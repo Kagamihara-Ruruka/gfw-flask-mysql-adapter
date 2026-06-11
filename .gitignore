@@ -1,0 +1,16 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+*.log
+benchmark_result.csv
+instance/
+data/
+config/adapter.local.json
+flask_pid.txt
+headless_*.html
+headless_*.txt
+headless_*.png
+chrome_*_stderr.log
+last_records_response.json
+frontend_verified*.png

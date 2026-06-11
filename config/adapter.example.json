@@ -1,0 +1,66 @@
+{
+  "sql_backend": {
+    "kind": "mysql",
+    "driver": "pymysql"
+  },
+  "mysql": {
+    "host": "127.0.0.1",
+    "port": 3307,
+    "user": "root",
+    "password": "fishery123",
+    "database": "ocean_fishery"
+  },
+  "query_policy": {
+    "default_limit": 1000,
+    "max_limit": 5000,
+    "table_preview_limit": 300,
+    "require_time_or_bbox_filter": true
+  },
+  "server": {
+    "default_command": "serve",
+    "host": "127.0.0.1",
+    "port": 5057,
+    "debug": false,
+    "kill_port_if_busy": true
+  },
+  "default_dataset": "gfw_full",
+  "datasets": {
+    "gfw_full": {
+      "label": "GFW January 2024 grid",
+      "duckdb_source_table": "main.gold_grid",
+      "mysql_table": "gold_grid",
+      "time_column": "obs_date",
+      "lat_column": "lat",
+      "lon_column": "lon",
+      "id_column": "grid_id",
+      "display_columns": [
+        "obs_date",
+        "grid_id",
+        "lat",
+        "lon",
+        "fish_sum",
+        "fish_ratio",
+        "vessels",
+        "dominant_flag",
+        "dominant_gear",
+        "sst",
+        "chlor_a",
+        "kd490",
+        "nflh"
+      ],
+      "metric_columns": [
+        "fish_sum",
+        "fish_ratio",
+        "vessels",
+        "sst",
+        "chlor_a",
+        "kd490",
+        "nflh"
+      ],
+      "category_columns": [
+        "dominant_flag",
+        "dominant_gear"
+      ]
+    }
+  }
+}

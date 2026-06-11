@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/gfw-mysql-adapter/config.schema.json",
+  "title": "GFW Flask adapter config",
+  "type": "object",
+  "required": ["sql_backend", "mysql", "query_policy", "server", "default_dataset", "datasets"],
+  "additionalProperties": false,
+  "properties": {
+    "sql_backend": {
+      "type": "object",
+      "required": ["kind", "driver"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "mysql"
+        },
+        "driver": {
+          "type": "string",
+          "const": "pymysql"
+        }
+      }
+    },
+    "mysql": {
+      "type": "object",
+      "required": ["host", "port", "user", "password", "database"],
+      "additionalProperties": false,
+      "properties": {
+        "host": { "type": "string", "minLength": 1 },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "user": { "type": "string", "minLength": 1 },
+        "password": { "type": "string" },
+        "database": { "$ref": "#/$defs/sqlIdentifier" }
+      }
+    },
+    "query_policy": {
+      "type": "object",
+      "required": [
+        "default_limit",
+        "max_limit",
+        "table_preview_limit",
+        "require_time_or_bbox_filter"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "default_limit": { "type": "integer", "minimum": 1 },
+        "max_limit": { "type": "integer", "minimum": 1 },
+        "table_preview_limit": { "type": "integer", "minimum": 1 },
+        "require_time_or_bbox_filter": { "type": "boolean" }
+      }
+    },
+    "server": {
+      "type": "object",
+      "required": ["default_command", "host", "port", "debug", "kill_port_if_busy"],
+      "additionalProperties": false,
+      "properties": {
+        "default_command": {
+          "type": "string",
+          "enum": ["serve"]
+        },
+        "host": { "type": "string", "minLength": 1 },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "debug": { "type": "boolean" },
+        "kill_port_if_busy": { "type": "boolean" }
+      }
+    },
+    "default_dataset": {
+      "$ref": "#/$defs/sqlIdentifier"
+    },
+    "datasets": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "label",
+          "duckdb_source_table",
+          "mysql_table",
+          "time_column",
+          "lat_column",
+          "lon_column",
+          "id_column",
+          "display_columns",
+          "metric_columns",
+          "category_columns"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "label": { "type": "string", "minLength": 1 },
+          "duckdb_source_table": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)?$"
+          },
+          "mysql_table": { "$ref": "#/$defs/sqlIdentifier" },
+          "time_column": { "$ref": "#/$defs/sqlIdentifier" },
+          "lat_column": { "$ref": "#/$defs/sqlIdentifier" },
+          "lon_column": { "$ref": "#/$defs/sqlIdentifier" },
+          "id_column": { "$ref": "#/$defs/sqlIdentifier" },
+          "display_columns": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "$ref": "#/$defs/sqlIdentifier" }
+          },
+          "metric_columns": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/sqlIdentifier" }
+          },
+          "category_columns": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/sqlIdentifier" }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sqlIdentifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+    }
+  }
+}

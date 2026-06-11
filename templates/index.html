@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GFW MySQL Adapter MVP</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <h1>GFW MySQL Adapter MVP</h1>
+      <p>MySQL + PyMySQL + Flask adapter, with map, table, and request-to-render timing.</p>
+    </div>
+    <div class="status" id="status">initializing</div>
+  </header>
+
+  <main class="layout">
+    <section class="controls" aria-label="query controls">
+      <label>
+        Dataset
+        <select id="dataset"></select>
+      </label>
+      <label>
+        Date
+        <select id="date"></select>
+      </label>
+      <label>
+        Limit
+        <input id="limit" type="number" min="1" max="5000" step="100" value="1000">
+      </label>
+      <button id="reload" type="button">Reload</button>
+    </section>
+
+    <section class="metrics" aria-label="timing metrics">
+      <div><span>SQL query</span><strong id="query-ms">-</strong></div>
+      <div><span>Serialize</span><strong id="serialize-ms">-</strong></div>
+      <div><span>API total</span><strong id="api-ms">-</strong></div>
+      <div><span>Fetch to render</span><strong id="client-ms">-</strong></div>
+      <div><span>Rows</span><strong id="row-count">-</strong></div>
+    </section>
+
+    <section class="workspace">
+      <div id="map" aria-label="map"></div>
+      <aside class="table-panel">
+        <div class="table-title">
+          <h2>Records</h2>
+          <span id="table-note">waiting for data</span>
+        </div>
+        <div class="table-scroll">
+          <table id="records">
+            <thead></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </aside>
+    </section>
+  </main>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
