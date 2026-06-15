@@ -1,111 +1,26 @@
-# GFW MySQL 轉接頭 MVP
+# GFW Flask MySQL Adapter MVP
 
-這份專案把原本的靜態儀表板流程，改成一條可查詢、可量測、可部署的動態資料管線：
-
-```text
-DuckDB 來源資料 -> 匯入 MySQL -> Flask / PyMySQL 轉接頭 -> HTML5 / Leaflet 地圖與表格
-```
-
-前端會量測「從網頁送出請求，到資料回來並完成地圖與表格渲染」的總時間。後端會回報 SQL 查詢時間、JSON 序列化時間、Flask API 總時間。
-
-## 為什麼不是直接產生 HTML
-
-雲端資料夾裡的 `gfw_dashboard_FULL.html` 是一份已經把資料塞進去的靜態 HTML。它適合展示 demo，但不適合面對更大的資料集。
-
-本專案採用新的流程：
+This project imports a GFW DuckDB table into MySQL and serves it through a Flask API plus a Leaflet dashboard.
 
 ```text
-網頁三件套 -> Flask API -> PyMySQL -> MySQL
+DuckDB source -> MySQL -> Flask / PyMySQL API -> HTML / Leaflet dashboard
 ```
 
-資料會留在 SQL 後端，前端只拿當下需要的切片資料，不會一次把整張大表塞進 Python 或瀏覽器。
-
-## 檔案結構
-
-真正執行時需要看的檔案很少：
+## Project Layout
 
 ```text
-adapter.py                  # 匯入資料、啟動 Flask、查 MySQL、回傳 JSON
-config/adapter.example.json # MySQL 位置、資料表欄位、查詢上限、預設啟動設定
-config/adapter.schema.json  # 配置檔格式說明，給人類與 IDE 參考
-benchmarks/                 # row-scale pipeline 測速報告
-templates/index.html        # 網頁 HTML
-static/app.js               # 前端請求、地圖、表格、總耗時計算
-static/styles.css           # 樣式
+adapter.py                  # Import pipeline, Flask API, MySQL queries
+config/adapter.example.json # Example runtime config
+config/adapter.schema.json  # Config schema
+benchmarks/                 # Row-scale benchmark notes
+templates/index.html        # Dashboard shell
+static/app.js               # Map/table client logic
+static/styles.css           # Dashboard styles
+requirements.txt            # Python dependencies
+docker-compose.yml          # Optional local MySQL container
 ```
 
-支援檔案：
-
-```text
-requirements.txt
-docker-compose.yml
-.gitignore
-README.md
-```
-
-## 最短操作流程
-
-如果資料庫檔案放在下載資料夾，而且檔名是 `完整資料庫gfw_full.duckdb`，第一次驗收可以直接複製下面整段貼到 PowerShell：
-
-```powershell
-cd "C:\Users\lyn59\Documents\Codex\2026-06-05\rrkal-o-1-session-code-rrkal\work\gfw_mysql_adapter_mvp"
-py -3 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-Copy-Item config\adapter.example.json config\adapter.local.json -Force
-docker compose up -d
-.\.venv\Scripts\python.exe adapter.py --config config\adapter.local.json import --source "C:\Users\lyn59\Downloads\完整資料庫gfw_full.duckdb" --replace
-.\.venv\Scripts\python.exe adapter.py --config config\adapter.local.json serve
-```
-
-最後一行會啟動 Flask 伺服器。終端機不要關，接著用瀏覽器打開：
-
-```text
-http://127.0.0.1:5057
-```
-
-如果資料已經匯入過，只想重新啟動網頁，複製下面這段即可：
-
-```powershell
-cd "C:\Users\lyn59\Documents\Codex\2026-06-05\rrkal-o-1-session-code-rrkal\work\gfw_mysql_adapter_mvp"
-docker compose up -d
-.\.venv\Scripts\python.exe adapter.py --config config\adapter.local.json serve
-```
-
-## IDE 直接按 Run
-
-如果 IDE 只是執行：
-
-```powershell
-python adapter.py
-```
-
-程式會讀 `config/adapter.local.json` 裡的 `server` 設定，自動等同於：
-
-```powershell
-python adapter.py --config config/adapter.local.json serve
-```
-
-也就是直接啟動 Flask。匯入資料仍然要用 `import` 指令。
-
-`server` 設定如下：
-
-```json
-{
-  "server": {
-    "default_command": "serve",
-    "host": "127.0.0.1",
-    "port": 5057,
-    "debug": false,
-    "kill_port_if_busy": true
-  }
-}
-```
-
-`kill_port_if_busy` 的意思是：如果 IDE 重複按 Run，舊的 Flask 還佔著同一個 port，程式會先把正在 listen 該 port 的舊 process 關掉，再啟動新的 Flask。這是為了避免維護者卡在「port already in use」。
-
-## 安裝套件
-
-如果不使用最短流程，也可以分步安裝：
+## Local Setup
 
 ```powershell
 py -3 -m venv .venv
@@ -113,88 +28,62 @@ py -3 -m venv .venv
 Copy-Item config\adapter.example.json config\adapter.local.json -Force
 ```
 
-目前使用的 Python 套件：
-
-```text
-Flask
-PyMySQL
-duckdb
-```
-
-## 啟動 MySQL
-
-如果只是本機驗證，可以直接用本專案附的 Docker MySQL：
+Start MySQL with Docker:
 
 ```powershell
 docker compose up -d
 ```
 
-預設 MySQL 會開在：
+Default Docker MySQL settings:
 
 ```text
-127.0.0.1:3307
+host: 127.0.0.1
+port: 3307
 database: ocean_fishery
 user: root
 password: fishery123
 ```
 
-如果要接現有 MySQL 或未來的 SQL 服務，請改 `config/adapter.local.json`。
+If you use an existing local MySQL instance, update `config/adapter.local.json` accordingly.
 
-## 匯入 DuckDB 到 MySQL
-
-完整匯入：
+## Import Data
 
 ```powershell
 .\.venv\Scripts\python.exe adapter.py --config config\adapter.local.json import --source "C:\path\to\gfw_full.duckdb" --replace
 ```
 
-小量測試：
+For a small smoke test:
 
 ```powershell
 .\.venv\Scripts\python.exe adapter.py --config config\adapter.local.json import --source "C:\path\to\gfw_full.duckdb" --replace --row-limit 5000
 ```
 
-匯入時採用 chunk streaming，不會把整份資料一次讀進 pandas 或 Python 記憶體。這是為了避免未來資料列數更大時 OOM。
+The importer streams rows in chunks to avoid loading the full DuckDB table into memory.
 
-## 啟動 Flask 伺服器
+## Run Flask
 
 ```powershell
 .\.venv\Scripts\python.exe adapter.py --config config\adapter.local.json serve
 ```
 
-預設網址由 `config/adapter.local.json` 的 `server.port` 決定。本專案預設是：
+Open:
 
 ```text
 http://127.0.0.1:5057
 ```
 
-## API
+When `kill_port_if_busy` is enabled, the server can clean up an existing listener on the configured port before starting. This helps with repeated IDE runs.
 
-健康檢查：
+## API
 
 ```text
 GET /api/health
-```
-
-資料集列表：
-
-```text
 GET /api/datasets
-```
-
-資料表欄位與日期：
-
-```text
 GET /api/datasets/gfw_full/schema
+GET /api/datasets/gfw_full/records?date=2024-01-01&bbox=119,21,123,26&zoom=6&lod=1
 ```
 
-查詢資料：
-
-```text
-GET /api/datasets/gfw_full/records?date=2024-01-01&limit=1000
-```
-
-查詢回應會包含：
+Timing is returned in the response:
 
 ```json
 {
@@ -207,100 +96,72 @@ GET /api/datasets/gfw_full/records?date=2024-01-01&limit=1000
 }
 ```
 
-前端會另外計算 `Fetch to render`，也就是從瀏覽器送出請求，到地圖與表格更新完成的總時間。
+The client also measures `Fetch to render`, which covers the browser-side time from request start through map/table rendering.
 
-## 配置檔需要填什麼
+## Query Policy
 
-配置檔不是資料庫 DDL，而是「資料集語意對照表」。它告訴轉接頭：
-
-- SQL 服務在哪裡
-- Flask 預設開在哪個 host / port
-- 哪一張表是目前資料集
-- 哪個欄位是時間
-- 哪個欄位是緯度
-- 哪個欄位是經度
-- 哪些欄位要送到前端表格
-- 每次查詢最多回傳幾筆
-- 表格最多預覽幾筆
-
-主要欄位：
+`query_policy` controls default limits, optional hard limits, and table preview size:
 
 ```json
 {
-  "sql_backend": {
-    "kind": "mysql",
-    "driver": "pymysql"
-  },
-  "mysql": {
-    "host": "127.0.0.1",
-    "port": 3307,
-    "user": "root",
-    "password": "fishery123",
-    "database": "ocean_fishery"
-  },
   "query_policy": {
     "default_limit": 1000,
     "max_limit": 5000,
     "table_preview_limit": 300,
     "require_time_or_bbox_filter": true
-  },
-  "server": {
-    "default_command": "serve",
-    "host": "127.0.0.1",
-    "port": 5057,
-    "debug": false,
-    "kill_port_if_busy": true
   }
 }
 ```
 
-每個 dataset 需要：
+`max_limit` may be set to `null` to remove the API clamp. This should be used carefully because large browser renders can still be expensive.
 
-- `duckdb_source_table`：匯入時讀的 DuckDB 表。
-- `mysql_table`：Flask 查詢時讀的 MySQL 表。
-- `time_column`：時間欄位。
-- `lat_column`：緯度欄位。
-- `lon_column`：經度欄位。
-- `id_column`：資料識別欄位。
-- `display_columns`：回傳給前端表格的欄位。
-- `metric_columns`：數值欄位，未來可拿來做圖表或顏色。
-- `category_columns`：分類欄位，未來可拿來做篩選。
+## Rendering Strategy
 
-嚴格格式請看：
+The map uses Leaflet rectangles to draw the fishing grid. Rendering is intentionally viewport-driven:
 
-```text
-config/adapter.schema.json
-```
+- The current map bounds are sent as `bbox=west,south,east,north`.
+- The selected date and current map bounds both participate in the SQL query.
+- The browser only receives rows for the current view instead of pulling a whole day by default.
+- The initial map view is centered near Taiwan to avoid a heavy global first render.
+- Leaflet vector rendering uses Canvas for better large-layer performance.
+- Tooltips are disabled automatically when the rendered row count is high.
+- The table is a preview only; the map may render more rows than the table displays.
 
-## 未來部署到 K8s 的理解
+In short: the map viewport is part of the query, not just a client-side crop.
 
-未來部署時，可以把 Flask adapter 放在對方的 pod 裡：
+## LOD Strategy
 
-```text
-HTML/CSS/JS -> Flask pod -> SQL backend driver -> SQL service / lakehouse endpoint
-```
+LOD is based on the current zoom level, but it does not enlarge rendered grid cells.
 
-目前是 MySQL / PyMySQL。如果未來湖倉提供的是 MySQL protocol，這份轉接頭可以直接改連線位置。
-
-如果未來湖倉提供的是 Trino、Spark SQL、Databricks SQL 或其他協定，就只應該替換 `adapter.py` 裡的 SQL driver 查詢層，前端 API 契約不應該重寫。
-
-## 容量邊界
-
-這份 MVP 有刻意保護資料管線：
-
-- 匯入資料時用 chunk streaming。
-- API 每次查詢最多回傳 `query_policy.max_limit` 筆。
-- 表格只顯示 `query_policy.table_preview_limit` 筆。
-- 查詢預設需要時間或 bbox 條件，避免無意中掃整張大表。
-- 大資料集應該留在 MySQL 或湖倉裡，不應該被整包塞進 Python 或前端。
-
-## 已知定位
-
-這是最低交付版本，不追求華麗特效。它要證明的是：
+At close zoom levels, the API returns original rows 1:1:
 
 ```text
-前端可以透過 Flask 轉接頭查 SQL，
-資料可以切片回傳，
-地圖與表格可以渲染，
-而且整條 pipeline 的耗時可以被量測。
+zoom >= 6 -> original rows, one source row per rendered rectangle
 ```
+
+At wider zoom levels, the API samples representative original rows by spatial bucket:
+
+```text
+zoom = 5  -> sample bucket 0.0625 degrees
+zoom = 4  -> sample bucket 0.25 degrees
+zoom = 3  -> sample bucket 0.5 degrees
+zoom <= 2 -> sample bucket 1.25 degrees
+```
+
+The bucket only controls sampling density. Rendered rectangles still use the original grid size and original `grid_id`, `lat`, and `lon`. This keeps the map from implying a lower-resolution grid while still preventing global views from sending too many Leaflet rectangles to the browser.
+
+## Config Notes
+
+Each dataset config includes:
+
+- `duckdb_source_table`: source table in the DuckDB file
+- `mysql_table`: target/query table in MySQL
+- `time_column`: date/time column
+- `lat_column`: latitude column
+- `lon_column`: longitude column
+- `id_column`: stable row/grid id
+- `display_columns`: columns returned to the dashboard
+- `metric_columns`: numeric columns used by the UI
+- `category_columns`: categorical columns used by the UI
+
+See `config/adapter.schema.json` for the full schema.
