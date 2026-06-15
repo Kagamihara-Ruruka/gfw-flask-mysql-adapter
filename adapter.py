@@ -48,7 +48,7 @@ def validate_config(config: dict[str, Any]) -> None:
     if backend.get("kind", "mysql") != "mysql" or backend.get("driver", "pymysql") != "pymysql":
         raise ValueError("this MVP currently supports only sql_backend kind=mysql driver=pymysql")
     policy = query_policy(config)
-    if policy["default_limit"] > policy["max_limit"]:
+    if policy["max_limit"] is not None and policy["default_limit"] > policy["max_limit"]:
         raise ValueError("query_policy.default_limit must not exceed query_policy.max_limit")
     server = server_settings(config)
     if server["default_command"] != "serve":
@@ -104,9 +104,10 @@ def elapsed_ms(start: float) -> float:
 # 查詢容量邊界集中在 config，避免前端或 API 偷偷把大表整批拉回 Python 或瀏覽器。
 def query_policy(config: dict[str, Any]) -> dict[str, Any]:
     policy = config.get("query_policy", {})
+    max_limit = policy.get("max_limit", 5000)
     return {
         "default_limit": int(policy.get("default_limit", 1000)),
-        "max_limit": int(policy.get("max_limit", 5000)),
+        "max_limit": None if max_limit is None else int(max_limit),
         "table_preview_limit": int(policy.get("table_preview_limit", 300)),
         "require_time_or_bbox_filter": bool(policy.get("require_time_or_bbox_filter", True)),
     }
@@ -342,7 +343,7 @@ def records_packet(
     *,
     date_value: str | None,
     bbox: tuple[float, float, float, float] | None,
-    limit: int,
+    limit: int | None,
     offset: int,
 ) -> dict[str, Any]:
     table = dataset["mysql_table"]
@@ -351,7 +352,10 @@ def records_packet(
     lon_column = dataset["lon_column"]
     columns = dataset["display_columns"]
     policy = query_policy(config)
-    limit = max(1, min(int(limit), policy["max_limit"]))
+    if limit is not None:
+        limit = max(1, int(limit))
+        if policy["max_limit"] is not None:
+            limit = min(limit, policy["max_limit"])
     offset = max(0, int(offset))
     if policy["require_time_or_bbox_filter"] and not date_value and not bbox:
         raise ValueError("records query requires date or bbox filter")
@@ -369,11 +373,13 @@ def records_packet(
     where_sql = "WHERE " + " AND ".join(where_parts) if where_parts else ""
     column_sql = ", ".join(mysql_quote(column) for column in columns)
     order_sql = f"{mysql_quote(time_column)}, {mysql_quote(lat_column)}, {mysql_quote(lon_column)}"
+    page_sql = " LIMIT %s OFFSET %s" if limit is not None else ""
     sql = (
         f"SELECT {column_sql} FROM {mysql_quote(table)} {where_sql} "
-        f"ORDER BY {order_sql} LIMIT %s OFFSET %s"
+        f"ORDER BY {order_sql}{page_sql}"
     )
-    params.extend([limit, offset])
+    if limit is not None:
+        params.extend([limit, offset])
 
     total_start = time.perf_counter()
     query_start = time.perf_counter()
@@ -398,6 +404,115 @@ def records_packet(
     }
 
 
+def lod_cell_size(zoom: int | None) -> float | None:
+    if zoom is None or zoom >= 6:
+        return None
+    if zoom <= 2:
+        return 1.25
+    if zoom == 3:
+        return 0.5
+    if zoom == 4:
+        return 0.25
+    return 0.0625
+
+
+def lod_records_packet(
+    config: dict[str, Any],
+    dataset: dict[str, Any],
+    *,
+    date_value: str | None,
+    bbox: tuple[float, float, float, float] | None,
+    zoom: int | None,
+    limit: int | None,
+    offset: int,
+) -> dict[str, Any]:
+    cell_size = lod_cell_size(zoom)
+    if cell_size is None:
+        return records_packet(
+            config,
+            dataset,
+            date_value=date_value,
+            bbox=bbox,
+            limit=limit,
+            offset=offset,
+        )
+
+    table = dataset["mysql_table"]
+    time_column = dataset["time_column"]
+    lat_column = dataset["lat_column"]
+    lon_column = dataset["lon_column"]
+    policy = query_policy(config)
+    if limit is not None:
+        limit = max(1, int(limit))
+        if policy["max_limit"] is not None:
+            limit = min(limit, policy["max_limit"])
+    offset = max(0, int(offset))
+    if policy["require_time_or_bbox_filter"] and not date_value and not bbox:
+        raise ValueError("records query requires date or bbox filter")
+
+    where_parts = []
+    params: list[Any] = []
+    if date_value:
+        where_parts.append(f"{mysql_quote(time_column)} = %s")
+        params.append(date_value)
+    if bbox:
+        west, south, east, north = bbox
+        where_parts.append(f"{mysql_quote(lon_column)} BETWEEN %s AND %s")
+        params.extend([west, east])
+        where_parts.append(f"{mysql_quote(lat_column)} BETWEEN %s AND %s")
+        params.extend([south, north])
+    where_sql = "WHERE " + " AND ".join(where_parts) if where_parts else ""
+    lat_bucket = f"FLOOR({mysql_quote(lat_column)} / {cell_size})"
+    lon_bucket = f"FLOOR({mysql_quote(lon_column)} / {cell_size})"
+    page_sql = " LIMIT %s OFFSET %s" if limit is not None else ""
+    column_sql = ", ".join(mysql_quote(column) for column in dataset["display_columns"])
+    order_sql = f"{mysql_quote(time_column)}, {mysql_quote(lat_column)}, {mysql_quote(lon_column)}"
+    sql = (
+        f"SELECT {column_sql}, source_rows, {cell_size} AS sample_cell_size "
+        f"FROM ("
+        f"SELECT ranked.*, "
+        f"ROW_NUMBER() OVER ("
+        f"PARTITION BY lat_bucket, lon_bucket "
+        f"ORDER BY COALESCE(fish_sum, 0) DESC, {mysql_quote(dataset['id_column'])}"
+        f") AS sample_rank, "
+        f"COUNT(*) OVER (PARTITION BY lat_bucket, lon_bucket) AS source_rows "
+        f"FROM ("
+        f"SELECT {column_sql}, {lat_bucket} AS lat_bucket, {lon_bucket} AS lon_bucket "
+        f"FROM {mysql_quote(table)} {where_sql}"
+        f") AS ranked"
+        f") AS sampled "
+        f"WHERE sample_rank = 1 "
+        f"ORDER BY {order_sql}{page_sql}"
+    )
+    group_params = []
+    if limit is not None:
+        group_params.extend([limit, offset])
+    params = params + group_params
+
+    total_start = time.perf_counter()
+    query_start = time.perf_counter()
+    with mysql_connection(config, config["mysql"]["database"], dict_cursor=True) as conn, conn.cursor() as cur:
+        cur.execute(sql, params)
+        raw_rows = cur.fetchall()
+    query_ms = elapsed_ms(query_start)
+    serialize_start = time.perf_counter()
+    rows = rows_json_ready(raw_rows)
+    serialize_ms = elapsed_ms(serialize_start)
+    return {
+        "rows": rows,
+        "row_count": len(rows),
+        "limit": limit,
+        "offset": offset,
+        "lod": {"enabled": True, "zoom": zoom, "sample_cell_size": cell_size, "render_cell_size": 0.0833334},
+        "query_policy": policy,
+        "timing": {
+            "query_ms": query_ms,
+            "serialize_ms": serialize_ms,
+            "server_total_ms": elapsed_ms(total_start),
+        },
+    }
+
+
 def parse_bbox(value: str | None) -> tuple[float, float, float, float] | None:
     if not value:
         return None
@@ -408,6 +523,12 @@ def parse_bbox(value: str | None) -> tuple[float, float, float, float] | None:
     if west > east or south > north:
         raise ValueError("bbox ranges are invalid")
     return west, south, east, north
+
+
+def parse_optional_int(value: str | None) -> int | None:
+    if value is None or value == "":
+        return None
+    return int(value)
 
 
 def create_app(config: dict[str, Any]) -> Flask:
@@ -483,14 +604,25 @@ def create_app(config: dict[str, Any]) -> Flask:
         request_start = time.perf_counter()
         try:
             dataset = get_dataset(dataset_id)
-            packet = records_packet(
-                config,
-                dataset,
-                date_value=request.args.get("date"),
-                bbox=parse_bbox(request.args.get("bbox")),
-                limit=int(request.args.get("limit", str(query_policy(config)["default_limit"]))),
-                offset=int(request.args.get("offset", "0")),
-            )
+            if request.args.get("lod") in {"1", "true", "yes"}:
+                packet = lod_records_packet(
+                    config,
+                    dataset,
+                    date_value=request.args.get("date"),
+                    bbox=parse_bbox(request.args.get("bbox")),
+                    zoom=int(request.args["zoom"]) if request.args.get("zoom") else None,
+                    limit=parse_optional_int(request.args.get("limit")),
+                    offset=int(request.args.get("offset", "0")),
+                )
+            else:
+                packet = records_packet(
+                    config,
+                    dataset,
+                    date_value=request.args.get("date"),
+                    bbox=parse_bbox(request.args.get("bbox")),
+                    limit=parse_optional_int(request.args.get("limit")) or query_policy(config)["default_limit"],
+                    offset=int(request.args.get("offset", "0")),
+                )
             packet["dataset_id"] = dataset_id
             packet["timing"]["api_total_ms"] = elapsed_ms(request_start)
             return jsonify(packet)
