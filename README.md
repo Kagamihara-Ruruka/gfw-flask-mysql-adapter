@@ -83,6 +83,7 @@ The timing drawer reports:
 - Python 3.11+
 - MySQL-compatible server
 - PostgreSQL + PostGIS for EEZ vector tiles
+- 7-Zip for extracting the temporary test-data archive
 - Node.js only for local JavaScript syntax checks
 
 Python dependencies are listed in `requirements.txt`.
@@ -105,11 +106,17 @@ Edit `config\adapter.local.json` for local database settings.
 
 This repo does not commit large datasets. For repeatable demos, `config/adapter.example.json` includes a temporary `test_data_bootstrap` section.
 
-When `auto_on_serve` is true, running the app downloads the public test data listed in `config/test_data.example.json` if the expected files are missing:
+When `auto_on_serve` is true, running the app downloads the public `.7z` test-data archive listed in `config/test_data.example.json` if the expected files are missing:
 
 ```text
 data/gfw_full.duckdb
 data/eez_v12.gpkg
+```
+
+The archive is hosted as a GitHub Release asset:
+
+```text
+https://github.com/Kagamihara-Ruruka/gfw-flask-mysql-adapter/releases/tag/test-data-v1
 ```
 
 You can also run the bootstrap step manually:

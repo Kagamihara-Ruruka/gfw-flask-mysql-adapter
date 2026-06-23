@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -53,6 +54,31 @@ def download_zip(entry: dict[str, Any]) -> None:
         archive.unlink(missing_ok=True)
 
 
+def find_7z() -> Path:
+    candidates = [
+        Path("C:/Program Files/7-Zip/7z.exe"),
+        Path("C:/Program Files (x86)/7-Zip/7z.exe"),
+    ]
+    discovered = shutil.which("7z") or shutil.which("7za") or shutil.which("7zr")
+    if discovered:
+        candidates.insert(0, Path(discovered))
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    raise RuntimeError("7z test-data archive requires 7-Zip. Install 7-Zip or put 7z.exe on PATH.")
+
+
+def download_7z(entry: dict[str, Any]) -> None:
+    archive = resolve_path(entry.get("archive", "data/test_data_download.7z"))
+    download_direct_file({**entry, "target": str(archive)})
+    target_dir = resolve_path(entry.get("target_dir", "data"))
+    target_dir.mkdir(parents=True, exist_ok=True)
+    seven_zip = find_7z()
+    subprocess.run([str(seven_zip), "x", str(archive), f"-o{target_dir}", "-y"], check=True)
+    if entry.get("remove_archive", False):
+        archive.unlink(missing_ok=True)
+
+
 def download_google_drive_folder(entry: dict[str, Any]) -> None:
     try:
         import gdown
@@ -73,6 +99,8 @@ def run_entry(entry: dict[str, Any]) -> None:
         download_direct_file(entry)
     elif kind == "zip":
         download_zip(entry)
+    elif kind == "7z":
+        download_7z(entry)
     elif kind == "google_drive_folder":
         download_google_drive_folder(entry)
     else:

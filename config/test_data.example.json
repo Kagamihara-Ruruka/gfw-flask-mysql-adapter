@@ -3,8 +3,9 @@
   "entries": [
     {
       "name": "rrkal_public_ocean_test_data",
-      "kind": "google_drive_folder",
-      "url": "https://drive.google.com/drive/folders/1mXBMMAUyepd5vb3TFCs4GqomSEwWbonu",
+      "kind": "7z",
+      "url": "https://github.com/Kagamihara-Ruruka/gfw-flask-mysql-adapter/releases/download/test-data-v1/rrkal_ocean_test_data.7z",
+      "archive": "data/rrkal_ocean_test_data.7z",
       "target_dir": "data",
       "required_paths": [
         "data/gfw_full.duckdb",
