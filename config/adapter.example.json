@@ -23,6 +23,11 @@
     "debug": false,
     "kill_port_if_busy": true
   },
+  "test_data_bootstrap": {
+    "enabled": true,
+    "auto_on_serve": true,
+    "manifest": "config/test_data.example.json"
+  },
   "overlays": {
     "eez": {
       "enabled": true,

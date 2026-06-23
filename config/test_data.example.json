@@ -1,0 +1,15 @@
+{
+  "description": "Temporary test-data bootstrap manifest. This is intentionally separate from core.py so it can be removed later.",
+  "entries": [
+    {
+      "name": "rrkal_public_ocean_test_data",
+      "kind": "google_drive_folder",
+      "url": "https://drive.google.com/drive/folders/1mXBMMAUyepd5vb3TFCs4GqomSEwWbonu",
+      "target_dir": "data",
+      "required_paths": [
+        "data/gfw_full.duckdb",
+        "data/eez_v12.gpkg"
+      ]
+    }
+  ]
+}

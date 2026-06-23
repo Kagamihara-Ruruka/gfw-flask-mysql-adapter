@@ -101,6 +101,25 @@ Edit `config\adapter.local.json` for local database settings.
 
 `config\adapter.local.json` is ignored by git. Keep real passwords there or in environment variables.
 
+## Temporary Test Data Bootstrap
+
+This repo does not commit large datasets. For repeatable demos, `config/adapter.example.json` includes a temporary `test_data_bootstrap` section.
+
+When `auto_on_serve` is true, running the app downloads the public test data listed in `config/test_data.example.json` if the expected files are missing:
+
+```text
+data/gfw_full.duckdb
+data/eez_v12.gpkg
+```
+
+You can also run the bootstrap step manually:
+
+```powershell
+.\.venv\Scripts\python.exe core.py --config config\adapter.local.json bootstrap-test-data
+```
+
+This is a test-only convenience path. It is intentionally isolated in `TestDataBootstrap.py` and `config/test_data.example.json` so it can be removed later without touching the app core.
+
 For AIS, use an environment variable instead of committing a password:
 
 ```powershell

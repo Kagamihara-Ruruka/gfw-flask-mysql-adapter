@@ -69,6 +69,16 @@
         "kill_port_if_busy": { "type": "boolean" }
       }
     },
+    "test_data_bootstrap": {
+      "type": "object",
+      "required": ["enabled", "auto_on_serve", "manifest"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "auto_on_serve": { "type": "boolean" },
+        "manifest": { "type": "string", "minLength": 1 }
+      }
+    },
     "default_dataset": {
       "$ref": "#/$defs/sqlIdentifier"
     },
