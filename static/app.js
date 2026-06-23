@@ -27,6 +27,10 @@ function syncMapFullscreenButton() {
   const active = document.fullscreenElement === $("map-shell");
   $("map-fullscreen").textContent = active ? "Exit" : "Full";
   $("map-fullscreen").title = active ? "Exit fullscreen map" : "Fullscreen map";
+  $("map-settings-open").hidden = active;
+  if (active && typeof setMapSettingsModal === "function") {
+    setMapSettingsModal(false);
+  }
   setTimeout(() => {
     map.invalidateSize();
     if (pendingFullscreenBounds) {
@@ -48,6 +52,11 @@ function bindControls() {
   }
   bindLayerOrderDrag();
   bindLayerAlphaControls();
+  bindEezPaintControls();
+  bindMapSettingsControls();
+  bindMapExportControls();
+  bindLayerSettingsModalControls();
+  bindAisSettingsControls();
   $("ais-render-strategy").addEventListener("change", () => {
     if (state.dataLayer === "ais") {
       reloadActiveLayer();

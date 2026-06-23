@@ -31,6 +31,8 @@ def ais_live_settings(config: dict[str, Any]) -> dict[str, Any]:
         "course_column": settings.get("course_column"),
         "heading_column": settings.get("heading_column"),
         "name_column": settings.get("name_column"),
+        "source_column": settings.get("source_column"),
+        "include_sources": settings.get("include_sources", []),
         "max_age_minutes": int(settings.get("max_age_minutes", 60)),
         "limit": limit,
     }
@@ -100,6 +102,7 @@ def ais_live_packet(
         "course": _optional_column(settings, "course_column"),
         "heading": _optional_column(settings, "heading_column"),
         "name": _optional_column(settings, "name_column"),
+        "source": _optional_column(settings, "source_column"),
     }
     limit = max(1, min(int(settings["limit"]), query_policy(config)["max_limit"]))
     max_age_minutes = max(1, int(settings["max_age_minutes"]))
@@ -120,6 +123,12 @@ def ais_live_packet(
         f"{mysql_quote(lon_column)} IS NOT NULL",
     ]
     params: list[Any] = [max_age_minutes]
+    source_column = optional_columns.get("source")
+    include_sources = [str(value) for value in settings.get("include_sources", []) if str(value)]
+    if source_column and include_sources:
+        placeholders = ", ".join(["%s"] * len(include_sources))
+        where_parts.append(f"{mysql_quote(source_column)} IN ({placeholders})")
+        params.extend(include_sources)
     if bbox:
         west, south, east, north = bbox
         where_parts.append(f"{mysql_quote(lon_column)} BETWEEN %s AND %s")
@@ -144,5 +153,54 @@ def ais_live_packet(
         "row_count": len(rows),
         "limit": limit,
         "max_age_minutes": max_age_minutes,
+        "source_filter": {
+            "column": source_column,
+            "include_sources": include_sources,
+        },
         "timing": {"query_ms": elapsed_ms(started)},
+    }
+
+
+def merged_ais_live_packet(
+    config: dict[str, Any],
+    *,
+    bboxes: list[tuple[float, float, float, float] | None],
+) -> dict[str, Any]:
+    packets = [ais_live_packet(config, bbox=bbox) for bbox in (bboxes or [None])]
+    if any(packet.get("status") != "ok" for packet in packets):
+        first = next((packet for packet in packets if packet.get("status") != "ok"), packets[0])
+        return {
+            "status": first.get("status", "error"),
+            "message": first.get("message", "AIS live source failed."),
+            "rows": [],
+            "row_count": 0,
+            "timing": {"query_ms": 0},
+        }
+
+    seen: set[str] = set()
+    rows: list[dict[str, Any]] = []
+    query_ms = 0.0
+    limit = 0
+    max_age_minutes = 0
+    source_filter = {}
+    for packet in packets:
+        query_ms += float(packet.get("timing", {}).get("query_ms", 0))
+        limit = max(limit, int(packet.get("limit", 0)))
+        max_age_minutes = max(max_age_minutes, int(packet.get("max_age_minutes", 0)))
+        source_filter = packet.get("source_filter") or source_filter
+        for row in packet.get("rows", []):
+            key = f"{row.get('mmsi')}|{row.get('event_time')}|{row.get('lat')}|{row.get('lon')}"
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(row)
+
+    return {
+        "status": "ok",
+        "rows": rows,
+        "row_count": len(rows),
+        "limit": limit,
+        "max_age_minutes": max_age_minutes,
+        "source_filter": source_filter,
+        "timing": {"query_ms": query_ms},
     }

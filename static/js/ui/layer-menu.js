@@ -36,6 +36,9 @@ function bindLayerAlphaControls() {
     const layerId = input.dataset.alphaLayer;
     if (!layerId) continue;
     input.value = String(state.layerAlpha[layerId] ?? Number(input.value));
+    for (const eventName of ["click", "pointerdown", "mousedown", "touchstart", "dragstart"]) {
+      input.addEventListener(eventName, (event) => event.stopPropagation());
+    }
     input.addEventListener("input", () => {
       state.layerAlpha[layerId] = Number(input.value);
       applyLayerAlpha(layerId);
@@ -60,12 +63,61 @@ function updateDataLayerMenu() {
 
 function toggleLayerSettings(event) {
   const button = event.currentTarget;
-  const targetId = button.dataset.settingsTarget;
-  const panel = $(targetId);
-  if (!panel) return;
-  const isOpen = !panel.hidden;
-  panel.hidden = isOpen;
-  button.setAttribute("aria-expanded", String(!isOpen));
+  const layerId = button.dataset.settingsLayer;
+  if (!layerId) return;
+  setLayerSettingsModal(layerId, true);
+  button.setAttribute("aria-expanded", "true");
+}
+
+function setLayerSettingsModal(layerId, open) {
+  const modal = $("layer-settings-modal");
+  if (!modal) return;
+  modal.hidden = !open;
+  if (!open) {
+    for (const button of document.querySelectorAll(".layer-settings-toggle")) {
+      button.setAttribute("aria-expanded", "false");
+    }
+    return;
+  }
+
+  const labels = {
+    gfw: ["GFW fishery grid", "Grid layer display controls."],
+    ais: ["AIS vessel positions", "Live AIS source and display controls."],
+    eez: ["EEZ boundary overlay", "Maritime boundary overlay controls."],
+  };
+  const [title, subtitle] = labels[layerId] || ["Layer Settings", "Configure the selected map layer."];
+  $("layer-settings-title").textContent = title;
+  $("layer-settings-subtitle").textContent = subtitle;
+
+  for (const panel of document.querySelectorAll("[data-layer-settings-panel]")) {
+    panel.hidden = panel.dataset.layerSettingsPanel !== layerId;
+  }
+}
+
+function bindLayerSettingsModalControls() {
+  const modal = $("layer-settings-modal");
+  const closeButton = $("layer-settings-close");
+  if (closeButton) {
+    closeButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      setLayerSettingsModal(null, false);
+    });
+  }
+  if (modal) {
+    modal.addEventListener("click", (event) => {
+      if (event.target === modal) {
+        setLayerSettingsModal(null, false);
+      }
+    });
+  }
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      if (typeof setAisConfigModal === "function") {
+        setAisConfigModal(false);
+      }
+      setLayerSettingsModal(null, false);
+    }
+  });
 }
 
 async function selectDataLayer(layerId) {
@@ -94,8 +146,26 @@ function syncLayerOrderFromDom() {
 function bindLayerOrderDrag() {
   let draggedItem = null;
   for (const item of layerItems()) {
-    item.draggable = true;
+    const handle = item.querySelector(".drag-handle");
+    item.draggable = false;
+    if (handle) {
+      handle.draggable = true;
+      handle.addEventListener("dragstart", (event) => {
+        draggedItem = item;
+        item.classList.add("is-dragging");
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", item.dataset.layerId);
+      });
+    }
+    for (const control of item.querySelectorAll("input, select, button, label, .layer-settings")) {
+      control.addEventListener("click", (event) => event.stopPropagation());
+      control.addEventListener("dragstart", (event) => event.stopPropagation());
+    }
     item.addEventListener("dragstart", (event) => {
+      if (event.target !== handle) {
+        event.preventDefault();
+        return;
+      }
       draggedItem = item;
       item.classList.add("is-dragging");
       event.dataTransfer.effectAllowed = "move";

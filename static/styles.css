@@ -264,6 +264,280 @@ body {
   line-height: 1.4;
 }
 
+.setting-note.is-warning {
+  color: #f2cc60;
+}
+
+.ais-setup,
+.ais-connected-panel {
+  display: grid;
+  gap: 8px;
+}
+
+.ais-setup {
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.ais-setup input {
+  min-width: 100%;
+}
+
+.provider-settings {
+  display: grid;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #10161f;
+}
+
+.provider-settings summary {
+  cursor: pointer;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.provider-settings h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.setup-link-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #10161f;
+  color: var(--accent-strong);
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.setup-link-button:hover {
+  border-color: var(--accent);
+}
+
+.danger-button {
+  border-color: #8a3f45;
+  background: #4f1f26;
+  color: #ffd7d7;
+}
+
+.diagnostics-result {
+  display: grid;
+  gap: 4px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #10161f;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.diagnostics-result.is-ok {
+  border-color: #2f7c57;
+  color: #b9f6d2;
+}
+
+.diagnostics-result.is-warning {
+  border-color: #8a6d28;
+  color: #f2cc60;
+}
+
+.diagnostics-result.is-error {
+  border-color: #8a3f45;
+  color: #ffd7d7;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1400;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(0 0 0 / 62%);
+}
+
+.modal-backdrop[hidden] {
+  display: none;
+}
+
+.modal-window {
+  width: min(960px, 100%);
+  display: flex;
+  flex-direction: column;
+  max-height: min(860px, calc(100vh - 48px));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 24px 70px rgb(0 0 0 / 58%);
+  overflow: hidden;
+}
+
+.layer-settings-window {
+  width: min(520px, 100%);
+}
+
+.map-settings-window {
+  width: min(500px, 100%);
+  max-height: min(720px, calc(100vh - 48px));
+}
+
+.modal-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.modal-header p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.modal-body {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.layer-settings-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.layer-settings-panel[hidden] {
+  display: none;
+}
+
+.settings-section {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #10161f;
+}
+
+.settings-section h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.nested-settings {
+  display: grid;
+  gap: 9px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+
+.nested-settings summary {
+  cursor: pointer;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.nested-settings label {
+  margin-top: 8px;
+}
+
+.switch-row {
+  display: flex !important;
+  grid-template-columns: none !important;
+  align-items: center;
+  gap: 9px !important;
+  color: var(--text) !important;
+}
+
+.layer-settings-panel label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.color-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.color-grid label {
+  min-width: 0;
+}
+
+.color-input {
+  min-width: 100%;
+  padding: 3px;
+}
+
+.layer-settings-panel select,
+.layer-settings-panel input[type="range"] {
+  min-width: 100%;
+}
+
+.embedded-auth-panel {
+  display: grid;
+  gap: 8px;
+}
+
+.embedded-auth-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.embedded-auth-panel iframe {
+  width: 100%;
+  height: min(520px, 58vh);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.api-key-entry {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.api-key-entry input {
+  min-width: 100%;
+}
+
 select,
 input,
 button {
@@ -392,13 +666,18 @@ button {
   height: 100vh;
 }
 
-.map-tool-button {
+.map-tool-stack {
   position: absolute;
   z-index: 900;
   top: 12px;
   right: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.map-tool-button {
   height: 32px;
-  min-width: 54px;
+  min-width: 72px;
   padding: 0 10px;
   border-color: rgb(255 255 255 / 20%);
   background: rgb(13 17 23 / 82%);
@@ -408,6 +687,45 @@ button {
 
 .map-tool-button:hover {
   border-color: var(--accent-strong);
+}
+
+.map-settings-button {
+  position: absolute;
+  z-index: 900;
+  right: 12px;
+  bottom: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-color: rgb(255 255 255 / 20%);
+  border-radius: 50%;
+  background: rgb(13 17 23 / 82%);
+  color: var(--text);
+  font-size: 18px;
+  line-height: 1;
+  box-shadow: 0 8px 18px rgb(0 0 0 / 32%);
+}
+
+.map-settings-button:hover,
+.map-settings-button[aria-expanded="true"] {
+  border-color: var(--accent-strong);
+}
+
+.leaflet-control-scale {
+  margin-left: 12px !important;
+  margin-bottom: 12px !important;
+}
+
+.leaflet-control-scale-line {
+  border-color: rgb(230 237 243 / 78%) !important;
+  border-top: 0 !important;
+  background: rgb(13 17 23 / 78%) !important;
+  color: var(--text) !important;
+  text-shadow: none !important;
 }
 
 .table-panel {
@@ -441,7 +759,8 @@ button {
 
 .grid-canvas-layer,
 .ais-density-canvas-layer,
-.ais-point-canvas-layer {
+.ais-point-canvas-layer,
+.graticule-canvas-layer {
   pointer-events: none;
 }
 

@@ -26,6 +26,7 @@ def command_import(args: argparse.Namespace) -> int:
 
 def command_serve(args: argparse.Namespace) -> int:
     config = load_config(args.config)
+    config["__config_path"] = str((Path(args.config) if args.config else Path("config/adapter.local.json")).resolve())
     bootstrap = config.get("test_data_bootstrap", {})
     if bootstrap.get("auto_on_serve", False):
         ensure_test_data(config, reason="serve")

@@ -6,7 +6,7 @@
   <title>GFW MySQL Adapter MVP</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
-  <link rel="stylesheet" href="/static/styles.css?v=map-fullscreen-preserve-bounds-v29">
+  <link rel="stylesheet" href="/static/styles.css?v=scrollable-map-modal-v55">
 </head>
 <body>
   <header class="app-header">
@@ -24,24 +24,17 @@
         <details id="data-layer-menu" class="data-layer-menu">
           <summary>
             <span>Dataset</span>
-            <strong id="data-layer-summary">GFW</strong>
+                <strong id="data-layer-summary">EEZ</strong>
           </summary>
           <div class="data-layer-options" role="group" aria-label="data layer selection">
             <div class="layer-item" data-layer-id="gfw">
               <div class="layer-option">
                 <span class="drag-handle" title="Drag to reorder">::</span>
                 <label class="checkbox-row">
-                  <input id="layer-gfw" name="data-layer" type="checkbox" value="gfw" checked>
+                  <input id="layer-gfw" name="data-layer" type="checkbox" value="gfw">
                   <span>GFW fishery grid</span>
                 </label>
-                <button class="icon-button layer-settings-toggle" type="button" data-settings-target="gfw-settings" aria-label="GFW display settings">Gear</button>
-              </div>
-              <div id="gfw-settings" class="layer-settings" hidden>
-                <span class="setting-note">Canvas geographic grid, driven by date and viewport.</span>
-                <label>
-                  Alpha
-                  <input class="alpha-slider" data-alpha-layer="gfw" type="range" min="0" max="1" step="0.05" value="0.58">
-                </label>
+                <button class="icon-button layer-settings-toggle" type="button" data-settings-layer="gfw" aria-label="GFW display settings">Gear</button>
               </div>
             </div>
             <div class="layer-item" data-layer-id="ais">
@@ -51,20 +44,7 @@
                   <input id="layer-ais" name="data-layer" type="checkbox" value="ais">
                   <span>AIS vessel positions</span>
                 </label>
-                <button class="icon-button layer-settings-toggle" type="button" data-settings-target="ais-settings" aria-label="AIS display settings">Gear</button>
-              </div>
-              <div id="ais-settings" class="layer-settings" hidden>
-                <label>
-                  AIS display
-                  <select id="ais-render-strategy">
-                    <option value="density_grid" selected>Density grid</option>
-                    <option value="point_dots">Point dots</option>
-                  </select>
-                </label>
-                <label>
-                  Alpha
-                  <input class="alpha-slider" data-alpha-layer="ais" type="range" min="0" max="1" step="0.05" value="0.58">
-                </label>
+                <button class="icon-button layer-settings-toggle" type="button" data-settings-layer="ais" aria-label="AIS display settings">Gear</button>
               </div>
             </div>
             <div class="layer-item" data-layer-id="eez">
@@ -74,14 +54,7 @@
                   <input id="eez-toggle" type="checkbox" checked>
                   <span>EEZ boundary overlay</span>
                 </label>
-                <button class="icon-button layer-settings-toggle" type="button" data-settings-target="eez-settings" aria-label="EEZ display settings">Gear</button>
-              </div>
-              <div id="eez-settings" class="layer-settings" hidden>
-                <span class="setting-note">Vector tile boundary and translucent fill overlay.</span>
-                <label>
-                  Alpha
-                  <input class="alpha-slider" data-alpha-layer="eez" type="range" min="0" max="1" step="0.05" value="1">
-                </label>
+                <button class="icon-button layer-settings-toggle" type="button" data-settings-layer="eez" aria-label="EEZ display settings">Gear</button>
               </div>
             </div>
           </div>
@@ -138,7 +111,10 @@
     <section class="workspace">
       <div id="map-shell" class="map-shell">
         <div id="map" aria-label="map"></div>
-        <button id="map-fullscreen" class="map-tool-button" type="button" title="Fullscreen map" aria-label="Fullscreen map">Full</button>
+        <div class="map-tool-stack" aria-label="map tools">
+          <button id="map-fullscreen" class="map-tool-button" type="button" title="Fullscreen map" aria-label="Fullscreen map">Full</button>
+        </div>
+        <button id="map-settings-open" class="map-settings-button" type="button" title="Map settings" aria-label="Map settings">⚙</button>
       </div>
       <aside class="table-panel">
         <div class="table-title">
@@ -155,20 +131,243 @@
     </section>
   </main>
 
+  <div id="layer-settings-modal" class="modal-backdrop" hidden>
+    <section class="modal-window layer-settings-window" role="dialog" aria-modal="true" aria-labelledby="layer-settings-title">
+      <header class="modal-header">
+        <div>
+          <h2 id="layer-settings-title">Layer Settings</h2>
+          <p id="layer-settings-subtitle">Configure the selected map layer.</p>
+        </div>
+        <button id="layer-settings-close" class="icon-button" type="button" aria-label="Close layer settings">Close</button>
+      </header>
+      <div class="modal-body">
+        <section class="layer-settings-panel" data-layer-settings-panel="gfw" hidden>
+          <span class="setting-note">Canvas geographic grid, driven by date and viewport.</span>
+          <label>
+            Alpha
+            <input class="alpha-slider" data-alpha-layer="gfw" type="range" min="0" max="1" step="0.05" value="0.58">
+          </label>
+        </section>
+        <section class="layer-settings-panel" data-layer-settings-panel="ais" hidden>
+          <div class="ais-setup">
+            <div class="setting-note" id="ais-config-status">AIS provider status: checking</div>
+            <details class="provider-settings">
+              <summary>AISStream WebSocket</summary>
+              <button id="ais-open-config" class="small-button" type="button">Configure AISStream</button>
+              <div id="ais-connected-panel" class="ais-connected-panel" hidden>
+                <span class="setting-note">AISStream key is stored in local config.</span>
+                <button id="ais-run-diagnostics" class="small-button" type="button">Run AISStream test</button>
+                <button id="ais-disconnect-key" class="small-button danger-button" type="button">Disconnect AISStream Key</button>
+              </div>
+            </details>
+            <section class="provider-settings aishub-settings">
+              <h3>AISHub polling</h3>
+              <p class="setting-note">AISHub is polled at most once every 180 seconds to respect its API limit.</p>
+              <label>
+                AISHub username
+                <input id="aishub-username" type="password" autocomplete="off" placeholder="Paste AISHub username">
+              </label>
+              <div class="button-row">
+                <button id="aishub-save-username" class="small-button" type="button">Connect AISHub</button>
+                <button id="aishub-run-diagnostics" class="small-button" type="button">Run AISHub test</button>
+                <button id="aishub-disconnect" class="small-button danger-button" type="button">Disconnect AISHub</button>
+              </div>
+            </section>
+            <div id="ais-diagnostics-result" class="diagnostics-result" hidden></div>
+          </div>
+          <label>
+            AIS display
+            <select id="ais-render-strategy">
+              <option value="density_grid" selected>Density grid</option>
+              <option value="point_dots">Point dots</option>
+            </select>
+          </label>
+          <label>
+            Alpha
+            <input class="alpha-slider" data-alpha-layer="ais" type="range" min="0" max="1" step="0.05" value="0.58">
+          </label>
+        </section>
+        <section class="layer-settings-panel" data-layer-settings-panel="eez" hidden>
+          <span class="setting-note">Vector tile boundary and translucent fill overlay.</span>
+          <div class="color-grid" aria-label="EEZ color controls">
+            <label>
+              Fill color
+              <input id="eez-fill-color" class="color-input" type="color" value="#176f86">
+            </label>
+            <label>
+              Boundary color
+              <input id="eez-boundary-color" class="color-input" type="color" value="#1f7f96">
+            </label>
+            <label>
+              Fill opacity
+              <input id="eez-fill-opacity" type="range" min="0" max="0.35" step="0.01" value="0.08">
+            </label>
+            <label>
+              Boundary opacity
+              <input id="eez-boundary-opacity" type="range" min="0" max="1" step="0.05" value="0.88">
+            </label>
+          </div>
+          <label>
+            Alpha
+            <input class="alpha-slider" data-alpha-layer="eez" type="range" min="0" max="1" step="0.05" value="1">
+          </label>
+        </section>
+      </div>
+    </section>
+  </div>
+
+  <div id="map-settings-modal" class="modal-backdrop" hidden>
+    <section class="modal-window map-settings-window" role="dialog" aria-modal="true" aria-labelledby="map-settings-title">
+      <header class="modal-header">
+        <div>
+          <h2 id="map-settings-title">Map Settings</h2>
+          <p>Leaflet viewport and interaction controls.</p>
+        </div>
+        <button id="map-settings-close" class="icon-button" type="button" aria-label="Close map settings">Close</button>
+      </header>
+      <div class="modal-body">
+        <section class="settings-section">
+          <h3>Controls</h3>
+          <label>
+            Basemap
+            <select id="map-basemap-select">
+              <option value="carto_light">Light</option>
+              <option value="carto_dark">Dark</option>
+              <option value="osm_standard">OSM</option>
+              <option value="opentopo_terrain">Terrain</option>
+              <option value="esri_imagery">Satellite</option>
+            </select>
+          </label>
+          <label class="switch-row">
+            <input id="map-setting-scale" type="checkbox" checked>
+            <span>Scale bar</span>
+          </label>
+          <label class="switch-row">
+            <input id="map-setting-zoom-control" type="checkbox" checked>
+            <span>Zoom buttons</span>
+          </label>
+          <details class="nested-settings">
+            <summary>Latitude / longitude grid</summary>
+            <label class="switch-row">
+              <input id="map-setting-graticule" type="checkbox">
+              <span>Show grid</span>
+            </label>
+            <label class="switch-row">
+              <input id="map-setting-graticule-labels" type="checkbox" checked>
+              <span>Grid labels</span>
+            </label>
+            <label>
+              Grid color
+              <input id="map-setting-graticule-color" class="color-input" type="color" value="#e2ecf6">
+            </label>
+            <label>
+              Line style
+              <select id="map-setting-graticule-line-style">
+                <option value="dashed">Dashed</option>
+                <option value="solid">Solid</option>
+                <option value="dotted">Dotted</option>
+              </select>
+            </label>
+            <label>
+              Line width
+              <input id="map-setting-graticule-line-width" type="range" min="0.5" max="3" step="0.5" value="1">
+            </label>
+            <label>
+              Grid alpha
+              <input id="map-setting-graticule-alpha" type="range" min="0.1" max="1" step="0.05" value="0.45">
+            </label>
+          </details>
+        </section>
+        <section class="settings-section">
+          <h3>Interaction</h3>
+          <label class="switch-row">
+            <input id="map-setting-scroll-wheel" type="checkbox" checked>
+            <span>Mouse wheel zoom</span>
+          </label>
+          <label class="switch-row">
+            <input id="map-setting-double-click" type="checkbox" checked>
+            <span>Double-click zoom</span>
+          </label>
+          <label class="switch-row">
+            <input id="map-setting-dragging" type="checkbox" checked>
+            <span>Drag pan</span>
+          </label>
+          <label class="switch-row">
+            <input id="map-setting-keyboard" type="checkbox" checked>
+            <span>Keyboard navigation</span>
+          </label>
+        </section>
+        <section class="settings-section">
+          <h3>View</h3>
+          <div class="button-row">
+            <button id="map-view-reset" class="small-button" type="button">Reset</button>
+            <button id="map-view-world" class="small-button" type="button">World</button>
+            <button id="map-view-taiwan" class="small-button" type="button">Taiwan</button>
+          </div>
+        </section>
+        <section class="settings-section">
+          <h3>Export</h3>
+          <p class="setting-note">Save the current map viewport as a PNG image.</p>
+          <button id="map-export-png" class="small-button" type="button">Save PNG</button>
+        </section>
+      </div>
+    </section>
+  </div>
+
+  <div id="ais-config-modal" class="modal-backdrop" hidden>
+    <section class="modal-window" role="dialog" aria-modal="true" aria-labelledby="ais-config-title">
+      <header class="modal-header">
+        <div>
+          <h2 id="ais-config-title">AISStream Setup</h2>
+          <p>Connect this local map to real-time AIS over a backend WebSocket bridge.</p>
+        </div>
+        <button id="ais-modal-close" class="icon-button" type="button" aria-label="Close AISStream setup">Close</button>
+      </header>
+      <div class="modal-body">
+        <div class="embedded-auth-panel">
+          <div class="embedded-auth-toolbar">
+            <span>AISStream sign-in</span>
+            <a class="setup-link-button" href="https://aisstream.io/authenticate" target="_blank" rel="noreferrer">Open in browser</a>
+          </div>
+          <iframe
+            id="ais-auth-frame"
+            title="AISStream API key sign-in"
+            src="https://aisstream.io/authenticate"
+            loading="lazy"
+          ></iframe>
+        </div>
+        <div class="api-key-entry">
+          <label>
+            Paste API key after creating it
+            <input id="ais-api-key" type="password" autocomplete="off" placeholder="Paste AISStream API key">
+          </label>
+          <button id="ais-save-key" class="small-button" type="button">Connect live AIS</button>
+        </div>
+        <p class="setting-note">The key is stored only in local config and is never sent to the browser after saving.</p>
+      </div>
+    </section>
+  </div>
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+  <script src="/static/vendor/html2canvas.min.js?v=1.4.1"></script>
   <script src="/static/vendor/Leaflet.VectorGrid.bundled.min.js?v=1.3.0"></script>
-  <script src="/static/TimingMetrics.js?v=map-fullscreen-preserve-bounds-v29"></script>
-  <script src="/static/js/core/state.js?v=map-fullscreen-preserve-bounds-v29"></script>
-  <script src="/static/js/core/dom.js?v=map-fullscreen-preserve-bounds-v29"></script>
-  <script src="/static/js/core/map.js?v=map-fullscreen-preserve-bounds-v29"></script>
-  <script src="/static/js/core/geo.js?v=map-fullscreen-preserve-bounds-v29"></script>
-  <script src="/static/js/layers/eez-layer.js?v=map-fullscreen-preserve-bounds-v29"></script>
-  <script src="/static/js/layers/ais-layer.js?v=map-fullscreen-preserve-bounds-v29"></script>
-  <script src="/static/js/layers/gfw-layer.js?v=map-fullscreen-preserve-bounds-v29"></script>
-  <script src="/static/js/ui/table-view.js?v=map-fullscreen-preserve-bounds-v29"></script>
-  <script src="/static/js/ui/playback-controls.js?v=map-fullscreen-preserve-bounds-v29"></script>
-  <script src="/static/js/ui/layer-menu.js?v=map-fullscreen-preserve-bounds-v29"></script>
-  <script src="/static/js/services/api-client.js?v=map-fullscreen-preserve-bounds-v29"></script>
-  <script src="/static/app.js?v=map-fullscreen-preserve-bounds-v29"></script>
+  <script src="/static/TimingMetrics.js?v=scrollable-map-modal-v55"></script>
+  <script src="/static/js/core/state.js?v=scrollable-map-modal-v55"></script>
+  <script src="/static/js/core/dom.js?v=scrollable-map-modal-v55"></script>
+  <script src="/static/js/core/map.js?v=scrollable-map-modal-v55"></script>
+  <script src="/static/js/core/geo.js?v=scrollable-map-modal-v55"></script>
+  <script src="/static/js/layers/eez-layer.js?v=scrollable-map-modal-v55"></script>
+  <script src="/static/js/layers/graticule-layer.js?v=scrollable-map-modal-v55"></script>
+  <script src="/static/js/layers/ais-layer.js?v=scrollable-map-modal-v55"></script>
+  <script src="/static/js/layers/gfw-layer.js?v=scrollable-map-modal-v55"></script>
+  <script src="/static/js/ui/table-view.js?v=scrollable-map-modal-v55"></script>
+  <script src="/static/js/ui/playback-controls.js?v=scrollable-map-modal-v55"></script>
+  <script src="/static/js/ui/map-settings.js?v=scrollable-map-modal-v55"></script>
+  <script src="/static/js/ui/map-export.js?v=scrollable-map-modal-v55"></script>
+  <script src="/static/js/ui/eez-settings.js?v=scrollable-map-modal-v55"></script>
+  <script src="/static/js/ui/ais-settings.js?v=scrollable-map-modal-v55"></script>
+  <script src="/static/js/ui/layer-menu.js?v=scrollable-map-modal-v55"></script>
+  <script src="/static/js/services/api-client.js?v=scrollable-map-modal-v55"></script>
+  <script src="/static/app.js?v=scrollable-map-modal-v55"></script>
 </body>
 </html>

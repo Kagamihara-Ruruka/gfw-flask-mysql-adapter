@@ -1,12 +1,10 @@
 function eezStyle(feature) {
-  const iso = feature?.properties?.iso3 || "";
-  const hue = Array.from(iso).reduce((sum, char) => sum + char.charCodeAt(0), 0) % 36;
   return {
-    color: `hsl(${185 + hue}, 92%, 36%)`,
+    color: state.eezPaint.boundaryColor,
     weight: 2.4,
-    opacity: 1,
-    fillColor: "#34b6d7",
-    fillOpacity: 0.08,
+    opacity: state.eezPaint.boundaryOpacity,
+    fillColor: state.eezPaint.fillColor,
+    fillOpacity: state.eezPaint.fillOpacity,
   };
 }
 
@@ -21,27 +19,23 @@ function eezPopup(feature) {
 }
 
 function eezVectorTileStyle(properties, zoom) {
-  const iso = properties?.iso3 || "";
-  const hue = Array.from(iso).reduce((sum, char) => sum + char.charCodeAt(0), 0) % 72;
   return {
     stroke: false,
     color: "transparent",
     weight: 0,
     opacity: 0,
     fill: true,
-    fillColor: `hsl(${175 + hue}, 78%, 48%)`,
-    fillOpacity: zoom <= 4 ? 0.055 : 0.11,
+    fillColor: state.eezPaint.fillColor,
+    fillOpacity: state.eezPaint.fillOpacity,
   };
 }
 
 function eezBoundaryTileStyle(properties, zoom) {
-  const iso = properties?.iso3 || "";
-  const hue = Array.from(iso).reduce((sum, char) => sum + char.charCodeAt(0), 0) % 36;
   return {
     fill: false,
-    color: `hsl(${185 + hue}, 92%, 32%)`,
+    color: state.eezPaint.boundaryColor,
     weight: zoom <= 4 ? 0.8 : 1.5,
-    opacity: 0.88,
+    opacity: state.eezPaint.boundaryOpacity,
   };
 }
 
@@ -143,5 +137,23 @@ function syncEezLayer() {
     applyLayerOrder();
   } else if (map.hasLayer(state.eezLayer)) {
     map.removeLayer(state.eezLayer);
+  }
+}
+
+function repaintEezLayer() {
+  if (!state.eezLayer) return;
+  if (state.eezMode === "geojson" && state.eezLayer.setStyle) {
+    state.eezLayer.setStyle(eezStyle);
+    return;
+  }
+  const wasVisible = map.hasLayer(state.eezLayer);
+  if (wasVisible) {
+    map.removeLayer(state.eezLayer);
+  }
+  state.eezLayer = null;
+  state.eezTileLayers = [];
+  state.eezMode = null;
+  if (wasVisible) {
+    reloadEezLayer().catch((err) => console.error("EEZ overlay failed", err));
   }
 }
