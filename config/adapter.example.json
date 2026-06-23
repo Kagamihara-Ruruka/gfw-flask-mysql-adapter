@@ -11,8 +11,8 @@
     "database": "ocean_fishery"
   },
   "query_policy": {
-    "default_limit": 1000,
-    "max_limit": 5000,
+    "default_limit": 5000,
+    "max_limit": 100000,
     "table_preview_limit": 300,
     "require_time_or_bbox_filter": true
   },
@@ -22,6 +22,51 @@
     "port": 5057,
     "debug": false,
     "kill_port_if_busy": true
+  },
+  "overlays": {
+    "eez": {
+      "enabled": true,
+      "provider": "postgis",
+      "full_gpkg_path": "data/eez_v12.gpkg",
+      "gpkg_table": "eez_v12",
+      "gpkg_geometry_column": "geom",
+      "force_full": false,
+      "postgis": {
+        "host": "127.0.0.1",
+        "port": 5433,
+        "user": "postgres",
+        "password": "spatial123",
+        "database": "ocean_spatial",
+        "table": "eez_v12",
+        "tile_table": "eez_v12_tile",
+        "boundary_table": "eez_v12_boundary",
+        "geometry_column": "geom",
+        "mvt_layer": "eez"
+      }
+    }
+  },
+  "live": {
+    "ais": {
+      "enabled": false,
+      "connection": {
+        "host": "127.0.0.1",
+        "port": 3306,
+        "user": "root",
+        "password": "env:RRKAL_AIS_MYSQL_PASSWORD"
+      },
+      "database": "ocean_fishery",
+      "table": "ais_latest",
+      "time_column": "event_time",
+      "lat_column": "lat",
+      "lon_column": "lon",
+      "mmsi_column": "mmsi",
+      "speed_column": "sog",
+      "course_column": "cog",
+      "heading_column": "heading",
+      "name_column": "vessel_name",
+      "max_age_minutes": 60,
+      "limit": "max"
+    }
   },
   "default_dataset": "gfw_full",
   "datasets": {

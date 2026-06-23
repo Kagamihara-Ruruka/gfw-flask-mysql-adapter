@@ -72,6 +72,58 @@
     "default_dataset": {
       "$ref": "#/$defs/sqlIdentifier"
     },
+    "live": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ais": {
+          "type": "object",
+          "required": [
+            "enabled",
+            "connection",
+            "database",
+            "table",
+            "time_column",
+            "lat_column",
+            "lon_column",
+            "mmsi_column",
+            "max_age_minutes",
+            "limit"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "connection": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "host": { "type": "string", "minLength": 1 },
+                "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+                "user": { "type": "string", "minLength": 1 },
+                "password": { "type": "string" }
+              }
+            },
+            "database": { "$ref": "#/$defs/sqlIdentifier" },
+            "table": { "$ref": "#/$defs/sqlIdentifier" },
+            "time_column": { "$ref": "#/$defs/sqlIdentifier" },
+            "lat_column": { "$ref": "#/$defs/sqlIdentifier" },
+            "lon_column": { "$ref": "#/$defs/sqlIdentifier" },
+            "mmsi_column": { "$ref": "#/$defs/sqlIdentifier" },
+            "speed_column": { "$ref": "#/$defs/sqlIdentifier" },
+            "course_column": { "$ref": "#/$defs/sqlIdentifier" },
+            "heading_column": { "$ref": "#/$defs/sqlIdentifier" },
+            "name_column": { "$ref": "#/$defs/sqlIdentifier" },
+            "max_age_minutes": { "type": "integer", "minimum": 1 },
+            "limit": {
+              "oneOf": [
+                { "type": "integer", "minimum": 1 },
+                { "type": "string", "const": "max" }
+              ]
+            }
+          }
+        }
+      }
+    },
     "datasets": {
       "type": "object",
       "minProperties": 1,

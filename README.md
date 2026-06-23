@@ -1,26 +1,95 @@
-# GFW Flask MySQL Adapter MVP
+# GFW Flask MySQL Adapter
 
-This project imports a GFW DuckDB table into MySQL and serves it through a Flask API plus a Leaflet dashboard.
+This is a small local map adapter for exploring ocean datasets with Flask, MySQL, PostGIS, and Leaflet.
+
+The current app renders:
+
+- GFW fishery grid records from MySQL.
+- AIS latest vessel positions from a live MySQL table.
+- EEZ boundaries from PostGIS vector tiles.
+- A Leaflet map with table preview, timing metrics, time playback, fullscreen map mode, layer ordering, and per-layer alpha controls.
+
+It is an experimental local tool. It is not a production GIS system.
+
+## Architecture
 
 ```text
-DuckDB source -> MySQL -> Flask / PyMySQL API -> HTML / Leaflet dashboard
+core.py
+  -> Interface.py              Flask routes and HTTP service
+  -> DatabaseConnect.py        MySQL config, import, schema, record queries
+  -> AisLiveService.py         AIS live query packet
+  -> SpatialOverlay.py         EEZ overlay fallback helpers
+  -> LodOverlayService.py      PostGIS / MVT EEZ tile helpers
+  -> templates/index.html      Leaflet UI shell
+  -> static/js/*               Frontend state, API, layer, and UI modules
 ```
 
-## Project Layout
+The frontend is deliberately split by responsibility:
 
-```text
-adapter.py                  # Import pipeline, Flask API, MySQL queries
-config/adapter.example.json # Example runtime config
-config/adapter.schema.json  # Config schema
-benchmarks/                 # Row-scale benchmark notes
-templates/index.html        # Dashboard shell
-static/app.js               # Map/table client logic
-static/styles.css           # Dashboard styles
-requirements.txt            # Python dependencies
-docker-compose.yml          # Optional local MySQL container
-```
+- `static/app.js`: bootstraps the app and wires UI events.
+- `static/js/core`: shared state, DOM, map, and geographic helpers.
+- `static/js/services`: API client calls.
+- `static/js/layers`: GFW, AIS, and EEZ rendering behavior.
+- `static/js/ui`: table, playback, and layer selector controls.
 
-## Local Setup
+## Features
+
+### Data layers
+
+The dataset selector supports these layers:
+
+- `GFW fishery grid`
+- `AIS vessel positions`
+- `EEZ boundary overlay`
+
+GFW and AIS are mutually exclusive primary data layers, but both can also be turned off. EEZ is an independent overlay.
+
+Layer rows can be drag-reordered in the selector. The order controls map stacking by Leaflet pane z-index. Each layer also has a gear panel with alpha controls. AIS can switch between density-grid and point-dot rendering.
+
+### Map
+
+- Dark UI theme.
+- Leaflet base map.
+- Fullscreen map button.
+- Fullscreen preserves the current geographic bounds instead of showing extra horizontal world copies.
+- EEZ uses vector tiles when available.
+
+### Time controls
+
+GFW supports:
+
+- single-day mode
+- start/end date range
+- replay
+- previous/next day
+- play/pause
+- playback speed
+
+AIS is live viewport mode and does not use the date player.
+
+### Timing panel
+
+The timing drawer reports:
+
+- SQL query time
+- serialization time
+- API total time
+- client fetch-to-render time
+- EEZ tile timing
+- row count
+
+## Requirements
+
+- Python 3.11+
+- MySQL-compatible server
+- PostgreSQL + PostGIS for EEZ vector tiles
+- Node.js only for local JavaScript syntax checks
+
+Python dependencies are listed in `requirements.txt`.
+
+## Quick Start
+
+From the repo root:
 
 ```powershell
 py -3 -m venv .venv
@@ -28,42 +97,20 @@ py -3 -m venv .venv
 Copy-Item config\adapter.example.json config\adapter.local.json -Force
 ```
 
-Start MySQL with Docker:
+Edit `config\adapter.local.json` for local database settings.
+
+`config\adapter.local.json` is ignored by git. Keep real passwords there or in environment variables.
+
+For AIS, use an environment variable instead of committing a password:
 
 ```powershell
-docker compose up -d
+$env:RRKAL_AIS_MYSQL_PASSWORD = "your-password"
 ```
 
-Default Docker MySQL settings:
-
-```text
-host: 127.0.0.1
-port: 3307
-database: ocean_fishery
-user: root
-password: fishery123
-```
-
-If you use an existing local MySQL instance, update `config/adapter.local.json` accordingly.
-
-## Import Data
+Start the app:
 
 ```powershell
-.\.venv\Scripts\python.exe adapter.py --config config\adapter.local.json import --source "C:\path\to\gfw_full.duckdb" --replace
-```
-
-For a small smoke test:
-
-```powershell
-.\.venv\Scripts\python.exe adapter.py --config config\adapter.local.json import --source "C:\path\to\gfw_full.duckdb" --replace --row-limit 5000
-```
-
-The importer streams rows in chunks to avoid loading the full DuckDB table into memory.
-
-## Run Flask
-
-```powershell
-.\.venv\Scripts\python.exe adapter.py --config config\adapter.local.json serve
+.\.venv\Scripts\python.exe core.py --config config\adapter.local.json serve
 ```
 
 Open:
@@ -72,96 +119,76 @@ Open:
 http://127.0.0.1:5057
 ```
 
-When `kill_port_if_busy` is enabled, the server can clean up an existing listener on the configured port before starting. This helps with repeated IDE runs.
+## Import GFW Data
 
-## API
+Import a DuckDB table into MySQL:
+
+```powershell
+.\.venv\Scripts\python.exe core.py --config config\adapter.local.json import --source "C:\path\to\gfw_full.duckdb" --replace
+```
+
+Import a smaller sample:
+
+```powershell
+.\.venv\Scripts\python.exe core.py --config config\adapter.local.json import --source "C:\path\to\gfw_full.duckdb" --replace --row-limit 5000
+```
+
+## Docker Compose
+
+The repo includes `docker-compose.yml` for local service support. Adjust ports and passwords in your local config before use.
+
+```powershell
+docker compose up -d
+```
+
+## API Surface
+
+Health:
 
 ```text
 GET /api/health
+```
+
+Datasets:
+
+```text
 GET /api/datasets
-GET /api/datasets/gfw_full/schema
-GET /api/datasets/gfw_full/records?date=2024-01-01&bbox=119,21,123,26&zoom=6&lod=1
+GET /api/datasets/<dataset_id>/schema
+GET /api/datasets/<dataset_id>/records?date=YYYY-MM-DD&bbox=west,south,east,north&limit=100000
 ```
 
-Timing is returned in the response:
-
-```json
-{
-  "timing": {
-    "query_ms": 0,
-    "serialize_ms": 0,
-    "server_total_ms": 0,
-    "api_total_ms": 0
-  }
-}
-```
-
-The client also measures `Fetch to render`, which covers the browser-side time from request start through map/table rendering.
-
-## Query Policy
-
-`query_policy` controls default limits, optional hard limits, and table preview size:
-
-```json
-{
-  "query_policy": {
-    "default_limit": 1000,
-    "max_limit": 5000,
-    "table_preview_limit": 300,
-    "require_time_or_bbox_filter": true
-  }
-}
-```
-
-`max_limit` may be set to `null` to remove the API clamp. This should be used carefully because large browser renders can still be expensive.
-
-## Rendering Strategy
-
-The map uses Leaflet rectangles to draw the fishing grid. Rendering is intentionally viewport-driven:
-
-- The current map bounds are sent as `bbox=west,south,east,north`.
-- The selected date and current map bounds both participate in the SQL query.
-- The browser only receives rows for the current view instead of pulling a whole day by default.
-- The initial map view is centered near Taiwan to avoid a heavy global first render.
-- Leaflet vector rendering uses Canvas for better large-layer performance.
-- Tooltips are disabled automatically when the rendered row count is high.
-- The table is a preview only; the map may render more rows than the table displays.
-
-In short: the map viewport is part of the query, not just a client-side crop.
-
-## LOD Strategy
-
-LOD is based on the current zoom level, but it does not enlarge rendered grid cells.
-
-At close zoom levels, the API returns original rows 1:1:
+EEZ:
 
 ```text
-zoom >= 6 -> original rows, one source row per rendered rectangle
+GET /api/overlays/eez
+GET /api/overlays/eez/tiles/<z>/<x>/<y>.pbf
+GET /api/overlays/eez/boundary/tiles/<z>/<x>/<y>.pbf
 ```
 
-At wider zoom levels, the API samples representative original rows by spatial bucket:
+AIS:
 
 ```text
-zoom = 5  -> sample bucket 0.0625 degrees
-zoom = 4  -> sample bucket 0.25 degrees
-zoom = 3  -> sample bucket 0.5 degrees
-zoom <= 2 -> sample bucket 1.25 degrees
+GET /api/live/ais?bbox=west,south,east,north
 ```
 
-The bucket only controls sampling density. Rendered rectangles still use the original grid size and original `grid_id`, `lat`, and `lon`. This keeps the map from implying a lower-resolution grid while still preventing global views from sending too many Leaflet rectangles to the browser.
+## Validation
 
-## Config Notes
+JavaScript syntax check:
 
-Each dataset config includes:
+```powershell
+Get-ChildItem static\js -Recurse -Filter *.js | ForEach-Object { node --check $_.FullName }
+node --check static\app.js
+```
 
-- `duckdb_source_table`: source table in the DuckDB file
-- `mysql_table`: target/query table in MySQL
-- `time_column`: date/time column
-- `lat_column`: latitude column
-- `lon_column`: longitude column
-- `id_column`: stable row/grid id
-- `display_columns`: columns returned to the dashboard
-- `metric_columns`: numeric columns used by the UI
-- `category_columns`: categorical columns used by the UI
+Git whitespace check:
 
-See `config/adapter.schema.json` for the full schema.
+```powershell
+git diff --check -- static templates *.py config requirements.txt docker-compose.yml README.md
+```
+
+## Notes
+
+- Do not commit `config/adapter.local.json`.
+- Do not commit runtime logs, PID files, database files, or downloaded datasets.
+- Use environment variables for local secrets.
+- This app is designed as a small local exploratory adapter. Keep data access, rendering, and UI behavior separated as the feature set grows.
