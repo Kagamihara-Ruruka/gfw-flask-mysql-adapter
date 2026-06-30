@@ -164,6 +164,7 @@
             "ingest_auto_create_table": { "type": "boolean" },
             "ingest_meta_table": { "$ref": "#/$defs/sqlIdentifier" },
             "collector_config_path": { "type": "string", "minLength": 1 },
+            "connection_ref": { "$ref": "#/$defs/sqlIdentifier" },
             "connection": {
               "type": "object",
               "additionalProperties": false,

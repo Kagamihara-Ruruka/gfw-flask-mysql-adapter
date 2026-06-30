@@ -12,10 +12,9 @@ from datetime import datetime, time as datetime_time, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-import pymysql
 from websocket import WebSocketTimeoutException
 
-from AisLiveService import _ais_mysql_connection, ais_live_settings
+from AisLiveService import _ais_mysql_connection, ais_live_settings, ais_mysql_connection_info
 from AisStreamProvider import ais_stream_settings, normalize_aisstream_message, open_aisstream_socket
 from DatabaseConnect import json_ready, mysql_connection, mysql_quote, validate_identifier
 
@@ -445,36 +444,17 @@ def ais_sql_locked_packet(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _connection_secret(value: Any) -> str:
-    if not isinstance(value, str):
-        return ""
-    if value.startswith("env:"):
-        return os.environ.get(value[4:], "")
-    return value
-
-
 @contextmanager
 def _ais_mysql_server_connection(config: dict[str, Any], settings: dict[str, Any]):
-    connection = settings.get("connection") or {}
-    if not connection:
-        with mysql_connection(config, database=None, dict_cursor=True) as conn:
-            yield conn
-        return
-    kwargs = {
-        "host": connection.get("host", "127.0.0.1"),
-        "port": int(connection.get("port", 3306)),
-        "user": connection.get("user", "root"),
-        "password": _connection_secret(connection.get("password", "")),
-        "database": None,
-        "charset": "utf8mb4",
-        "autocommit": True,
-        "cursorclass": pymysql.cursors.DictCursor,
-    }
-    conn = pymysql.connect(**kwargs)
-    try:
+    _connection_ref, connection = ais_mysql_connection_info(config, settings)
+    with mysql_connection(
+        config,
+        database=None,
+        dict_cursor=True,
+        connection=connection,
+        use_connection_database=False,
+    ) as conn:
         yield conn
-    finally:
-        conn.close()
 
 
 def _optional_live_column(live: dict[str, Any], key: str) -> str | None:

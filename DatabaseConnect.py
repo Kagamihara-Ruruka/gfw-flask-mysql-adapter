@@ -209,6 +209,7 @@ def mysql_connection(
     *,
     dict_cursor: bool = False,
     connection: dict[str, Any] | None = None,
+    use_connection_database: bool = True,
 ):
     if connection is not None:
         mysql = dict(connection)
@@ -216,12 +217,15 @@ def mysql_connection(
         connections = connection_configs(config)
         ref = config.get("default_connection_ref") or DEFAULT_MYSQL_CONNECTION_REF
         mysql = dict(connections.get(ref) or connections[DEFAULT_MYSQL_CONNECTION_REF])
+    database_name = database
+    if database_name is None and use_connection_database:
+        database_name = mysql.get("database")
     kwargs = {
         "host": mysql.get("host", "127.0.0.1"),
         "port": int(mysql.get("port", 3306)),
         "user": mysql.get("user", "root"),
         "password": setting_secret(mysql.get("password", "")),
-        "database": database if database is not None else mysql.get("database"),
+        "database": database_name,
         "charset": "utf8mb4",
         "autocommit": True,
     }
