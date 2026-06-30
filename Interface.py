@@ -31,6 +31,7 @@ from AisStreamProvider import (
 )
 from AisLiveService import ais_live_packet, merged_ais_live_packet
 from DatabaseConnect import (
+    dataset_backend_info,
     mysql_connection,
     parse_bbox,
     query_policy,
@@ -217,15 +218,23 @@ def create_app(config: dict[str, Any]) -> Flask:
     def health():
         started = time.perf_counter()
         try:
-            with mysql_connection(config, config["mysql"]["database"], dict_cursor=True) as conn, conn.cursor() as cur:
-                cur.execute("SELECT 1 AS ok")
-                ok = cur.fetchone()["ok"] == 1
+            default_dataset = config["datasets"][config.get("default_dataset")]
+            backend_kind, connection_ref, connection = dataset_backend_info(config, default_dataset)
+            ok = True
+            db_ping_ms = None
+            if backend_kind == "mysql":
+                database = default_dataset.get("database") or connection["database"]
+                with mysql_connection(config, database, dict_cursor=True, connection=connection) as conn, conn.cursor() as cur:
+                    cur.execute("SELECT 1 AS ok")
+                    ok = cur.fetchone()["ok"] == 1
+                db_ping_ms = elapsed_ms(started)
             return jsonify(
                 {
                     "status": "ok" if ok else "degraded",
                     "backend": config.get("sql_backend", {"kind": "mysql", "driver": "pymysql"}),
+                    "default_dataset_backend": {"kind": backend_kind, "connection_ref": connection_ref},
                     "datasets": sorted(config["datasets"].keys()),
-                    "timing": {"db_ping_ms": elapsed_ms(started)},
+                    "timing": {"db_ping_ms": db_ping_ms},
                 }
             )
         except Exception as exc:
@@ -243,8 +252,11 @@ def create_app(config: dict[str, Any]) -> Flask:
         safe = {}
         policy = query_policy(config)
         for dataset_id, dataset in config["datasets"].items():
+            backend_kind, connection_ref, _connection = dataset_backend_info(config, dataset)
             safe[dataset_id] = {
                 "label": dataset.get("label", dataset_id),
+                "backend": backend_kind,
+                "connection_ref": connection_ref,
                 "time_column": dataset["time_column"],
                 "lat_column": dataset["lat_column"],
                 "lon_column": dataset["lon_column"],

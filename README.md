@@ -4,10 +4,10 @@ This is a small local map adapter for exploring ocean datasets with Flask, MySQL
 
 The current app renders:
 
-- GFW fishery grid records from MySQL.
-- AIS latest vessel positions from a live MySQL table.
-- EEZ boundaries from PostGIS vector tiles.
-- A Leaflet map with table preview, timing metrics, time playback, fullscreen map mode, layer ordering, and per-layer alpha controls.
+- GFW fishery grid records from MySQL, rendered through a WebGL-first map path with canvas fallback.
+- AIS latest vessel positions from a live MySQL table maintained by a separate upstream collector.
+- EEZ boundaries from PostGIS vector tiles and cached local vector data.
+- A Leaflet map with table preview, timing metrics, render-state lights, time playback, fullscreen map mode, layer ordering, basemap controls, graticule controls, screenshot export, and per-layer style controls.
 
 It is an experimental local tool. It is not a production GIS system.
 
@@ -16,7 +16,8 @@ It is an experimental local tool. It is not a production GIS system.
 ```text
 core.py
   -> Interface.py              Flask routes and HTTP service
-  -> DatabaseConnect.py        MySQL config, import, schema, record queries
+  -> DatabaseConnect.py        Dataset read backend dispatch and compatibility wrappers
+  -> database/registry.py      @database_backend registry for read-model adapters
   -> AisLiveService.py         AIS live query packet
   -> AisIngestService.py       AISStream upstream collector to SQL latest-state table
   -> SpatialOverlay.py         EEZ overlay fallback helpers
@@ -29,9 +30,94 @@ The frontend is deliberately split by responsibility:
 
 - `static/app.js`: bootstraps the app and wires UI events.
 - `static/js/core`: shared state, DOM, map, and geographic helpers.
-- `static/js/services`: API client calls.
+- `static/js/services`: API client calls and GFW record cache/prewarm behavior.
 - `static/js/layers`: GFW, AIS, and EEZ rendering behavior.
-- `static/js/ui`: table, playback, and layer selector controls.
+- `static/js/rendering`: renderer capability checks, renderer selection, WebGL/canvas paint helpers, and GFW paint configuration.
+- `static/js/ui`: table, playback, layer selector, map settings, and shared layer style controls.
+
+Runtime pipeline:
+
+```mermaid
+flowchart TD
+  UI["Browser UI / Leaflet / WebGL"]
+  API["Interface.py / Flask API"]
+  READ["DatabaseConnect.py / read_backend"]
+  REG["database.registry / backend registry"]
+  MYSQL["MySQL read backend"]
+  HIVE["Hive read backend stub"]
+  EEZ["EEZ overlay services / MVT + cache"]
+  AISREAD["AIS SQL consumer"]
+  AISCOLLECT["AIS ingest collector"]
+  AISUP["AISStream upstream"]
+  SQLAIS["BDDE38No1 AIS tables"]
+  GFW["GFW gold_grid table"]
+  NASA["NASA OceanColor future array store"]
+
+  UI --> API
+  API --> READ
+  READ --> REG
+  REG --> MYSQL
+  REG --> HIVE
+  MYSQL --> GFW
+  API --> EEZ
+  API --> AISREAD
+  AISREAD --> SQLAIS
+  AISUP --> AISCOLLECT
+  AISCOLLECT --> SQLAIS
+  NASA --> READ
+```
+
+The database read path is also split by responsibility:
+
+- Decorators register available backend implementations, such as `@database_backend("mysql")`.
+- JSON config selects the backend and connection per dataset.
+- Route handlers call `schema_packet()` and `records_packet()` without knowing whether a dataset is backed by MySQL or a future Hive/Trino read model.
+
+Example dataset routing:
+
+```json
+{
+  "default_connection_ref": "local_mysql",
+  "connections": {
+    "local_mysql": {
+      "kind": "mysql",
+      "driver": "pymysql",
+      "host": "127.0.0.1",
+      "port": 3307,
+      "user": "root",
+      "password": "env:MYSQL_PASSWORD",
+      "database": "ocean_fishery"
+    },
+    "class_hive": {
+      "kind": "hive",
+      "driver": "placeholder",
+      "host": "hive-server.local",
+      "port": 10000,
+      "user": "hive",
+      "password": "env:HIVE_PASSWORD",
+      "database": "ocean_warehouse"
+    }
+  },
+  "datasets": {
+    "gfw_full": {
+      "backend": "mysql",
+      "connection_ref": "local_mysql",
+      "table": "gold_grid"
+    }
+  }
+}
+```
+
+Hive is intentionally registered only as an explicit unsupported stub in this version. It is a reserved read-model extension point, not a claimed working Hive integration.
+
+Backend contract:
+
+- `Interface.py` owns HTTP shape only. It must not know vendor-specific SQL/Hive query details.
+- `DatabaseConnect.py` owns dataset read dispatch and compatibility wrappers.
+- `database/registry.py` owns backend registration and backend instantiation.
+- `config/*.json` owns backend selection, connection refs, and table/read-model names.
+- Collector jobs own source-specific ingestion and sink-specific writes.
+- Frontend layer code must consume API packets, not raw database credentials, raw source files, or collector paths.
 
 ## Features
 
@@ -43,23 +129,34 @@ The dataset selector supports these layers:
 - `AIS vessel positions`
 - `EEZ boundary overlay`
 
-GFW and AIS are mutually exclusive primary data layers, but both can also be turned off. EEZ is an independent overlay.
+GFW and AIS are mutually exclusive primary data layers, but both can also be turned off. EEZ is an independent overlay and can be stacked with either primary layer.
 
-Layer rows can be drag-reordered in the selector. The order controls map stacking by Leaflet pane z-index. Each layer also has a gear panel with alpha controls. AIS can switch between density-grid and point-dot rendering.
+Layer rows can be drag-reordered in the selector. The order controls map stacking by Leaflet pane z-index. Each layer has a gear panel:
+
+- GFW exposes low/high gradient colors, max intensity, and alpha.
+- AIS exposes collector key handoff plus density-grid or point-dot rendering.
+- EEZ exposes fill color, boundary color, fill opacity, boundary opacity, and alpha.
+
+The alpha and color controls are centralized in shared UI helpers so future layers should not copy one-off slider logic.
 
 ### Map
 
 - Dark UI theme.
-- Leaflet base map.
+- Leaflet base map with selectable basemaps: light, dark, OSM, terrain, and satellite.
 - Fullscreen map button.
 - Fullscreen preserves the current geographic bounds instead of showing extra horizontal world copies.
+- Map settings gear for scale bar, zoom buttons, mouse-wheel zoom, double-click zoom, dragging, screenshot export, and latitude/longitude graticule options.
+- Latitude is clamped to avoid dragging into invalid north/south map bounds.
 - EEZ uses vector tiles when available.
 
 ### Time controls
 
-GFW supports:
+Time controls are enabled only when at least one selected layer exposes time capability. EEZ-only mode disables the single-day and time-sequence controls.
+
+GFW currently supports:
 
 - single-day mode
+- latest available date jump
 - start/end date range
 - replay
 - previous/next day
@@ -77,7 +174,24 @@ The timing drawer reports:
 - API total time
 - client fetch-to-render time
 - EEZ tile timing
+- render-state gate for GFW, AIS, and EEZ readiness
+- selected GFW render backend and draw timing
 - row count
+
+`rendering` timing is client draw time for the selected backend. It is not a claimed time saving. `fetch-to-render` remains the broader user-facing latency from API request through visible map update.
+
+### Rendering and cache behavior
+
+The app asks `/api/render/capability` for backend policy and inspects browser WebGL support. GFW rendering prefers WebGL when available and falls back to the canvas layer when not.
+
+GFW records use a viewport/zoom-aware cache:
+
+- Panning at the same zoom level keeps the current LOD packet when the cache key still matches.
+- Zoom changes mark GFW as loading, clear the stale drawing, and fetch the new LOD packet.
+- After a successful render, the client prewarms the other configured zoom/LOD packets in the background.
+- Prewarm is opportunistic. It must not change the visible map until the requested render state is ready.
+
+EEZ is treated closer to a basemap overlay: local vector data and PostGIS vector tiles are reused as much as possible, and pan-only movement should not force a full EEZ reload.
 
 ### AIS upstream ingest
 
@@ -371,6 +485,16 @@ AIS:
 ```text
 GET /api/live/ais?bbox=west,south,east,north
 GET /api/live/ais/ingest/status
+GET /api/live/ais/settings
+GET /api/live/ais/diagnostics
+POST /api/live/ais/settings
+DELETE /api/live/ais/settings
+```
+
+Rendering capability:
+
+```text
+GET /api/render/capability
 ```
 
 ## Validation
@@ -394,3 +518,5 @@ git diff --check -- static templates *.py config requirements.txt docker-compose
 - Do not commit runtime logs, PID files, database files, or downloaded datasets.
 - Use environment variables for local secrets.
 - This app is designed as a small local exploratory adapter. Keep data access, rendering, and UI behavior separated as the feature set grows.
+- EEZ country/claim attribution is not implemented yet. The current EEZ layer draws geometry only; identifying which country or claim owns a maritime zone requires a separate attribution field, tooltip/pick query, and UI treatment.
+- AISHub polling remains a reserved fallback path. The MVP path is AISStream collector to SQL, then map consumption from SQL.

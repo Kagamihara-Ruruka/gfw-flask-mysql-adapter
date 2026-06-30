@@ -10,6 +10,27 @@
     "password": "fishery123",
     "database": "ocean_fishery"
   },
+  "default_connection_ref": "local_mysql",
+  "connections": {
+    "local_mysql": {
+      "kind": "mysql",
+      "driver": "pymysql",
+      "host": "127.0.0.1",
+      "port": 3307,
+      "user": "root",
+      "password": "fishery123",
+      "database": "ocean_fishery"
+    },
+    "class_hive": {
+      "kind": "hive",
+      "driver": "placeholder",
+      "host": "hive-server.local",
+      "port": 10000,
+      "user": "hive",
+      "password": "env:HIVE_PASSWORD",
+      "database": "ocean_warehouse"
+    }
+  },
   "query_policy": {
     "default_limit": 5000,
     "max_limit": 100000,
@@ -109,8 +130,11 @@
   "datasets": {
     "gfw_full": {
       "label": "GFW January 2024 grid",
+      "backend": "mysql",
+      "connection_ref": "local_mysql",
       "duckdb_source_table": "main.gold_grid",
       "mysql_table": "gold_grid",
+      "table": "gold_grid",
       "time_column": "obs_date",
       "lat_column": "lat",
       "lon_column": "lon",
