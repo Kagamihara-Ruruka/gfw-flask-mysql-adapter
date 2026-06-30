@@ -9,6 +9,8 @@ instance/
 data/
 config/adapter.local.json
 config/ais_collector.local.json
+handoff/airflow_ais_crawler/ais_collector.handoff.json
+handoff_dist/
 flask_pid.txt
 flask_pid.txt.stale
 ais_ingest_pid.json

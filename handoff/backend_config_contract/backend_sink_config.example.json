@@ -1,0 +1,138 @@
+{
+  "schema": "rrkal.backend.sink_config.v1",
+  "description": "Backend/system owner fills this file to declare the stable data sink/read-model contract consumed by XiaoKeAi. Copy to backend_sink.local.json or an environment-specific path before adding secrets.",
+  "active_sink_ref": "mysql_local_read_model",
+  "sinks": {
+    "mysql_local_read_model": {
+      "kind": "mysql",
+      "driver": "pymysql",
+      "host": "127.0.0.1",
+      "port": 3307,
+      "user": "root",
+      "password": "env:RRKAL_BACKEND_MYSQL_PASSWORD",
+      "database": "BDDE38No1",
+      "capability_key": "database_backend.mysql"
+    },
+    "hive_class_read_model": {
+      "kind": "hive",
+      "driver": "placeholder",
+      "host": "hive-server.local",
+      "port": 10000,
+      "user": "hive",
+      "password": "env:RRKAL_BACKEND_HIVE_PASSWORD",
+      "database": "ocean_warehouse",
+      "capability_key": "database_backend.hive",
+      "enabled": false
+    }
+  },
+  "datasets": {
+    "ais_live_sql": {
+      "sink_ref": "mysql_local_read_model",
+      "table": "ais_positions",
+      "time_column": "event_time",
+      "lat_column": "lat",
+      "lon_column": "lon",
+      "id_column": "mmsi",
+      "display_columns": [
+        "event_time",
+        "mmsi",
+        "lat",
+        "lon",
+        "sog",
+        "cog",
+        "heading",
+        "vessel_name",
+        "source"
+      ],
+      "metric_columns": [
+        "sog",
+        "cog",
+        "heading"
+      ],
+      "category_columns": [
+        "source",
+        "vessel_name"
+      ],
+      "capability_key": "dataset_contract.ais_live_sql"
+    },
+    "ais_hourly_snapshot": {
+      "sink_ref": "mysql_local_read_model",
+      "table": "ais_hourly_snapshots",
+      "time_column": "snapshot_at",
+      "lat_column": "lat",
+      "lon_column": "lon",
+      "id_column": "mmsi",
+      "display_columns": [
+        "snapshot_at",
+        "mmsi",
+        "event_time",
+        "seconds_before_snapshot",
+        "lat",
+        "lon",
+        "sog",
+        "cog",
+        "heading",
+        "vessel_name",
+        "source"
+      ],
+      "metric_columns": [
+        "seconds_before_snapshot",
+        "sog",
+        "cog",
+        "heading"
+      ],
+      "category_columns": [
+        "source",
+        "vessel_name"
+      ],
+      "capability_key": "dataset_contract.ais_hourly_snapshot",
+      "enabled": false
+    },
+    "gfw_full": {
+      "sink_ref": "mysql_local_read_model",
+      "table": "gold_grid",
+      "time_column": "obs_date",
+      "lat_column": "lat",
+      "lon_column": "lon",
+      "id_column": "grid_id",
+      "display_columns": [
+        "obs_date",
+        "grid_id",
+        "lat",
+        "lon",
+        "fish_sum"
+      ],
+      "metric_columns": [
+        "fish_sum"
+      ],
+      "category_columns": [
+        "dominant_flag",
+        "dominant_gear"
+      ],
+      "capability_key": "dataset_contract.gfw_full"
+    }
+  },
+  "skin_display": {
+    "enabled": false,
+    "capability_key": "skin_display_contract.backend_returned_skin",
+    "datasets": {
+      "gfw_full": {
+        "layer_style": {
+          "alpha": 0.58,
+          "low_color": "#2d8296",
+          "high_color": "#d85a30"
+        },
+        "tooltip_fields": [],
+        "legend": {
+          "title": "",
+          "unit": ""
+        }
+      }
+    }
+  },
+  "stability_rule": {
+    "do_not_change_existing_sink_fields_after_handoff": true,
+    "allowed_future_change": "Additive fields only, or create a new sink_ref/dataset_id when semantics change.",
+    "consumer_rule": "XiaoKeAi may change UI, LOD, cache, and renderer internals without changing this sink config contract."
+  }
+}

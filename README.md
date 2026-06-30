@@ -11,6 +11,15 @@ The current app renders:
 
 It is an experimental local tool. It is not a production GIS system.
 
+## Upstream Handoff
+
+Use `handoff/` when sharing this repo with upstream owners:
+
+- `handoff/airflow_ais_crawler/` is for the Airflow/crawler owner. It explains the AISStream to SQL collector, the handoff JSON, SQL sink, timing, and health checks.
+- `handoff/backend_config_contract/` is for the backend/system owner. It explains database config JSON, MySQL/Hive switching, dataset fields, and the capability matrix for disabled future skin/display settings.
+
+Do not send real API keys through tracked files. `config/adapter.local.json` and `config/ais_collector.local.json` are local ignored files.
+
 ## Architecture
 
 ```text

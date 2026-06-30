@@ -193,22 +193,23 @@ def import_eez(config_path: str | None, *, replace: bool) -> None:
                     ]) AS geom
                 )
                 SELECT
-                    fid,
-                    mrgid,
-                    name,
-                    pol_type,
-                    territory,
-                    iso3,
-                    sovereign,
-                    area_km2,
+                    source.fid,
+                    source.mrgid,
+                    source.name,
+                    source.pol_type,
+                    source.territory,
+                    source.iso3,
+                    source.sovereign,
+                    source.area_km2,
                     ST_Multi(
                         ST_CollectionExtract(
-                            ST_Difference(ST_Boundary({target_geom}), dateline_mask.geom),
+                            ST_Difference(ST_Boundary(source.{target_geom}), dateline_mask.geom),
                             2
                         )
                     )::geometry(MultiLineString, 4326) AS {target_geom}
-                FROM {target_table}, dateline_mask
-                WHERE NOT ST_IsEmpty({target_geom})
+                FROM {target_table} AS source
+                CROSS JOIN dateline_mask
+                WHERE NOT ST_IsEmpty(source.{target_geom})
                 """
             )
             cur.execute(f"CREATE INDEX idx_{boundary_table}_{target_geom}_gist ON {boundary_table} USING GIST ({target_geom})")

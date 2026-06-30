@@ -1,0 +1,101 @@
+{
+  "schema": "rrkal.backend.capability_matrix.v1",
+  "stable_sink_contract": {
+    "declared": true,
+    "implemented": false,
+    "enabled": false,
+    "owner": "backend/system",
+    "contract_file": "handoff/backend_config_contract/backend_sink_config.example.json",
+    "activation_gate": "backend/system fills environment-specific sink config; existing sink field semantics are frozen after handoff"
+  },
+  "database_backend": {
+    "mysql": {
+      "declared": true,
+      "implemented": true,
+      "enabled": true,
+      "owner": "backend/system",
+      "runtime_entry": "DatabaseConnect.MySqlReadBackend",
+      "activation_gate": "config/adapter.schema.json validates and MySQL smoke test passes"
+    },
+    "hive": {
+      "declared": true,
+      "implemented": false,
+      "enabled": false,
+      "owner": "backend/system",
+      "runtime_entry": "DatabaseConnect.HiveReadBackend",
+      "activation_gate": "Hive/Trino driver, schema_packet, records_packet, and viewport query tests are implemented"
+    }
+  },
+  "dataset_contract": {
+    "gfw_full": {
+      "declared": true,
+      "implemented": true,
+      "enabled": true,
+      "backend": "mysql",
+      "connection_ref": "local_mysql",
+      "activation_gate": "date/bbox records query and schema packet pass"
+    },
+    "ais_live_sql": {
+      "declared": true,
+      "implemented": true,
+      "enabled": true,
+      "backend": "mysql",
+      "connection_ref": "local_mysql",
+      "activation_gate": "collector key gate passes and ais_ingest_meta heartbeat is fresh"
+    },
+    "ais_hourly_snapshot": {
+      "declared": true,
+      "implemented": true,
+      "enabled": false,
+      "backend": "mysql",
+      "connection_ref": "local_mysql",
+      "activation_gate": "frontend history/timeline query route is implemented"
+    },
+    "nasa_ocean_4km_daily": {
+      "declared": true,
+      "implemented": false,
+      "enabled": false,
+      "backend": "array_store_plus_sql_read_model",
+      "connection_ref": "pending",
+      "activation_gate": "Zarr/xarray store, metadata table, and tile-stat read model are stable"
+    }
+  },
+  "skin_display_contract": {
+    "backend_returned_skin": {
+      "declared": true,
+      "implemented": false,
+      "enabled": false,
+      "owner": "backend/system returns patch; frontend/o_1 accepts after schema review",
+      "activation_gate": "skin schema is added to adapter schema and frontend mapping tests pass"
+    }
+  },
+  "example_backend_dataset_patch": {
+    "schema": "rrkal.backend.dataset_contract_patch.v1",
+    "dataset_id": "gfw_full",
+    "backend": "hive",
+    "connection_ref": "class_hive",
+    "table": "gold_grid",
+    "time_column": "obs_date",
+    "lat_column": "lat",
+    "lon_column": "lon",
+    "id_column": "grid_id",
+    "display_columns": [],
+    "metric_columns": [],
+    "category_columns": []
+  },
+  "example_skin_patch": {
+    "schema": "rrkal.backend.dataset_skin_patch.v1",
+    "dataset_id": "gfw_full",
+    "enabled": false,
+    "layer_style": {
+      "alpha": 0.58,
+      "low_color": "#2d8296",
+      "high_color": "#d85a30"
+    },
+    "tooltip_fields": [],
+    "legend": {
+      "title": "",
+      "unit": ""
+    }
+  }
+}
