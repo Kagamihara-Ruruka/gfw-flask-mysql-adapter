@@ -16,8 +16,8 @@ def ais_live_settings(config: dict[str, Any]) -> dict[str, Any]:
     if not settings:
         return {"enabled": False}
     policy = query_policy(config)
-    configured_limit = settings.get("limit", min(5000, policy["max_limit"]))
-    limit = policy["max_limit"] if configured_limit == "max" else int(configured_limit)
+    configured_limit = settings.get("limit", policy["default_limit"])
+    limit = None if configured_limit in {None, "max", "all", "unbounded"} else int(configured_limit)
     return {
         "enabled": bool(settings.get("enabled", False)),
         "connection": settings.get("connection", {}),
@@ -104,7 +104,7 @@ def ais_live_packet(
         "name": _optional_column(settings, "name_column"),
         "source": _optional_column(settings, "source_column"),
     }
-    limit = max(1, min(int(settings["limit"]), query_policy(config)["max_limit"]))
+    limit = None if settings["limit"] is None else max(1, int(settings["limit"]))
     max_age_minutes = max(1, int(settings["max_age_minutes"]))
 
     select_parts = [
@@ -136,12 +136,15 @@ def ais_live_packet(
         where_parts.append(f"{mysql_quote(lat_column)} BETWEEN %s AND %s")
         params.extend([south, north])
 
+    limit_sql = ""
+    if limit is not None:
+        limit_sql = " LIMIT %s"
+        params.append(limit)
     sql = (
         f"SELECT {', '.join(select_parts)} FROM {mysql_quote(table)} "
         f"WHERE {' AND '.join(where_parts)} "
-        f"ORDER BY {mysql_quote(time_column)} DESC LIMIT %s"
+        f"ORDER BY {mysql_quote(time_column)} DESC{limit_sql}"
     )
-    params.append(limit)
 
     started = time.perf_counter()
     with _ais_mysql_connection(config, settings, database) as conn, conn.cursor() as cur:
@@ -180,12 +183,16 @@ def merged_ais_live_packet(
     seen: set[str] = set()
     rows: list[dict[str, Any]] = []
     query_ms = 0.0
-    limit = 0
+    limit: int | None = 0
     max_age_minutes = 0
     source_filter = {}
     for packet in packets:
         query_ms += float(packet.get("timing", {}).get("query_ms", 0))
-        limit = max(limit, int(packet.get("limit", 0)))
+        packet_limit = packet.get("limit")
+        if packet_limit is None:
+            limit = None
+        elif limit is not None:
+            limit = max(limit, int(packet_limit))
         max_age_minutes = max(max_age_minutes, int(packet.get("max_age_minutes", 0)))
         source_filter = packet.get("source_filter") or source_filter
         for row in packet.get("rows", []):

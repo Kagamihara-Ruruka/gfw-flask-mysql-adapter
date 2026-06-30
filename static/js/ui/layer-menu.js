@@ -7,10 +7,15 @@ function applyLayerOrder() {
   const step = 50;
   const order = state.layerOrder.length ? state.layerOrder : ["gfw", "ais", "eez"];
   order.forEach((layerId, index) => {
-    const pane = map.getPane(`${layerId}Pane`);
-    if (!pane) return;
     // The first item in the selector is the top visual layer.
-    pane.style.zIndex = String(baseZ + ((order.length - index) * step));
+    const zIndex = String(baseZ + ((order.length - index) * step));
+    const paneNames = layerId === "eez" ? ["eezPaneA", "eezPaneB"] : [`${layerId}Pane`];
+    for (const paneName of paneNames) {
+      const pane = map.getPane(paneName);
+      if (pane) {
+        pane.style.zIndex = zIndex;
+      }
+    }
   });
 }
 
@@ -24,28 +29,13 @@ function applyLayerAlpha(layerId) {
     return;
   }
   if (layerId === "eez") {
-    const pane = map.getPane("eezPane");
-    if (pane) {
-      pane.style.opacity = String(state.layerAlpha.eez);
+    for (const paneName of ["eezPaneA", "eezPaneB"]) {
+      const pane = map.getPane(paneName);
+      if (!pane) continue;
+      pane.style.opacity = paneName === state.eezActivePane && $("eez-toggle").checked
+        ? String(state.layerAlpha.eez)
+        : "0";
     }
-  }
-}
-
-function bindLayerAlphaControls() {
-  for (const input of document.querySelectorAll(".alpha-slider")) {
-    const layerId = input.dataset.alphaLayer;
-    if (!layerId) continue;
-    input.value = String(state.layerAlpha[layerId] ?? Number(input.value));
-    for (const eventName of ["click", "pointerdown", "mousedown", "touchstart", "dragstart"]) {
-      input.addEventListener(eventName, (event) => event.stopPropagation());
-    }
-    input.addEventListener("input", () => {
-      state.layerAlpha[layerId] = Number(input.value);
-      applyLayerAlpha(layerId);
-    });
-  }
-  for (const layerId of Object.keys(state.layerAlpha)) {
-    applyLayerAlpha(layerId);
   }
 }
 
@@ -59,6 +49,22 @@ function updateDataLayerMenu() {
   $("data-layer-summary").textContent = labels.length ? labels.join(" + ") : "None";
   updatePlaybackControls();
   applyLayerOrder();
+}
+
+function bindDataLayerMenuDismiss() {
+  const menu = $("data-layer-menu");
+  if (!menu) return;
+
+  document.addEventListener("click", (event) => {
+    if (!menu.open || menu.contains(event.target)) return;
+    menu.open = false;
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && menu.open) {
+      menu.open = false;
+    }
+  });
 }
 
 function toggleLayerSettings(event) {

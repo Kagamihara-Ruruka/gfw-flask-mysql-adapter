@@ -1,12 +1,3 @@
-function cellColor(row) {
-  const fish = Number(row.fish_sum ?? 0);
-  const ratio = Math.min(1, Math.max(0, fish / 40));
-  const red = Math.round(216 * ratio + 45 * (1 - ratio));
-  const green = Math.round(90 * ratio + 130 * (1 - ratio));
-  const blue = Math.round(48 * ratio + 150 * (1 - ratio));
-  return `rgb(${red},${green},${blue})`;
-}
-
 const GridCanvasLayer = L.Layer.extend({
   initialize() {
     this._rows = [];
@@ -25,7 +16,7 @@ const GridCanvasLayer = L.Layer.extend({
   },
   setRows(rows) {
     this._rows = rows;
-    this._draw();
+    return this._draw();
   },
   _reset() {
     const size = this._map.getSize();
@@ -38,7 +29,8 @@ const GridCanvasLayer = L.Layer.extend({
     this._draw();
   },
   _draw() {
-    if (!this._ctx || !this._map) return;
+    const started = performance.now();
+    if (!this._ctx || !this._map) return 0;
     const ctx = this._ctx;
     const size = this._map.getSize();
     ctx.clearRect(0, 0, size.x, size.y);
@@ -54,10 +46,11 @@ const GridCanvasLayer = L.Layer.extend({
       const w = Math.max(1, Math.ceil(Math.abs(se.x - nw.x)));
       const h = Math.max(1, Math.ceil(Math.abs(se.y - nw.y)));
       if (x > size.x || y > size.y || x + w < 0 || y + h < 0) continue;
-      ctx.fillStyle = cellColor(row);
+      ctx.fillStyle = gfwCellColorCss(row);
       ctx.fillRect(x, y, w, h);
     }
     ctx.globalAlpha = 1;
+    return performance.now() - started;
   },
 });
 
@@ -65,16 +58,47 @@ function removeGfwLayer() {
   if (state.gridLayer && map.hasLayer(state.gridLayer)) {
     map.removeLayer(state.gridLayer);
   }
+  clearRenderedLodZoom("gfw");
+  if (state.dataLayer !== "gfw") {
+    RenderState.off("gfw", "off");
+  }
+}
+
+function clearGfwLayerForLodReload() {
+  removeGfwLayer();
+  RenderState.loading("gfw", "zoom changed");
+}
+
+function ensureGfwLayer(layerClass) {
+  if (state.gridLayer && !(state.gridLayer instanceof layerClass)) {
+    removeGfwLayer();
+    state.gridLayer = null;
+  }
+  if (!state.gridLayer) {
+    state.gridLayer = new layerClass().addTo(map);
+  } else if (!map.hasLayer(state.gridLayer)) {
+    state.gridLayer.addTo(map);
+  }
 }
 
 function renderGfwMap(rows) {
   map.invalidateSize();
   removeAisLayer();
-  if (!state.gridLayer) {
-    state.gridLayer = new GridCanvasLayer().addTo(map);
-  } else if (!map.hasLayer(state.gridLayer)) {
-    state.gridLayer.addTo(map);
+  let choice = RendererRegistry.chooseGfwLayer(rows, GridCanvasLayer);
+  ensureGfwLayer(choice.LayerClass);
+  let drawMs = state.gridLayer.setRows(rows);
+  if (choice.backend === "webgl" && state.gridLayer._failed) {
+    removeGfwLayer();
+    state.gridLayer = null;
+    choice = { backend: "canvas", LayerClass: GridCanvasLayer };
+    ensureGfwLayer(choice.LayerClass);
+    drawMs = state.gridLayer.setRows(rows);
   }
-  state.gridLayer.setRows(rows);
+  setRenderedLodZoom("gfw");
   applyLayerOrder();
+  return {
+    backend: choice.backend,
+    drawMs,
+    detail: RendererRegistry.recordGfwRender(choice.backend, drawMs),
+  };
 }

@@ -4,10 +4,14 @@ __pycache__/
 *.pyc
 *.log
 benchmark_result.csv
+benchmarks/*.json
 instance/
 data/
 config/adapter.local.json
+config/ais_collector.local.json
 flask_pid.txt
+flask_pid.txt.stale
+ais_ingest_pid.json
 headless_*.html
 headless_*.txt
 headless_*.png

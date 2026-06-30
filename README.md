@@ -18,6 +18,7 @@ core.py
   -> Interface.py              Flask routes and HTTP service
   -> DatabaseConnect.py        MySQL config, import, schema, record queries
   -> AisLiveService.py         AIS live query packet
+  -> AisIngestService.py       AISStream upstream collector to SQL latest-state table
   -> SpatialOverlay.py         EEZ overlay fallback helpers
   -> LodOverlayService.py      PostGIS / MVT EEZ tile helpers
   -> templates/index.html      Leaflet UI shell
@@ -78,6 +79,129 @@ The timing drawer reports:
 - EEZ tile timing
 - row count
 
+### AIS upstream ingest
+
+AIS live data is intentionally split into two processes:
+
+- `core.py serve` runs the local map UI and reads AIS from SQL.
+- `core.py ingest-ais` runs a long-lived upstream AISStream collector and writes SQL latest-state rows.
+
+The collector is not a frontend feature. It is an upstream data service whose job is to keep a durable AIS base table warm even when the map is closed. It can later be handed to the upstream/Airflow owner as a scheduled or long-lived data collection job. It upserts by `mmsi`, so the latest-state table keeps one current row per vessel instead of growing without bound. The map then queries that SQL table by viewport.
+
+AIS latest-state reads must not impose an artificial total-row cap. The map may constrain reads by viewport, freshness, and future LOD representation, but `live.ais.limit: "max"` means the SQL query is unbounded and does not inherit `query_policy.max_limit`. If a numeric `live.ais.limit` is configured, it is treated as an explicit diagnostic cap, not the default product behavior.
+
+Crawler timing lives in the crawler handoff JSON, not in the map rendering path. During local + Airflow dual-machine testing, `ingest_reconnect_seconds` and `ingest_status_report_seconds` default to 30 seconds to avoid two machines creating tight reconnect/status loops with the same upstream AIS key. After the collector is owned by one machine, those values can be lowered in the crawler JSON/secret, such as 3 seconds, without changing the map consumer.
+
+This is a strict boundary:
+
+- The map is a consumer.
+- The collector is an upstream data feeder.
+- The map must not directly consume AISStream for rendering.
+- The map must not clean, crawl, or own upstream AIS collection.
+- The collector writes SQL rows and a collector heartbeat row into `live.ais.ingest_meta_table`.
+- The map reads SQL only after its locally configured collector key matches the collector key fingerprint in SQL metadata.
+
+That internal key check is not a public auth system. It is a local boundary marker for this prototype: a normal user configures the AIS key once in the UI, the UI writes only a key fingerprint into `config/adapter.local.json`, writes the raw key into the crawler handoff file at `config/ais_collector.local.json`, and the map verifies that the SQL table is being maintained by the matching collector before it reads from it. Do not return the raw key from HTTP APIs, and do not use this key check as permission to blur the consumer/upstream boundary.
+
+Future public setup can replace the local handoff file with a K8 Secret, Airflow variable, or upstream service registration. That handoff belongs to the crawler/upstream side, not to the map rendering path.
+
+For the upstream owner, the handoff JSON should stay simple: upstream key, crawler timing, and destination sink. Changing polling/reconnect timing or changing the destination from local MySQL to another SQL/Hive-facing sink is crawler configuration work, not map UI work.
+
+Minimal crawler handoff shape:
+
+```json
+{
+  "schema": "rrkal.ais.collector_handoff.v1",
+  "role": "upstream_ais_collector",
+  "provider": "aisstream",
+  "api_key": "<AISSTREAM_API_KEY>",
+  "ingest": {
+    "reconnect_seconds": 30,
+    "status_report_seconds": 30,
+    "flush_seconds": 1.0,
+    "batch_size": 250,
+    "meta_table": "ais_ingest_meta"
+  },
+  "sql": {
+    "connection": {
+      "host": "127.0.0.1",
+      "port": 3306,
+      "user": "root",
+      "password": "env:RRKAL_AIS_MYSQL_PASSWORD"
+    },
+    "database": "BDDE38No1",
+    "table": "ais_positions"
+  }
+}
+```
+
+To change the sink, edit only the collector-side `sql` section: `connection.host`, `connection.port`, `database`, and `table`. If the upstream owner later writes into Hive instead of MySQL, that change belongs to the collector/sink adapter and its config; the map should continue consuming the agreed read model rather than calling AISStream directly.
+
+If historical tracks are needed later, add a separate history/events table with an explicit retention policy. Do not overload the latest-state table with unbounded event history.
+
+### Upstream collectors
+
+GFW and NASA ingestion are reusable upstream collector jobs, not frontend features:
+
+- `collectors/gfw_collector.py` imports a configured GFW DuckDB source into the SQL read model.
+- `collectors/nasa_ocean_collector.py` lists NASA OceanColor files, downloads authorized files, inspects NetCDF/HDF grids, and converts local files to Zarr.
+
+The map UI must not learn raw source paths such as D-drive data folders, NASA download URLs, Zarr chunk paths, or temporary manifests. Those belong to collector configuration. The app should consume SQL tables or later service responses only.
+
+For GFW, the collector currently writes the MySQL table consumed by the map. For NASA OceanColor grids, do not flatten all 4 km daily pixels into MySQL. The intended path is:
+
+```text
+NASA NetCDF/HDF source files
+  -> collector-managed raw file cache
+  -> collector-managed Zarr/xarray or TileDB array store
+  -> DuckDB/SQL metadata, asset index, and tile-stat read model
+  -> map/BI consumer queries
+```
+
+This keeps large scientific arrays in an array-native store and uses SQL for metadata, summaries, and query coordination. If the upstream owner later uses Hive, only the collector sink adapter and config should change; the map remains a consumer of the agreed read model.
+
+NASA OceanColor downloads require Earthdata credentials supplied outside git, for example:
+
+```powershell
+$env:EARTHDATA_USERNAME = "your-earthdata-username"
+$env:EARTHDATA_PASSWORD = "your-earthdata-password"
+```
+
+or:
+
+```powershell
+$env:EARTHDATA_TOKEN = "your-earthdata-token"
+```
+
+Initialize the D-drive NASA database:
+
+```powershell
+.\.venv\Scripts\python.exe collectors\nasa_ocean_collector.py --collector-config config\nasa_ocean_collector.example.json init-db
+```
+
+List the 2024 daily 4 km four-product manifest:
+
+```powershell
+.\.venv\Scripts\python.exe collectors\nasa_ocean_collector.py --collector-config config\nasa_ocean_collector.example.json list --start-date 2024-01-01 --end-date 2024-12-31 --output data\nasa_ocean_manifest_2024_daily_4km_four_products.json
+```
+
+Ingest the manifest into the D-drive NASA database:
+
+```powershell
+.\.venv\Scripts\python.exe collectors\nasa_ocean_collector.py --collector-config config\nasa_ocean_collector.example.json ingest-manifest --manifest data\nasa_ocean_manifest_2024_daily_4km_four_products.json --replace
+```
+
+Download, inspect, convert, and ingest a tiny first sample before starting a full-year download:
+
+```powershell
+.\.venv\Scripts\python.exe collectors\nasa_ocean_collector.py --collector-config config\nasa_ocean_collector.example.json download --manifest data\nasa_ocean_manifest_2024_daily_4km_four_products.json --max-files 1
+.\.venv\Scripts\python.exe collectors\nasa_ocean_collector.py --collector-config config\nasa_ocean_collector.example.json inspect --path "D:\RRKAL_tools\nasa_ocean_store\raw\<dataset>\<year>\<file>.nc"
+.\.venv\Scripts\python.exe collectors\nasa_ocean_collector.py --collector-config config\nasa_ocean_collector.example.json to-zarr --path "D:\RRKAL_tools\nasa_ocean_store\raw\<dataset>\<year>\<file>.nc"
+.\.venv\Scripts\python.exe collectors\nasa_ocean_collector.py --collector-config config\nasa_ocean_collector.example.json ingest-grid --path "D:\RRKAL_tools\nasa_ocean_store\raw\<dataset>\<year>\<file>.nc" --replace
+```
+
+The configured 2024 NASA products are `CHL.chlor_a`, `FLH.nflh`, `KD.Kd_490`, and `SST.sst`. Treat these as schema discovery inputs until the first real files have been downloaded and inspected.
+
 ## Requirements
 
 - Python 3.11+
@@ -133,11 +257,29 @@ For AIS, use an environment variable instead of committing a password:
 $env:RRKAL_AIS_MYSQL_PASSWORD = "your-password"
 ```
 
-Start the app:
+Start only the AIS upstream collector:
+
+```powershell
+.\.venv\Scripts\python.exe core.py --config config\adapter.local.json ingest-ais
+```
+
+Or pass an explicit crawler handoff JSON for an Airflow/K8 worker:
+
+```powershell
+.\.venv\Scripts\python.exe core.py --config config\adapter.local.json ingest-ais --collector-config config\ais_collector.local.json
+```
+
+`ingest-ais` reads `config/ais_collector.local.json` when it exists, then writes the latest-state table and the `ais_ingest_meta` heartbeat table. The handoff file is gitignored because it contains the upstream AIS key. `config/adapter.local.json` should keep only the key fingerprint for the consumer-side SQL read gate.
+
+For Airflow, Windows Task Scheduler, NSSM, Docker, or K8, run the same command as the collector task and provide the same SQL connection plus the crawler handoff/secret. The Flask UI does not need to be running for the collector to keep warming SQL.
+
+Start the map UI:
 
 ```powershell
 .\.venv\Scripts\python.exe core.py --config config\adapter.local.json serve
 ```
+
+The server is intentionally single-instance. On startup it reads `flask_pid.txt`, force-exits the previous local Flask server when it is still running, clears the configured port when needed, and writes the new PID. This prevents duplicate AIS or database query loops from running at the same time.
 
 Open:
 
@@ -158,6 +300,39 @@ Import a smaller sample:
 ```powershell
 .\.venv\Scripts\python.exe core.py --config config\adapter.local.json import --source "C:\path\to\gfw_full.duckdb" --replace --row-limit 5000
 ```
+
+## NASA OceanColor Warehouse Seed
+
+NASA OceanColor ingestion is an upstream warehouse task. The consumer map should read SQL/database service responses, not raw NetCDF files or Zarr paths.
+
+Install the scientific stack:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+Create or refresh the 2024 daily 4 km manifest for the four starter variables:
+
+```powershell
+.\.venv\Scripts\python.exe collectors\nasa_ocean_collector.py list --output data\nasa_ocean_manifest_2024_daily_4km_four_products.json
+.\.venv\Scripts\python.exe collectors\nasa_ocean_collector.py ingest-manifest --manifest data\nasa_ocean_manifest_2024_daily_4km_four_products.json
+```
+
+Run the resumable full pipeline after setting Earthdata credentials in the environment:
+
+```powershell
+$env:EARTHDATA_USERNAME="..."
+$env:EARTHDATA_PASSWORD="..."
+.\.venv\Scripts\python.exe collectors\nasa_ocean_collector.py pipeline --manifest data\nasa_ocean_manifest_2024_daily_4km_four_products.json --timeout-seconds 600
+```
+
+The pipeline writes:
+
+- raw NetCDF files under `D:\RRKAL_tools\nasa_ocean_store\raw`
+- Zarr stores under `D:\RRKAL_tools\nasa_ocean_store\zarr`
+- DuckDB read-model tables under `D:\RRKAL_tools\nasa_ocean_store\db\nasa_ocean.duckdb`
+
+The first read-model tables are `nasa_ocean_assets`, `nasa_ocean_schema_snapshots`, and `nasa_ocean_tile_stats`. `nasa_ocean_tile_stats` is the initial map/BI query surface; downstream UI code should not depend on raw file locations.
 
 ## Docker Compose
 
@@ -195,6 +370,7 @@ AIS:
 
 ```text
 GET /api/live/ais?bbox=west,south,east,north
+GET /api/live/ais/ingest/status
 ```
 
 ## Validation

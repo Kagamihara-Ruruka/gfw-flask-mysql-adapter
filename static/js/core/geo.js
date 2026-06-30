@@ -5,13 +5,50 @@ function gfwCellCenter(value) {
   return Math.round(value / GFW_CELL_DEGREES) * GFW_CELL_DEGREES;
 }
 
-function currentBbox() {
-  const bounds = map.getBounds();
+function bboxStringFromBounds(bounds) {
   const west = Math.max(-180, bounds.getWest());
   const south = Math.max(-90, bounds.getSouth());
   const east = Math.min(180, bounds.getEast());
   const north = Math.min(90, bounds.getNorth());
   return [west, south, east, north].map((value) => value.toFixed(6)).join(",");
+}
+
+function currentBbox() {
+  return bboxStringFromBounds(map.getBounds());
+}
+
+function bboxForCenterZoom(center, zoom) {
+  const size = map.getSize();
+  const projectedCenter = map.project(center, zoom);
+  const northWest = map.unproject(
+    L.point(projectedCenter.x - size.x / 2, projectedCenter.y - size.y / 2),
+    zoom
+  );
+  const southEast = map.unproject(
+    L.point(projectedCenter.x + size.x / 2, projectedCenter.y + size.y / 2),
+    zoom
+  );
+  return bboxStringFromBounds(L.latLngBounds([southEast.lat, northWest.lng], [northWest.lat, southEast.lng]));
+}
+
+function currentLodZoom() {
+  return Math.round(map.getZoom());
+}
+
+function setRenderedLodZoom(layerId, zoom = currentLodZoom()) {
+  if (!state.renderedLodZoom) {
+    state.renderedLodZoom = {};
+  }
+  state.renderedLodZoom[layerId] = zoom;
+}
+
+function clearRenderedLodZoom(layerId) {
+  if (!state.renderedLodZoom) return;
+  state.renderedLodZoom[layerId] = null;
+}
+
+function isLodZoomEvent(event) {
+  return event?.type === "zoomstart" || event?.type === "zoomend";
 }
 
 function normalizeLongitude(lon) {

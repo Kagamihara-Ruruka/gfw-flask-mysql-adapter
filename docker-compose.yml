@@ -12,7 +12,9 @@ services:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
     volumes:
-      - mysql_data:/var/lib/mysql
+      - type: bind
+        source: D:/RRKAL_tools/gfw_mysql_data
+        target: /var/lib/mysql
 
   postgis:
     image: postgis/postgis:16-3.4
@@ -27,5 +29,4 @@ services:
       - postgis_data:/var/lib/postgresql/data
 
 volumes:
-  mysql_data:
   postgis_data:

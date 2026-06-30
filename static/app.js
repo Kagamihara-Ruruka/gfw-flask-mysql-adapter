@@ -1,5 +1,6 @@
 async function init() {
   try {
+    await loadRenderCapability();
     await loadDatasets();
     await loadSchema();
     await reloadActiveLayer();
@@ -46,6 +47,7 @@ function syncMapFullscreenButton() {
 function bindControls() {
   $("layer-gfw").addEventListener("change", () => selectDataLayer("gfw"));
   $("layer-ais").addEventListener("change", () => selectDataLayer("ais"));
+  bindDataLayerMenuDismiss();
   for (const button of document.querySelectorAll(".layer-settings-toggle")) {
     button.setAttribute("aria-expanded", "false");
     button.addEventListener("click", toggleLayerSettings);
@@ -53,10 +55,13 @@ function bindControls() {
   bindLayerOrderDrag();
   bindLayerAlphaControls();
   bindEezPaintControls();
+  bindGfwPaintControls();
   bindMapSettingsControls();
   bindMapExportControls();
   bindLayerSettingsModalControls();
   bindAisSettingsControls();
+  bindPlaybackControlFeedback();
+  RenderState.sync();
   $("ais-render-strategy").addEventListener("change", () => {
     if (state.dataLayer === "ais") {
       reloadActiveLayer();
@@ -76,7 +81,7 @@ function bindControls() {
   });
   $("play-toggle").addEventListener("click", () => setPlayback(!state.isPlaying));
   $("play-speed").addEventListener("change", updatePlaybackSpeed);
-  $("reload").addEventListener("click", reloadActiveLayer);
+  $("latest-date").addEventListener("click", jumpToLatestDate);
   $("map-fullscreen").addEventListener("click", () => {
     toggleMapFullscreen().catch((err) => setStatus(err.message, true));
   });
@@ -90,22 +95,6 @@ function bindControls() {
     }
   });
   $("table-scroll").addEventListener("scroll", () => requestAnimationFrame(renderTableWindow));
-}
-
-function bindMapRefresh() {
-  let moveTimer = null;
-  let eezMoveTimer = null;
-  map.on("moveend", () => {
-    if (state.isBootstrapping) return;
-    clearTimeout(moveTimer);
-    clearTimeout(eezMoveTimer);
-    moveTimer = setTimeout(() => {
-      reloadActiveLayer();
-    }, 250);
-    eezMoveTimer = setTimeout(() => {
-      reloadEezLayer().catch((err) => console.error("EEZ overlay failed", err));
-    }, 900);
-  });
 }
 
 bindControls();

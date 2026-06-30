@@ -42,7 +42,7 @@ def postgis_dsn(settings: dict[str, Any]) -> str:
     )
 
 
-def import_eez(config_path: str | None, *, replace: bool, build_lod_tables: bool) -> None:
+def import_eez(config_path: str | None, *, replace: bool) -> None:
     config = load_config(config_path)
     eez = overlay_settings(config)
     source = eez.get("full_gpkg_path")
@@ -56,8 +56,6 @@ def import_eez(config_path: str | None, *, replace: bool, build_lod_tables: bool
     target_table = validate_identifier(pg.get("table", "eez_v12"), "postgis table")
     tile_table = validate_identifier(pg.get("tile_table", f"{target_table}_tile"), "postgis tile table")
     boundary_table = validate_identifier(pg.get("boundary_table", f"{target_table}_boundary"), "postgis boundary table")
-    tile_low_table = validate_identifier(pg.get("tile_low_table", f"{target_table}_tile_low"), "postgis low LOD tile table")
-    tile_mid_table = validate_identifier(pg.get("tile_mid_table", f"{target_table}_tile_mid"), "postgis mid LOD tile table")
     target_geom = validate_identifier(pg.get("geometry_column", "geom"), "postgis geometry column")
     gpkg_table = validate_identifier(eez.get("gpkg_table", "eez_v12"), "gpkg table")
     gpkg_geom = validate_identifier(eez.get("gpkg_geometry_column", "geom"), "gpkg geometry column")
@@ -69,8 +67,6 @@ def import_eez(config_path: str | None, *, replace: bool, build_lod_tables: bool
                 cur.execute(f"DROP TABLE IF EXISTS {target_table}")
                 cur.execute(f"DROP TABLE IF EXISTS {tile_table}")
                 cur.execute(f"DROP TABLE IF EXISTS {boundary_table}")
-                cur.execute(f"DROP TABLE IF EXISTS {tile_low_table}")
-                cur.execute(f"DROP TABLE IF EXISTS {tile_mid_table}")
             cur.execute(
                 f"""
                 CREATE TABLE IF NOT EXISTS {target_table} (
@@ -217,60 +213,16 @@ def import_eez(config_path: str | None, *, replace: bool, build_lod_tables: bool
             )
             cur.execute(f"CREATE INDEX idx_{boundary_table}_{target_geom}_gist ON {boundary_table} USING GIST ({target_geom})")
             cur.execute(f"ANALYZE {boundary_table}")
-            if build_lod_tables:
-                create_tile_table(
-                    tile_low_table,
-                    f"ST_SimplifyPreserveTopology(source.{target_geom}, 0.15)",
-                    make_valid=True,
-                )
-                create_tile_table(
-                    tile_mid_table,
-                    f"ST_SimplifyPreserveTopology(source.{target_geom}, 0.035)",
-                    make_valid=True,
-                )
-            cur.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {target_table}_lod_manifest (
-                    name text PRIMARY KEY,
-                    source_table text NOT NULL,
-                    zoom_min integer NOT NULL,
-                    zoom_max integer NOT NULL,
-                    tolerance_degrees double precision NOT NULL
-                )
-                """
-            )
-            cur.execute(f"TRUNCATE {target_table}_lod_manifest")
-            manifest_rows = [
-                ("full", tile_table, 0, 22, 0.0),
-            ]
-            if build_lod_tables:
-                manifest_rows = [
-                    ("low", tile_low_table, 0, 3, 0.15),
-                    ("mid", tile_mid_table, 4, 5, 0.035),
-                    ("full", tile_table, 6, 22, 0.0),
-                ]
-            cur.executemany(
-                f"""
-                INSERT INTO {target_table}_lod_manifest
-                    (name, source_table, zoom_min, zoom_max, tolerance_degrees)
-                VALUES (%s, %s, %s, %s, %s)
-                """,
-                manifest_rows,
-            )
         pg_conn.commit()
-    if build_lod_tables:
-        print(f"import_complete rows={inserted} tile_tables={tile_low_table},{tile_mid_table},{tile_table} boundary_table={boundary_table}")
-    else:
-        print(f"import_complete rows={inserted} tile_table={tile_table} boundary_table={boundary_table}")
+    print(f"import_complete rows={inserted} tile_table={tile_table} boundary_table={boundary_table}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Import Marine Regions EEZ GPKG into PostGIS.")
     parser.add_argument("--config", default=None)
     parser.add_argument("--replace", action="store_true")
-    parser.add_argument("--build-lod-tables", action="store_true")
     args = parser.parse_args()
-    import_eez(args.config, replace=args.replace, build_lod_tables=args.build_lod_tables)
+    import_eez(args.config, replace=args.replace)
 
 
 if __name__ == "__main__":

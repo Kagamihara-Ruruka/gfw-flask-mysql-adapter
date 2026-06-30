@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
+from AisIngestService import run_ais_ingest_forever
 from DatabaseConnect import import_duckdb_to_mysql, load_config, server_settings
 from Interface import run_server
 from TestDataBootstrap import ensure_test_data
@@ -44,6 +45,14 @@ def command_bootstrap_test_data(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_ingest_ais(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    if args.collector_config:
+        config.setdefault("live", {}).setdefault("ais", {})["collector_config_path"] = args.collector_config
+    run_ais_ingest_forever(config)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="GFW Flask/PyMySQL adapter.")
     parser.add_argument("--config", default=None, help="Path to adapter config JSON.")
@@ -65,6 +74,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     bootstrap_parser = subparsers.add_parser("bootstrap-test-data", help="Download temporary test datasets.")
     bootstrap_parser.set_defaults(func=command_bootstrap_test_data)
+
+    ingest_ais_parser = subparsers.add_parser("ingest-ais", help="Run AISStream to SQL latest-state ingest only.")
+    ingest_ais_parser.add_argument(
+        "--collector-config",
+        default=None,
+        help="Path to AIS crawler handoff JSON. Overrides live.ais.collector_config_path.",
+    )
+    ingest_ais_parser.set_defaults(func=command_ingest_ais)
     return parser
 
 

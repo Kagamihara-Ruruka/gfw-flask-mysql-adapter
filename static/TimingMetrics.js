@@ -37,20 +37,30 @@ const TimingMetrics = (() => {
   }
 
   function waitForLayerLoad(layer, timeoutMs = 8000) {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       let done = false;
       let timer = null;
-      const finish = () => {
+      const cleanup = () => {
         if (done) return;
         done = true;
         clearTimeout(timer);
-        layer.off?.("load", finish);
-        layer.off?.("tileerror", finish);
+        layer.off?.("load", onLoad);
+        layer.off?.("tileerror", onError);
+      };
+      const onLoad = () => {
+        cleanup();
         resolve();
       };
-      layer.once?.("load", finish);
-      layer.once?.("tileerror", finish);
-      timer = setTimeout(finish, timeoutMs);
+      const onError = () => {
+        cleanup();
+        reject(new Error("tile load failed"));
+      };
+      layer.once?.("load", onLoad);
+      layer.once?.("tileerror", onError);
+      timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("tile load timeout"));
+      }, timeoutMs);
     });
   }
 

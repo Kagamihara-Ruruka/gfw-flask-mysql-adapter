@@ -1,3 +1,33 @@
+const TIME_CONTROL_LAYER_IDS = new Set(["gfw"]);
+const PLAYBACK_CONTROL_IDS = ["latest-date", "replay", "prev-day", "play-toggle", "next-day"];
+
+function syncPlayToggleIcon() {
+  if (state.isPlaying) {
+    ControlButtons.setIcon("play-toggle", "pause", "II", "Pause");
+    return;
+  }
+  ControlButtons.setIcon("play-toggle", "play", ">", "Play");
+}
+
+function bindPlaybackControlFeedback() {
+  ControlButtons.bindFeedback(PLAYBACK_CONTROL_IDS);
+}
+
+function selectedLayerIds() {
+  const ids = [];
+  if (state.dataLayer) {
+    ids.push(state.dataLayer);
+  }
+  if ($("eez-toggle")?.checked) {
+    ids.push("eez");
+  }
+  return ids;
+}
+
+function hasSelectedTimeControlLayer() {
+  return selectedLayerIds().some((layerId) => TIME_CONTROL_LAYER_IDS.has(layerId));
+}
+
 function setAvailableDates(dates) {
   state.availableDates = [...dates].sort();
   const first = state.availableDates[0] || "";
@@ -34,23 +64,36 @@ function clampDateToSelectedRange(value) {
 
 function updatePlaybackControls() {
   const dates = datesInSelectedRange();
-  const hasDates = dates.length > 0 && state.dataLayer === "gfw";
+  const hasTimeControlLayer = hasSelectedTimeControlLayer();
+  const singleDateEnabled = hasTimeControlLayer && state.availableDates.length > 0;
+  const timeSequenceEnabled = hasTimeControlLayer && dates.length > 0;
   const current = $("date").value;
   const index = dates.indexOf(current);
-  $("single-date-label").textContent = state.dataLayer === "gfw"
-    ? "GFW Date"
+  const singleDateControl = $("single-date-control");
+  const timeSequence = document.querySelector(".time-sequence");
+  $("single-date-label").textContent = hasTimeControlLayer
+    ? "Date"
     : state.dataLayer === "ais"
       ? "AIS Live"
-      : "No primary layer";
-  $("date").disabled = state.dataLayer !== "gfw" || state.availableDates.length === 0;
-  $("start-date").disabled = state.dataLayer !== "gfw" || state.availableDates.length === 0;
-  $("end-date").disabled = state.dataLayer !== "gfw" || state.availableDates.length === 0;
-  $("prev-day").disabled = !hasDates || index <= 0;
-  $("next-day").disabled = !hasDates || index < 0 || index >= dates.length - 1;
-  $("replay").disabled = !hasDates;
-  $("play-toggle").disabled = !hasDates || dates.length <= 1;
-  $("play-toggle").textContent = state.isPlaying ? "Pause" : "Play";
-  $("play-toggle").title = state.isPlaying ? "Pause" : "Play";
+      : "No dated layer";
+  $("date").disabled = !singleDateEnabled;
+  $("latest-date").disabled = !singleDateEnabled;
+  if (singleDateControl) {
+    singleDateControl.classList.toggle("is-disabled", !singleDateEnabled);
+    singleDateControl.setAttribute("aria-disabled", String(!singleDateEnabled));
+  }
+  $("start-date").disabled = !timeSequenceEnabled;
+  $("end-date").disabled = !timeSequenceEnabled;
+  $("prev-day").disabled = !timeSequenceEnabled || index <= 0;
+  $("next-day").disabled = !timeSequenceEnabled || index < 0 || index >= dates.length - 1;
+  $("replay").disabled = !timeSequenceEnabled;
+  $("play-toggle").disabled = !timeSequenceEnabled || dates.length <= 1;
+  $("play-speed").disabled = !timeSequenceEnabled || dates.length <= 1;
+  if (timeSequence) {
+    timeSequence.classList.toggle("is-disabled", !timeSequenceEnabled);
+    timeSequence.setAttribute("aria-disabled", String(!timeSequenceEnabled));
+  }
+  syncPlayToggleIcon();
 }
 
 function stopPlayback() {
@@ -125,6 +168,14 @@ function replayFromStart() {
   if (!dates.length) return;
   stopPlayback();
   $("date").value = dates[0];
+  updatePlaybackControls();
+  reloadActiveLayer();
+}
+
+function jumpToLatestDate() {
+  if (!hasSelectedTimeControlLayer() || !state.availableDates.length) return;
+  stopPlayback();
+  $("date").value = state.availableDates[state.availableDates.length - 1];
   updatePlaybackControls();
   reloadActiveLayer();
 }

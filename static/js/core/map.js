@@ -67,21 +67,24 @@ function setBasemap(basemapId) {
   state.mapSettings.basemapId = nextBasemapId;
 }
 
-map.createPane("eezPane");
-map.getPane("eezPane").style.zIndex = 520;
-map.getPane("eezPane").style.pointerEvents = "none";
+function createOverlayPane(name, zIndex) {
+  map.createPane(name);
+  const pane = map.getPane(name);
+  pane.style.zIndex = String(zIndex);
+  pane.style.pointerEvents = "none";
+  return pane;
+}
 
-map.createPane("graticulePane");
-map.getPane("graticulePane").style.zIndex = 545;
-map.getPane("graticulePane").style.pointerEvents = "none";
+createOverlayPane("eezPaneA", 520);
+createOverlayPane("eezPaneB", 520);
+map.getPane("eezPaneA").style.opacity = String(state.layerAlpha.eez);
+map.getPane("eezPaneB").style.opacity = "0";
 
-map.createPane("gfwPane");
-map.getPane("gfwPane").style.zIndex = 570;
-map.getPane("gfwPane").style.pointerEvents = "none";
+createOverlayPane("graticulePane", 545);
 
-map.createPane("aisPane");
-map.getPane("aisPane").style.zIndex = 610;
-map.getPane("aisPane").style.pointerEvents = "none";
+createOverlayPane("gfwPane", 570);
+
+createOverlayPane("aisPane", 610);
 
 setBasemap(state.mapSettings.basemapId);
 

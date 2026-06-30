@@ -12,16 +12,22 @@ from typing import Any
 
 from flask import Flask, Response, jsonify, render_template, request
 from flask_sock import Sock
-from websocket import WebSocketTimeoutException
 
 from AisHubProvider import aishub_packet, aishub_settings, probe_aishub
+from AisIngestService import (
+    ais_api_key_fingerprint,
+    ais_collector_handoff_status,
+    ais_ingest_should_start,
+    ais_sql_locked_packet,
+    ais_sql_read_allowed,
+    get_ais_ingest_status,
+    remove_ais_collector_handoff,
+    write_ais_collector_handoff,
+)
 from AisStreamProvider import (
     ais_stream_settings,
-    normalize_aisstream_message,
-    open_aisstream_socket,
     probe_aisstream,
     setting_secret,
-    streaming_snapshot_packet,
 )
 from AisLiveService import ais_live_packet, merged_ais_live_packet
 from DatabaseConnect import (
@@ -32,7 +38,10 @@ from DatabaseConnect import (
     schema_packet,
 )
 from LodOverlayService import eez_boundary_mvt_tile_packet, eez_geojson_packet, eez_mvt_tile_packet
+from RenderCapability import server_render_capability
 from SpatialOverlay import eez_overlay_packet, elapsed_ms, overlay_settings
+
+SERVER_PID_FILE = Path("flask_pid.txt")
 
 
 def port_is_busy(host: str, port: int) -> bool:
@@ -80,6 +89,91 @@ def free_configured_port_if_needed(host: str, port: int, *, enabled: bool) -> No
     time.sleep(0.5)
     if port_is_busy(host, port):
         raise RuntimeError(f"port {port} is still busy after killing PID(s): {sorted(pids)}")
+
+
+def read_server_pid_file() -> dict[str, Any] | None:
+    if not SERVER_PID_FILE.exists():
+        return None
+    raw = SERVER_PID_FILE.read_text(encoding="utf-8", errors="ignore").strip()
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return data
+    except json.JSONDecodeError:
+        pass
+    try:
+        return {"pid": int(raw)}
+    except ValueError:
+        return None
+
+
+def windows_command_line_for_pid(pid: int) -> str:
+    script = (
+        "$p = Get-CimInstance Win32_Process -Filter \"ProcessId = "
+        + str(pid)
+        + "\"; if ($p) { $p.CommandLine }"
+    )
+    completed = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="ignore",
+    )
+    return completed.stdout.strip()
+
+
+def process_looks_like_this_server(pid: int, previous: dict[str, Any]) -> bool:
+    if sys.platform != "win32":
+        return True
+    command_line = windows_command_line_for_pid(pid).replace("\\", "/").lower()
+    if not command_line:
+        return False
+    previous_cwd = str(previous.get("cwd") or Path.cwd()).replace("\\", "/").lower()
+    current_cwd = str(Path.cwd()).replace("\\", "/").lower()
+    has_entrypoint = "core.py" in command_line
+    has_expected_cwd = previous_cwd in command_line or current_cwd in command_line
+    has_python = "python" in command_line
+    return has_entrypoint and (has_expected_cwd or has_python)
+
+
+def force_exit_previous_server_instance(*, enabled: bool) -> None:
+    if not enabled:
+        return
+    previous = read_server_pid_file()
+    if not previous:
+        return
+    try:
+        previous_pid = int(previous["pid"])
+    except (KeyError, TypeError, ValueError):
+        return
+    if previous_pid <= 0 or previous_pid == os.getpid():
+        return
+    if not process_looks_like_this_server(previous_pid, previous):
+        return
+    if sys.platform == "win32":
+        subprocess.run(["taskkill", "/PID", str(previous_pid), "/T", "/F"], check=False, capture_output=True)
+        time.sleep(0.5)
+        return
+    try:
+        os.kill(previous_pid, 9)
+    except OSError:
+        return
+    time.sleep(0.5)
+
+
+def write_server_pid_file(*, host: str, port: int) -> None:
+    payload = {
+        "pid": os.getpid(),
+        "cwd": str(Path.cwd()),
+        "host": host,
+        "port": port,
+        "started_at": int(time.time()),
+    }
+    SERVER_PID_FILE.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="ascii")
 
 
 def create_app(config: dict[str, Any]) -> Flask:
@@ -136,6 +230,13 @@ def create_app(config: dict[str, Any]) -> Flask:
             )
         except Exception as exc:
             return jsonify({"status": "error", "error": str(exc)}), 503
+
+    @app.get("/api/render/capability")
+    def render_capability():
+        try:
+            return jsonify(server_render_capability(config))
+        except Exception as exc:
+            return jsonify({"status": "error", "error": str(exc)}), 400
 
     @app.get("/api/datasets")
     def datasets():
@@ -208,10 +309,11 @@ def create_app(config: dict[str, Any]) -> Flask:
         try:
             tile, meta = eez_mvt_tile_packet(config, z=z, x=x, y=y)
             response = Response(tile, mimetype="application/x-protobuf")
-            response.headers["Cache-Control"] = "no-store"
+            response.headers["Cache-Control"] = "public, max-age=86400"
             response.headers["X-EEZ-Tile-Bytes"] = str(meta["bytes"])
             response.headers["X-EEZ-Tile-MS"] = str(meta["timing"]["tile_ms"])
             response.headers["X-EEZ-LOD"] = str(meta["lod"])
+            response.headers["X-EEZ-Cache"] = str(meta["cache"])
             response.headers["X-EEZ-Source-Table"] = str(meta["table"])
             return response
         except Exception as exc:
@@ -222,10 +324,11 @@ def create_app(config: dict[str, Any]) -> Flask:
         try:
             tile, meta = eez_boundary_mvt_tile_packet(config, z=z, x=x, y=y)
             response = Response(tile, mimetype="application/x-protobuf")
-            response.headers["Cache-Control"] = "no-store"
+            response.headers["Cache-Control"] = "public, max-age=86400"
             response.headers["X-EEZ-Tile-Bytes"] = str(meta["bytes"])
             response.headers["X-EEZ-Tile-MS"] = str(meta["timing"]["tile_ms"])
             response.headers["X-EEZ-LOD"] = str(meta["lod"])
+            response.headers["X-EEZ-Cache"] = str(meta["cache"])
             response.headers["X-EEZ-Source-Table"] = str(meta["table"])
             return response
         except Exception as exc:
@@ -237,24 +340,36 @@ def create_app(config: dict[str, Any]) -> Flask:
             if aishub_settings(config)["provider"] == "aishub_polling":
                 packet = aishub_packet(config, bbox=parse_bbox(request.args.get("bbox")))
                 return jsonify(packet)
+            if not ais_sql_read_allowed(config):
+                return jsonify(ais_sql_locked_packet(config)), 403
             packet = ais_live_packet(config, bbox=parse_bbox(request.args.get("bbox")))
             return jsonify(packet)
         except Exception as exc:
             return jsonify({"status": "error", "error": str(exc), "rows": [], "row_count": 0}), 400
 
+    @app.get("/api/live/ais/ingest/status")
+    def ais_ingest_status():
+        return jsonify(get_ais_ingest_status(config))
+
     @app.get("/api/live/ais/settings")
     def ais_settings_get():
         try:
             settings = config.get("live", {}).get("ais", {})
+            ingest = get_ais_ingest_status(config)
+            handoff = ais_collector_handoff_status(config)
+            has_collector_key = bool(settings.get("api_key_fingerprint")) or bool(handoff.get("has_api_key"))
             return jsonify(
                 {
                     "status": "ok",
                     "enabled": bool(settings.get("enabled", False)),
                     "provider": settings.get("provider", "mysql"),
-                    "has_api_key": bool(setting_secret(settings.get("api_key", ""))),
+                    "has_api_key": has_collector_key,
                     "has_aishub_username": bool(setting_secret(settings.get("aishub_username", ""))),
                     "stream_url": settings.get("stream_url", "wss://stream.aisstream.io/v0/stream"),
                     "aishub_url": settings.get("aishub_url", "https://data.aishub.net/ws.php"),
+                    "collector_key_gate": ingest.get("key_gate"),
+                    "collector_handoff": handoff,
+                    "ingest": ingest,
                 }
             )
         except Exception as exc:
@@ -293,6 +408,8 @@ def create_app(config: dict[str, Any]) -> Flask:
 
     @app.post("/api/live/ais/aishub/settings")
     def aishub_settings_post():
+        # Dormant fallback path: hidden from the MVP UI. Keep the endpoint for
+        # later provider experiments, but do not route the main AIS flow here.
         try:
             payload = request.get_json(force=True, silent=False) or {}
             username = str(payload.get("username", "")).strip()
@@ -315,7 +432,9 @@ def create_app(config: dict[str, Any]) -> Flask:
                     "provider": "aishub_polling",
                     "enabled": True,
                     "has_aishub_username": True,
-                    "has_api_key": bool(setting_secret(ais.get("api_key", ""))),
+                    "has_api_key": bool(ais.get("api_key_fingerprint")) or bool(ais_collector_handoff_status(config).get("has_api_key")),
+                    "collector_key_gate": get_ais_ingest_status(config).get("key_gate"),
+                    "collector_handoff": ais_collector_handoff_status(config),
                     "message": "AISHub username saved to local config.",
                 }
             )
@@ -324,6 +443,7 @@ def create_app(config: dict[str, Any]) -> Flask:
 
     @app.delete("/api/live/ais/aishub/settings")
     def aishub_settings_delete():
+        # Dormant fallback path: hidden from the MVP UI.
         try:
             config_path = Path(config.get("__config_path") or "config/adapter.local.json")
             if not config_path.is_absolute():
@@ -340,7 +460,9 @@ def create_app(config: dict[str, Any]) -> Flask:
                     "provider": ais["provider"],
                     "enabled": True,
                     "has_aishub_username": False,
-                    "has_api_key": bool(setting_secret(ais.get("api_key", ""))),
+                    "has_api_key": bool(ais.get("api_key_fingerprint")) or bool(ais_collector_handoff_status(config).get("has_api_key")),
+                    "collector_key_gate": get_ais_ingest_status(config).get("key_gate"),
+                    "collector_handoff": ais_collector_handoff_status(config),
                     "message": "AISHub username disconnected from local config.",
                 }
             )
@@ -361,7 +483,8 @@ def create_app(config: dict[str, Any]) -> Flask:
             ais = data.setdefault("live", {}).setdefault("ais", {})
             ais["enabled"] = True
             ais["provider"] = "aisstream"
-            ais["api_key"] = api_key
+            ais["api_key"] = ""
+            ais["api_key_fingerprint"] = ais_api_key_fingerprint(api_key)
             ais["stream_url"] = ais.get("stream_url") or "wss://stream.aisstream.io/v0/stream"
             ais["filter_message_types"] = ais.get("filter_message_types") or [
                 "PositionReport",
@@ -372,13 +495,16 @@ def create_app(config: dict[str, Any]) -> Flask:
             ais["stream_cache_limit"] = int(ais.get("stream_cache_limit", 10000))
             config_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             config.setdefault("live", {}).setdefault("ais", {}).update(ais)
+            handoff = write_ais_collector_handoff(config, api_key)
             return jsonify(
                 {
                     "status": "ok",
                     "provider": "aisstream",
                     "enabled": True,
                     "has_api_key": True,
-                    "message": "AISStream key saved to local config.",
+                    "collector_key_gate": get_ais_ingest_status(config).get("key_gate"),
+                    "collector_handoff": handoff,
+                    "message": "AISStream collector key handed to crawler config.",
                 }
             )
         except Exception as exc:
@@ -395,15 +521,19 @@ def create_app(config: dict[str, Any]) -> Flask:
             ais["enabled"] = True
             ais["provider"] = "aisstream"
             ais["api_key"] = ""
+            ais["api_key_fingerprint"] = ""
             config_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             config.setdefault("live", {}).setdefault("ais", {}).update(ais)
+            handoff = remove_ais_collector_handoff(config)
             return jsonify(
                 {
                     "status": "ok",
                     "provider": "aisstream",
                     "enabled": True,
                     "has_api_key": False,
-                    "message": "AISStream key disconnected from local config.",
+                    "collector_key_gate": get_ais_ingest_status(config).get("key_gate"),
+                    "collector_handoff": handoff,
+                    "message": "AISStream collector key disconnected from crawler config.",
                 }
             )
         except Exception as exc:
@@ -416,28 +546,47 @@ def create_app(config: dict[str, Any]) -> Flask:
         if not bboxes:
             bboxes = [None]
         stream_settings = ais_stream_settings(config)
-        if stream_settings["provider"] == "aisstream":
-            aisstream_live_ws(ws, bboxes=bboxes, settings=stream_settings)
+        if stream_settings["provider"] == "aisstream" and ais_ingest_should_start(config):
+            sql_ais_live_ws(ws, bboxes=bboxes, interval_ms=interval_ms, config=config)
             return
         if stream_settings["provider"] == "aishub_polling":
             aishub = aishub_settings(config)
             aishub_live_ws(ws, bboxes=bboxes, interval_ms=aishub["poll_interval_seconds"] * 1000, config=config)
             return
-        while True:
-            try:
-                packet = merged_ais_live_packet(config, bboxes=bboxes)
-                packet["transport"] = "websocket"
+        sql_ais_live_ws(ws, bboxes=bboxes, interval_ms=interval_ms, config=config)
+
+    return app
+
+
+def sql_ais_live_ws(
+    ws,
+    *,
+    bboxes: list[tuple[float, float, float, float] | None],
+    interval_ms: int,
+    config: dict[str, Any],
+) -> None:
+    while True:
+        try:
+            if not ais_sql_read_allowed(config):
+                packet = ais_sql_locked_packet(config)
+                packet["transport"] = "sql_ingest_websocket"
+                packet["ingest"] = get_ais_ingest_status(config)
                 packet["sent_at_ms"] = int(time.time() * 1000)
                 ws.send(json.dumps(packet, ensure_ascii=False))
                 time.sleep(interval_ms / 1000)
-            except Exception as exc:
-                try:
-                    ws.send(json.dumps({"status": "error", "error": str(exc), "rows": [], "row_count": 0}))
-                except Exception:
-                    pass
-                break
-
-    return app
+                continue
+            packet = merged_ais_live_packet(config, bboxes=bboxes)
+            packet["transport"] = "sql_ingest_websocket"
+            packet["ingest"] = get_ais_ingest_status(config)
+            packet["sent_at_ms"] = int(time.time() * 1000)
+            ws.send(json.dumps(packet, ensure_ascii=False))
+            time.sleep(interval_ms / 1000)
+        except Exception as exc:
+            try:
+                ws.send(json.dumps({"status": "error", "error": str(exc), "rows": [], "row_count": 0}))
+            except Exception:
+                pass
+            break
 
 
 def aishub_live_ws(
@@ -493,73 +642,9 @@ def aishub_live_ws(
             break
 
 
-def aisstream_live_ws(ws, *, bboxes: list[tuple[float, float, float, float] | None], settings: dict[str, Any]) -> None:
-    rows_by_key: dict[str, dict[str, Any]] = {}
-    dropped_messages = 0
-    accepted_messages = 0
-    started_at = time.perf_counter()
-    last_sent = 0.0
-    snapshot_interval = max(0.25, settings["snapshot_interval_ms"] / 1000)
-    cache_limit = max(1, settings["stream_cache_limit"])
-    try:
-        upstream = open_aisstream_socket(settings, bboxes)
-    except Exception as exc:
-        ws.send(json.dumps({"status": "error", "error": str(exc), "rows": [], "row_count": 0}))
-        return
-
-    try:
-        ws.send(
-            json.dumps(
-                {
-                    "status": "warming",
-                    "transport": "aisstream_websocket",
-                    "rows": [],
-                    "row_count": 0,
-                    "message": "AISStream subscription accepted; waiting for live frames.",
-                    "timing": {"query_ms": 0},
-                },
-                ensure_ascii=False,
-            )
-        )
-        while True:
-            try:
-                raw_message = upstream.recv()
-            except WebSocketTimeoutException:
-                raw_message = None
-
-            if raw_message:
-                row = normalize_aisstream_message(raw_message)
-                if row is None:
-                    dropped_messages += 1
-                else:
-                    accepted_messages += 1
-                    key = str(row.get("mmsi"))
-                    rows_by_key[key] = row
-                    while len(rows_by_key) > cache_limit:
-                        oldest_key = next(iter(rows_by_key))
-                        rows_by_key.pop(oldest_key, None)
-
-            now = time.perf_counter()
-            if now - last_sent >= snapshot_interval:
-                packet = streaming_snapshot_packet(
-                    rows_by_key,
-                    dropped_messages=dropped_messages,
-                    accepted_messages=accepted_messages,
-                    started_at=started_at,
-                )
-                packet["sent_at_ms"] = int(time.time() * 1000)
-                ws.send(json.dumps(packet, ensure_ascii=False))
-                last_sent = now
-    except Exception as exc:
-        try:
-            ws.send(json.dumps({"status": "error", "error": str(exc), "rows": [], "row_count": 0}))
-        except Exception:
-            pass
-    finally:
-        upstream.close()
-
-
 def run_server(config: dict[str, Any], *, host: str, port: int, debug: bool, kill_port_if_busy: bool) -> None:
+    force_exit_previous_server_instance(enabled=kill_port_if_busy)
     free_configured_port_if_needed(host, port, enabled=kill_port_if_busy)
+    write_server_pid_file(host=host, port=port)
     app = create_app(config)
     app.run(host=host, port=port, debug=debug, use_reloader=False)

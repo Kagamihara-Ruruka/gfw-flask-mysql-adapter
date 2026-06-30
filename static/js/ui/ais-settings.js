@@ -2,21 +2,33 @@ function updateAisSettingsPanel() {
   const status = $("ais-config-status");
   if (!status) return;
   const settings = state.aisSettings || {};
+  const ingest = state.aisIngestStatus || settings.ingest || {};
+  const keyGate = settings.collector_key_gate || ingest.key_gate || {};
   const connectedPanel = $("ais-connected-panel");
   const configureButton = $("ais-open-config");
   if (settings.provider === "aishub_polling" && settings.has_aishub_username) {
     status.textContent = "AIS provider: AISHub polling, 180s interval";
     status.classList.remove("is-warning");
   } else if (settings.has_api_key && settings.provider === "aisstream") {
-    status.textContent = "AIS provider: AISStream WebSocket";
-    status.classList.remove("is-warning");
+    if (keyGate.authorized_sql_read) {
+      status.textContent = "AIS crawler heartbeat matched. SQL read unlocked.";
+      status.classList.remove("is-warning");
+    } else {
+      const handoff = settings.collector_handoff || ingest.handoff || {};
+      status.textContent =
+        keyGate.message ||
+        (handoff.exists
+          ? "AIS key handed to crawler; waiting for crawler heartbeat."
+          : "AIS key saved, but crawler handoff is missing.");
+      status.classList.add("is-warning");
+    }
   } else {
-    status.textContent = "AIS provider: not connected";
+    status.textContent = "AIS collector key: not configured. AIS SQL read is locked.";
     status.classList.add("is-warning");
   }
   if (configureButton) {
     configureButton.hidden = Boolean(settings.has_api_key);
-    configureButton.textContent = "Setup AISStream";
+    configureButton.textContent = "交付到爬蟲";
   }
   if (connectedPanel) connectedPanel.hidden = !settings.has_api_key;
 }
@@ -86,7 +98,7 @@ function bindAisStreamControls() {
       event.stopPropagation();
       const apiKey = keyInput.value.trim();
       if (!apiKey) {
-        setStatus("Paste an AISStream API key first", true);
+        setStatus("Paste the AIS collector API key first", true);
         return;
       }
       saveButton.disabled = true;
@@ -94,7 +106,8 @@ function bindAisStreamControls() {
         await saveAisApiKey(apiKey);
         keyInput.value = "";
         setAisConfigModal(false);
-        setStatus("AISStream key connected; live mode is ready");
+        await loadAisSettings();
+        setStatus("AIS key handed to crawler; SQL read unlocks after crawler heartbeat matches");
         if (state.dataLayer === "ais") {
           await reloadAisRecords();
         }
@@ -115,7 +128,8 @@ function bindAisStreamControls() {
         if (state.dataLayer === "ais") {
           clearPrimaryLayerRecords();
         }
-        setStatus("AISStream key disconnected");
+        await loadAisSettings();
+        setStatus("AIS crawler handoff disconnected");
       } catch (err) {
         console.error(err);
         setStatus(err.message, true);
@@ -132,13 +146,13 @@ function bindAisStreamControls() {
       if (result) {
         result.hidden = false;
         result.classList.remove("is-ok", "is-warning", "is-error");
-        result.textContent = "Testing AISStream for 12 seconds...";
+        result.textContent = "Testing upstream AISStream key for 12 seconds...";
       }
       try {
         const packet = await runAisDiagnostics();
         renderAisDiagnostics(packet);
         if (packet.status === "ok" && Number(packet.accepted_messages || 0) > 0) {
-          setStatus("AISStream diagnostics received live frames");
+          setStatus("AISStream diagnostics received upstream frames");
         } else {
           setStatus("AISStream diagnostics completed with no usable live frames", true);
         }

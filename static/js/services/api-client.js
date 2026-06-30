@@ -26,7 +26,7 @@ async function loadSchema() {
         [Number(packet.bounds.min_lat), Number(packet.bounds.min_lon)],
         [Number(packet.bounds.max_lat), Number(packet.bounds.max_lon)]
       ),
-      { padding: [20, 20], maxZoom: 3 }
+      { padding: [20, 20], maxZoom: 3, animate: false }
     );
   }
 }
@@ -38,6 +38,11 @@ async function reloadAisRecords() {
 async function loadAisSettings() {
   const packet = await fetchJson("/api/live/ais/settings");
   state.aisSettings = packet;
+  try {
+    state.aisIngestStatus = await fetchJson("/api/live/ais/ingest/status");
+  } catch (err) {
+    state.aisIngestStatus = { status: "error", error: err.message };
+  }
   updateAisSettingsPanel();
   return packet;
 }
@@ -123,6 +128,7 @@ function closeAisSocket() {
 
 function applyAisPacket(packet, bboxes, timing) {
   if (packet.status === "warming") {
+    RenderState.loading("ais", "warming");
     TimingMetrics.setText("query-ms", "stream warmup");
     TimingMetrics.setText("serialize-ms", "-");
     TimingMetrics.setText("api-ms", "websocket");
@@ -130,6 +136,20 @@ function applyAisPacket(packet, bboxes, timing) {
     TimingMetrics.setCount("row-count", 0);
     TimingMetrics.updateSummary();
     setStatus(packet.message || "AIS stream warming");
+    return;
+  }
+  if (packet.status === "locked") {
+    const gate = packet.key_gate || packet.ingest?.key_gate || {};
+    removeAisLayer();
+    renderTable([], AIS_COLUMNS, { layer: "ais", wrappedBboxCount: bboxes.length });
+    TimingMetrics.setText("query-ms", "-");
+    TimingMetrics.setText("serialize-ms", "-");
+    TimingMetrics.setText("api-ms", "locked");
+    TimingMetrics.setMs("client-ms", timing.elapsed());
+    TimingMetrics.setCount("row-count", 0);
+    TimingMetrics.updateSummary();
+    RenderState.error("ais", "key gate locked");
+    setStatus(gate.message || packet.message || "AIS SQL read is locked by collector key gate.", true);
     return;
   }
   if (packet.status !== "ok") {
@@ -144,12 +164,22 @@ function applyAisPacket(packet, bboxes, timing) {
   TimingMetrics.setMs("client-ms", timing.elapsed());
   TimingMetrics.setCount("row-count", rows.length);
   TimingMetrics.updateSummary();
+  RenderState.ready("ais", `${rows.length.toLocaleString()} rows`);
   const stream = packet.stream
     ? `, ${Number(packet.stream.accepted_messages || 0).toLocaleString()} source rows`
     : "";
-  if (packet.transport === "aisstream_websocket" && packet.stream && Number(packet.stream.accepted_messages || 0) === 0) {
-    const age = Number(packet.stream.age_seconds || 0).toFixed(1);
-    setStatus(`AISStream connected, waiting for upstream frames (${age}s, 0 received)`, true);
+  if (packet.transport === "sql_ingest_websocket") {
+    const ingest = packet.ingest || {};
+    const ingestState = ingest.connected ? "ingesting" : ingest.running ? "warming" : "idle";
+    const accepted = Number(ingest.accepted_messages || 0).toLocaleString();
+    const written = Number(ingest.written_rows || 0).toLocaleString();
+    const skipped = Number(ingest.skipped_stale_rows || 0).toLocaleString();
+    const store = ingest.store || {};
+    const storeCount = Number(store.vessel_count || rows.length || 0).toLocaleString();
+    const storeSuffix = store.status === "ok" ? `, SQL store ${storeCount}` : "";
+    setStatus(
+      `AIS SQL ingest ${ingestState}, ${rows.length.toLocaleString()} visible vessels${storeSuffix}, ${accepted} accepted, ${written} upserted, ${skipped} stale skipped`
+    );
     return;
   }
   if (packet.transport === "aishub_polling") {
@@ -157,7 +187,7 @@ function applyAisPacket(packet, bboxes, timing) {
     setStatus(`AISHub polling, ${rows.length.toLocaleString()} vessels${stream}, ${interval}s interval`);
     return;
   }
-  setStatus(`AIS websocket, ${rows.length.toLocaleString()} vessels${stream}, ${bboxes.length} wrapped bbox`);
+  setStatus(`AIS local SQL stream, ${rows.length.toLocaleString()} vessels${stream}, ${bboxes.length} wrapped bbox`);
 }
 
 function startAisWebSocket() {
@@ -165,7 +195,8 @@ function startAisWebSocket() {
   const timing = TimingMetrics.stopwatch();
   const bboxes = currentWrappedBboxes();
   closeAisSocket();
-  setStatus("opening AIS websocket");
+  RenderState.loading("ais", "connecting");
+  setStatus("opening local AIS SQL stream");
 
   return new Promise((resolve) => {
     let resolved = false;
@@ -187,7 +218,7 @@ function startAisWebSocket() {
         closeAisSocket();
         return;
       }
-      setStatus("AIS websocket connected");
+      setStatus("AIS SQL stream connected");
     };
     socket.onmessage = (event) => {
       if (seq !== state.aisLiveSeq || state.dataLayer !== "ais") return;
@@ -200,6 +231,7 @@ function startAisWebSocket() {
         }
       } catch (err) {
         console.error(err);
+        RenderState.error("ais", "packet failed");
         setStatus(err.message, true);
         if (!resolved) {
           resolved = true;
@@ -208,7 +240,8 @@ function startAisWebSocket() {
       }
     };
     socket.onerror = () => {
-      setStatus("AIS websocket failed, falling back to REST", true);
+      RenderState.loading("ais", "fallback");
+      setStatus("AIS local stream failed, falling back to REST", true);
       fallbackToRest();
     };
     socket.onclose = () => {
@@ -222,14 +255,30 @@ function startAisWebSocket() {
 async function reloadAisRecordsRest() {
   const seq = ++state.aisLiveSeq;
   const timing = TimingMetrics.stopwatch();
+  RenderState.loading("ais", "REST");
   setStatus("loading AIS REST fallback");
   const bboxes = currentWrappedBboxes();
   const packets = await Promise.all(bboxes.map((bbox) => {
     const params = new URLSearchParams();
     params.set("bbox", bbox);
-    return fetchJson(`/api/live/ais?${params}`);
+    return fetchJson(`/api/live/ais?${params}`).catch((err) => ({
+      status: "error",
+      error: err.message,
+      rows: [],
+      row_count: 0,
+      timing: { query_ms: 0 },
+    }));
   }));
   if (seq !== state.aisLiveSeq || state.dataLayer !== "ais") return;
+  const locked = packets.find((packet) => packet.status === "locked");
+  if (locked) {
+    applyAisPacket(locked, bboxes, timing);
+    return;
+  }
+  const failed = packets.find((packet) => packet.status !== "ok");
+  if (failed) {
+    throw new Error(failed.error || failed.message || "AIS REST fallback failed");
+  }
   const seen = new Set();
   const rows = [];
   let queryMs = 0;
@@ -250,6 +299,7 @@ async function reloadAisRecordsRest() {
   TimingMetrics.setMs("client-ms", timing.elapsed());
   TimingMetrics.setCount("row-count", rows.length);
   TimingMetrics.updateSummary();
+  RenderState.ready("ais", `${rows.length.toLocaleString()} rows`);
   setStatus(`AIS REST ok, ${rows.length.toLocaleString()} vessels, ${bboxes.length} wrapped bbox`);
 }
 
@@ -257,31 +307,60 @@ async function reloadGfwRecords() {
   // Drop stale responses after pan/zoom/date changes.
   const seq = ++state.fetchSeq;
   const timing = TimingMetrics.stopwatch();
+  RenderState.loading("gfw", "querying");
   setStatus("loading GFW");
-  const params = new URLSearchParams();
   const requestedLimit = Number(state.queryPolicy.max_limit || state.queryPolicy.default_limit || 100000);
-  params.set("date", $("date").value);
-  params.set("limit", String(requestedLimit));
-  params.set("bbox", currentBbox());
-  const packet = await fetchJson(`/api/datasets/${state.datasetId}/records?${params}`);
-  if (seq !== state.fetchSeq || state.dataLayer !== "gfw") return;
-  renderGfwMap(packet.rows);
+  const requestContext = {
+    datasetId: state.datasetId,
+    date: $("date").value,
+    bbox: currentBbox(),
+    limit: requestedLimit,
+    center: map.getCenter(),
+    zoom: map.getZoom(),
+  };
+  const { packet, cacheHit } = await GfwRecordCache.fetchPacket(requestContext);
+  if (state.dataLayer !== "gfw") return;
+  if (seq !== state.fetchSeq) {
+    RenderState.loading("gfw", "refreshing");
+    schedulePrimaryReload(80);
+    return;
+  }
+  const renderResult = renderGfwMap(packet.rows);
   renderTable(packet.rows, state.datasets[state.datasetId].display_columns, { layer: "gfw", date: $("date").value });
-  TimingMetrics.setMs("query-ms", packet.timing.query_ms);
-  TimingMetrics.setMs("serialize-ms", packet.timing.serialize_ms);
-  TimingMetrics.setMs("api-ms", packet.timing.api_total_ms);
+  if (cacheHit) {
+    TimingMetrics.setText("query-ms", "cache hit");
+    TimingMetrics.setText("serialize-ms", "cache hit");
+    TimingMetrics.setMs("api-ms", timing.elapsed());
+  } else {
+    TimingMetrics.setMs("query-ms", packet.timing.query_ms);
+    TimingMetrics.setMs("serialize-ms", packet.timing.serialize_ms);
+    TimingMetrics.setMs("api-ms", packet.timing.api_total_ms);
+  }
   TimingMetrics.setMs("client-ms", timing.elapsed());
   TimingMetrics.setCount("row-count", packet.row_count);
   TimingMetrics.updateSummary();
-  setStatus(`GFW ready, ${$("date").value}, viewport max`);
+  const sourceDetail = cacheHit ? "cache hit" : "SQL";
+  RenderState.ready(
+    "gfw",
+    `${Number(packet.row_count || 0).toLocaleString()} rows, z${currentLodZoom()}, ${sourceDetail}, ${renderResult.detail}`
+  );
+  setStatus(`GFW ready, ${$("date").value}, viewport max, z${currentLodZoom()}, ${sourceDetail}, ${renderResult.detail}`);
+  GfwRecordCache.schedulePrewarm(requestContext);
 }
 
 function clearPrimaryLayerRecords() {
+  clearTimeout(state.primaryReloadTimer);
+  state.primaryReloadTimer = null;
+  if (typeof GfwRecordCache !== "undefined") {
+    GfwRecordCache.cancelPrewarm();
+  }
   state.fetchSeq += 1;
   state.aisLiveSeq += 1;
   closeAisSocket();
   removeGfwLayer();
   removeAisLayer();
+  RenderState.off("gfw", "off");
+  RenderState.off("ais", "off");
   renderTable([], [], { layer: "none" });
   TimingMetrics.setText("query-ms", "-");
   TimingMetrics.setText("serialize-ms", "-");

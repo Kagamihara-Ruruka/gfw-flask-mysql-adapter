@@ -8,8 +8,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-import psycopg
-
 ROOT = Path(__file__).resolve().parent
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -38,6 +36,7 @@ def overlay_settings(config: dict[str, Any]) -> dict[str, Any]:
         "gpkg_table": eez.get("gpkg_table", "eez_v12"),
         "gpkg_geometry_column": eez.get("gpkg_geometry_column", "geom"),
         "postgis": eez.get("postgis", {}),
+        "tile_cache_max": eez.get("tile_cache_max"),
         "force_full": bool(eez.get("force_full", False)),
         "enabled": bool(eez.get("enabled", True)),
     }
@@ -513,71 +512,3 @@ def eez_overlay_packet(
             "filter_total_ms": elapsed_ms(started),
         },
     }
-
-
-def eez_tile_packet(
-    config: dict[str, Any],
-    *,
-    z: int,
-    x: int,
-    y: int,
-) -> tuple[bytes, dict[str, Any]]:
-    settings = overlay_settings(config)
-    if not settings["enabled"]:
-        raise ValueError("EEZ overlay is disabled")
-    if settings.get("provider") != "postgis":
-        raise ValueError("EEZ vector tiles require overlays.eez.provider=postgis")
-    pg = settings.get("postgis") or {}
-    if z <= 3 and pg.get("tile_low_table"):
-        configured_table = pg["tile_low_table"]
-        lod = "low"
-    elif z <= 5 and pg.get("tile_mid_table"):
-        configured_table = pg["tile_mid_table"]
-        lod = "mid"
-    else:
-        configured_table = pg.get("tile_table") or pg.get("table", "eez_v12")
-        lod = "full" if z > 5 else "full_fallback"
-    table = validate_identifier(configured_table, "postgis table")
-    geom_col = validate_identifier(pg.get("geometry_column", "geom"), "postgis geometry column")
-    layer = validate_identifier(pg.get("mvt_layer", "eez"), "mvt layer")
-    started = time.perf_counter()
-    sql = f"""
-        WITH bounds AS (
-            SELECT ST_TileEnvelope(%s, %s, %s) AS geom
-        ),
-        mvtgeom AS (
-            SELECT
-                fid,
-                iso3,
-                name,
-                sovereign,
-                area_km2,
-                ST_AsMVTGeom(
-                    ST_Transform(source.{geom_col}, 3857),
-                    bounds.geom,
-                    extent => 8192,
-                    buffer => 128,
-                    clip_geom => true
-                ) AS geom
-            FROM {table} AS source, bounds
-            WHERE source.{geom_col} && ST_Transform(bounds.geom, 4326)
-        )
-        SELECT ST_AsMVT(mvtgeom.*, %s, 8192, 'geom') AS tile
-        FROM mvtgeom
-    """
-    with psycopg.connect(postgis_dsn(pg)) as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql, (z, x, y, layer))
-            tile = cur.fetchone()[0] or b""
-    meta = {
-        "source": "postgis",
-        "layer": layer,
-        "lod": lod,
-        "table": table,
-        "z": z,
-        "x": x,
-        "y": y,
-        "bytes": len(tile),
-        "timing": {"tile_ms": elapsed_ms(started)},
-    }
-    return bytes(tile), meta

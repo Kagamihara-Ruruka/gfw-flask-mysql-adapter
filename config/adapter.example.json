@@ -23,6 +23,12 @@
     "debug": false,
     "kill_port_if_busy": true
   },
+  "rendering": {
+    "hardware_acceleration": "auto",
+    "allow_webgl": true,
+    "allow_webgpu": false,
+    "min_webgl_rows": 1
+  },
   "test_data_bootstrap": {
     "enabled": true,
     "auto_on_serve": true,
@@ -36,6 +42,7 @@
       "gpkg_table": "eez_v12",
       "gpkg_geometry_column": "geom",
       "force_full": false,
+      "tile_cache_max": 2048,
       "postgis": {
         "host": "127.0.0.1",
         "port": 5433,
@@ -55,6 +62,7 @@
       "enabled": false,
       "provider": "mysql",
       "api_key": "env:AISSTREAM_API_KEY",
+      "api_key_fingerprint": "",
       "stream_url": "wss://stream.aisstream.io/v0/stream",
       "aishub_username": "env:AISHUB_USERNAME",
       "aishub_url": "https://data.aishub.net/ws.php",
@@ -65,6 +73,14 @@
       ],
       "snapshot_interval_ms": 1000,
       "stream_cache_limit": 10000,
+      "ingest_enabled": true,
+      "ingest_reconnect_seconds": 30,
+      "ingest_status_report_seconds": 30,
+      "ingest_flush_seconds": 1.0,
+      "ingest_batch_size": 250,
+      "ingest_auto_create_table": true,
+      "ingest_meta_table": "ais_ingest_meta",
+      "collector_config_path": "config/ais_collector.local.json",
       "connection": {
         "host": "127.0.0.1",
         "port": 3306,

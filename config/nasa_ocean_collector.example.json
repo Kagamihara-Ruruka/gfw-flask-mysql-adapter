@@ -1,0 +1,75 @@
+{
+  "source": {
+    "kind": "nasa_obdaac_file_search",
+    "file_search_url": "https://oceandata.sci.gsfc.nasa.gov/api/file_search",
+    "download_base_url": "https://oceandata.sci.gsfc.nasa.gov/getfile",
+    "sensor": "aqua",
+    "dtype": "L3m",
+    "start_date": "2024-01-01",
+    "end_date": "2024-12-31",
+    "resolution": "4km",
+    "period": "DAY",
+    "exclude_nrt": true,
+    "list_strategy": "day_all",
+    "download_method": "curl",
+    "timeout_seconds": 60,
+    "earthdata_username_env": "EARTHDATA_USERNAME",
+    "earthdata_password_env": "EARTHDATA_PASSWORD",
+    "earthdata_token_env": "EARTHDATA_TOKEN",
+    "products": [
+      {
+        "dataset_id": "nasa_chl_chlor_a_daily_4km",
+        "product": "CHL.chlor_a",
+        "variable": "chlor_a",
+        "label": "Chlorophyll-a concentration",
+        "label_zh": "葉綠素 a 濃度 / 浮游植物濃度",
+        "search": "*{date}*L3m*DAY*CHL*chlor_a*4km*.nc",
+        "canonical_contains": [".DAY.CHL.chlor_a.4km.nc"]
+      },
+      {
+        "dataset_id": "nasa_flh_nflh_daily_4km",
+        "product": "FLH.nflh",
+        "variable": "nflh",
+        "label": "Normalized fluorescence line height",
+        "label_zh": "歸一化螢光線高度 / 活體螢光強度",
+        "search": "*{date}*L3m*DAY*FLH*nflh*4km*.nc",
+        "canonical_contains": [".DAY.FLH.nflh.4km.nc"]
+      },
+      {
+        "dataset_id": "nasa_kd_kd_490_daily_4km",
+        "product": "KD.Kd_490",
+        "variable": "Kd_490",
+        "label": "Diffuse attenuation coefficient at 490 nm",
+        "label_zh": "海水透明度 / 490奈米光衰減係數",
+        "search": "*{date}*L3m*DAY*KD*490*4km*.nc",
+        "canonical_contains": [".DAY.KD.Kd_490.4km.nc"]
+      },
+      {
+        "dataset_id": "nasa_sst_sst_daily_4km",
+        "product": "SST.sst",
+        "variable": "sst",
+        "label": "Sea surface temperature",
+        "label_zh": "海表溫度 / 海面溫度",
+        "search": "*{date}*L3m*DAY*SST.sst*4km*.nc",
+        "canonical_contains": [".DAY.SST.sst.4km.nc"]
+      }
+    ]
+  },
+  "store": {
+    "root": "D:/RRKAL_tools/nasa_ocean_store",
+    "raw_dir": "raw",
+    "zarr_dir": "zarr",
+    "manifest_dir": "manifests",
+    "auth_dir": "auth"
+  },
+  "sink": {
+    "kind": "duckdb_array_read_model",
+    "database_path": "D:/RRKAL_tools/nasa_ocean_store/db/nasa_ocean.duckdb",
+    "metadata_database": "BDDE38No1",
+    "assets_table": "nasa_ocean_assets",
+    "schema_table": "nasa_ocean_schema_snapshots",
+    "tile_stats_table": "nasa_ocean_tile_stats",
+    "default_tile_degrees": 4.0,
+    "boundary": "NASA collector owns files/Zarr/database read models. The consumer app only reads SQL/database service responses."
+  }
+}

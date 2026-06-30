@@ -50,16 +50,33 @@ function createEezVectorGrid(url, options) {
   return new L.VectorGrid.Protobuf(url, options);
 }
 
-function ensureEezVectorTileLayer() {
-  if (state.eezLayer && state.eezMode === "mvt") {
-    return state.eezLayer;
+function otherEezPaneName(paneName) {
+  return paneName === "eezPaneA" ? "eezPaneB" : "eezPaneA";
+}
+
+function setEezPaneVisibility(activePaneName, visible) {
+  for (const paneName of ["eezPaneA", "eezPaneB"]) {
+    const pane = map.getPane(paneName);
+    if (!pane) continue;
+    pane.style.opacity = visible && paneName === activePaneName ? String(state.layerAlpha.eez) : "0";
   }
+}
+
+function clearEezLayerForReload() {
   if (state.eezLayer && map.hasLayer(state.eezLayer)) {
     map.removeLayer(state.eezLayer);
   }
+  state.eezLayer = null;
+  state.eezTileLayers = [];
+  state.eezMode = null;
+  clearRenderedLodZoom("eez");
+  setEezPaneVisibility(state.eezActivePane, false);
+}
+
+function createEezVectorTileLayer(paneName) {
   const rendererFactory = L.canvas?.tile || L.svg.tile;
-  const fillLayer = createEezVectorGrid("/api/overlays/eez/tiles/{z}/{x}/{y}.pbf?v=eez-fill-v4", {
-    pane: "eezPane",
+  const fillLayer = createEezVectorGrid("/api/overlays/eez/tiles/{z}/{x}/{y}.pbf?v=eez-fill-lod-v6", {
+    pane: paneName,
     rendererFactory,
     maxNativeZoom: 14,
     interactive: false,
@@ -67,8 +84,8 @@ function ensureEezVectorTileLayer() {
       eez: eezVectorTileStyle,
     },
   });
-  const boundaryLayer = createEezVectorGrid("/api/overlays/eez/boundary/tiles/{z}/{x}/{y}.pbf?v=eez-boundary-v5", {
-    pane: "eezPane",
+  const boundaryLayer = createEezVectorGrid("/api/overlays/eez/boundary/tiles/{z}/{x}/{y}.pbf?v=eez-boundary-lod-v6", {
+    pane: paneName,
     rendererFactory,
     maxNativeZoom: 14,
     interactive: false,
@@ -76,31 +93,58 @@ function ensureEezVectorTileLayer() {
       eez_boundary: eezBoundaryTileStyle,
     },
   });
-  state.eezMode = "mvt";
-  state.eezTileLayers = [fillLayer, boundaryLayer];
-  state.eezLayer = L.layerGroup([fillLayer, boundaryLayer]);
-  return state.eezLayer;
+  return {
+    layer: L.layerGroup([fillLayer, boundaryLayer]),
+    tileLayers: [fillLayer, boundaryLayer],
+  };
 }
 
 async function reloadEezLayer() {
   const timing = TimingMetrics.stopwatch();
   TimingMetrics.setText("eez-ms", "loading");
   const seq = ++state.eezSeq;
+  const transaction = RenderState.begin("eez", ["eez"]);
+  clearEezLayerForReload();
   if (!$("eez-toggle").checked) {
-    syncEezLayer();
     TimingMetrics.setText("eez-ms", "off");
+    RenderState.off("eez", "off");
     return;
   }
   if (canUseEezVectorTiles()) {
-    const layer = ensureEezVectorTileLayer();
-    if (!map.hasLayer(layer)) {
-      layer.addTo(map);
-    }
+    const paneName = state.eezStagePane || otherEezPaneName(state.eezActivePane);
+    setEezPaneVisibility(paneName, false);
+    const staged = createEezVectorTileLayer(paneName);
+    staged.layer.addTo(map);
     applyLayerOrder();
-    await TimingMetrics.waitForLayers(state.eezTileLayers, 8000);
-    if (seq !== state.eezSeq) return;
+    try {
+      await TimingMetrics.waitForLayers(staged.tileLayers, 8000);
+    } catch (err) {
+      if (map.hasLayer(staged.layer)) {
+        map.removeLayer(staged.layer);
+      }
+      if (seq === state.eezSeq) {
+        TimingMetrics.setText("eez-ms", "failed");
+        RenderState.fail(transaction, "tile load failed");
+        setStatus(err.message || "EEZ tile load failed", true);
+      }
+      return;
+    }
+    if (seq !== state.eezSeq || !RenderState.isCurrent(transaction)) {
+      if (map.hasLayer(staged.layer)) {
+        map.removeLayer(staged.layer);
+      }
+      return;
+    }
+    state.eezActivePane = paneName;
+    state.eezStagePane = otherEezPaneName(paneName);
+    state.eezMode = "mvt";
+    state.eezLayer = staged.layer;
+    state.eezTileLayers = staged.tileLayers;
+    setRenderedLodZoom("eez");
+    setEezPaneVisibility(state.eezActivePane, true);
     TimingMetrics.setMs("eez-ms", timing.elapsed());
     TimingMetrics.updateSummary();
+    RenderState.finish(transaction, { eez: "tiles ready" });
     setStatus("EEZ MVT tiles");
     return;
   }
@@ -109,34 +153,43 @@ async function reloadEezLayer() {
   params.set("bbox", currentBbox());
   params.set("zoom", String(map.getZoom()));
   const geojson = await fetchJson(`/api/overlays/eez?${params}`);
-  if (seq !== state.eezSeq) return;
-  if (state.eezLayer) {
-    map.removeLayer(state.eezLayer);
-  }
+  if (seq !== state.eezSeq || !RenderState.isCurrent(transaction)) return;
+  const paneName = state.eezStagePane || otherEezPaneName(state.eezActivePane);
   state.eezMode = "geojson";
   state.eezLayer = L.geoJSON(geojson, {
-    pane: "eezPane",
+    pane: paneName,
     style: eezStyle,
     onEachFeature(feature, layer) {
       layer.bindPopup(eezPopup(feature));
     },
   });
   state.eezLayer.addTo(map);
+  setRenderedLodZoom("eez");
+  state.eezActivePane = paneName;
+  state.eezStagePane = otherEezPaneName(paneName);
+  setEezPaneVisibility(state.eezActivePane, true);
   applyLayerOrder();
   TimingMetrics.setMs("eez-ms", timing.elapsed());
   TimingMetrics.updateSummary();
+  RenderState.finish(transaction, { eez: "geojson ready" });
   setStatus(`EEZ GeoJSON fallback ${geojson.feature_count}/${geojson.total_feature_count}, ${geojson.detail}`);
 }
 
 function syncEezLayer() {
-  if (!state.eezLayer) return;
   if ($("eez-toggle").checked) {
+    if (!state.eezLayer) {
+      RenderState.off("eez", "not loaded");
+      return;
+    }
     if (!map.hasLayer(state.eezLayer)) {
       state.eezLayer.addTo(map);
     }
+    setEezPaneVisibility(state.eezActivePane, true);
+    RenderState.ready("eez", "ready");
     applyLayerOrder();
-  } else if (map.hasLayer(state.eezLayer)) {
-    map.removeLayer(state.eezLayer);
+  } else {
+    clearEezLayerForReload();
+    RenderState.off("eez", "off");
   }
 }
 
