@@ -23,18 +23,18 @@ function renderTableWindow() {
 
 function tableContextLabel(context) {
   if (context?.layer === "none") {
-    return "No primary data layer";
+    return "未選擇主要資料圖層";
   }
   if (context?.layer === "ais") {
     const bboxCount = context.wrappedBboxCount || 1;
-    return `AIS live viewport, ${bboxCount} wrapped bbox`;
+    return `AIS 即時視窗，${bboxCount} 個循環邊界框`;
   }
   if (context?.layer === "gfw" && context.date) {
     return context.loading
-      ? `GFW date ${context.date}, loading`
-      : `GFW date ${context.date}, viewport max`;
+      ? `GFW 日期 ${context.date}，載入中`
+      : `GFW 日期 ${context.date}，視窗最大量`;
   }
-  return "viewport records";
+  return "視窗資料";
 }
 
 function renderTable(rows, columns = state.datasets[state.datasetId].display_columns, context = {}) {
@@ -43,6 +43,6 @@ function renderTable(rows, columns = state.datasets[state.datasetId].display_col
   $("records").querySelector("thead").innerHTML = state.columns.length
     ? `<tr>${state.columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}</tr>`
     : "";
-  $("table-note").textContent = `${tableContextLabel(context)} - ${rows.length.toLocaleString()} loaded`;
+  $("table-note").textContent = `${tableContextLabel(context)} - 已載入 ${rows.length.toLocaleString()} 筆`;
   renderTableWindow();
 }

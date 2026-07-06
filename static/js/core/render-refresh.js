@@ -12,12 +12,12 @@ function invalidatePrimaryRenderForViewport({ lodChanging = false } = {}) {
     if (lodChanging) {
       clearGfwLayerForLodReload();
     } else {
-      RenderState.loading("gfw", "viewport changed");
+      RenderState.loading("gfw", "視窗變更");
     }
     return;
   }
   if (state.dataLayer === "ais") {
-    RenderState.loading("ais", lodChanging ? "LOD changed" : "viewport changed");
+    RenderState.loading("ais", lodChanging ? "LOD 變更" : "視窗變更");
   }
 }
 
@@ -25,8 +25,8 @@ function invalidateEezRenderForZoom() {
   if (!$("eez-toggle").checked) return;
   state.eezSeq += 1;
   clearEezLayerForReload();
-  RenderState.loading("eez", "zoom changed");
-  TimingMetrics.setText("eez-ms", "loading");
+  RenderState.loading("eez", "縮放變更");
+  TimingMetrics.setText("eez-ms", "載入中");
 }
 
 function bindMapRefresh() {

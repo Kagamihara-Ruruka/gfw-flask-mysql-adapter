@@ -1,16 +1,45 @@
 const GFW_CELL_HALF_DEGREES = 0.0416667;
 const GFW_CELL_DEGREES = GFW_CELL_HALF_DEGREES * 2;
+const GFW_MIN_RENDER_CELL_KM = 9;
+const KM_PER_LATITUDE_DEGREE = 111.32;
 
 function gfwCellCenter(value) {
   return Math.round(value / GFW_CELL_DEGREES) * GFW_CELL_DEGREES;
 }
 
+function gfwRenderCellKm() {
+  const value = Number(state.gfwPaint?.renderCellKm ?? GFW_MIN_RENDER_CELL_KM);
+  if (!Number.isFinite(value)) return GFW_MIN_RENDER_CELL_KM;
+  return Math.max(GFW_MIN_RENDER_CELL_KM, value);
+}
+
+function gfwRenderCellDegrees() {
+  return Math.max(GFW_CELL_DEGREES, gfwRenderCellKm() / KM_PER_LATITUDE_DEGREE);
+}
+
+function gfwRenderCellHalfDegrees() {
+  return gfwRenderCellDegrees() / 2;
+}
+
+function gfwRenderCellCenter(value) {
+  const degrees = gfwRenderCellDegrees();
+  return Math.round(value / degrees) * degrees;
+}
+
 function bboxStringFromBounds(bounds) {
-  const west = Math.max(-180, bounds.getWest());
-  const south = Math.max(-90, bounds.getSouth());
-  const east = Math.min(180, bounds.getEast());
-  const north = Math.min(90, bounds.getNorth());
-  return [west, south, east, north].map((value) => value.toFixed(6)).join(",");
+  const segments = wrappedBboxesFromValues(
+    bounds.getWest(),
+    bounds.getSouth(),
+    bounds.getEast(),
+    bounds.getNorth()
+  );
+  if (!segments.length) {
+    return "-180.000000,-90.000000,180.000000,90.000000";
+  }
+  const centerLon = normalizeLongitude((bounds.getWest() + bounds.getEast()) / 2);
+  const selected = segments.find(([west, , east]) => centerLon >= west && centerLon <= east)
+    || [...segments].sort((left, right) => (right[2] - right[0]) - (left[2] - left[0]))[0];
+  return selected.map((value) => value.toFixed(6)).join(",");
 }
 
 function currentBbox() {
@@ -55,14 +84,12 @@ function normalizeLongitude(lon) {
   return ((((lon + 180) % 360) + 360) % 360) - 180;
 }
 
-function currentWrappedBboxes() {
-  const bounds = map.getBounds();
-  const south = Math.max(-90, bounds.getSouth());
-  const north = Math.min(90, bounds.getNorth());
-  const rawWest = bounds.getWest();
-  const rawEast = bounds.getEast();
+function wrappedBboxesFromValues(rawWest, rawSouth, rawEast, rawNorth) {
+  const south = Math.max(-90, rawSouth);
+  const north = Math.min(90, rawNorth);
+  if (south >= north) return [];
   if (rawEast - rawWest >= 360) {
-    return [[-180, south, 180, north].map((value) => value.toFixed(6)).join(",")];
+    return [[-180, south, 180, north]];
   }
   const segments = [];
   const startWorld = Math.floor((rawWest + 180) / 360);
@@ -83,6 +110,17 @@ function currentWrappedBboxes() {
       normalized.push([west, boxSouth, 180, boxNorth], [-180, boxSouth, east, boxNorth]);
     }
   }
+  return normalized.filter(([west, boxSouth, east, boxNorth]) => west < east && boxSouth < boxNorth);
+}
+
+function currentWrappedBboxes() {
+  const bounds = map.getBounds();
+  const normalized = wrappedBboxesFromValues(
+    bounds.getWest(),
+    bounds.getSouth(),
+    bounds.getEast(),
+    bounds.getNorth()
+  );
   return normalized.map((bbox) => bbox.map((value) => value.toFixed(6)).join(","));
 }
 

@@ -3,86 +3,91 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>GFW MySQL Adapter MVP</title>
+  <title>大可愛海事資料儀表板</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/static/vendor/leaflet-1.9.4.css?v=1.9.4">
-  <link rel="stylesheet" href="/static/styles.css?v=gfw-gradient-v83">
+  <link rel="stylesheet" href="/static/styles.css?v=zh-tw-v94">
 </head>
 <body>
   <header class="app-header">
-    <div>
-      <h1>GFW MySQL Adapter MVP</h1>
-      <p>MySQL + PyMySQL + Flask adapter, with map, table, and request-to-render timing.</p>
+    <div class="app-title-block">
+      <nav class="app-tabs" aria-label="主要頁面">
+        <button class="app-tab is-active" type="button" data-page-tab="dashboard" aria-selected="true">儀表板</button>
+        <button class="app-tab" type="button" data-page-tab="settings" aria-selected="false">設定</button>
+      </nav>
+      <h1>大可愛海事資料儀表板</h1>
+      <p>海事資料圖層、時間播放、效能測速與資料庫轉接測試介面。</p>
     </div>
-    <div class="status" id="status">initializing</div>
+    <div class="status" id="status">初始化中</div>
   </header>
 
-  <main class="layout">
-    <section class="controls" aria-label="query controls">
-      <div class="single-day-controls" aria-label="single day mode">
-        <span class="control-group-title">Single day</span>
+  <main class="layout page-panel is-active" data-page-panel="dashboard">
+    <section class="controls" aria-label="查詢控制">
+      <div class="single-day-controls" aria-label="單日模式">
+        <span class="control-group-title">單日模式</span>
         <details id="data-layer-menu" class="data-layer-menu">
           <summary>
-            <span>Dataset</span>
+            <span>資料集</span>
                 <strong id="data-layer-summary">EEZ</strong>
             <span class="dropdown-caret" aria-hidden="true"></span>
           </summary>
-          <div class="data-layer-options" role="group" aria-label="data layer selection">
+          <div class="data-layer-options" role="group" aria-label="資料圖層選擇">
             <div class="layer-item" data-layer-id="gfw">
               <div class="layer-option">
-                <span class="drag-handle" title="Drag to reorder">::</span>
+                <span class="drag-handle" title="拖曳調整圖層順序">::</span>
                 <label class="checkbox-row">
                   <input id="layer-gfw" name="data-layer" type="checkbox" value="gfw">
-                  <span>GFW fishery grid</span>
+                  <span>GFW 漁業網格</span>
                 </label>
-                <button class="icon-button layer-settings-toggle layer-gear-button" type="button" data-settings-layer="gfw" aria-label="GFW display settings">⚙</button>
+                <button class="icon-button layer-settings-toggle layer-gear-button" type="button" data-settings-layer="gfw" aria-label="GFW 顯示設定">⚙</button>
               </div>
             </div>
             <div class="layer-item" data-layer-id="ais">
               <div class="layer-option">
-                <span class="drag-handle" title="Drag to reorder">::</span>
+                <span class="drag-handle" title="拖曳調整圖層順序">::</span>
                 <label class="checkbox-row">
                   <input id="layer-ais" name="data-layer" type="checkbox" value="ais">
-                  <span>AIS vessel positions</span>
+                  <span>AIS 船舶位置</span>
                 </label>
-                <button class="icon-button layer-settings-toggle layer-gear-button" type="button" data-settings-layer="ais" aria-label="AIS display settings">⚙</button>
+                <button class="icon-button layer-settings-toggle layer-gear-button" type="button" data-settings-layer="ais" aria-label="AIS 顯示設定">⚙</button>
               </div>
             </div>
             <div class="layer-item" data-layer-id="eez">
               <div class="layer-option">
-                <span class="drag-handle" title="Drag to reorder">::</span>
+                <span class="drag-handle" title="拖曳調整圖層順序">::</span>
                 <label class="checkbox-row">
                   <input id="eez-toggle" type="checkbox" checked>
-                  <span>EEZ boundary overlay</span>
+                  <span>EEZ 經濟海域邊界</span>
                 </label>
-                <button class="icon-button layer-settings-toggle layer-gear-button" type="button" data-settings-layer="eez" aria-label="EEZ display settings">⚙</button>
+                <button class="icon-button layer-settings-toggle layer-gear-button" type="button" data-settings-layer="eez" aria-label="EEZ 顯示設定">⚙</button>
               </div>
             </div>
           </div>
         </details>
         <label id="single-date-control" class="date-control">
-          <span id="single-date-label">GFW Date</span>
+          <span id="single-date-label">資料日期</span>
           <input id="date" type="date">
         </label>
         <button id="latest-date" class="latest-date-button" type="button" title="跳到資料集最後一日">最後一日</button>
       </div>
-      <div class="time-sequence" aria-label="time sequence mode">
-        <span class="control-group-title">Time sequence</span>
+      <div class="time-sequence" aria-label="時間序列模式">
+        <span class="control-group-title">時間序列</span>
         <label>
-          Start
+          開始
           <input id="start-date" type="date">
         </label>
         <label>
-          End
+          結束
           <input id="end-date" type="date">
         </label>
-        <div class="time-player" aria-label="time playback controls">
-          <button id="replay" class="play-button" type="button" title="Replay from start date" aria-label="Replay from start date"><span class="control-icon-fallback" aria-hidden="true">R</span><i class="control-icon" data-lucide="rotate-ccw" aria-hidden="true"></i></button>
+        <div class="time-player" aria-label="時間播放控制">
+          <button id="replay" class="play-button" type="button" title="回到開始日期" aria-label="回到開始日期"><span class="control-icon-fallback" aria-hidden="true">↺</span><i class="control-icon" data-lucide="rotate-ccw" aria-hidden="true"></i></button>
           <button id="prev-day" class="small-button" type="button" title="上一日" aria-label="上一日"><span class="control-icon-fallback" aria-hidden="true">‹</span><i class="control-icon" data-lucide="skip-back" aria-hidden="true"></i></button>
-          <button id="play-toggle" class="play-button" type="button" title="Play" aria-label="Play"><span class="control-icon-fallback" aria-hidden="true">&gt;</span><i class="control-icon" data-lucide="play" aria-hidden="true"></i></button>
+          <button id="play-toggle" class="play-button" type="button" title="播放" aria-label="播放"><span class="control-icon-fallback" aria-hidden="true">▶</span><i class="control-icon" data-lucide="play" aria-hidden="true"></i></button>
+          <button id="playback-settings-toggle" class="playback-settings-button" type="button" title="播放快取設定" aria-label="播放快取設定" aria-expanded="false"><span aria-hidden="true">⚙</span></button>
           <button id="next-day" class="small-button" type="button" title="下一日" aria-label="下一日"><span class="control-icon-fallback" aria-hidden="true">›</span><i class="control-icon" data-lucide="skip-forward" aria-hidden="true"></i></button>
           <label class="speed-control">
-            Speed
+            速度
             <select id="play-speed">
               <option value="2800">0.5x</option>
               <option value="1400" selected>1x</option>
@@ -96,20 +101,20 @@
 
     <details class="metrics-drawer">
       <summary>
-        <span>Timing</span>
-        <strong id="metrics-summary">ready</strong>
+        <span>測速</span>
+        <strong id="metrics-summary">就緒</strong>
       </summary>
-      <section class="metrics" aria-label="timing metrics">
-        <div><span>SQL query</span><strong id="query-ms">-</strong></div>
-        <div><span>Serialize</span><strong id="serialize-ms">-</strong></div>
-        <div><span>API total</span><strong id="api-ms">-</strong></div>
-        <div><span>Fetch to render</span><strong id="client-ms">-</strong></div>
-        <div><span>EEZ tiles</span><strong id="eez-ms">-</strong></div>
-        <div><span>Rows</span><strong id="row-count">-</strong></div>
+      <section class="metrics" aria-label="測速指標">
+        <div><span>SQL 查詢</span><strong id="query-ms">-</strong></div>
+        <div><span>序列化</span><strong id="serialize-ms">-</strong></div>
+        <div><span>API 總耗時</span><strong id="api-ms">-</strong></div>
+        <div><span>抓取到渲染</span><strong id="client-ms">-</strong></div>
+        <div><span>EEZ 瓦片</span><strong id="eez-ms">-</strong></div>
+        <div><span>資料列</span><strong id="row-count">-</strong></div>
       </section>
-      <section class="render-gate" aria-label="render ready state">
+      <section class="render-gate" aria-label="渲染就緒狀態">
         <div class="render-gate-header">
-          <span>Render ready</span>
+          <span>渲染就緒</span>
           <strong id="render-gate-summary">GFW 0 / AIS 0 / EEZ 0</strong>
         </div>
         <div class="render-gate-grid">
@@ -117,19 +122,19 @@
             <span id="render-light-gfw" class="render-light is-off"></span>
             <span>GFW</span>
             <strong id="render-bit-gfw">0</strong>
-            <small id="render-detail-gfw">off</small>
+            <small id="render-detail-gfw">關閉</small>
           </div>
           <div id="render-chip-ais" class="render-chip is-off">
             <span id="render-light-ais" class="render-light is-off"></span>
             <span>AIS</span>
             <strong id="render-bit-ais">0</strong>
-            <small id="render-detail-ais">off</small>
+            <small id="render-detail-ais">關閉</small>
           </div>
           <div id="render-chip-eez" class="render-chip is-off">
             <span id="render-light-eez" class="render-light is-off"></span>
             <span>EEZ</span>
             <strong id="render-bit-eez">0</strong>
-            <small id="render-detail-eez">off</small>
+            <small id="render-detail-eez">關閉</small>
           </div>
         </div>
       </section>
@@ -137,16 +142,16 @@
 
     <section class="workspace">
       <div id="map-shell" class="map-shell">
-        <div id="map" aria-label="map"></div>
-        <div class="map-tool-stack" aria-label="map tools">
-          <button id="map-fullscreen" class="map-tool-button" type="button" title="Fullscreen map" aria-label="Fullscreen map">Full</button>
+        <div id="map" aria-label="地圖"></div>
+        <div class="map-tool-stack" aria-label="地圖工具">
+          <button id="map-fullscreen" class="map-tool-button" type="button" title="地圖全螢幕" aria-label="地圖全螢幕">全螢幕</button>
         </div>
-        <button id="map-settings-open" class="map-settings-button" type="button" title="Map settings" aria-label="Map settings">⚙</button>
+        <button id="map-settings-open" class="map-settings-button" type="button" title="地圖設定" aria-label="地圖設定">⚙</button>
       </div>
       <aside class="table-panel">
         <div class="table-title">
-          <h2>Records</h2>
-          <span id="table-note">waiting for data</span>
+          <h2>資料列</h2>
+          <span id="table-note">等待資料</span>
         </div>
         <div class="table-scroll" id="table-scroll">
           <table id="records">
@@ -158,99 +163,161 @@
     </section>
   </main>
 
+  <section class="settings-page page-panel" data-page-panel="settings" hidden>
+    <div class="settings-page-card">
+      <h2>設定</h2>
+      <p>尚無全域設定。</p>
+    </div>
+  </section>
+
   <div id="layer-settings-modal" class="modal-backdrop" hidden>
     <section class="modal-window layer-settings-window" role="dialog" aria-modal="true" aria-labelledby="layer-settings-title">
       <header class="modal-header">
         <div>
-          <h2 id="layer-settings-title">Layer Settings</h2>
-          <p id="layer-settings-subtitle">Configure the selected map layer.</p>
+          <h2 id="layer-settings-title">圖層設定</h2>
+          <p id="layer-settings-subtitle">調整所選地圖圖層。</p>
         </div>
-        <button id="layer-settings-close" class="icon-button" type="button" aria-label="Close layer settings">Close</button>
+        <button id="layer-settings-close" class="icon-button" type="button" aria-label="關閉圖層設定">關閉</button>
       </header>
       <div class="modal-body">
         <section class="layer-settings-panel" data-layer-settings-panel="gfw" hidden>
-          <span class="setting-note">Canvas geographic grid, driven by date and viewport.</span>
-          <div class="color-grid" aria-label="GFW gradient controls">
+          <span class="setting-note">以日期與視窗範圍驅動的 Canvas 地理網格。</span>
+          <div class="color-grid" aria-label="GFW 漸層控制">
             <label>
-              Low color
+              低值顏色
               <input id="gfw-low-color" class="color-input" type="color" value="#2d8296">
             </label>
             <label>
-              High color
+              高值顏色
               <input id="gfw-high-color" class="color-input" type="color" value="#d85a30">
             </label>
             <label>
-              Max intensity
+              最大強度
               <input id="gfw-max-fish" type="number" min="1" max="10000" step="1" value="40">
+            </label>
+            <label>
+              粒度控制 (km)
+              <input id="gfw-render-cell-km" type="number" min="9" max="500" step="1" value="9">
             </label>
           </div>
           <label>
-            Alpha
+            透明度
             <input class="alpha-slider" data-alpha-layer="gfw" type="range" min="0" max="1" step="0.05" value="0.58">
           </label>
         </section>
         <section class="layer-settings-panel" data-layer-settings-panel="ais" hidden>
           <div class="ais-setup">
-            <div class="setting-note" id="ais-config-status">AIS collector key gate: checking</div>
+            <div class="setting-note" id="ais-config-status">AIS 收集器金鑰門檻：檢查中</div>
             <details class="provider-settings">
-              <summary>AISStream collector key</summary>
+              <summary>AISStream 收集器金鑰</summary>
               <button id="ais-open-config" class="small-button" type="button">交付到爬蟲</button>
               <div id="ais-connected-panel" class="ais-connected-panel" hidden>
-                <span class="setting-note">Collector key is written to the crawler handoff file. SQL read unlocks only when the crawler publishes a matching key heartbeat.</span>
-                <button id="ais-run-diagnostics" class="small-button" type="button">Test Upstream Key</button>
-                <button id="ais-disconnect-key" class="small-button danger-button" type="button">Disconnect Collector Key</button>
+                <span class="setting-note">收集器金鑰會寫入爬蟲交接檔；只有爬蟲送出相同金鑰心跳後，SQL 讀取才會解鎖。</span>
+                <button id="ais-run-diagnostics" class="small-button" type="button">測試上游金鑰</button>
+                <button id="ais-disconnect-key" class="small-button danger-button" type="button">斷開收集器金鑰</button>
               </div>
             </details>
             <section class="provider-settings aishub-settings" hidden>
-              <h3>AISHub polling</h3>
-              <p class="setting-note">AISHub is polled at most once every 180 seconds to respect its API limit.</p>
+              <h3>AISHub 輪詢</h3>
+              <p class="setting-note">AISHub 最多每 180 秒輪詢一次，以遵守 API 限制。</p>
               <label>
-                AISHub username
-                <input id="aishub-username" type="password" autocomplete="off" placeholder="Paste AISHub username">
+                AISHub 使用者名稱
+                <input id="aishub-username" type="password" autocomplete="off" placeholder="貼上 AISHub 使用者名稱">
               </label>
               <div class="button-row">
-                <button id="aishub-save-username" class="small-button" type="button">Connect AISHub</button>
-                <button id="aishub-run-diagnostics" class="small-button" type="button">Run AISHub test</button>
-                <button id="aishub-disconnect" class="small-button danger-button" type="button">Disconnect AISHub</button>
+                <button id="aishub-save-username" class="small-button" type="button">連接 AISHub</button>
+                <button id="aishub-run-diagnostics" class="small-button" type="button">執行 AISHub 測試</button>
+                <button id="aishub-disconnect" class="small-button danger-button" type="button">斷開 AISHub</button>
               </div>
             </section>
             <div id="ais-diagnostics-result" class="diagnostics-result" hidden></div>
           </div>
           <label>
-            AIS display
+            AIS 顯示方式
             <select id="ais-render-strategy">
-              <option value="density_grid" selected>Density grid</option>
-              <option value="point_dots">Point dots</option>
+              <option value="density_grid" selected>密度網格</option>
+              <option value="point_dots">點狀標記</option>
             </select>
           </label>
           <label>
-            Alpha
+            透明度
             <input class="alpha-slider" data-alpha-layer="ais" type="range" min="0" max="1" step="0.05" value="0.58">
           </label>
         </section>
         <section class="layer-settings-panel" data-layer-settings-panel="eez" hidden>
-          <span class="setting-note">Vector tile boundary and translucent fill overlay.</span>
-          <div class="color-grid" aria-label="EEZ color controls">
+          <span class="setting-note">向量瓦片邊界與半透明填色圖層。</span>
+          <div class="color-grid" aria-label="EEZ 顏色控制">
             <label>
-              Fill color
+              填色
               <input id="eez-fill-color" class="color-input" type="color" value="#176f86">
             </label>
             <label>
-              Boundary color
+              邊界顏色
               <input id="eez-boundary-color" class="color-input" type="color" value="#1f7f96">
             </label>
             <label>
-              Fill opacity
+              填色不透明度
               <input id="eez-fill-opacity" type="range" min="0" max="0.35" step="0.01" value="0.08">
             </label>
             <label>
-              Boundary opacity
+              邊界不透明度
               <input id="eez-boundary-opacity" type="range" min="0" max="1" step="0.05" value="0.88">
             </label>
           </div>
           <label>
-            Alpha
+            透明度
             <input class="alpha-slider" data-alpha-layer="eez" type="range" min="0" max="1" step="0.05" value="1">
+          </label>
+        </section>
+      </div>
+    </section>
+  </div>
+
+  <div id="playback-settings-modal" class="modal-backdrop" hidden>
+    <section class="modal-window playback-settings-window" role="dialog" aria-modal="true" aria-labelledby="playback-settings-title">
+      <header class="modal-header">
+        <div>
+          <h2 id="playback-settings-title">播放設定</h2>
+          <p>播放前預熱指定日期的地圖快照，並調整轉場遮罩。</p>
+        </div>
+        <button id="playback-settings-close" class="icon-button" type="button" aria-label="關閉播放設定">關閉</button>
+      </header>
+      <div class="modal-body">
+        <section class="settings-section">
+          <h3>快取預熱</h3>
+          <label>
+            模式
+            <select id="playback-cache-mode">
+              <option value="before_play">播放前完整預熱</option>
+              <option value="progressive">播放時漸進預熱</option>
+              <option value="off">關閉</option>
+            </select>
+          </label>
+          <label>
+            工作數
+            <input id="playback-cache-concurrency" type="number" min="1" max="12" step="1" value="2">
+          </label>
+          <label>
+            最多日期數
+            <input id="playback-cache-max-dates" type="number" min="0" max="366" step="1" value="0">
+          </label>
+          <label>
+            快取上限 (GB)
+            <input id="playback-cache-max-gb" type="number" min="0.25" max="16" step="0.25" value="2">
+          </label>
+          <p class="setting-note">最多日期數為 0 代表使用開始到結束的所有日期。快取上限用來限制瀏覽器記憶體；舊快照會先被釋放。</p>
+          <progress id="playback-cache-progress" max="1" value="0"></progress>
+          <div id="playback-cache-status" class="diagnostics-result">閒置</div>
+        </section>
+        <section class="settings-section">
+          <h3>轉場</h3>
+          <label>
+            淡入淡出時間 (ms)
+            <input id="gfw-transition-ms" type="number" min="0" max="1200" step="20" value="180">
+          </label>
+          <label>
+            縮放模糊 (px)
+            <input id="gfw-zoom-blur-px" type="range" min="0" max="8" step="0.5" value="2">
           </label>
         </section>
       </div>
@@ -261,95 +328,95 @@
     <section class="modal-window map-settings-window" role="dialog" aria-modal="true" aria-labelledby="map-settings-title">
       <header class="modal-header">
         <div>
-          <h2 id="map-settings-title">Map Settings</h2>
-          <p>Leaflet viewport and interaction controls.</p>
+          <h2 id="map-settings-title">地圖設定</h2>
+          <p>Leaflet 視窗與互動控制。</p>
         </div>
-        <button id="map-settings-close" class="icon-button" type="button" aria-label="Close map settings">Close</button>
+        <button id="map-settings-close" class="icon-button" type="button" aria-label="關閉地圖設定">關閉</button>
       </header>
       <div class="modal-body">
         <section class="settings-section">
-          <h3>Controls</h3>
+          <h3>控制</h3>
           <label>
-            Basemap
+            底圖
             <select id="map-basemap-select">
-              <option value="carto_light">Light</option>
-              <option value="carto_dark">Dark</option>
-              <option value="osm_standard">OSM</option>
-              <option value="opentopo_terrain">Terrain</option>
-              <option value="esri_imagery">Satellite</option>
+              <option value="carto_light">淺色</option>
+              <option value="carto_dark">深色</option>
+              <option value="osm_standard">OSM 標準</option>
+              <option value="opentopo_terrain">地形</option>
+              <option value="esri_imagery">衛星</option>
             </select>
           </label>
           <label class="switch-row">
             <input id="map-setting-scale" type="checkbox" checked>
-            <span>Scale bar</span>
+            <span>比例尺</span>
           </label>
           <label class="switch-row">
             <input id="map-setting-zoom-control" type="checkbox" checked>
-            <span>Zoom buttons</span>
+            <span>縮放按鈕</span>
           </label>
           <details class="nested-settings">
-            <summary>Latitude / longitude grid</summary>
+            <summary>經緯度格線</summary>
             <label class="switch-row">
               <input id="map-setting-graticule" type="checkbox">
-              <span>Show grid</span>
+              <span>顯示格線</span>
             </label>
             <label class="switch-row">
               <input id="map-setting-graticule-labels" type="checkbox" checked>
-              <span>Grid labels</span>
+              <span>顯示標籤</span>
             </label>
             <label>
-              Grid color
+              格線顏色
               <input id="map-setting-graticule-color" class="color-input" type="color" value="#e2ecf6">
             </label>
             <label>
-              Line style
+              線條樣式
               <select id="map-setting-graticule-line-style">
-                <option value="dashed">Dashed</option>
-                <option value="solid">Solid</option>
-                <option value="dotted">Dotted</option>
+                <option value="dashed">虛線</option>
+                <option value="solid">實線</option>
+                <option value="dotted">點線</option>
               </select>
             </label>
             <label>
-              Line width
+              線寬
               <input id="map-setting-graticule-line-width" type="range" min="0.5" max="3" step="0.5" value="1">
             </label>
             <label>
-              Grid alpha
+              格線透明度
               <input id="map-setting-graticule-alpha" type="range" min="0.1" max="1" step="0.05" value="0.45">
             </label>
           </details>
         </section>
         <section class="settings-section">
-          <h3>Interaction</h3>
+          <h3>互動</h3>
           <label class="switch-row">
             <input id="map-setting-scroll-wheel" type="checkbox" checked>
-            <span>Mouse wheel zoom</span>
+            <span>滑鼠滾輪縮放</span>
           </label>
           <label class="switch-row">
             <input id="map-setting-double-click" type="checkbox" checked>
-            <span>Double-click zoom</span>
+            <span>雙擊縮放</span>
           </label>
           <label class="switch-row">
             <input id="map-setting-dragging" type="checkbox" checked>
-            <span>Drag pan</span>
+            <span>拖曳平移</span>
           </label>
           <label class="switch-row">
             <input id="map-setting-keyboard" type="checkbox" checked>
-            <span>Keyboard navigation</span>
+            <span>鍵盤導航</span>
           </label>
         </section>
         <section class="settings-section">
-          <h3>View</h3>
+          <h3>視角</h3>
           <div class="button-row">
-            <button id="map-view-reset" class="small-button" type="button">Reset</button>
-            <button id="map-view-world" class="small-button" type="button">World</button>
-            <button id="map-view-taiwan" class="small-button" type="button">Taiwan</button>
+            <button id="map-view-reset" class="small-button" type="button">重設</button>
+            <button id="map-view-world" class="small-button" type="button">世界</button>
+            <button id="map-view-taiwan" class="small-button" type="button">台灣</button>
           </div>
         </section>
         <section class="settings-section">
-          <h3>Export</h3>
-          <p class="setting-note">Save the current map viewport as a PNG image.</p>
-          <button id="map-export-png" class="small-button" type="button">Save PNG</button>
+          <h3>匯出</h3>
+          <p class="setting-note">將目前地圖視窗儲存為 PNG 圖片。</p>
+          <button id="map-export-png" class="small-button" type="button">儲存 PNG</button>
         </section>
       </div>
     </section>
@@ -359,32 +426,32 @@
     <section class="modal-window" role="dialog" aria-modal="true" aria-labelledby="ais-config-title">
       <header class="modal-header">
         <div>
-          <h2 id="ais-config-title">AIS Key 交付到爬蟲</h2>
-          <p>This key is an internal boundary marker. The map remains a SQL consumer and unlocks AIS SQL reads only when the upstream collector publishes the same key fingerprint.</p>
+          <h2 id="ais-config-title">AIS 金鑰交付</h2>
+          <p>這個金鑰是內部邊界標記。地圖仍然只是 SQL 消費端；只有上游收集器送出相同金鑰指紋後，AIS SQL 讀取才會解鎖。</p>
         </div>
-        <button id="ais-modal-close" class="icon-button" type="button" aria-label="Close AISStream setup">Close</button>
+        <button id="ais-modal-close" class="icon-button" type="button" aria-label="關閉 AISStream 設定">關閉</button>
       </header>
       <div class="modal-body">
         <div class="embedded-auth-panel">
           <div class="embedded-auth-toolbar">
-            <span>AISStream key source</span>
-            <a class="setup-link-button" href="https://aisstream.io/authenticate" target="_blank" rel="noreferrer">Open in browser</a>
+            <span>AISStream 金鑰來源</span>
+            <a class="setup-link-button" href="https://aisstream.io/authenticate" target="_blank" rel="noreferrer">在瀏覽器開啟</a>
           </div>
           <iframe
             id="ais-auth-frame"
-            title="AISStream API key sign-in"
+            title="AISStream API 金鑰登入"
             src="https://aisstream.io/authenticate"
             loading="lazy"
           ></iframe>
         </div>
         <div class="api-key-entry">
           <label>
-            Paste collector API key after creating it
-            <input id="ais-api-key" type="password" autocomplete="off" placeholder="Paste AISStream API key">
+            建立後貼上收集器 API 金鑰
+            <input id="ais-api-key" type="password" autocomplete="off" placeholder="貼上 AISStream API 金鑰">
           </label>
           <button id="ais-save-key" class="small-button" type="button">交付到爬蟲</button>
         </div>
-        <p class="setting-note">In this MVP, "交付到爬蟲" writes a local crawler handoff file for the independent AIS collector. Do not treat this as frontend AIS access. The UI only proves it is reading the SQL table maintained by the matching AIS crawler. The raw key is not returned after saving.</p>
+        <p class="setting-note">在此 MVP 中，「交付到爬蟲」會寫入本機爬蟲交接檔，供獨立 AIS 收集器使用。請勿把它視為前端直接存取 AIS；UI 只證明自己正在讀取由相同 AIS 爬蟲維護的 SQL table。儲存後不會回傳原始金鑰。</p>
       </div>
     </section>
   </div>
@@ -393,33 +460,33 @@
   <script src="/static/vendor/lucide.min.js?v=0.468.0"></script>
   <script src="/static/vendor/html2canvas.min.js?v=1.4.1"></script>
   <script src="/static/vendor/Leaflet.VectorGrid.bundled.min.js?v=1.3.0"></script>
-  <script src="/static/TimingMetrics.js?v=gfw-pan-lod-v59"></script>
-  <script src="/static/js/core/state.js?v=date-map-table-sync-v84"></script>
-  <script src="/static/js/core/dom.js?v=scrollable-map-modal-v55"></script>
-  <script src="/static/js/core/render-state.js?v=gfw-pan-lod-v59"></script>
-  <script src="/static/js/core/map.js?v=scrollable-map-modal-v55"></script>
-  <script src="/static/js/core/geo.js?v=gfw-lod-prewarm-v80"></script>
-  <script src="/static/js/rendering/render-capability.js?v=render-capability-v2"></script>
-  <script src="/static/js/rendering/gfw-paint.js?v=gfw-gradient-v83"></script>
-  <script src="/static/js/rendering/gfw-webgl-renderer.js?v=render-capability-v2"></script>
-  <script src="/static/js/rendering/renderer-registry.js?v=render-capability-v2"></script>
-  <script src="/static/js/core/render-refresh.js?v=architecture-cut-v79"></script>
-  <script src="/static/js/layers/eez-layer.js?v=gfw-pan-lod-v59"></script>
-  <script src="/static/js/layers/graticule-layer.js?v=scrollable-map-modal-v55"></script>
-  <script src="/static/js/layers/ais-layer.js?v=scrollable-map-modal-v55"></script>
-  <script src="/static/js/layers/gfw-layer.js?v=date-map-table-sync-v84"></script>
-  <script src="/static/js/ui/table-view.js?v=date-map-table-sync-v84"></script>
-  <script src="/static/js/ui/control-buttons.js?v=playback-tooltip-v72"></script>
-  <script src="/static/js/ui/playback-controls.js?v=date-map-table-sync-v84"></script>
-  <script src="/static/js/ui/map-settings.js?v=scrollable-map-modal-v55"></script>
-  <script src="/static/js/ui/map-export.js?v=scrollable-map-modal-v55"></script>
-  <script src="/static/js/ui/layer-style-controls.js?v=gfw-gradient-v83"></script>
-  <script src="/static/js/ui/eez-settings.js?v=gfw-gradient-v83"></script>
-  <script src="/static/js/ui/gfw-settings.js?v=gfw-gradient-v83"></script>
-  <script src="/static/js/ui/ais-settings.js?v=ais-crawler-handoff-v78"></script>
-  <script src="/static/js/ui/layer-menu.js?v=data-layer-dismiss-v74"></script>
-  <script src="/static/js/services/gfw-record-cache.js?v=gfw-lod-prewarm-v81"></script>
-  <script src="/static/js/services/api-client.js?v=date-map-table-sync-v84"></script>
-  <script src="/static/app.js?v=date-map-table-sync-v84"></script>
+  <script src="/static/TimingMetrics.js?v=zh-tw-v94"></script>
+  <script src="/static/js/core/state.js?v=zh-tw-v94"></script>
+  <script src="/static/js/core/dom.js?v=zh-tw-v94"></script>
+  <script src="/static/js/core/render-state.js?v=zh-tw-v94"></script>
+  <script src="/static/js/core/map.js?v=zh-tw-v94"></script>
+  <script src="/static/js/core/geo.js?v=zh-tw-v94"></script>
+  <script src="/static/js/rendering/render-capability.js?v=zh-tw-v94"></script>
+  <script src="/static/js/rendering/gfw-paint.js?v=zh-tw-v94"></script>
+  <script src="/static/js/rendering/gfw-webgl-renderer.js?v=zh-tw-v94"></script>
+  <script src="/static/js/rendering/renderer-registry.js?v=zh-tw-v94"></script>
+  <script src="/static/js/core/render-refresh.js?v=zh-tw-v94"></script>
+  <script src="/static/js/layers/eez-layer.js?v=zh-tw-v94"></script>
+  <script src="/static/js/layers/graticule-layer.js?v=zh-tw-v94"></script>
+  <script src="/static/js/layers/ais-layer.js?v=zh-tw-v94"></script>
+  <script src="/static/js/layers/gfw-layer.js?v=zh-tw-v94"></script>
+  <script src="/static/js/ui/table-view.js?v=zh-tw-v94"></script>
+  <script src="/static/js/ui/control-buttons.js?v=zh-tw-v94"></script>
+  <script src="/static/js/ui/playback-controls.js?v=zh-tw-v94"></script>
+  <script src="/static/js/ui/map-settings.js?v=zh-tw-v94"></script>
+  <script src="/static/js/ui/map-export.js?v=zh-tw-v94"></script>
+  <script src="/static/js/ui/layer-style-controls.js?v=zh-tw-v94"></script>
+  <script src="/static/js/ui/eez-settings.js?v=zh-tw-v94"></script>
+  <script src="/static/js/ui/gfw-settings.js?v=zh-tw-v94"></script>
+  <script src="/static/js/ui/ais-settings.js?v=zh-tw-v94"></script>
+  <script src="/static/js/ui/layer-menu.js?v=zh-tw-v94"></script>
+  <script src="/static/js/services/gfw-record-cache.js?v=zh-tw-v94"></script>
+  <script src="/static/js/services/api-client.js?v=zh-tw-v94"></script>
+  <script src="/static/app.js?v=zh-tw-v94"></script>
 </body>
 </html>

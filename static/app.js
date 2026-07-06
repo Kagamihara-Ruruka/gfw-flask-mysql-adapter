@@ -26,8 +26,8 @@ async function toggleMapFullscreen() {
 
 function syncMapFullscreenButton() {
   const active = document.fullscreenElement === $("map-shell");
-  $("map-fullscreen").textContent = active ? "Exit" : "Full";
-  $("map-fullscreen").title = active ? "Exit fullscreen map" : "Fullscreen map";
+  $("map-fullscreen").textContent = active ? "退出" : "全螢幕";
+  $("map-fullscreen").title = active ? "退出地圖全螢幕" : "地圖全螢幕";
   $("map-settings-open").hidden = active;
   if (active && typeof setMapSettingsModal === "function") {
     setMapSettingsModal(false);
@@ -44,7 +44,32 @@ function syncMapFullscreenButton() {
   }, 80);
 }
 
+function setActivePage(pageId) {
+  for (const button of document.querySelectorAll("[data-page-tab]")) {
+    const active = button.dataset.pageTab === pageId;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  }
+  for (const panel of document.querySelectorAll("[data-page-panel]")) {
+    const active = panel.dataset.pagePanel === pageId;
+    panel.hidden = !active;
+    panel.classList.toggle("is-active", active);
+  }
+  if (pageId !== "dashboard") {
+    stopPlayback();
+    return;
+  }
+  setTimeout(() => map.invalidateSize(), 60);
+}
+
+function bindPageTabs() {
+  for (const button of document.querySelectorAll("[data-page-tab]")) {
+    button.addEventListener("click", () => setActivePage(button.dataset.pageTab));
+  }
+}
+
 function bindControls() {
+  bindPageTabs();
   $("layer-gfw").addEventListener("change", () => selectDataLayer("gfw"));
   $("layer-ais").addEventListener("change", () => selectDataLayer("ais"));
   bindDataLayerMenuDismiss();
@@ -61,6 +86,7 @@ function bindControls() {
   bindLayerSettingsModalControls();
   bindAisSettingsControls();
   bindPlaybackControlFeedback();
+  bindPlaybackSettingsControls();
   RenderState.sync();
   $("ais-render-strategy").addEventListener("change", () => {
     if (state.dataLayer === "ais") {

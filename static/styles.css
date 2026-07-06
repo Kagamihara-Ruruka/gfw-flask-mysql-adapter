@@ -32,6 +32,44 @@ body {
   border-bottom: 1px solid var(--line);
 }
 
+.app-title-block {
+  display: grid;
+  gap: 8px;
+}
+
+.app-tabs {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #10161f;
+}
+
+.app-tab {
+  height: 28px;
+  min-width: 76px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.app-tab:hover {
+  color: var(--text);
+  background: rgb(230 237 243 / 6%);
+}
+
+.app-tab.is-active {
+  color: #f8fbff;
+  background: #1f6feb;
+  box-shadow: 0 6px 14px rgba(31, 111, 235, 0.22);
+}
+
 .app-header h1 {
   margin: 0;
   font-size: 22px;
@@ -57,6 +95,33 @@ body {
 
 .layout {
   padding: 16px 20px 20px;
+}
+
+.page-panel[hidden] {
+  display: none !important;
+}
+
+.settings-page {
+  padding: 16px 20px 20px;
+}
+
+.settings-page-card {
+  min-height: 420px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.settings-page-card h2 {
+  margin: 0 0 6px;
+  font-size: 18px;
+}
+
+.settings-page-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .controls {
@@ -164,6 +229,7 @@ body {
 #replay,
 #prev-day,
 #play-toggle,
+#playback-settings-toggle,
 #next-day {
   display: inline-flex;
   align-items: center;
@@ -197,6 +263,7 @@ body {
 #replay,
 #prev-day,
 #play-toggle,
+#playback-settings-toggle,
 #next-day {
   flex: 0 0 clamp(2rem, 2.2vw, 2.35rem);
   inline-size: clamp(2rem, 2.2vw, 2.35rem);
@@ -207,6 +274,7 @@ body {
 #replay .control-icon-fallback,
 #prev-day .control-icon-fallback,
 #play-toggle .control-icon-fallback,
+#playback-settings-toggle span,
 #next-day .control-icon-fallback {
   font-size: 16px;
 }
@@ -228,6 +296,7 @@ body {
 #replay:hover,
 #prev-day:hover,
 #play-toggle:hover,
+#playback-settings-toggle:hover,
 #next-day:hover {
   border-color: #388bfd;
   background: #388bfd;
@@ -239,11 +308,13 @@ body {
 #replay:active,
 #prev-day:active,
 #play-toggle:active,
+#playback-settings-toggle:active,
 #next-day:active,
 #latest-date.is-pressing,
 #replay.is-pressing,
 #prev-day.is-pressing,
 #play-toggle.is-pressing,
+#playback-settings-toggle.is-pressing,
 #next-day.is-pressing {
   transform: translateY(1px) scale(0.97);
   border-color: #58a6ff;
@@ -257,6 +328,7 @@ body {
 #replay.is-click-pulse,
 #prev-day.is-click-pulse,
 #play-toggle.is-click-pulse,
+#playback-settings-toggle.is-click-pulse,
 #next-day.is-click-pulse {
   animation: playback-control-pulse 180ms ease-out;
 }
@@ -569,6 +641,18 @@ body {
   max-height: min(720px, calc(100vh - 48px));
 }
 
+.playback-settings-window {
+  width: min(520px, 100%);
+}
+
+#playback-cache-progress {
+  width: 100%;
+  height: 10px;
+  min-width: 100%;
+  padding: 0;
+  accent-color: #388bfd;
+}
+
 .modal-header {
   display: flex;
   align-items: start;
@@ -748,6 +832,7 @@ button {
 #replay:disabled,
 #prev-day:disabled,
 #play-toggle:disabled,
+#playback-settings-toggle:disabled,
 #next-day:disabled {
   border-color: #242d39;
   background: #111820;

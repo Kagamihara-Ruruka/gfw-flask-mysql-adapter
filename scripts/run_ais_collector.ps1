@@ -21,4 +21,9 @@ $stdout = Join-Path $logDir "ais_collector_task_stdout.log"
 $stderr = Join-Path $logDir "ais_collector_task_stderr.log"
 "[$stamp] starting AIS collector" | Out-File -FilePath $stdout -Encoding utf8 -Append
 
-& $python core.py --config config\adapter.local.json ingest-ais --collector-config config\ais_collector.local.json 1>> $stdout 2>> $stderr
+$adapterConfig = "config\adapter.ais_collector.local.json"
+if (-not (Test-Path -LiteralPath (Join-Path $repo $adapterConfig))) {
+  $adapterConfig = "config\adapter.local.json"
+}
+
+& $python core.py --config $adapterConfig ingest-ais --collector-config config\ais_collector.local.json 1>> $stdout 2>> $stderr

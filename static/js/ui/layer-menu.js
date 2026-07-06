@@ -46,7 +46,7 @@ function updateDataLayerMenu() {
   if (state.dataLayer === "gfw") labels.push("GFW");
   if (state.dataLayer === "ais") labels.push("AIS");
   if ($("eez-toggle").checked) labels.push("EEZ");
-  $("data-layer-summary").textContent = labels.length ? labels.join(" + ") : "None";
+  $("data-layer-summary").textContent = labels.length ? labels.join(" + ") : "無";
   updatePlaybackControls();
   applyLayerOrder();
 }
@@ -87,11 +87,11 @@ function setLayerSettingsModal(layerId, open) {
   }
 
   const labels = {
-    gfw: ["GFW fishery grid", "Grid layer display controls."],
-    ais: ["AIS vessel positions", "Live AIS source and display controls."],
-    eez: ["EEZ boundary overlay", "Maritime boundary overlay controls."],
+    gfw: ["GFW 漁業網格", "網格圖層顯示控制。"],
+    ais: ["AIS 船舶位置", "即時 AIS 來源與顯示控制。"],
+    eez: ["EEZ 經濟海域邊界", "海事邊界圖層控制。"],
   };
-  const [title, subtitle] = labels[layerId] || ["Layer Settings", "Configure the selected map layer."];
+  const [title, subtitle] = labels[layerId] || ["圖層設定", "調整所選地圖圖層。"];
   $("layer-settings-title").textContent = title;
   $("layer-settings-subtitle").textContent = subtitle;
 

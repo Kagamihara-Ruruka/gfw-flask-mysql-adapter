@@ -27,7 +27,7 @@ const RendererRegistry = (() => {
   function recordGfwRender(backend, drawMs) {
     const formatted = TimingMetrics.formatMs(drawMs);
     state.rendering.gfwMode = backend;
-    state.rendering.gfwBackend = `${backend} ${formatted}`;
+    state.rendering.gfwBackend = `${backend} 渲染 ${formatted}`;
     return state.rendering.gfwBackend;
   }
 

@@ -145,7 +145,7 @@ function removeAisLayer() {
     map.removeLayer(state.aisLayer);
   }
   if (state.dataLayer !== "ais") {
-    RenderState.off("ais", "off");
+    RenderState.off("ais", "關閉");
   }
 }
 

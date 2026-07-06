@@ -7,23 +7,23 @@ function updateAisSettingsPanel() {
   const connectedPanel = $("ais-connected-panel");
   const configureButton = $("ais-open-config");
   if (settings.provider === "aishub_polling" && settings.has_aishub_username) {
-    status.textContent = "AIS provider: AISHub polling, 180s interval";
+    status.textContent = "AIS 來源：AISHub 輪詢，間隔 180 秒";
     status.classList.remove("is-warning");
   } else if (settings.has_api_key && settings.provider === "aisstream") {
     if (keyGate.authorized_sql_read) {
-      status.textContent = "AIS crawler heartbeat matched. SQL read unlocked.";
+      status.textContent = "AIS 爬蟲心跳已匹配，SQL 讀取已解鎖。";
       status.classList.remove("is-warning");
     } else {
       const handoff = settings.collector_handoff || ingest.handoff || {};
       status.textContent =
         keyGate.message ||
         (handoff.exists
-          ? "AIS key handed to crawler; waiting for crawler heartbeat."
-          : "AIS key saved, but crawler handoff is missing.");
+          ? "AIS 金鑰已交付到爬蟲，等待爬蟲心跳。"
+          : "AIS 金鑰已儲存，但找不到爬蟲交接檔。");
       status.classList.add("is-warning");
     }
   } else {
-    status.textContent = "AIS collector key: not configured. AIS SQL read is locked.";
+    status.textContent = "AIS 收集器金鑰尚未設定，AIS SQL 讀取已鎖定。";
     status.classList.add("is-warning");
   }
   if (configureButton) {
@@ -50,9 +50,9 @@ function renderAisDiagnostics(packet) {
   }
   const elapsed = Number(packet.total_elapsed_seconds || packet.duration_seconds || 0).toFixed(1);
   result.innerHTML = [
-    `<strong>Diagnostics: ${packet.status || "unknown"}</strong>`,
-    `<span>${packet.diagnosis || "No diagnosis returned."}</span>`,
-    `<span>${accepted.toLocaleString()} accepted / ${raw.toLocaleString()} raw / ${dropped.toLocaleString()} dropped frames in ${elapsed}s.</span>`,
+    `<strong>診斷：${packet.status || "unknown"}</strong>`,
+    `<span>${packet.diagnosis || "未回傳診斷。"}</span>`,
+    `<span>${accepted.toLocaleString()} 筆接收 / ${raw.toLocaleString()} 筆原始 / ${dropped.toLocaleString()} 筆丟棄，耗時 ${elapsed} 秒。</span>`,
   ].join("");
 }
 
@@ -98,7 +98,7 @@ function bindAisStreamControls() {
       event.stopPropagation();
       const apiKey = keyInput.value.trim();
       if (!apiKey) {
-        setStatus("Paste the AIS collector API key first", true);
+        setStatus("請先貼上 AIS 收集器 API 金鑰", true);
         return;
       }
       saveButton.disabled = true;
@@ -107,7 +107,7 @@ function bindAisStreamControls() {
         keyInput.value = "";
         setAisConfigModal(false);
         await loadAisSettings();
-        setStatus("AIS key handed to crawler; SQL read unlocks after crawler heartbeat matches");
+        setStatus("AIS 金鑰已交付到爬蟲；爬蟲心跳匹配後才會解鎖 SQL 讀取");
         if (state.dataLayer === "ais") {
           await reloadAisRecords();
         }
@@ -129,7 +129,7 @@ function bindAisStreamControls() {
           clearPrimaryLayerRecords();
         }
         await loadAisSettings();
-        setStatus("AIS crawler handoff disconnected");
+        setStatus("AIS 爬蟲交接已斷開");
       } catch (err) {
         console.error(err);
         setStatus(err.message, true);
@@ -146,15 +146,15 @@ function bindAisStreamControls() {
       if (result) {
         result.hidden = false;
         result.classList.remove("is-ok", "is-warning", "is-error");
-        result.textContent = "Testing upstream AISStream key for 12 seconds...";
+        result.textContent = "正在測試上游 AISStream 金鑰，約 12 秒...";
       }
       try {
         const packet = await runAisDiagnostics();
         renderAisDiagnostics(packet);
         if (packet.status === "ok" && Number(packet.accepted_messages || 0) > 0) {
-          setStatus("AISStream diagnostics received upstream frames");
+          setStatus("AISStream 診斷已收到上游資料幀");
         } else {
-          setStatus("AISStream diagnostics completed with no usable live frames", true);
+          setStatus("AISStream 診斷完成，但沒有可用即時資料幀", true);
         }
       } catch (err) {
         console.error(err);
@@ -181,14 +181,14 @@ function bindAisHubControls() {
       event.stopPropagation();
       const username = usernameInput.value.trim();
       if (!username) {
-        setStatus("Paste an AISHub username first", true);
+        setStatus("請先貼上 AISHub 使用者名稱", true);
         return;
       }
       saveButton.disabled = true;
       try {
         await saveAishubUsername(username);
         usernameInput.value = "";
-        setStatus("AISHub connected; polling interval fixed at 180 seconds");
+        setStatus("AISHub 已連接；輪詢間隔固定為 180 秒");
         if (state.dataLayer === "ais") {
           await reloadAisRecords();
         }
@@ -204,7 +204,7 @@ function bindAisHubControls() {
     diagnosticsButton.addEventListener("click", async (event) => {
       event.stopPropagation();
       if (state.aisSettings?.provider !== "aishub_polling" || !state.aisSettings?.has_aishub_username) {
-        setStatus("Connect AISHub username before running AISHub diagnostics", true);
+        setStatus("請先連接 AISHub 使用者名稱，再執行診斷", true);
         return;
       }
       diagnosticsButton.disabled = true;
@@ -212,15 +212,15 @@ function bindAisHubControls() {
       if (result) {
         result.hidden = false;
         result.classList.remove("is-ok", "is-warning", "is-error");
-        result.textContent = "Testing AISHub...";
+        result.textContent = "正在測試 AISHub...";
       }
       try {
         const packet = await runAisDiagnostics();
         renderAisDiagnostics(packet);
         if (packet.status === "ok" && Number(packet.accepted_messages || 0) > 0) {
-          setStatus("AISHub diagnostics received rows");
+          setStatus("AISHub 診斷已收到資料列");
         } else {
-          setStatus("AISHub diagnostics returned no vessel rows", true);
+          setStatus("AISHub 診斷沒有回傳船舶資料", true);
         }
       } catch (err) {
         console.error(err);
@@ -244,7 +244,7 @@ function bindAisHubControls() {
         if (state.dataLayer === "ais") {
           clearPrimaryLayerRecords();
         }
-        setStatus("AISHub disconnected");
+        setStatus("AISHub 已斷開");
       } catch (err) {
         console.error(err);
         setStatus(err.message, true);

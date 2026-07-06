@@ -83,6 +83,8 @@ map.getPane("eezPaneB").style.opacity = "0";
 createOverlayPane("graticulePane", 545);
 
 createOverlayPane("gfwPane", 570);
+map.getPane("gfwPane").style.opacity = "1";
+map.getPane("gfwPane").style.transition = `opacity ${state.gfwTransitionMs}ms ease, filter ${state.gfwTransitionMs}ms ease`;
 
 createOverlayPane("aisPane", 610);
 

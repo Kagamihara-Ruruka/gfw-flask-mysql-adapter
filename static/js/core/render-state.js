@@ -1,8 +1,8 @@
 const RenderState = (() => {
   const layers = {
-    gfw: { label: "GFW", bit: 0, status: "off", detail: "off" },
-    ais: { label: "AIS", bit: 0, status: "off", detail: "off" },
-    eez: { label: "EEZ", bit: 0, status: "off", detail: "off" },
+    gfw: { label: "GFW", bit: 0, status: "off", detail: "關閉" },
+    ais: { label: "AIS", bit: 0, status: "off", detail: "關閉" },
+    eez: { label: "EEZ", bit: 0, status: "off", detail: "關閉" },
   };
   const primaryExclusive = {
     gfw: "ais",
@@ -54,7 +54,7 @@ const RenderState = (() => {
     const otherLayerId = primaryExclusive[layerId];
     layers[otherLayerId].bit = 0;
     layers[otherLayerId].status = "off";
-    layers[otherLayerId].detail = "exclusive off";
+    layers[otherLayerId].detail = "互斥關閉";
     syncLayer(otherLayerId);
   }
 
@@ -69,26 +69,26 @@ const RenderState = (() => {
   }
 
   function ready(layerId, detail) {
-    setLayer(layerId, 1, "ready", detail || "ready");
+    setLayer(layerId, 1, "ready", detail || "就緒");
   }
 
   function loading(layerId, detail) {
-    setLayer(layerId, 0, "loading", detail || "loading");
+    setLayer(layerId, 0, "loading", detail || "載入中");
   }
 
   function off(layerId, detail) {
-    setLayer(layerId, 0, "off", detail || "off");
+    setLayer(layerId, 0, "off", detail || "關閉");
   }
 
   function error(layerId, detail) {
-    setLayer(layerId, 0, "error", detail || "error");
+    setLayer(layerId, 0, "error", detail || "錯誤");
   }
 
   function begin(scope, layerIds) {
     const id = (scopes.get(scope) || 0) + 1;
     scopes.set(scope, id);
     for (const layerId of layerIds) {
-      loading(layerId, "rendering");
+      loading(layerId, "渲染中");
     }
     return { scope, id, layerIds: [...layerIds] };
   }
@@ -100,7 +100,7 @@ const RenderState = (() => {
   function finish(transaction, detailByLayer = {}) {
     if (!isCurrent(transaction)) return false;
     for (const layerId of transaction.layerIds) {
-      ready(layerId, detailByLayer[layerId] || "ready");
+      ready(layerId, detailByLayer[layerId] || "就緒");
     }
     return true;
   }
@@ -108,7 +108,7 @@ const RenderState = (() => {
   function fail(transaction, message) {
     if (!isCurrent(transaction)) return false;
     for (const layerId of transaction.layerIds) {
-      error(layerId, message || "failed");
+      error(layerId, message || "失敗");
     }
     return true;
   }

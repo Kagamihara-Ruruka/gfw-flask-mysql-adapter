@@ -10,6 +10,7 @@
 
 請閱讀：
 
+- `handoff/airflow_ais_crawler/MANIFEST.zh-TW.md`
 - `handoff/airflow_ais_crawler/README.zh-TW.md`
 - `handoff/airflow_ais_crawler/ais_collector.handoff.example.json`
 - `handoff/airflow_ais_crawler/ais_collector.handoff.json`（實交接檔，若存在則含真 AISStream API key）
@@ -20,6 +21,9 @@
 - `AisIngestService.py`
 - `AisStreamProvider.py`
 - `AisLiveService.py`
+- `DatabaseConnect.py`
+- `database/registry.py`
+- `config/adapter.ais_collector.example.json`
 - `scripts/run_ais_collector.ps1`
 - `scripts/install_ais_collector_task.ps1`
 - `scripts/start_ais_collector_task.ps1`

@@ -10,7 +10,7 @@ const GfwWebglLayer = L.Layer.extend({
       alpha: true,
       antialias: false,
       premultipliedAlpha: false,
-      preserveDrawingBuffer: false,
+      preserveDrawingBuffer: true,
       powerPreference: "high-performance",
     });
     if (!this._gl) {
@@ -127,12 +127,14 @@ const GfwWebglLayer = L.Layer.extend({
 
     const vertices = [];
     const alpha = Math.max(0, Math.min(1, Number(state.layerAlpha.gfw ?? 0.58)));
-    for (const row of this._rows) {
+    const renderRows = aggregateGfwRowsForRender(this._rows);
+    const halfDegrees = gfwRenderCellHalfDegrees();
+    for (const row of renderRows) {
       const lat = Number(row.lat);
       const lon = Number(row.lon);
       if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
-      const nw = this._map.latLngToContainerPoint([lat + GFW_CELL_HALF_DEGREES, lon - GFW_CELL_HALF_DEGREES]);
-      const se = this._map.latLngToContainerPoint([lat - GFW_CELL_HALF_DEGREES, lon + GFW_CELL_HALF_DEGREES]);
+      const nw = this._map.latLngToContainerPoint([lat + halfDegrees, lon - halfDegrees]);
+      const se = this._map.latLngToContainerPoint([lat - halfDegrees, lon + halfDegrees]);
       const x = Math.floor(Math.min(nw.x, se.x));
       const y = Math.floor(Math.min(nw.y, se.y));
       const w = Math.max(1, Math.ceil(Math.abs(se.x - nw.x)));

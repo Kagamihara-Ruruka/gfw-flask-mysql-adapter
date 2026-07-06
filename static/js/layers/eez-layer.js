@@ -101,13 +101,13 @@ function createEezVectorTileLayer(paneName) {
 
 async function reloadEezLayer() {
   const timing = TimingMetrics.stopwatch();
-  TimingMetrics.setText("eez-ms", "loading");
+  TimingMetrics.setText("eez-ms", "載入中");
   const seq = ++state.eezSeq;
   const transaction = RenderState.begin("eez", ["eez"]);
   clearEezLayerForReload();
   if (!$("eez-toggle").checked) {
-    TimingMetrics.setText("eez-ms", "off");
-    RenderState.off("eez", "off");
+    TimingMetrics.setText("eez-ms", "關閉");
+    RenderState.off("eez", "關閉");
     return;
   }
   if (canUseEezVectorTiles()) {
@@ -123,9 +123,9 @@ async function reloadEezLayer() {
         map.removeLayer(staged.layer);
       }
       if (seq === state.eezSeq) {
-        TimingMetrics.setText("eez-ms", "failed");
-        RenderState.fail(transaction, "tile load failed");
-        setStatus(err.message || "EEZ tile load failed", true);
+        TimingMetrics.setText("eez-ms", "失敗");
+        RenderState.fail(transaction, "瓦片載入失敗");
+        setStatus(err.message || "EEZ 瓦片載入失敗", true);
       }
       return;
     }
@@ -144,11 +144,11 @@ async function reloadEezLayer() {
     setEezPaneVisibility(state.eezActivePane, true);
     TimingMetrics.setMs("eez-ms", timing.elapsed());
     TimingMetrics.updateSummary();
-    RenderState.finish(transaction, { eez: "tiles ready" });
-    setStatus("EEZ MVT tiles");
+    RenderState.finish(transaction, { eez: "瓦片就緒" });
+    setStatus("EEZ MVT 瓦片就緒");
     return;
   }
-  setStatus("loading EEZ");
+  setStatus("正在載入 EEZ");
   const params = new URLSearchParams();
   params.set("bbox", currentBbox());
   params.set("zoom", String(map.getZoom()));
@@ -171,25 +171,25 @@ async function reloadEezLayer() {
   applyLayerOrder();
   TimingMetrics.setMs("eez-ms", timing.elapsed());
   TimingMetrics.updateSummary();
-  RenderState.finish(transaction, { eez: "geojson ready" });
-  setStatus(`EEZ GeoJSON fallback ${geojson.feature_count}/${geojson.total_feature_count}, ${geojson.detail}`);
+  RenderState.finish(transaction, { eez: "GeoJSON 就緒" });
+  setStatus(`EEZ GeoJSON 備援 ${geojson.feature_count}/${geojson.total_feature_count}，${geojson.detail}`);
 }
 
 function syncEezLayer() {
   if ($("eez-toggle").checked) {
     if (!state.eezLayer) {
-      RenderState.off("eez", "not loaded");
+      RenderState.off("eez", "未載入");
       return;
     }
     if (!map.hasLayer(state.eezLayer)) {
       state.eezLayer.addTo(map);
     }
     setEezPaneVisibility(state.eezActivePane, true);
-    RenderState.ready("eez", "ready");
+    RenderState.ready("eez", "就緒");
     applyLayerOrder();
   } else {
     clearEezLayerForReload();
-    RenderState.off("eez", "off");
+    RenderState.off("eez", "關閉");
   }
 }
 

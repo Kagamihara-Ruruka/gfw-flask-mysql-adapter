@@ -26,6 +26,7 @@ Airflow owner 只需要看這些：
 - `AisLiveService.py`
 - `DatabaseConnect.py`
 - `core.py`
+- `config/adapter.ais_collector.example.json`
 - `handoff/airflow_ais_crawler/ais_collector.handoff.example.json`
 - `handoff/airflow_ais_crawler/ais_collector.handoff.json`（實交接檔，若存在則含真 AISStream API key）
 - `scripts/run_ais_collector.ps1`
@@ -39,16 +40,22 @@ Airflow owner 只需要看這些：
 本機直接跑：
 
 ```powershell
-.\.venv\Scripts\python.exe core.py --config config\adapter.local.json ingest-ais --collector-config config\ais_collector.local.json
+Copy-Item config\adapter.ais_collector.example.json config\adapter.ais_collector.local.json
+Copy-Item handoff\airflow_ais_crawler\ais_collector.handoff.example.json config\ais_collector.local.json
+.\.venv\Scripts\python.exe core.py --config config\adapter.ais_collector.local.json ingest-ais --collector-config config\ais_collector.local.json
 ```
 
 如果交給 Airflow/K8，核心仍然是同一個 command：
 
 ```powershell
-python core.py --config config/adapter.local.json ingest-ais --collector-config config/ais_collector.local.json
+python core.py --config config/adapter.ais_collector.local.json ingest-ais --collector-config config/ais_collector.local.json
 ```
 
+`config/adapter.ais_collector.example.json` 是 crawler 專用的最小 adapter config。上游應複製成 `config/adapter.ais_collector.local.json` 後填入自己的 SQL connection。
+
 `config/ais_collector.local.json` 可以由 Airflow variable、K8 Secret 或 volume mount 產生。不要 commit。
+
+若只拿到兩個 JSON，代表交接包拿錯了。Airflow owner 需要 crawler 本體與 runner；至少要包含 `AisIngestService.py`、`AisStreamProvider.py`、`AisLiveService.py`、`DatabaseConnect.py`、`database/registry.py`、`core.py`、`requirements.txt` 與本 README。
 
 ## API key 交付方式
 

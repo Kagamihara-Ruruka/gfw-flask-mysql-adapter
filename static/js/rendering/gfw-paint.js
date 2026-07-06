@@ -30,3 +30,31 @@ function gfwCellColorCss(row) {
   const [red, green, blue] = gfwCellColorParts(row);
   return `rgb(${red},${green},${blue})`;
 }
+
+function aggregateGfwRowsForRender(rows) {
+  const buckets = new Map();
+  for (const row of rows || []) {
+    const lat = Number(row.lat);
+    const lon = Number(row.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    const latCenter = gfwRenderCellCenter(lat);
+    const lonCenter = gfwRenderCellCenter(normalizeLongitude(lon));
+    const key = `${latCenter.toFixed(6)}:${lonCenter.toFixed(6)}`;
+    const fish = Number(row.fish_sum ?? 0);
+    const previous = buckets.get(key);
+    if (previous) {
+      previous.fish_sum += Number.isFinite(fish) ? fish : 0;
+      previous.source_rows += 1;
+      continue;
+    }
+    buckets.set(key, {
+      ...row,
+      lat: latCenter,
+      lon: lonCenter,
+      fish_sum: Number.isFinite(fish) ? fish : 0,
+      source_rows: 1,
+      render_cell_km: gfwRenderCellKm(),
+    });
+  }
+  return [...buckets.values()];
+}

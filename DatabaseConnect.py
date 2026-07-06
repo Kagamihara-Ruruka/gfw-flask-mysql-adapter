@@ -200,6 +200,59 @@ def server_settings(config: dict[str, Any]) -> dict[str, Any]:
 
 
 _SCHEMA_CACHE: dict[str, Any] = {}
+_RECORDS_CACHE: dict[str, Any] = {}
+_RECORDS_CACHE_TTL_SECONDS = 300
+_RECORDS_CACHE_MAX_ENTRIES = 96
+
+
+def _records_cache_key(
+    *,
+    connection: dict[str, Any],
+    database: str,
+    table: str,
+    columns: list[str],
+    date_value: str | None,
+    bbox: tuple[float, float, float, float] | None,
+    limit: int,
+    offset: int,
+) -> str:
+    return "|".join(
+        [
+            str(connection.get("host", "")),
+            str(connection.get("port", "")),
+            database,
+            table,
+            ",".join(columns),
+            str(date_value or ""),
+            "" if bbox is None else ",".join(f"{value:.6f}" for value in bbox),
+            str(limit),
+            str(offset),
+        ]
+    )
+
+
+def _remember_records_packet(key: str, packet: dict[str, Any]) -> None:
+    _RECORDS_CACHE.pop(key, None)
+    _RECORDS_CACHE[key] = {"created_at": time.time(), "packet": packet}
+    while len(_RECORDS_CACHE) > _RECORDS_CACHE_MAX_ENTRIES:
+        _RECORDS_CACHE.pop(next(iter(_RECORDS_CACHE)))
+
+
+def _cached_records_packet(key: str) -> dict[str, Any] | None:
+    cached = _RECORDS_CACHE.get(key)
+    if not cached:
+        return None
+    if time.time() - cached["created_at"] > _RECORDS_CACHE_TTL_SECONDS:
+        _RECORDS_CACHE.pop(key, None)
+        return None
+    packet = dict(cached["packet"])
+    packet["timing"] = dict(packet["timing"])
+    packet["timing"]["cache_hit"] = True
+    packet["timing"]["query_ms"] = 0
+    packet["timing"]["serialize_ms"] = 0
+    packet["timing"]["server_total_ms"] = 0
+    packet["query_policy"] = dict(packet["query_policy"])
+    return packet
 
 
 @contextmanager
@@ -442,6 +495,19 @@ def _mysql_records_packet(
         params.extend([west, east])
         where_parts.append(f"{mysql_quote(lat_column)} BETWEEN %s AND %s")
         params.extend([south, north])
+    cache_key = _records_cache_key(
+        connection=connection,
+        database=database,
+        table=table,
+        columns=columns,
+        date_value=date_value,
+        bbox=bbox,
+        limit=limit,
+        offset=offset,
+    )
+    cached = _cached_records_packet(cache_key)
+    if cached:
+        return cached
     where_sql = "WHERE " + " AND ".join(where_parts) if where_parts else ""
     column_sql = ", ".join(mysql_quote(column) for column in columns)
     order_sql = f"{mysql_quote(time_column)}, {mysql_quote(lat_column)}, {mysql_quote(lon_column)}"
@@ -460,7 +526,7 @@ def _mysql_records_packet(
     serialize_start = time.perf_counter()
     rows = rows_json_ready(raw_rows)
     serialize_ms = elapsed_ms(serialize_start)
-    return {
+    packet = {
         "rows": rows,
         "row_count": len(rows),
         "limit": limit,
@@ -472,6 +538,8 @@ def _mysql_records_packet(
             "server_total_ms": elapsed_ms(total_start),
         },
     }
+    _remember_records_packet(cache_key, packet)
+    return packet
 
 
 @database_backend("mysql")

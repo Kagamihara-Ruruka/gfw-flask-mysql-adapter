@@ -128,14 +128,14 @@ function closeAisSocket() {
 
 function applyAisPacket(packet, bboxes, timing) {
   if (packet.status === "warming") {
-    RenderState.loading("ais", "warming");
-    TimingMetrics.setText("query-ms", "stream warmup");
+    RenderState.loading("ais", "預熱中");
+    TimingMetrics.setText("query-ms", "串流預熱");
     TimingMetrics.setText("serialize-ms", "-");
-    TimingMetrics.setText("api-ms", "websocket");
+    TimingMetrics.setText("api-ms", "WebSocket");
     TimingMetrics.setMs("client-ms", timing.elapsed());
     TimingMetrics.setCount("row-count", 0);
     TimingMetrics.updateSummary();
-    setStatus(packet.message || "AIS stream warming");
+    setStatus(packet.message || "AIS 串流預熱中");
     return;
   }
   if (packet.status === "locked") {
@@ -144,50 +144,50 @@ function applyAisPacket(packet, bboxes, timing) {
     renderTable([], AIS_COLUMNS, { layer: "ais", wrappedBboxCount: bboxes.length });
     TimingMetrics.setText("query-ms", "-");
     TimingMetrics.setText("serialize-ms", "-");
-    TimingMetrics.setText("api-ms", "locked");
+    TimingMetrics.setText("api-ms", "已鎖定");
     TimingMetrics.setMs("client-ms", timing.elapsed());
     TimingMetrics.setCount("row-count", 0);
     TimingMetrics.updateSummary();
-    RenderState.error("ais", "key gate locked");
-    setStatus(gate.message || packet.message || "AIS SQL read is locked by collector key gate.", true);
+    RenderState.error("ais", "金鑰門檻鎖定");
+    setStatus(gate.message || packet.message || "AIS SQL 讀取被收集器金鑰門檻鎖定。", true);
     return;
   }
   if (packet.status !== "ok") {
-    throw new Error(packet.error || packet.message || "AIS live source failed");
+    throw new Error(packet.error || packet.message || "AIS 即時來源失敗");
   }
   const rows = packet.rows || [];
   renderAisMap(rows);
   renderTable(rows, AIS_COLUMNS, { layer: "ais", wrappedBboxCount: bboxes.length });
   TimingMetrics.setText("query-ms", `${Number(packet.timing?.query_ms || 0).toFixed(3)} ms`);
   TimingMetrics.setText("serialize-ms", "-");
-  TimingMetrics.setText("api-ms", "websocket");
+  TimingMetrics.setText("api-ms", "WebSocket");
   TimingMetrics.setMs("client-ms", timing.elapsed());
   TimingMetrics.setCount("row-count", rows.length);
   TimingMetrics.updateSummary();
-  RenderState.ready("ais", `${rows.length.toLocaleString()} rows`);
+  RenderState.ready("ais", `${rows.length.toLocaleString()} 筆`);
   const stream = packet.stream
-    ? `, ${Number(packet.stream.accepted_messages || 0).toLocaleString()} source rows`
+    ? `，來源 ${Number(packet.stream.accepted_messages || 0).toLocaleString()} 筆`
     : "";
   if (packet.transport === "sql_ingest_websocket") {
     const ingest = packet.ingest || {};
-    const ingestState = ingest.connected ? "ingesting" : ingest.running ? "warming" : "idle";
+    const ingestState = ingest.connected ? "寫入中" : ingest.running ? "預熱中" : "閒置";
     const accepted = Number(ingest.accepted_messages || 0).toLocaleString();
     const written = Number(ingest.written_rows || 0).toLocaleString();
     const skipped = Number(ingest.skipped_stale_rows || 0).toLocaleString();
     const store = ingest.store || {};
     const storeCount = Number(store.vessel_count || rows.length || 0).toLocaleString();
-    const storeSuffix = store.status === "ok" ? `, SQL store ${storeCount}` : "";
+    const storeSuffix = store.status === "ok" ? `，SQL 庫存 ${storeCount}` : "";
     setStatus(
-      `AIS SQL ingest ${ingestState}, ${rows.length.toLocaleString()} visible vessels${storeSuffix}, ${accepted} accepted, ${written} upserted, ${skipped} stale skipped`
+      `AIS SQL 收集器${ingestState}，可見船舶 ${rows.length.toLocaleString()} 艘${storeSuffix}，接收 ${accepted} 筆，寫入 ${written} 筆，略過過期 ${skipped} 筆`
     );
     return;
   }
   if (packet.transport === "aishub_polling") {
     const interval = Number(packet.stream?.poll_interval_seconds || 180);
-    setStatus(`AISHub polling, ${rows.length.toLocaleString()} vessels${stream}, ${interval}s interval`);
+    setStatus(`AISHub 輪詢，可見船舶 ${rows.length.toLocaleString()} 艘${stream}，間隔 ${interval} 秒`);
     return;
   }
-  setStatus(`AIS local SQL stream, ${rows.length.toLocaleString()} vessels${stream}, ${bboxes.length} wrapped bbox`);
+  setStatus(`AIS 本機 SQL 串流，可見船舶 ${rows.length.toLocaleString()} 艘${stream}，${bboxes.length} 個循環邊界框`);
 }
 
 function startAisWebSocket() {
@@ -195,8 +195,8 @@ function startAisWebSocket() {
   const timing = TimingMetrics.stopwatch();
   const bboxes = currentWrappedBboxes();
   closeAisSocket();
-  RenderState.loading("ais", "connecting");
-  setStatus("opening local AIS SQL stream");
+  RenderState.loading("ais", "連線中");
+  setStatus("正在開啟本機 AIS SQL 串流");
 
   return new Promise((resolve) => {
     let resolved = false;
@@ -218,7 +218,7 @@ function startAisWebSocket() {
         closeAisSocket();
         return;
       }
-      setStatus("AIS SQL stream connected");
+      setStatus("AIS SQL 串流已連線");
     };
     socket.onmessage = (event) => {
       if (seq !== state.aisLiveSeq || state.dataLayer !== "ais") return;
@@ -231,7 +231,7 @@ function startAisWebSocket() {
         }
       } catch (err) {
         console.error(err);
-        RenderState.error("ais", "packet failed");
+        RenderState.error("ais", "封包失敗");
         setStatus(err.message, true);
         if (!resolved) {
           resolved = true;
@@ -240,8 +240,8 @@ function startAisWebSocket() {
       }
     };
     socket.onerror = () => {
-      RenderState.loading("ais", "fallback");
-      setStatus("AIS local stream failed, falling back to REST", true);
+      RenderState.loading("ais", "切換備援");
+      setStatus("AIS 本機串流失敗，切換到 REST 備援", true);
       fallbackToRest();
     };
     socket.onclose = () => {
@@ -255,8 +255,8 @@ function startAisWebSocket() {
 async function reloadAisRecordsRest() {
   const seq = ++state.aisLiveSeq;
   const timing = TimingMetrics.stopwatch();
-  RenderState.loading("ais", "REST");
-  setStatus("loading AIS REST fallback");
+  RenderState.loading("ais", "REST 備援");
+  setStatus("正在載入 AIS REST 備援");
   const bboxes = currentWrappedBboxes();
   const packets = await Promise.all(bboxes.map((bbox) => {
     const params = new URLSearchParams();
@@ -277,7 +277,7 @@ async function reloadAisRecordsRest() {
   }
   const failed = packets.find((packet) => packet.status !== "ok");
   if (failed) {
-    throw new Error(failed.error || failed.message || "AIS REST fallback failed");
+    throw new Error(failed.error || failed.message || "AIS REST 備援失敗");
   }
   const seen = new Set();
   const rows = [];
@@ -299,16 +299,16 @@ async function reloadAisRecordsRest() {
   TimingMetrics.setMs("client-ms", timing.elapsed());
   TimingMetrics.setCount("row-count", rows.length);
   TimingMetrics.updateSummary();
-  RenderState.ready("ais", `${rows.length.toLocaleString()} rows`);
-  setStatus(`AIS REST ok, ${rows.length.toLocaleString()} vessels, ${bboxes.length} wrapped bbox`);
+  RenderState.ready("ais", `${rows.length.toLocaleString()} 筆`);
+  setStatus(`AIS REST 完成，可見船舶 ${rows.length.toLocaleString()} 艘，${bboxes.length} 個循環邊界框`);
 }
 
 async function reloadGfwRecords() {
   // Drop stale responses after pan/zoom/date changes.
   const seq = ++state.fetchSeq;
   const timing = TimingMetrics.stopwatch();
-  RenderState.loading("gfw", "querying");
-  setStatus("loading GFW");
+  RenderState.loading("gfw", "查詢中");
+  setStatus("正在載入 GFW");
   const requestedLimit = Number(state.queryPolicy.max_limit || state.queryPolicy.default_limit || 100000);
   const requestedDate = $("date").value;
   const requestContext = {
@@ -319,22 +319,24 @@ async function reloadGfwRecords() {
     center: map.getCenter(),
     zoom: map.getZoom(),
   };
-  if (state.renderedGfwDate && state.renderedGfwDate !== requestedDate) {
-    removeGfwLayer();
+  const dateChanged = state.renderedGfwDate && state.renderedGfwDate !== requestedDate;
+  if (dateChanged) {
+    fadeOutGfwLayer();
   }
   renderTable([], state.datasets[state.datasetId].display_columns, { layer: "gfw", date: requestedDate, loading: true });
   const { packet, cacheHit } = await GfwRecordCache.fetchPacket(requestContext);
   if (state.dataLayer !== "gfw") return;
   if (seq !== state.fetchSeq) {
-    RenderState.loading("gfw", "refreshing");
+    RenderState.loading("gfw", "重新整理");
     schedulePrimaryReload(80);
     return;
   }
   const renderResult = renderGfwMap(packet.rows);
   renderTable(packet.rows, state.datasets[state.datasetId].display_columns, { layer: "gfw", date: requestedDate });
-  if (cacheHit) {
-    TimingMetrics.setText("query-ms", "cache hit");
-    TimingMetrics.setText("serialize-ms", "cache hit");
+  const serverCacheHit = Boolean(packet.timing?.cache_hit);
+  if (cacheHit || serverCacheHit) {
+    TimingMetrics.setText("query-ms", "快取命中");
+    TimingMetrics.setText("serialize-ms", "快取命中");
     TimingMetrics.setMs("api-ms", timing.elapsed());
   } else {
     TimingMetrics.setMs("query-ms", packet.timing.query_ms);
@@ -344,12 +346,12 @@ async function reloadGfwRecords() {
   TimingMetrics.setMs("client-ms", timing.elapsed());
   TimingMetrics.setCount("row-count", packet.row_count);
   TimingMetrics.updateSummary();
-  const sourceDetail = cacheHit ? "cache hit" : "SQL";
+  const sourceDetail = cacheHit ? "瀏覽器快取" : serverCacheHit ? "伺服器快取" : "SQL";
   RenderState.ready(
     "gfw",
-    `${Number(packet.row_count || 0).toLocaleString()} rows, z${currentLodZoom()}, ${sourceDetail}, ${renderResult.detail}`
+    `${Number(packet.row_count || 0).toLocaleString()} 筆，z${currentLodZoom()}，${sourceDetail}，${renderResult.detail}`
   );
-  setStatus(`GFW ready, ${requestedDate}, viewport max, z${currentLodZoom()}, ${sourceDetail}, ${renderResult.detail}`);
+  setStatus(`GFW 就緒，${requestedDate}，視窗最大量，z${currentLodZoom()}，${sourceDetail}，${renderResult.detail}`);
   GfwRecordCache.schedulePrewarm(requestContext);
 }
 
@@ -364,8 +366,8 @@ function clearPrimaryLayerRecords() {
   closeAisSocket();
   removeGfwLayer();
   removeAisLayer();
-  RenderState.off("gfw", "off");
-  RenderState.off("ais", "off");
+  RenderState.off("gfw", "關閉");
+  RenderState.off("ais", "關閉");
   renderTable([], [], { layer: "none" });
   TimingMetrics.setText("query-ms", "-");
   TimingMetrics.setText("serialize-ms", "-");
@@ -373,7 +375,7 @@ function clearPrimaryLayerRecords() {
   TimingMetrics.setText("client-ms", "-");
   TimingMetrics.setCount("row-count", 0);
   TimingMetrics.updateSummary();
-  setStatus($("eez-toggle").checked ? "primary layer off, EEZ only" : "no active map layer");
+  setStatus($("eez-toggle").checked ? "主要資料圖層已關閉，僅顯示 EEZ" : "沒有啟用中的地圖圖層");
 }
 
 function reloadActiveLayer() {

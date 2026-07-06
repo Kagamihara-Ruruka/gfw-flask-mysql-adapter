@@ -24,7 +24,7 @@ const TimingMetrics = (() => {
     const rows = document.getElementById("row-count")?.textContent || "-";
     const client = document.getElementById("client-ms")?.textContent || "-";
     const eez = document.getElementById("eez-ms")?.textContent || "-";
-    setText("metrics-summary", `Rows ${rows} / Render ${client} / EEZ ${eez}`);
+    setText("metrics-summary", `資料列 ${rows} / 渲染 ${client} / EEZ ${eez}`);
   }
 
   function stopwatch() {
@@ -53,13 +53,13 @@ const TimingMetrics = (() => {
       };
       const onError = () => {
         cleanup();
-        reject(new Error("tile load failed"));
+        reject(new Error("瓦片載入失敗"));
       };
       layer.once?.("load", onLoad);
       layer.once?.("tileerror", onError);
       timer = setTimeout(() => {
         cleanup();
-        reject(new Error("tile load timeout"));
+        reject(new Error("瓦片載入逾時"));
       }, timeoutMs);
     });
   }

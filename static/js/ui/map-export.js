@@ -13,7 +13,7 @@ function downloadCanvasAsPng(canvas, filename) {
 
 async function exportMapPng() {
   if (typeof html2canvas !== "function") {
-    throw new Error("Map export library is not loaded");
+    throw new Error("地圖匯出套件尚未載入");
   }
   const target = $("map");
   map.invalidateSize();
@@ -34,13 +34,13 @@ function bindMapExportControls() {
     event.stopPropagation();
     button.disabled = true;
     const originalText = button.textContent;
-    button.textContent = "Saving";
+    button.textContent = "儲存中";
     try {
       await exportMapPng();
-      setStatus("Map PNG saved");
+      setStatus("地圖 PNG 已儲存");
     } catch (err) {
       console.error(err);
-      setStatus(`Map export failed: ${err.message}`, true);
+      setStatus(`地圖匯出失敗：${err.message}`, true);
     } finally {
       button.disabled = false;
       button.textContent = originalText;
