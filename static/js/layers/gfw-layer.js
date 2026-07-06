@@ -58,6 +58,7 @@ function removeGfwLayer() {
   if (state.gridLayer && map.hasLayer(state.gridLayer)) {
     map.removeLayer(state.gridLayer);
   }
+  state.renderedGfwDate = null;
   clearRenderedLodZoom("gfw");
   if (state.dataLayer !== "gfw") {
     RenderState.off("gfw", "off");
@@ -94,6 +95,7 @@ function renderGfwMap(rows) {
     ensureGfwLayer(choice.LayerClass);
     drawMs = state.gridLayer.setRows(rows);
   }
+  state.renderedGfwDate = $("date")?.value || state.renderedGfwDate;
   setRenderedLodZoom("gfw");
   applyLayerOrder();
   return {

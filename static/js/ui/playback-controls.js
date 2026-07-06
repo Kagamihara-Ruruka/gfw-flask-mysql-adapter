@@ -98,12 +98,12 @@ function updatePlaybackControls() {
 
 function stopPlayback() {
   state.isPlaying = false;
-  clearInterval(state.playTimer);
+  clearTimeout(state.playTimer);
   state.playTimer = null;
   updatePlaybackControls();
 }
 
-function stepDay(delta) {
+async function stepDay(delta) {
   const dates = datesInSelectedRange();
   const index = dates.indexOf($("date").value);
   if (index < 0) {
@@ -111,7 +111,7 @@ function stepDay(delta) {
     if (!next) return false;
     $("date").value = next;
     updatePlaybackControls();
-    reloadActiveLayer();
+    await reloadActiveLayer();
     return true;
   }
   const nextIndex = index + delta;
@@ -120,27 +120,71 @@ function stepDay(delta) {
   }
   $("date").value = dates[nextIndex];
   updatePlaybackControls();
-  reloadActiveLayer();
+  await reloadActiveLayer();
   return true;
 }
 
-function setPlayback(active) {
+async function preparePlaybackStart() {
+  const dates = datesInSelectedRange();
+  if (dates.length <= 1) return false;
+  const current = $("date").value;
+  const index = dates.indexOf(current);
+  if (index < 0 || index >= dates.length - 1) {
+    $("date").value = dates[0];
+    updatePlaybackControls();
+    await reloadActiveLayer();
+  }
+  return true;
+}
+
+async function advancePlaybackDay() {
+  const dates = datesInSelectedRange();
+  const index = dates.indexOf($("date").value);
+  if (index < 0 || index >= dates.length - 1) {
+    return false;
+  }
+  $("date").value = dates[index + 1];
+  updatePlaybackControls();
+  await reloadActiveLayer();
+  return true;
+}
+
+function schedulePlaybackTick() {
+  clearTimeout(state.playTimer);
+  state.playTimer = setTimeout(async () => {
+    if (!state.isPlaying) return;
+    try {
+      const advanced = await advancePlaybackDay();
+      if (!advanced) {
+        stopPlayback();
+        return;
+      }
+      if (state.isPlaying) {
+        schedulePlaybackTick();
+      }
+    } catch (err) {
+      stopPlayback();
+      setStatus(err.message, true);
+    }
+  }, state.playIntervalMs);
+}
+
+async function setPlayback(active) {
   if (!active) {
+    stopPlayback();
+    return;
+  }
+  if (!(await preparePlaybackStart())) {
     stopPlayback();
     return;
   }
   state.isPlaying = true;
   state.playIntervalMs = Number($("play-speed").value || state.playIntervalMs);
   updatePlaybackControls();
-  clearInterval(state.playTimer);
-  state.playTimer = setInterval(() => {
-    if (!stepDay(1)) {
-      stopPlayback();
-    }
-  }, state.playIntervalMs);
+  schedulePlaybackTick();
 }
 
-function normalizeDateInputs({ reload = true } = {}) {
+async function normalizeDateInputs({ reload = true } = {}) {
   const dates = datesInSelectedRange();
   if (!dates.length) {
     stopPlayback();
@@ -152,7 +196,7 @@ function normalizeDateInputs({ reload = true } = {}) {
   }
   updatePlaybackControls();
   if (reload) {
-    reloadActiveLayer();
+    await reloadActiveLayer();
   }
 }
 
@@ -163,19 +207,19 @@ function updatePlaybackSpeed() {
   }
 }
 
-function replayFromStart() {
+async function replayFromStart() {
   const dates = datesInSelectedRange();
   if (!dates.length) return;
   stopPlayback();
   $("date").value = dates[0];
   updatePlaybackControls();
-  reloadActiveLayer();
+  await reloadActiveLayer();
 }
 
-function jumpToLatestDate() {
+async function jumpToLatestDate() {
   if (!hasSelectedTimeControlLayer() || !state.availableDates.length) return;
   stopPlayback();
   $("date").value = state.availableDates[state.availableDates.length - 1];
   updatePlaybackControls();
-  reloadActiveLayer();
+  await reloadActiveLayer();
 }

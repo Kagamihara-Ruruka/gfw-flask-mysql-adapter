@@ -67,21 +67,21 @@ function bindControls() {
       reloadActiveLayer();
     }
   });
-  $("start-date").addEventListener("change", () => normalizeDateInputs());
-  $("end-date").addEventListener("change", () => normalizeDateInputs());
-  $("date").addEventListener("change", () => normalizeDateInputs());
-  $("replay").addEventListener("click", replayFromStart);
+  $("start-date").addEventListener("change", () => normalizeDateInputs().catch((err) => setStatus(err.message, true)));
+  $("end-date").addEventListener("change", () => normalizeDateInputs().catch((err) => setStatus(err.message, true)));
+  $("date").addEventListener("change", () => normalizeDateInputs().catch((err) => setStatus(err.message, true)));
+  $("replay").addEventListener("click", () => replayFromStart().catch((err) => setStatus(err.message, true)));
   $("prev-day").addEventListener("click", () => {
     stopPlayback();
-    stepDay(-1);
+    stepDay(-1).catch((err) => setStatus(err.message, true));
   });
   $("next-day").addEventListener("click", () => {
     stopPlayback();
-    stepDay(1);
+    stepDay(1).catch((err) => setStatus(err.message, true));
   });
-  $("play-toggle").addEventListener("click", () => setPlayback(!state.isPlaying));
+  $("play-toggle").addEventListener("click", () => setPlayback(!state.isPlaying).catch((err) => setStatus(err.message, true)));
   $("play-speed").addEventListener("change", updatePlaybackSpeed);
-  $("latest-date").addEventListener("click", jumpToLatestDate);
+  $("latest-date").addEventListener("click", () => jumpToLatestDate().catch((err) => setStatus(err.message, true)));
   $("map-fullscreen").addEventListener("click", () => {
     toggleMapFullscreen().catch((err) => setStatus(err.message, true));
   });

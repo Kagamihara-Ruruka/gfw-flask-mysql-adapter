@@ -67,6 +67,7 @@ const state = {
   },
   rows: [],
   columns: [],
+  renderedGfwDate: null,
   availableDates: [],
   fetchSeq: 0,
   primaryReloadTimer: null,

@@ -310,14 +310,19 @@ async function reloadGfwRecords() {
   RenderState.loading("gfw", "querying");
   setStatus("loading GFW");
   const requestedLimit = Number(state.queryPolicy.max_limit || state.queryPolicy.default_limit || 100000);
+  const requestedDate = $("date").value;
   const requestContext = {
     datasetId: state.datasetId,
-    date: $("date").value,
+    date: requestedDate,
     bbox: currentBbox(),
     limit: requestedLimit,
     center: map.getCenter(),
     zoom: map.getZoom(),
   };
+  if (state.renderedGfwDate && state.renderedGfwDate !== requestedDate) {
+    removeGfwLayer();
+  }
+  renderTable([], state.datasets[state.datasetId].display_columns, { layer: "gfw", date: requestedDate, loading: true });
   const { packet, cacheHit } = await GfwRecordCache.fetchPacket(requestContext);
   if (state.dataLayer !== "gfw") return;
   if (seq !== state.fetchSeq) {
@@ -326,7 +331,7 @@ async function reloadGfwRecords() {
     return;
   }
   const renderResult = renderGfwMap(packet.rows);
-  renderTable(packet.rows, state.datasets[state.datasetId].display_columns, { layer: "gfw", date: $("date").value });
+  renderTable(packet.rows, state.datasets[state.datasetId].display_columns, { layer: "gfw", date: requestedDate });
   if (cacheHit) {
     TimingMetrics.setText("query-ms", "cache hit");
     TimingMetrics.setText("serialize-ms", "cache hit");
@@ -344,7 +349,7 @@ async function reloadGfwRecords() {
     "gfw",
     `${Number(packet.row_count || 0).toLocaleString()} rows, z${currentLodZoom()}, ${sourceDetail}, ${renderResult.detail}`
   );
-  setStatus(`GFW ready, ${$("date").value}, viewport max, z${currentLodZoom()}, ${sourceDetail}, ${renderResult.detail}`);
+  setStatus(`GFW ready, ${requestedDate}, viewport max, z${currentLodZoom()}, ${sourceDetail}, ${renderResult.detail}`);
   GfwRecordCache.schedulePrewarm(requestContext);
 }
 

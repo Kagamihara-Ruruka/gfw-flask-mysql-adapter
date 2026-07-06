@@ -30,7 +30,9 @@ function tableContextLabel(context) {
     return `AIS live viewport, ${bboxCount} wrapped bbox`;
   }
   if (context?.layer === "gfw" && context.date) {
-    return `GFW date ${context.date}, viewport max`;
+    return context.loading
+      ? `GFW date ${context.date}, loading`
+      : `GFW date ${context.date}, viewport max`;
   }
   return "viewport records";
 }
