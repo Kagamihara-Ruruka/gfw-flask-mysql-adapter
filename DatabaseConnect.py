@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import datetime as dt
 import decimal
-import json
 import os
 import re
 import time
@@ -14,6 +13,7 @@ import duckdb
 import pymysql
 from pymysql.cursors import DictCursor
 
+from ConfigContracts import load_assembled_config
 from database.registry import UnsupportedBackendOperation, database_backend, instantiate_backend
 
 ROOT = Path(__file__).resolve().parent
@@ -32,8 +32,7 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     config_path = Path(path) if path else default_config_path()
     if not config_path.is_absolute():
         config_path = ROOT / config_path
-    with config_path.open("r", encoding="utf-8") as fh:
-        config = json.load(fh)
+    config = load_assembled_config(config_path)
     validate_config(config)
     return config
 

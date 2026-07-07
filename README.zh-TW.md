@@ -104,7 +104,7 @@ flowchart TD
 資料庫讀取端以 config + registry 解耦：
 
 - `@database_backend("mysql")` 註冊 backend。
-- `config/adapter.local.json` 決定 dataset 使用哪個 backend、connection、table。
+- `config/router_manifest.local.json` 決定目前啟用哪些 route fragments；DATABASE fragment 決定 dataset 使用哪個 backend、connection、table。
 - `Interface.py` 只知道 API shape，不知道 MySQL 或 Hive 的細節。
 - `DatabaseConnect.py` 負責 read dispatch。
 - `database/registry.py` 負責 backend registration / instantiation。
@@ -246,6 +246,36 @@ http://127.0.0.1:5057
 
 這是測試便利路徑，未來可移除，不應綁死在 core 邏輯。
 
+## EEZ 的 PostGIS 依賴
+
+當 `overlays.eez.provider` 設為 `postgis` 時，PostGIS 是 EEZ 的正式執行期依賴。地圖正常渲染 EEZ 時走 PostGIS MVT table，不是在前端或 Flask 直接讀 `.gpkg`。
+
+先啟動 PostGIS：
+
+```powershell
+docker compose up -d postgis
+```
+
+確認測試資料存在：
+
+```powershell
+.\.venv\Scripts\python.exe core.py --config config\adapter.local.json bootstrap-test-data
+```
+
+把 EEZ 匯入 PostGIS：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\import_eez_to_postgis.py --config config\adapter.local.json --replace
+```
+
+啟動前可先做依賴健檢：
+
+```powershell
+.\.venv\Scripts\python.exe core.py --config config\adapter.local.json check-dependencies
+```
+
+`core.py serve` 也會自動執行同一個依賴檢查。若 `eez_v12`、`eez_v12_tile`、`eez_v12_boundary` 缺表或空表，服務會直接中止並提示匯入命令，不再讓 UI 進入「頁面可開但 EEZ 異常」的模糊狀態。
+
 ## 常用 API
 
 ```text
@@ -277,7 +307,7 @@ node --check static\app.js
 Python syntax check：
 
 ```powershell
-.\.venv\Scripts\python.exe -m py_compile core.py Interface.py DatabaseConnect.py LodOverlayService.py
+.\.venv\Scripts\python.exe -m py_compile core.py Interface.py DatabaseConnect.py DependencyCheck.py LodOverlayService.py
 ```
 
 Git whitespace check：

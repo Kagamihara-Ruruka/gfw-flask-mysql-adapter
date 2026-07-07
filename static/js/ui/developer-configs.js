@@ -12,6 +12,7 @@
   const configGroupOpen = {
     database: true,
     websocket: true,
+    spatial: true,
     demo: false,
   };
 
@@ -261,6 +262,7 @@
     bindConfigWizardControls();
     bindConfigNoteModalControls();
     bindConfigImportModalControls();
+    bindDeveloperLayerImportControls();
     bindDropzone();
     startDeveloperStatusMonitor();
     loadDeveloperConfigs()

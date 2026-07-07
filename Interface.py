@@ -43,6 +43,7 @@ from DeveloperConfigService import (
     connection_status_from_config,
     delete_managed_config,
     discover_config_files,
+    load_layer_mappings,
     load_router_manifest,
     normalize_config_ref,
     read_config_json,
@@ -51,15 +52,101 @@ from DeveloperConfigService import (
     set_config_group,
     set_config_locked,
     set_config_note,
+    set_layer_import,
+    set_layer_mapping_enabled,
+    spatial_status_from_config,
     summarize_config_file,
     unique_managed_config_path,
+    upsert_layer_mapping,
     write_config_json_content,
 )
+from LayerContractService import build_layer_contracts
+from LayerRuntimeService import dataset_layer_id, imported_layer_ids, is_layer_imported, resolve_runtime_dataset
 from LodOverlayService import eez_boundary_mvt_tile_packet, eez_geojson_packet, eez_mvt_tile_packet
 from RenderCapability import server_render_capability
+from SchemaInspector import inspect_relational_routes
 from SpatialOverlay import eez_overlay_packet, elapsed_ms, overlay_settings
 
 SERVER_PID_FILE = Path("flask_pid.txt")
+
+
+def active_websocket_config_path() -> Path | None:
+    manifest = load_router_manifest()
+    active_refs = set(manifest["active_configs"])
+    locked_refs = set(manifest["locked_configs"])
+    for path in discover_config_files():
+        ref = normalize_config_ref(path)
+        if ref not in active_refs:
+            continue
+        summary = summarize_config_file(path, active_refs, locked_refs)
+        if summary.get("group") == "websocket":
+            return path
+    return None
+
+
+def dataset_source_config(config: dict[str, Any], dataset_id: str) -> str | None:
+    for fragment_path in config.get("__config_fragments", []):
+        fragment, error = read_config_json(Path(fragment_path))
+        if error or fragment is None:
+            continue
+        if dataset_id in fragment.get("datasets", {}):
+            return normalize_config_ref(fragment_path)
+    if dataset_id in config.get("datasets", {}):
+        config_path = config.get("__config_path")
+        if config_path:
+            try:
+                return normalize_config_ref(config_path)
+            except Exception:
+                return str(config_path)
+    return None
+
+
+def ais_settings_config_path(config: dict[str, Any]) -> Path:
+    websocket_path = active_websocket_config_path()
+    if websocket_path:
+        return websocket_path
+    config_path = Path(config.get("__config_path") or "config/adapter.local.json")
+    if not config_path.is_absolute():
+        config_path = Path(__file__).resolve().parent / config_path
+    return config_path
+
+
+def active_config_files_by_group(group: str) -> list[tuple[str, Path, dict[str, Any]]]:
+    manifest = load_router_manifest()
+    active_refs = set(manifest["active_configs"])
+    locked_refs = set(manifest["locked_configs"])
+    rows: list[tuple[str, Path, dict[str, Any]]] = []
+    for path in discover_config_files():
+        ref = normalize_config_ref(path)
+        if ref not in active_refs:
+            continue
+        summary = summarize_config_file(path, active_refs, locked_refs)
+        if summary.get("group") != group:
+            continue
+        data, error = read_config_json(path)
+        if error or data is None:
+            continue
+        rows.append((ref, path, data))
+    return rows
+
+
+def route_provided_layer_rows() -> list[dict[str, Any]]:
+    manifest = load_router_manifest()
+    imported_layers = imported_layer_ids()
+    contracts = build_layer_contracts(
+        database_routes=active_config_files_by_group("database"),
+        websocket_routes=active_config_files_by_group("websocket"),
+        spatial_routes=active_config_files_by_group("spatial"),
+    )
+    seen: set[str] = set()
+    rows: list[dict[str, Any]] = []
+    for contract in contracts:
+        layer_id = str(contract.get("layer_id") or "").strip().lower()
+        if not layer_id or layer_id in seen:
+            continue
+        seen.add(layer_id)
+        rows.append({**contract, "imported": layer_id in imported_layers})
+    return rows
 
 
 def port_is_busy(host: str, port: int) -> bool:
@@ -296,8 +383,8 @@ def register_developer_routes(app: Flask) -> None:
             if path.name.endswith(".example.json"):
                 return jsonify({"error": "example config is demo-only and cannot be activated"}), 400
             summary = summarize_config_file(path, set(), set())
-            if summary.get("group") != "database":
-                return jsonify({"error": "only DATABASE config can be activated as a route"}), 400
+            if summary.get("group") == "demo":
+                return jsonify({"error": "demo config cannot be activated as a route"}), 400
             data, error = read_config_json(path)
             if active and (error or data is None):
                 return jsonify({"error": f"invalid config JSON: {error}"}), 400
@@ -397,23 +484,38 @@ def register_developer_routes(app: Flask) -> None:
     def developer_websocket_status():
         try:
             manifest = load_router_manifest()
+            active_refs = set(manifest["active_configs"])
             locked_refs = set(manifest["locked_configs"])
             rows: list[dict[str, Any]] = []
             for path in discover_config_files():
-                summary = summarize_config_file(path, set(), locked_refs)
+                ref = normalize_config_ref(path)
+                if ref not in active_refs:
+                    continue
+                summary = summarize_config_file(path, active_refs, locked_refs)
                 if summary.get("group") != "websocket":
                     continue
-                ref = normalize_config_ref(path)
                 data, error = read_config_json(path)
                 provider = "-"
                 endpoint = "-"
                 configured = False
                 enabled = False
                 if data:
-                    provider = str(data.get("provider") or data.get("stream_provider") or "websocket")
-                    endpoint = str(data.get("stream_url") or data.get("url") or data.get("endpoint") or "-")
+                    live_ais = data.get("live", {}).get("ais", {}) if isinstance(data.get("live"), dict) else {}
+                    provider = str(
+                        data.get("provider")
+                        or data.get("stream_provider")
+                        or live_ais.get("provider")
+                        or "websocket"
+                    )
+                    endpoint = str(
+                        data.get("stream_url")
+                        or data.get("url")
+                        or data.get("endpoint")
+                        or live_ais.get("stream_url")
+                        or "-"
+                    )
                     ingest = data.get("ingest") if isinstance(data.get("ingest"), dict) else {}
-                    enabled = bool(ingest.get("enabled", True))
+                    enabled = bool(ingest.get("enabled", live_ais.get("enabled", True)))
                     configured = bool(provider and endpoint != "-")
                 rows.append(
                     {
@@ -426,6 +528,112 @@ def register_developer_routes(app: Flask) -> None:
                     }
                 )
             return jsonify({"manifest": manifest, "rows": rows})
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.get("/api/developer/spatial-status")
+    def developer_spatial_status():
+        try:
+            manifest = load_router_manifest()
+            active_refs = set(manifest["active_configs"])
+            locked_refs = set(manifest["locked_configs"])
+            rows: list[dict[str, Any]] = []
+            for path in discover_config_files():
+                if path.name.endswith(".example.json"):
+                    continue
+                ref = normalize_config_ref(path)
+                if ref not in active_refs:
+                    continue
+                summary = summarize_config_file(path, active_refs, locked_refs)
+                if summary.get("group") != "spatial":
+                    continue
+                data, error = read_config_json(path)
+                if error or data is None:
+                    continue
+                rows.extend(spatial_status_from_config(ref, data))
+            return jsonify({"manifest": manifest, "rows": rows})
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.get("/api/developer/layer-imports")
+    def developer_layer_imports():
+        try:
+            return jsonify({"manifest": load_router_manifest(), "rows": route_provided_layer_rows()})
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.post("/api/developer/layer-imports")
+    def developer_layer_imports_update():
+        try:
+            payload = request.get_json(silent=True) or {}
+            layer_id = str(payload.get("layer_id") or "")
+            imported = bool(payload.get("imported"))
+            result = set_layer_import(layer_id, imported)
+            return jsonify({"rows": route_provided_layer_rows(), **result})
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.get("/api/developer/schema-profiles")
+    def developer_schema_profiles():
+        try:
+            return jsonify(
+                {
+                    "profiles": inspect_relational_routes(active_config_files_by_group("database")),
+                    "mappings": load_layer_mappings()["mappings"],
+                }
+            )
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.get("/api/developer/layer-mappings")
+    def developer_layer_mappings():
+        try:
+            return jsonify(load_layer_mappings())
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.post("/api/developer/layer-mappings")
+    def developer_layer_mappings_upsert():
+        try:
+            payload = request.get_json(silent=True) or {}
+            result = upsert_layer_mapping(payload)
+            return jsonify(
+                {
+                    **result,
+                    "layer_rows": route_provided_layer_rows(),
+                }
+            )
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.post("/api/developer/layer-mappings/enabled")
+    def developer_layer_mappings_enabled():
+        try:
+            payload = request.get_json(silent=True) or {}
+            mapping_id = str(payload.get("mapping_id") or "")
+            enabled = bool(payload.get("enabled"))
+            result = set_layer_mapping_enabled(mapping_id, enabled)
+            return jsonify(
+                {
+                    **result,
+                    "layer_rows": route_provided_layer_rows(),
+                }
+            )
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.get("/api/developer/layer-contracts")
+    def developer_layer_contracts():
+        try:
+            return jsonify(
+                {
+                    "contracts": build_layer_contracts(
+                        database_routes=active_config_files_by_group("database"),
+                        websocket_routes=active_config_files_by_group("websocket"),
+                        spatial_routes=active_config_files_by_group("spatial"),
+                    )
+                }
+            )
         except Exception as exc:
             return jsonify({"error": str(exc)}), 400
 
@@ -457,7 +665,11 @@ def create_app(config: dict[str, Any], *, developer_url: str | None = None) -> F
     def get_dataset(dataset_id: str) -> dict[str, Any]:
         if dataset_id not in config["datasets"]:
             raise ValueError(f"unknown dataset: {dataset_id}")
-        return config["datasets"][dataset_id]
+        dataset, _runtime = resolve_runtime_dataset(config, dataset_id, config["datasets"][dataset_id])
+        layer_id = dataset_layer_id(dataset_id, dataset)
+        if not is_layer_imported(layer_id):
+            raise ValueError(f"data layer is not imported: {layer_id}")
+        return dataset
 
     @app.get("/")
     def index():
@@ -504,25 +716,36 @@ def create_app(config: dict[str, Any], *, developer_url: str | None = None) -> F
     def datasets():
         safe = {}
         policy = query_policy(config)
+        imported_layers = imported_layer_ids()
         for dataset_id, dataset in config["datasets"].items():
-            backend_kind, connection_ref, _connection = dataset_backend_info(config, dataset)
+            runtime_dataset, runtime = resolve_runtime_dataset(config, dataset_id, dataset)
+            if runtime["layer_id"] not in imported_layers:
+                continue
+            backend_kind, connection_ref, _connection = dataset_backend_info(config, runtime_dataset)
             safe[dataset_id] = {
-                "label": dataset.get("label", dataset_id),
+                "label": runtime_dataset.get("label", dataset_id),
                 "backend": backend_kind,
                 "connection_ref": connection_ref,
-                "time_column": dataset["time_column"],
-                "lat_column": dataset["lat_column"],
-                "lon_column": dataset["lon_column"],
-                "display_columns": dataset["display_columns"],
-                "metric_columns": dataset.get("metric_columns", []),
-                "category_columns": dataset.get("category_columns", []),
+                "route_group": "database",
+                "layer_id": runtime["layer_id"],
+                "source_config": dataset_source_config(config, dataset_id),
+                "time_column": runtime_dataset["time_column"],
+                "lat_column": runtime_dataset["lat_column"],
+                "lon_column": runtime_dataset["lon_column"],
+                "display_columns": runtime_dataset["display_columns"],
+                "metric_columns": runtime_dataset.get("metric_columns", []),
+                "category_columns": runtime_dataset.get("category_columns", []),
+                "runtime": runtime,
             }
+        configured_default = str(config.get("default_dataset") or "")
+        default_dataset = configured_default if configured_default in safe else (next(iter(safe.keys()), None))
         return jsonify(
             {
-                "default_dataset": config.get("default_dataset"),
+                "default_dataset": default_dataset,
                 "sql_backend": config.get("sql_backend", {"kind": "mysql", "driver": "pymysql"}),
                 "query_policy": policy,
                 "datasets": safe,
+                "imported_layers": sorted(imported_layers),
             }
         )
 
@@ -530,8 +753,15 @@ def create_app(config: dict[str, Any], *, developer_url: str | None = None) -> F
     def schema(dataset_id: str):
         try:
             dataset = get_dataset(dataset_id)
+            runtime = {
+                "layer_id": dataset_layer_id(dataset_id, dataset),
+                "source": dataset.get("__runtime_source", "legacy_dataset_contract"),
+                "mapping_id": dataset.get("__runtime_mapping_id"),
+                "config_path": dataset.get("__runtime_config_path"),
+            }
             packet = schema_packet(config, dataset)
             packet["dataset_id"] = dataset_id
+            packet["runtime"] = runtime
             return jsonify(packet)
         except Exception as exc:
             return jsonify({"error": str(exc)}), 400
@@ -541,6 +771,12 @@ def create_app(config: dict[str, Any], *, developer_url: str | None = None) -> F
         request_start = time.perf_counter()
         try:
             dataset = get_dataset(dataset_id)
+            runtime = {
+                "layer_id": dataset_layer_id(dataset_id, dataset),
+                "source": dataset.get("__runtime_source", "legacy_dataset_contract"),
+                "mapping_id": dataset.get("__runtime_mapping_id"),
+                "config_path": dataset.get("__runtime_config_path"),
+            }
             packet = records_packet(
                 config,
                 dataset,
@@ -550,6 +786,7 @@ def create_app(config: dict[str, Any], *, developer_url: str | None = None) -> F
                 offset=int(request.args.get("offset", "0")),
             )
             packet["dataset_id"] = dataset_id
+            packet["runtime"] = runtime
             packet["timing"]["api_total_ms"] = elapsed_ms(request_start)
             return jsonify(packet)
         except Exception as exc:
@@ -680,9 +917,7 @@ def create_app(config: dict[str, Any], *, developer_url: str | None = None) -> F
             username = str(payload.get("username", "")).strip()
             if len(username) < 3:
                 return jsonify({"status": "error", "error": "AISHub username is too short."}), 400
-            config_path = Path(config.get("__config_path") or "config/adapter.local.json")
-            if not config_path.is_absolute():
-                config_path = Path(__file__).resolve().parent / config_path
+            config_path = ais_settings_config_path(config)
             data = json.loads(config_path.read_text(encoding="utf-8"))
             ais = data.setdefault("live", {}).setdefault("ais", {})
             ais["enabled"] = True
@@ -710,9 +945,7 @@ def create_app(config: dict[str, Any], *, developer_url: str | None = None) -> F
     def aishub_settings_delete():
         # Dormant fallback path: hidden from the MVP UI.
         try:
-            config_path = Path(config.get("__config_path") or "config/adapter.local.json")
-            if not config_path.is_absolute():
-                config_path = Path(__file__).resolve().parent / config_path
+            config_path = ais_settings_config_path(config)
             data = json.loads(config_path.read_text(encoding="utf-8"))
             ais = data.setdefault("live", {}).setdefault("ais", {})
             ais["provider"] = "aisstream" if ais.get("api_key") else "mysql"

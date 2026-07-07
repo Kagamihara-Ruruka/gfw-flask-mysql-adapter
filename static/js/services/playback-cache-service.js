@@ -64,6 +64,11 @@ const PlaybackCacheService = (() => {
     };
   }
 
+  function clear() {
+    state.playbackCache.isPreheating = false;
+    resetStats(0);
+  }
+
   function updateStats(event) {
     const stats = state.playbackCache.stats;
     stats.completed = Math.min(stats.queued, Number(stats.completed || 0) + 1);
@@ -121,6 +126,7 @@ const PlaybackCacheService = (() => {
 
   return {
     BYTES_PER_GB,
+    clear,
     formatBytes,
     isEnabledForCurrentLayer,
     layerLabel,

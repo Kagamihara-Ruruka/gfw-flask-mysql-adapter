@@ -6,7 +6,9 @@ async function init() {
     await loadSchema();
     await reloadActiveLayer();
     state.isBootstrapping = false;
-    reloadEezLayer().catch((err) => console.error("EEZ overlay failed", err));
+    if (state.importedLayers?.eez !== false && $("eez-toggle")?.checked) {
+      reloadEezLayer().catch((err) => console.error("EEZ overlay failed", err));
+    }
   } catch (err) {
     console.error(err);
     setStatus(err.message, true);
@@ -77,6 +79,9 @@ function bindControls() {
   bindPageTabs();
   $("layer-gfw").addEventListener("change", () => selectDataLayer("gfw"));
   $("layer-ais").addEventListener("change", () => selectDataLayer("ais"));
+  $("dataset-select")?.addEventListener("change", (event) => {
+    selectDataset(event.target.value).catch((err) => setStatus(err.message, true));
+  });
   bindDataLayerMenuDismiss();
   for (const button of document.querySelectorAll(".layer-settings-toggle")) {
     button.setAttribute("aria-expanded", "false");
@@ -134,6 +139,27 @@ function bindControls() {
   $("table-scroll").addEventListener("scroll", () => requestAnimationFrame(renderTableWindow));
 }
 
+function bindDeveloperBridge() {
+  window.addEventListener("message", (event) => {
+    if (event.data?.type !== "rrkal:layer-imports-changed") {
+      return;
+    }
+    try {
+      const origin = new URL(event.origin);
+      if (origin.hostname !== window.location.hostname) {
+        return;
+      }
+    } catch {
+      return;
+    }
+    loadDatasets()
+      .then(() => loadSchema())
+      .then(() => reloadActiveLayer())
+      .catch((err) => setStatus(err.message, true));
+  });
+}
+
 bindControls();
+bindDeveloperBridge();
 bindMapRefresh();
 init();

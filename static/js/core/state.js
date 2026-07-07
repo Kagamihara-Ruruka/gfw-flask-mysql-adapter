@@ -2,6 +2,8 @@ const state = {
   datasets: {},
   datasetId: null,
   dataLayer: null,
+  importedLayerIds: [],
+  importedLayers: { gfw: true, ais: true, eez: true },
   layerOrder: ["gfw", "ais", "eez"],
   layerAlpha: { gfw: 0.58, ais: 0.58, eez: 1 },
   schema: null,

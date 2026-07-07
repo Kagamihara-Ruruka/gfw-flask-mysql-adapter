@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>開發者路由器控制面</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="/static/styles.css?v=developer-split-v3">
-  <link rel="stylesheet" href="/static/css/developer.css?v=developer-split-v3">
+  <link rel="stylesheet" href="/static/styles.css?v=config-browser-groups-v1">
+  <link rel="stylesheet" href="/static/css/developer.css?v=config-browser-groups-v1">
 </head>
 <body class="developer-control-body{% if embedded %} is-embedded{% endif %}">
   {% if not embedded %}
@@ -208,6 +208,7 @@
                       <select id="developer-config-import-modal-group" class="developer-group-select">
                         <option value="database">DATABASE</option>
                         <option value="websocket">WEBSOCKET</option>
+                        <option value="spatial">SPATIAL</option>
                         <option value="demo">DEMO</option>
                       </select>
                     </label>
@@ -231,8 +232,8 @@
                       <p>拖拉或選取標準 JSON 匯入。</p>
                     </div>
                     <div class="developer-panel-actions">
-                      <button id="developer-config-wizard-toggle" class="small-button" type="button">引導精靈</button>
-                      <button id="developer-config-import-open" class="small-button developer-import-button" type="button">匯入</button>
+                      <button id="developer-config-wizard-toggle" class="small-button developer-primary-action" type="button">引導精靈</button>
+                      <button id="developer-config-import-open" class="small-button developer-primary-action developer-import-button" type="button">匯入</button>
                     </div>
                   </header>
                   <div id="developer-config-dropzone" class="developer-config-dropzone">
@@ -256,6 +257,7 @@
                       <select id="developer-config-group" class="developer-group-select" disabled>
                         <option value="database">DATABASE</option>
                         <option value="websocket">WEBSOCKET</option>
+                        <option value="spatial">SPATIAL</option>
                         <option value="demo">DEMO</option>
                       </select>
                     </label>
@@ -288,7 +290,7 @@
                   <section class="developer-status-machine" aria-label="資料庫路由狀態機">
                     <h4>DATABASE</h4>
                     <div class="developer-status-table-wrap">
-                      <table class="developer-status-table">
+                      <table class="developer-status-table is-database">
                         <thead>
                           <tr>
                             <th>Config</th>
@@ -310,7 +312,7 @@
                   <section class="developer-status-machine" aria-label="WebSocket 狀態機">
                     <h4>WEBSOCKET</h4>
                     <div class="developer-status-table-wrap">
-                      <table class="developer-status-table">
+                      <table class="developer-status-table is-websocket">
                         <thead>
                           <tr>
                             <th>Config</th>
@@ -329,6 +331,92 @@
                       </table>
                     </div>
                   </section>
+                  <section class="developer-status-machine is-spatial-machine" aria-label="空間路由狀態機">
+                    <h4>SPATIAL</h4>
+                    <div class="developer-status-table-wrap">
+                      <table class="developer-status-table is-spatial">
+                        <thead>
+                          <tr>
+                            <th>Config</th>
+                            <th>Overlay</th>
+                            <th>Backend</th>
+                            <th>啟用</th>
+                            <th>連線</th>
+                            <th>表格</th>
+                            <th>細節</th>
+                          </tr>
+                        </thead>
+                        <tbody id="developer-spatial-status-body">
+                          <tr>
+                            <td colspan="7">等待 Spatial 狀態資料。</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                </div>
+              </section>
+            </div>
+          </details>
+
+          <details class="settings-toggle-card developer-toggle-card developer-mapping-card" open>
+            <summary class="settings-toggle-summary">
+              <span class="settings-toggle-caret" aria-hidden="true"></span>
+              <span>
+                <span class="settings-toggle-title">Schema / Mapping 控制器</span>
+                <span class="settings-toggle-description">後端探測啟用的關聯式路由；前端在這裡檢視可用表格與欄位。</span>
+              </span>
+            </summary>
+            <div class="settings-toggle-content">
+              <section class="developer-mapping-panel" aria-label="Schema Mapping 控制器">
+                <header class="developer-panel-header">
+                  <div>
+                    <h3>關聯式 Schema 探測</h3>
+                    <p>Inspector 只列出資料庫 schema 與候選提示；欄位語意由後續 Mapping Controller 手動決定。</p>
+                  </div>
+                  <span id="developer-schema-profile-status" class="developer-status-badge is-idle">待命</span>
+                </header>
+                <div id="developer-schema-profile-list" class="developer-schema-profile-list">
+                  <div class="developer-schema-empty">等待 schema profile。</div>
+                </div>
+              </section>
+            </div>
+          </details>
+
+          <details class="settings-toggle-card developer-toggle-card developer-layer-imports-card" open>
+            <summary class="settings-toggle-summary">
+              <span class="settings-toggle-caret" aria-hidden="true"></span>
+              <span>
+                <span class="settings-toggle-title">資料圖層導入</span>
+                <span class="settings-toggle-description">從啟用路由提供的圖層中，選擇要放進儀表板候選清單的項目。</span>
+              </span>
+            </summary>
+            <div class="settings-toggle-content">
+              <section class="developer-layer-imports-panel" aria-label="資料圖層導入">
+                <header class="developer-panel-header">
+                  <div>
+                    <h3>路由提供圖層</h3>
+                    <p>勾選代表導入儀表板的「資料圖層」候選清單；儀表板再決定是否查詢與渲染。</p>
+                  </div>
+                </header>
+                <div class="developer-status-table-wrap is-layer-imports-wrap">
+                  <table class="developer-status-table is-layer-imports">
+                    <thead>
+                      <tr>
+                        <th>導入</th>
+                        <th>圖層</th>
+                        <th>來源路由</th>
+                        <th>來源資料</th>
+                        <th>Config</th>
+                        <th>細節</th>
+                      </tr>
+                    </thead>
+                    <tbody id="developer-layer-imports-body">
+                      <tr>
+                        <td colspan="6">等待路由圖層資料。</td>
+                      </tr>
+                    </tbody>
+                  </table>
                 </div>
               </section>
             </div>
@@ -339,13 +427,13 @@
     </section>
   </main>
 
-  <script src="/static/js/ui/developer-utils.js?v=developer-split-v3"></script>
-  <script src="/static/js/ui/developer-api.js?v=developer-split-v3"></script>
-  <script src="/static/js/ui/developer-config-list.js?v=developer-split-v3"></script>
-  <script src="/static/js/ui/developer-status-machines.js?v=developer-split-v3"></script>
-  <script src="/static/js/ui/developer-import.js?v=developer-split-v3"></script>
-  <script src="/static/js/ui/developer-wizard.js?v=developer-split-v3"></script>
-  <script src="/static/js/ui/developer-configs.js?v=developer-split-v3"></script>
+  <script src="/static/js/ui/developer-utils.js?v=config-browser-groups-v1"></script>
+  <script src="/static/js/ui/developer-api.js?v=config-browser-groups-v1"></script>
+  <script src="/static/js/ui/developer-config-list.js?v=config-browser-groups-v1"></script>
+  <script src="/static/js/ui/developer-status-machines.js?v=config-browser-groups-v1"></script>
+  <script src="/static/js/ui/developer-import.js?v=config-browser-groups-v1"></script>
+  <script src="/static/js/ui/developer-wizard.js?v=config-browser-groups-v1"></script>
+  <script src="/static/js/ui/developer-configs.js?v=config-browser-groups-v1"></script>
   <script>
     window.addEventListener("DOMContentLoaded", () => {
       if (typeof bindDeveloperConfigControls === "function") {

@@ -1,20 +1,23 @@
 .developer-page-grid {
+  --developer-section-gap: clamp(0.75rem, 0.9vw, 1rem);
+  --developer-section-content-gap: clamp(0.65rem, 0.8vw, 0.85rem);
+  --developer-section-margin-top: clamp(1rem, 1.2vw, 1.2rem);
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 12px;
-  margin-top: 18px;
+  gap: var(--developer-section-gap);
+  margin-top: var(--developer-section-margin-top);
 }
 
 .developer-toggle-card .settings-toggle-content {
   display: grid;
-  gap: 12px;
+  gap: var(--developer-section-content-gap);
 }
 
 .developer-router-grid {
   --developer-router-pane-height: min(72vh, 46rem);
   display: grid;
   grid-template-columns: minmax(0, 38fr) minmax(0, 62fr);
-  gap: 12px;
+  gap: var(--developer-section-content-gap);
   align-items: stretch;
 }
 
@@ -64,6 +67,35 @@
   gap: 8px;
 }
 
+.developer-primary-action {
+  display: inline-grid;
+  place-items: center;
+  min-inline-size: 5.5em;
+  min-block-size: 2.25em;
+  border-color: #2ea043;
+  border-radius: 8px;
+  background: #238636;
+  color: #f0fff4;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease,
+    box-shadow 140ms ease,
+    transform 120ms ease;
+}
+
+.developer-primary-action:hover,
+.developer-primary-action:focus-visible {
+  border-color: #56d364;
+  background: #2ea043;
+  box-shadow: 0 0 0 2px rgb(46 160 67 / 18%);
+}
+
+.developer-primary-action:active {
+  transform: translateY(1px);
+}
+
 .developer-panel-header h3 {
   margin: 0;
   color: var(--text);
@@ -77,18 +109,7 @@
 }
 
 .developer-import-button {
-  display: inline-grid;
-  place-items: center;
-  border-color: #2ea043;
-  background: #238636;
   color: #f0fff4;
-  cursor: pointer;
-}
-
-.developer-import-button:hover,
-.developer-import-button:focus-within {
-  border-color: #56d364;
-  background: #2ea043;
 }
 
 .developer-import-modal-grid {

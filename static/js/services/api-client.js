@@ -9,14 +9,78 @@ async function fetchJson(url) {
 
 async function loadDatasets() {
   const packet = await fetchJson("/api/datasets");
-  state.datasets = packet.datasets;
+  state.datasets = packet.datasets || {};
+  const imported = new Set(packet.imported_layers || ["gfw", "ais", "eez"]);
+  state.importedLayerIds = Array.from(imported);
+  state.importedLayers = {
+    gfw: imported.has("gfw"),
+    ais: imported.has("ais"),
+    eez: imported.has("eez"),
+  };
   // Keep frontend limits aligned with the Flask adapter config.
   state.queryPolicy = packet.query_policy || state.queryPolicy;
-  state.datasetId = Object.keys(state.datasets)[0];
+  const datasetIds = Object.keys(state.datasets);
+  state.datasetId = packet.default_dataset && state.datasets[packet.default_dataset]
+    ? packet.default_dataset
+    : (datasetIds[0] || null);
+  renderDatasetSelect();
   updateDataLayerMenu();
 }
 
+function renderDatasetSelect() {
+  const select = $("dataset-select");
+  if (!select) return;
+  select.innerHTML = "";
+  const entries = Object.entries(state.datasets || {});
+  if (!entries.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "尚未導入資料圖層";
+    select.appendChild(option);
+    select.value = "";
+    select.disabled = true;
+    return;
+  }
+  select.disabled = false;
+  for (const [datasetId, dataset] of entries) {
+    const option = document.createElement("option");
+    option.value = datasetId;
+    option.textContent = dataset.label || datasetId;
+    const route = [dataset.source_config, dataset.connection_ref].filter(Boolean).join(" / ");
+    option.title = route || datasetId;
+    select.appendChild(option);
+  }
+  select.value = state.datasetId || "";
+}
+
+async function selectDataset(datasetId) {
+  if (!datasetId || !state.datasets[datasetId] || datasetId === state.datasetId) return;
+  stopPlayback();
+  state.datasetId = datasetId;
+  state.rows = [];
+  state.columns = [];
+  state.renderedGfwDate = null;
+  if (typeof GfwRecordCache !== "undefined") {
+    GfwRecordCache.clear();
+  }
+  if (typeof PlaybackCacheService !== "undefined") {
+    PlaybackCacheService.clear();
+  }
+  await loadSchema();
+  if (state.dataLayer === "gfw") {
+    await reloadGfwRecords();
+  } else {
+    renderTable([], state.datasets[state.datasetId].display_columns, { layer: "none" });
+    updatePlaybackControls();
+  }
+}
+
 async function loadSchema() {
+  if (!state.datasetId || !state.datasets[state.datasetId]) {
+    state.schema = null;
+    setAvailableDates([]);
+    return null;
+  }
   const packet = await fetchJson(`/api/datasets/${state.datasetId}/schema`);
   state.schema = packet;
   setAvailableDates(packet.dates || []);
@@ -304,6 +368,12 @@ async function reloadAisRecordsRest() {
 }
 
 async function reloadGfwRecords() {
+  if (!state.datasetId || !state.datasets[state.datasetId]) {
+    clearPrimaryLayerRecords();
+    RenderState.off("gfw", "未導入");
+    setStatus("尚未導入可查詢的 GFW 資料圖層");
+    return;
+  }
   // Drop stale responses after pan/zoom/date changes.
   const seq = ++state.fetchSeq;
   const timing = TimingMetrics.stopwatch();

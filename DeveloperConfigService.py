@@ -5,13 +5,20 @@ import re
 from pathlib import Path
 from typing import Any
 
+import psycopg
+
 from DatabaseConnect import mysql_connection
+from SpatialOverlay import overlay_settings, postgis_dsn, validate_identifier
 
 CONFIG_ROOT = Path("config")
 MANAGED_CONFIG_DIR = CONFIG_ROOT / "managed"
 ROUTER_MANIFEST_PATH = CONFIG_ROOT / "router_manifest.local.json"
+LAYER_MAPPINGS_PATH = CONFIG_ROOT / "layer_mappings.local.json"
 CONFIG_NAME_PATTERN = re.compile(r"[^A-Za-z0-9_.-]+")
-CONFIG_GROUPS = {"database", "websocket", "demo"}
+DATA_LAYER_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
+CONFIG_GROUPS = {"database", "websocket", "spatial", "demo"}
+DATA_LAYER_IDS = {"gfw", "ais", "eez"}
+DEFAULT_IMPORTED_LAYERS = ["gfw", "ais", "eez"]
 
 
 def config_root() -> Path:
@@ -26,14 +33,31 @@ def router_manifest_path() -> Path:
     return ROUTER_MANIFEST_PATH.resolve()
 
 
+def layer_mappings_path() -> Path:
+    config_root()
+    return LAYER_MAPPINGS_PATH.resolve()
+
+
 def load_router_manifest() -> dict[str, Any]:
     path = router_manifest_path()
     if not path.exists():
-        return {"active_configs": [], "locked_configs": [], "config_notes": {}, "config_groups": {}}
+        return {
+            "active_configs": [],
+            "locked_configs": [],
+            "config_notes": {},
+            "config_groups": {},
+            "imported_layers": list(DEFAULT_IMPORTED_LAYERS),
+        }
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
-        return {"active_configs": [], "locked_configs": [], "config_notes": {}, "config_groups": {}}
+        return {
+            "active_configs": [],
+            "locked_configs": [],
+            "config_notes": {},
+            "config_groups": {},
+            "imported_layers": list(DEFAULT_IMPORTED_LAYERS),
+        }
     active = data.get("active_configs")
     if not isinstance(active, list):
         active = []
@@ -46,6 +70,9 @@ def load_router_manifest() -> dict[str, Any]:
     groups = data.get("config_groups")
     if not isinstance(groups, dict):
         groups = {}
+    imported_layers = normalize_imported_layers(data.get("imported_layers"))
+    if "imported_layers" not in data:
+        imported_layers = list(DEFAULT_IMPORTED_LAYERS)
     return {
         "active_configs": [str(item) for item in active],
         "locked_configs": [str(item) for item in locked],
@@ -55,6 +82,7 @@ def load_router_manifest() -> dict[str, Any]:
             for key, value in groups.items()
             if normalize_config_group(str(value))
         },
+        "imported_layers": imported_layers,
     }
 
 
@@ -74,10 +102,20 @@ def save_router_manifest(manifest: dict[str, Any]) -> None:
         group = normalize_config_group(str(value))
         if group:
             groups[ref] = group
-    active = sorted(ref for ref in active if groups.get(ref, "database") == "database")
+    active = sorted(ref for ref in active if groups.get(ref, "database") != "demo")
+    if "imported_layers" in manifest:
+        imported_layers = normalize_imported_layers(manifest.get("imported_layers"))
+    else:
+        imported_layers = _existing_imported_layers(path)
     path.write_text(
         json.dumps(
-            {"active_configs": active, "locked_configs": locked, "config_notes": notes, "config_groups": groups},
+            {
+                "active_configs": active,
+                "locked_configs": locked,
+                "config_notes": notes,
+                "config_groups": groups,
+                "imported_layers": imported_layers,
+            },
             ensure_ascii=False,
             indent=2,
         )
@@ -86,12 +124,182 @@ def save_router_manifest(manifest: dict[str, Any]) -> None:
     )
 
 
+def normalize_imported_layers(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    layers = {str(item).strip().lower() for item in value}
+    return sorted(layer for layer in layers if DATA_LAYER_ID_PATTERN.match(layer))
+
+
+def _existing_imported_layers(path: Path) -> list[str]:
+    if not path.exists():
+        return list(DEFAULT_IMPORTED_LAYERS)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return list(DEFAULT_IMPORTED_LAYERS)
+    if "imported_layers" not in data:
+        return list(DEFAULT_IMPORTED_LAYERS)
+    return normalize_imported_layers(data.get("imported_layers"))
+
+
+def set_layer_import(layer_id: str, imported: bool) -> dict[str, Any]:
+    layer = str(layer_id or "").strip().lower()
+    if not DATA_LAYER_ID_PATTERN.match(layer):
+        raise ValueError("unknown data layer")
+    manifest = load_router_manifest()
+    layers = set(normalize_imported_layers(manifest.get("imported_layers")))
+    if imported:
+        layers.add(layer)
+    else:
+        layers.discard(layer)
+    manifest["imported_layers"] = sorted(layers)
+    save_router_manifest(manifest)
+    return {"status": "ok", "manifest": load_router_manifest()}
+
+
+def load_layer_mappings() -> dict[str, Any]:
+    path = layer_mappings_path()
+    if not path.exists():
+        return {"mappings": []}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {"mappings": []}
+    mappings = data.get("mappings")
+    if not isinstance(mappings, list):
+        mappings = []
+    normalized: list[dict[str, Any]] = []
+    for item in mappings:
+        if not isinstance(item, dict):
+            continue
+        try:
+            normalized.append(normalize_layer_mapping(item))
+        except ValueError:
+            continue
+    return {"mappings": normalized}
+
+
+def save_layer_mappings(packet: dict[str, Any]) -> None:
+    mappings = []
+    for item in packet.get("mappings") or []:
+        if isinstance(item, dict):
+            mappings.append(normalize_layer_mapping(item))
+    path = layer_mappings_path()
+    path.write_text(
+        json.dumps({"mappings": sorted(mappings, key=lambda row: row["mapping_id"])}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _clean_column_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    cleaned: list[str] = []
+    for item in value:
+        text = str(item or "").strip()
+        if text and text not in cleaned:
+            validate_identifier(text, "mapping column")
+            cleaned.append(text)
+    return cleaned
+
+
+def _mapping_id(config_ref: str, connection_ref: str, table: str, layer_id: str) -> str:
+    safe_parts = [
+        re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(config_ref).stem),
+        re.sub(r"[^A-Za-z0-9_.-]+", "_", connection_ref),
+        re.sub(r"[^A-Za-z0-9_.-]+", "_", table),
+        re.sub(r"[^A-Za-z0-9_.-]+", "_", layer_id),
+    ]
+    return "__".join(part.strip("._") or "route" for part in safe_parts)
+
+
+def normalize_layer_mapping(value: dict[str, Any]) -> dict[str, Any]:
+    config_ref = normalize_config_ref(str(value.get("config_path") or value.get("config_ref") or ""))
+    connection_ref = str(value.get("connection_ref") or "").strip()
+    table = str(value.get("table") or value.get("table_ref") or "").strip()
+    database = str(value.get("database") or "").strip()
+    layer_id = str(value.get("layer_id") or "").strip().lower()
+    label = str(value.get("label") or layer_id or table).strip()
+    if not connection_ref:
+        raise ValueError("mapping connection_ref is required")
+    validate_identifier(connection_ref, "mapping connection_ref")
+    validate_identifier(table, "mapping table")
+    if database:
+        validate_identifier(database, "mapping database")
+    if not DATA_LAYER_ID_PATTERN.match(layer_id):
+        raise ValueError("mapping layer_id is invalid")
+    roles = value.get("roles") if isinstance(value.get("roles"), dict) else {}
+    normalized_roles: dict[str, str] = {}
+    for role in ("time", "lat", "lon", "id"):
+        column = str(roles.get(role) or value.get(f"{role}_column") or "").strip()
+        if column:
+            validate_identifier(column, f"mapping {role}_column")
+            normalized_roles[role] = column
+    selected_columns = _clean_column_list(value.get("selected_columns"))
+    display_columns = _clean_column_list(value.get("display_columns"))
+    metric_columns = _clean_column_list(value.get("metric_columns"))
+    category_columns = _clean_column_list(value.get("category_columns"))
+    for column in normalized_roles.values():
+        if column not in selected_columns:
+            selected_columns.append(column)
+    for column in [*display_columns, *metric_columns, *category_columns]:
+        if column not in selected_columns:
+            selected_columns.append(column)
+    return {
+        "mapping_id": str(value.get("mapping_id") or _mapping_id(config_ref, connection_ref, table, layer_id)),
+        "enabled": bool(value.get("enabled", True)),
+        "config_path": config_ref,
+        "connection_ref": connection_ref,
+        "backend": str(value.get("backend") or "mysql").strip().lower(),
+        "database": database,
+        "table": table,
+        "layer_id": layer_id,
+        "label": label[:120],
+        "roles": normalized_roles,
+        "selected_columns": selected_columns,
+        "display_columns": display_columns,
+        "metric_columns": metric_columns,
+        "category_columns": category_columns,
+    }
+
+
+def upsert_layer_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
+    normalized = normalize_layer_mapping(mapping)
+    packet = load_layer_mappings()
+    rows = [row for row in packet["mappings"] if row["mapping_id"] != normalized["mapping_id"]]
+    rows.append(normalized)
+    save_layer_mappings({"mappings": rows})
+    manifest = load_router_manifest()
+    layers = set(normalize_imported_layers(manifest.get("imported_layers")))
+    layers.add(normalized["layer_id"])
+    manifest["imported_layers"] = sorted(layers)
+    save_router_manifest(manifest)
+    return {"status": "ok", "mapping": normalized, "mappings": load_layer_mappings()["mappings"], "manifest": load_router_manifest()}
+
+
+def set_layer_mapping_enabled(mapping_id: str, enabled: bool) -> dict[str, Any]:
+    packet = load_layer_mappings()
+    changed = False
+    for row in packet["mappings"]:
+        if row["mapping_id"] == mapping_id:
+            row["enabled"] = bool(enabled)
+            changed = True
+            break
+    if not changed:
+        raise ValueError("unknown mapping_id")
+    save_layer_mappings(packet)
+    return {"status": "ok", "mappings": load_layer_mappings()["mappings"]}
+
+
 def normalize_config_group(value: str) -> str:
     group = str(value or "").strip().lower()
     if group in {"db", "sql", "mysql", "hive", "database"}:
         return "database"
     if group in {"ws", "websocket", "collector", "ais", "stream"}:
         return "websocket"
+    if group in {"spatial", "postgis", "gis", "overlay", "mvt"}:
+        return "spatial"
     if group in {"demo", "example", "sample"}:
         return "demo"
     return ""
@@ -101,11 +309,30 @@ def infer_config_group(path: Path, data: dict[str, Any] | None = None) -> str:
     name = path.name.lower()
     if name.endswith(".example.json"):
         return "demo"
+    if name == "adapter.local.json":
+        return "demo"
     if "collector" in name or "ais_" in name or "stream" in name:
         return "websocket"
     if isinstance(data, dict):
+        schema = str(data.get("schema") or "").lower()
+        role = str(data.get("role") or "").lower()
+        if "spatial" in schema or role.startswith("spatial"):
+            return "spatial"
+        if "websocket" in schema or role.startswith("websocket"):
+            return "websocket"
+        if "database" in schema or role.startswith("database"):
+            return "database"
+        if "profile" in schema or role.endswith("profile"):
+            return "demo"
         if any(key in data for key in ("provider", "stream_url", "ingest", "collector")) and not data.get("connections"):
             return "websocket"
+        if data.get("kind") in {"spatial_postgis", "postgis_overlay"}:
+            return "spatial"
+        overlays = data.get("overlays")
+        if isinstance(overlays, dict) and isinstance(overlays.get("eez"), dict):
+            eez = overlays["eez"]
+            if eez.get("provider") == "postgis" or eez.get("postgis"):
+                return "spatial"
     return "database"
 
 
@@ -186,12 +413,12 @@ def summarize_config_file(path: Path, active_refs: set[str], locked_refs: set[st
     summary: dict[str, Any] = {
         "path": ref,
         "name": path.name,
-        "active": group == "database" and ref in active_refs,
+        "active": group != "demo" and ref in active_refs,
         "locked": is_locked,
         "managed": is_managed,
         "example": is_example,
         "group": group,
-        "routable": group == "database",
+        "routable": group != "demo",
         "delete_allowed": is_managed and not is_locked,
         "edit_allowed": not is_locked and group != "demo",
         "group_edit_allowed": not is_locked and (is_managed or not is_example),
@@ -222,6 +449,7 @@ def discover_config_files() -> list[Path]:
         "test_data.example.json",
         "router_manifest.local.json",
         "router_manifest.example.json",
+        "adapter.local.json",
     }
     files = list(root.glob("*.json")) + list(MANAGED_CONFIG_DIR.glob("*.json"))
     return sorted(
@@ -311,12 +539,12 @@ def set_config_group(config_ref: str, group: str) -> dict[str, Any]:
     normalized = normalize_config_ref(path)
     selected_group = normalize_config_group(group)
     if not selected_group:
-        raise ValueError("config group must be database, websocket, or demo")
+        raise ValueError("config group must be database, websocket, spatial, or demo")
     manifest = load_router_manifest()
     active_refs = set(manifest["active_configs"])
     groups = dict(manifest.get("config_groups") or {})
     groups[normalized] = selected_group
-    if selected_group != "database":
+    if selected_group == "demo":
         active_refs.discard(normalized)
     save_router_manifest(
         {
@@ -387,4 +615,76 @@ def connection_status_from_config(config_ref: str, data: dict[str, Any], active:
                 "detail": detail,
             }
         )
+    return rows
+
+
+def _table_exists_and_has_rows(cursor: psycopg.Cursor[Any], table: str) -> tuple[bool, bool]:
+    safe_table = validate_identifier(table, "PostGIS table")
+    cursor.execute("SELECT to_regclass(%s)", (safe_table,))
+    exists = cursor.fetchone()[0] is not None
+    if not exists:
+        return False, False
+    cursor.execute(f"SELECT EXISTS (SELECT 1 FROM {safe_table} LIMIT 1)")
+    return True, bool(cursor.fetchone()[0])
+
+
+def spatial_status_from_config(config_ref: str, data: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    settings = overlay_settings(data)
+    if settings.get("provider") != "postgis" and not settings.get("postgis"):
+        return rows
+
+    pg = settings.get("postgis") or {}
+    base_table = str(pg.get("table") or "eez_v12")
+    tile_table = str(pg.get("tile_table") or f"{base_table}_tile")
+    boundary_table = str(pg.get("boundary_table") or f"{base_table}_boundary")
+    expected_tables = [base_table, tile_table, boundary_table]
+    enabled = bool(settings.get("enabled", True))
+    connected = False
+    ready = False
+    table_detail = "-"
+    detail = "尚未測試"
+
+    if not pg:
+        detail = "overlays.eez.postgis 缺失"
+    else:
+        try:
+            for table in expected_tables:
+                validate_identifier(table, "PostGIS table")
+            with psycopg.connect(postgis_dsn(pg), connect_timeout=5) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT PostGIS_Version()")
+                    postgis_version = cur.fetchone()[0]
+                    connected = True
+                    table_states = []
+                    all_ready = True
+                    for table in expected_tables:
+                        exists, has_rows = _table_exists_and_has_rows(cur, table)
+                        if not exists:
+                            table_states.append(f"{table}:missing")
+                            all_ready = False
+                        elif not has_rows:
+                            table_states.append(f"{table}:empty")
+                            all_ready = False
+                        else:
+                            table_states.append(f"{table}:ok")
+                    ready = all_ready
+                    table_detail = ", ".join(table_states)
+                    detail = f"PostGIS {postgis_version}"
+        except Exception as exc:
+            detail = str(exc)
+
+    rows.append(
+        {
+            "config_path": config_ref,
+            "overlay_ref": "eez",
+            "backend": "postgis",
+            "provider": str(settings.get("provider") or "-"),
+            "enabled": enabled,
+            "connected": connected,
+            "ready": ready,
+            "tables": table_detail,
+            "detail": detail,
+        }
+    )
     return rows

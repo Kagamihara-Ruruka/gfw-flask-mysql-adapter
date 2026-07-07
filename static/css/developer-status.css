@@ -40,6 +40,158 @@
   border-radius: 8px;
 }
 
+.developer-status-table-wrap.is-layer-imports-wrap {
+  max-block-size: min(42vh, 28rem);
+}
+
+.developer-layer-imports-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.developer-mapping-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.developer-schema-profile-list {
+  display: grid;
+  gap: 10px;
+  max-block-size: min(48vh, 34rem);
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.developer-schema-profile {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgb(7 12 18 / 28%);
+}
+
+.developer-schema-profile-header,
+.developer-schema-table > summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+}
+
+.developer-schema-profile strong,
+.developer-schema-profile small {
+  display: block;
+}
+
+.developer-schema-profile small {
+  margin-top: 3px;
+  color: #6f8095;
+  font-size: 10px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.developer-schema-table-list {
+  display: grid;
+  gap: 8px;
+}
+
+.developer-schema-table {
+  min-width: 0;
+  border: 1px solid #182434;
+  border-radius: 8px;
+  background: rgb(12 18 27 / 52%);
+}
+
+.developer-schema-table > summary {
+  cursor: pointer;
+  padding: 9px 10px;
+  list-style: none;
+}
+
+.developer-schema-table > summary::-webkit-details-marker {
+  display: none;
+}
+
+.developer-schema-candidates {
+  justify-self: end;
+  max-width: min(46vw, 42rem);
+  color: #9fb2ca;
+  font-size: 11px;
+  line-height: 1.35;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.developer-schema-empty {
+  padding: 12px;
+  border: 1px dashed #2a394b;
+  border-radius: 8px;
+  color: var(--muted);
+}
+
+.developer-status-table-wrap.is-schema-columns-wrap {
+  max-block-size: min(32vh, 22rem);
+  border-inline-width: 0;
+  border-bottom-width: 0;
+  border-radius: 0 0 8px 8px;
+}
+
+.developer-mapping-toolbar {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+  align-items: end;
+  gap: 10px;
+  padding: 10px;
+  border-top: 1px solid #182434;
+  background: rgb(8 13 20 / 40%);
+}
+
+.developer-mapping-toolbar label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.developer-mapping-toolbar input[type="text"],
+.developer-column-role-select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #233043;
+  border-radius: 7px;
+  background: #101824;
+  color: var(--text);
+}
+
+.developer-mapping-toolbar input[type="text"] {
+  padding: 7px 8px;
+}
+
+.developer-mapping-enabled {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  align-self: center;
+  color: var(--text);
+}
+
+.developer-mapping-toolbar .small-button {
+  inline-size: 100%;
+  min-inline-size: 0;
+}
+
+.developer-mapping-enabled input {
+  accent-color: #2ea043;
+}
+
+.developer-column-role-select {
+  padding: 6px 7px;
+  font-size: 11px;
+}
+
 .developer-status-machines {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -56,10 +208,20 @@
   min-width: 0;
 }
 
+.developer-status-machine.is-spatial-machine {
+  grid-column: 1 / -1;
+}
+
 .developer-status-machine h4 {
   margin: 0 0 8px;
   color: var(--text);
   font-size: 12px;
+}
+
+.developer-status-hint {
+  margin: -2px 0 8px;
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .developer-status-table {
@@ -67,6 +229,48 @@
   table-layout: fixed;
   border-collapse: collapse;
   font-size: 12px;
+}
+
+.developer-status-table.is-database th:nth-child(1),
+.developer-status-table.is-database td:nth-child(1),
+.developer-status-table.is-websocket th:nth-child(1),
+.developer-status-table.is-websocket td:nth-child(1),
+.developer-status-table.is-spatial th:nth-child(1),
+.developer-status-table.is-spatial td:nth-child(1),
+.developer-status-table.is-layer-imports th:nth-child(5),
+.developer-status-table.is-layer-imports td:nth-child(5) {
+  width: 28%;
+}
+
+.developer-status-table.is-websocket th:nth-child(3),
+.developer-status-table.is-websocket td:nth-child(3),
+.developer-status-table.is-spatial th:nth-child(7),
+.developer-status-table.is-spatial td:nth-child(7) {
+  width: 34%;
+}
+
+.developer-status-table.is-database th:nth-child(4),
+.developer-status-table.is-database td:nth-child(4),
+.developer-status-table.is-database th:nth-child(5),
+.developer-status-table.is-database td:nth-child(5),
+.developer-status-table.is-websocket th:nth-child(4),
+.developer-status-table.is-websocket td:nth-child(4),
+.developer-status-table.is-websocket th:nth-child(5),
+.developer-status-table.is-websocket td:nth-child(5),
+.developer-status-table.is-spatial th:nth-child(4),
+.developer-status-table.is-spatial td:nth-child(4),
+.developer-status-table.is-spatial th:nth-child(5),
+.developer-status-table.is-spatial td:nth-child(5),
+.developer-status-table.is-spatial th:nth-child(6),
+.developer-status-table.is-spatial td:nth-child(6),
+.developer-status-table.is-schema-columns th:nth-child(1),
+.developer-status-table.is-schema-columns td:nth-child(1) {
+  width: 7.5rem;
+}
+
+.developer-status-table.is-layer-imports th:nth-child(1),
+.developer-status-table.is-layer-imports td:nth-child(1) {
+  width: 4.8rem;
 }
 
 .developer-status-table th,
@@ -78,6 +282,7 @@
   vertical-align: top;
   overflow-wrap: anywhere;
   word-break: break-word;
+  white-space: normal;
 }
 
 .developer-status-table th {
@@ -86,6 +291,39 @@
   z-index: 1;
   background: #10161f;
   color: var(--text);
+}
+
+.developer-status-table .developer-long-value {
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+}
+
+.developer-status-table td small,
+.developer-status-table td strong {
+  display: block;
+}
+
+.developer-status-table td small {
+  margin-top: 2px;
+  color: #6f8095;
+  font-size: 10px;
+  line-height: 1.25;
+}
+
+.developer-layer-import-toggle {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+}
+
+.developer-layer-import-toggle input {
+  accent-color: #2ea043;
 }
 
 .developer-bit {

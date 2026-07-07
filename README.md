@@ -226,7 +226,7 @@ This is a strict boundary:
 - The collector writes SQL rows and a collector heartbeat row into `live.ais.ingest_meta_table`.
 - The map reads SQL only after its locally configured collector key matches the collector key fingerprint in SQL metadata.
 
-That internal key check is not a public auth system. It is a local boundary marker for this prototype: a normal user configures the AIS key once in the UI, the UI writes only a key fingerprint into `config/adapter.local.json`, writes the raw key into the crawler handoff file at `config/ais_collector.local.json`, and the map verifies that the SQL table is being maintained by the matching collector before it reads from it. Do not return the raw key from HTTP APIs, and do not use this key check as permission to blur the consumer/upstream boundary.
+That internal key check is not a public auth system. It is a local boundary marker for this prototype: a normal user configures the AIS key once in the UI, the UI writes only a key fingerprint into the active WEBSOCKET route config, writes the raw key into the crawler handoff file at `config/ais_collector.local.json`, and the map verifies that the SQL table is being maintained by the matching collector before it reads from it. Do not return the raw key from HTTP APIs, and do not use this key check as permission to blur the consumer/upstream boundary.
 
 Future public setup can replace the local handoff file with a K8 Secret, Airflow variable, or upstream service registration. That handoff belongs to the crawler/upstream side, not to the map rendering path.
 
@@ -349,9 +349,9 @@ py -3 -m venv .venv
 Copy-Item config\adapter.example.json config\adapter.local.json -Force
 ```
 
-Edit `config\adapter.local.json` for local database settings.
+Use `config\router_manifest.local.json` to select the active route fragments. Keep local database settings in a DATABASE fragment such as `config\database.local.json`, spatial overlay settings in a SPATIAL fragment such as `config\spatial.eez.local.json`, and websocket/source settings in a WEBSOCKET fragment such as `config\websocket.aisstream.local.json`.
 
-`config\adapter.local.json` is ignored by git. Keep real passwords there or in environment variables.
+Local config files are ignored by git. Keep real passwords in local fragments or in environment variables.
 
 ## Temporary Test Data Bootstrap
 
@@ -378,6 +378,36 @@ You can also run the bootstrap step manually:
 
 This is a test-only convenience path. It is intentionally isolated in `TestDataBootstrap.py` and `config/test_data.example.json` so it can be removed later without touching the app core.
 
+## EEZ PostGIS Dependency
+
+EEZ is a hard runtime dependency when `overlays.eez.provider` is `postgis`. The app renders EEZ through PostGIS MVT tables, not directly from the `.gpkg` file during normal map use.
+
+Start the local PostGIS service:
+
+```powershell
+docker compose up -d postgis
+```
+
+Make sure the test data exists:
+
+```powershell
+.\.venv\Scripts\python.exe core.py --config config\adapter.local.json bootstrap-test-data
+```
+
+Import EEZ into PostGIS:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\import_eez_to_postgis.py --config config\adapter.local.json --replace
+```
+
+Check runtime dependencies before serving:
+
+```powershell
+.\.venv\Scripts\python.exe core.py --config config\adapter.local.json check-dependencies
+```
+
+`core.py serve` runs the same dependency check before opening the Flask server. If `eez_v12`, `eez_v12_tile`, or `eez_v12_boundary` is missing or empty, startup fails with the import command instead of leaving the UI in a half-working EEZ state.
+
 For AIS, use an environment variable instead of committing a password:
 
 ```powershell
@@ -396,7 +426,7 @@ Or pass an explicit crawler handoff JSON for an Airflow/K8 worker:
 .\.venv\Scripts\python.exe core.py --config config\adapter.local.json ingest-ais --collector-config config\ais_collector.local.json
 ```
 
-`ingest-ais` reads `config/ais_collector.local.json` when it exists, then writes the latest-state table and the `ais_ingest_meta` heartbeat table. The handoff file is gitignored because it contains the upstream AIS key. `config/adapter.local.json` should keep only the key fingerprint for the consumer-side SQL read gate.
+`ingest-ais` reads `config/ais_collector.local.json` when it exists, then writes the latest-state table and the `ais_ingest_meta` heartbeat table. The handoff file is gitignored because it contains the upstream AIS key. The active WEBSOCKET route config should keep only the key fingerprint for the consumer-side SQL read gate.
 
 For Airflow, Windows Task Scheduler, NSSM, Docker, or K8, run the same command as the collector task and provide the same SQL connection plus the crawler handoff/secret. The Flask UI does not need to be running for the collector to keep warming SQL.
 

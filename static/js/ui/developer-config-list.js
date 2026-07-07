@@ -1,14 +1,26 @@
 (function () {
   const { escapeHtml, formatBytes } = window.DeveloperUtils;
 
+  const GROUPS = [
+    { id: "database", label: "DATABASE", routable: true },
+    { id: "websocket", label: "WEBSOCKET", routable: true },
+    { id: "spatial", label: "SPATIAL", routable: true },
+    { id: "demo", label: "DEMO", routable: false },
+  ];
+
+  const GROUP_BY_ID = Object.fromEntries(GROUPS.map((group) => [group.id, group]));
+
+  function normalizeGroup(config) {
+    const group = config.group || (config.example ? "demo" : "database");
+    return GROUP_BY_ID[group] ? group : "database";
+  }
+
   function groupLabel(group) {
-    if (group === "websocket") {
-      return "WEBSOCKET";
-    }
-    if (group === "demo") {
-      return "DEMO";
-    }
-    return "DATABASE";
+    return GROUP_BY_ID[group]?.label || GROUP_BY_ID.database.label;
+  }
+
+  function isRoutableGroup(group) {
+    return GROUP_BY_ID[group]?.routable !== false;
   }
 
   function summaryText(config) {
@@ -23,10 +35,23 @@
     return parts.join(" / ");
   }
 
+  function configRoleLabel(config, group, isDemo) {
+    if (isDemo) {
+      return "DEMO";
+    }
+    if (group === "websocket") {
+      return "WebSocket";
+    }
+    if (group === "spatial") {
+      return "Spatial";
+    }
+    return config.managed ? "匯入" : "本機";
+  }
+
   function renderItem(config, options) {
-    const group = config.group || (config.example ? "demo" : "database");
-    const isDemo = group === "demo" || Boolean(options.isDemo || config.example);
-    const isRoutable = group === "database" && !isDemo;
+    const group = normalizeGroup(config);
+    const isDemo = group === "demo" || Boolean(config.example);
+    const isRoutable = isRoutableGroup(group) && !isDemo;
     const item = document.createElement("div");
     item.className = `developer-config-item${isDemo ? " is-demo" : ""}${!isRoutable ? " is-non-routable" : ""}`;
     item.dataset.configPath = config.path;
@@ -35,7 +60,7 @@
     item.setAttribute("aria-selected", config.path === options.selectedPath ? "true" : "false");
 
     const noteText = config.note ? escapeHtml(config.note) : "尚未註記";
-    const roleLabel = isDemo ? "DEMO" : group === "websocket" ? "WebSocket" : config.managed ? "匯入" : "本機";
+    const roleLabel = configRoleLabel(config, group, isDemo);
     const activeControl = !isRoutable
       ? '<span class="developer-config-active is-disabled" aria-hidden="true"></span>'
       : `<label class="developer-config-active" title="啟用這份 config">
@@ -44,16 +69,19 @@
     const viewLabel = config.edit_allowed && !isDemo ? "編輯" : "檢視";
     const lockTitle = config.locked ? "解除鎖定" : "鎖定";
     const lockLabel = config.locked ? "解鎖" : "鎖定";
+    const parseLabel = config.parse_ok ? "JSON" : "錯誤";
+    const summary = config.parse_ok ? summaryText(config) : config.error;
+
     item.innerHTML = `
       ${activeControl}
       <span class="developer-config-main">
         <strong>${escapeHtml(config.name)}</strong>
         <small>${escapeHtml(config.path)}</small>
-        <em><span class="developer-config-role">${roleLabel}</span> ${escapeHtml(config.parse_ok ? summaryText(config) : config.error)}</em>
+        <em><span class="developer-config-role">${roleLabel}</span> ${escapeHtml(summary)}</em>
         <em class="developer-config-note-preview">${noteText}</em>
       </span>
       <span class="developer-config-actions">
-        <span class="developer-status-badge ${config.parse_ok ? "is-ok" : "is-error"}">${config.parse_ok ? "JSON" : "錯誤"}</span>
+        <span class="developer-status-badge ${config.parse_ok ? "is-ok" : "is-error"}">${parseLabel}</span>
         <button class="developer-config-action" type="button" data-action="view" title="檢視 / 編輯">${viewLabel}</button>
         <button class="developer-config-action" type="button" data-action="lock" title="${lockTitle}" ${isDemo ? "disabled" : ""}>${lockLabel}</button>
         <button class="developer-config-action" type="button" data-action="note" title="編輯註記" ${isDemo ? "disabled" : ""}>註記</button>
@@ -87,23 +115,23 @@
     return item;
   }
 
-  function renderGroup(list, groupName, configs, options) {
+  function renderGroup(list, groupDefinition, configs, options) {
     const group = document.createElement("details");
-    group.className = `developer-config-demo-group developer-config-group-${groupName}`;
-    group.open = Boolean(options.groupOpen[groupName]);
+    group.className = `developer-config-group developer-config-group-${groupDefinition.id}`;
+    group.open = Boolean(options.groupOpen[groupDefinition.id]);
     group.innerHTML = `
       <summary>
-        <span>${groupLabel(groupName)}</span>
+        <span>${groupDefinition.label}</span>
         <small>${configs.length} 個 config</small>
       </summary>
-      <div class="developer-config-demo-list"></div>
+      <div class="developer-config-group-list"></div>
     `;
     group.addEventListener("toggle", () => {
-      options.groupOpen[groupName] = group.open;
+      options.groupOpen[groupDefinition.id] = group.open;
     });
-    const groupList = group.querySelector(".developer-config-demo-list");
+    const groupList = group.querySelector(".developer-config-group-list");
     for (const config of configs) {
-      groupList.appendChild(renderItem(config, { ...options, isDemo: groupName === "demo" }));
+      groupList.appendChild(renderItem(config, options));
     }
     list.appendChild(group);
   }
@@ -116,28 +144,20 @@
       list.innerHTML = '<div class="developer-empty-state">尚未找到 config。</div>';
       return;
     }
-    const groups = {
-      database: [],
-      websocket: [],
-      demo: [],
-    };
+
+    const groupedConfigs = Object.fromEntries(GROUPS.map((group) => [group.id, []]));
     for (const config of configs) {
-      const group = config.group || (config.example ? "demo" : "database");
-      if (group === "websocket") {
-        groups.websocket.push(config);
-      } else if (group === "demo") {
-        groups.demo.push(config);
-      } else {
-        groups.database.push(config);
-      }
+      groupedConfigs[normalizeGroup(config)].push(config);
     }
+
     list.innerHTML = "";
-    renderGroup(list, "database", groups.database, options);
-    renderGroup(list, "websocket", groups.websocket, options);
-    renderGroup(list, "demo", groups.demo, options);
+    for (const group of GROUPS) {
+      renderGroup(list, group, groupedConfigs[group.id], options);
+    }
   }
 
   window.DeveloperConfigList = {
+    GROUPS,
     groupLabel,
     render,
   };

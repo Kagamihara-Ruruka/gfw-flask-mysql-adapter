@@ -1,8 +1,16 @@
+.developer-config-browser {
+  --developer-config-stack-gap: clamp(0.45rem, 0.65vw, 0.7rem);
+  --developer-config-card-gap: clamp(0.45rem, 0.65vw, 0.7rem);
+  --developer-config-card-padding: clamp(0.55rem, 0.7vw, 0.7rem);
+  --developer-config-group-padding: clamp(0.45rem, 0.65vw, 0.65rem);
+  --developer-config-header-height: 2.4rem;
+}
+
 .developer-config-dropzone {
   display: grid;
   place-items: center;
   min-height: 74px;
-  margin-bottom: 10px;
+  margin-bottom: var(--developer-config-stack-gap);
   border: 1px dashed #304158;
   border-radius: 8px;
   background: rgb(31 111 235 / 6%);
@@ -18,15 +26,15 @@
 }
 
 .developer-config-list {
-  display: grid;
-  align-content: start;
-  align-items: start;
-  gap: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--developer-config-stack-gap);
   min-height: 0;
   overflow: auto;
   padding-right: 4px;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
+  container-type: inline-size;
 }
 
 .developer-empty-state {
@@ -40,12 +48,12 @@
 
 .developer-config-item {
   display: grid;
-  grid-template-columns: minmax(1.4em, 0.08fr) minmax(0, 1fr);
-  gap: 10px;
+  grid-template-columns: minmax(1.4em, 0.08fr) minmax(0, 1fr) minmax(8rem, 0.42fr);
+  gap: var(--developer-config-card-gap);
   align-items: start;
   width: 100%;
   min-block-size: 4.15rem;
-  padding: 10px;
+  padding: var(--developer-config-card-padding);
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #0d131c;
@@ -143,10 +151,12 @@
 
 .developer-config-actions {
   display: grid;
-  grid-column: 1 / -1;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 6rem), 1fr));
-  gap: 6px;
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: calc(var(--developer-config-card-gap) * 0.72);
   align-items: start;
+  min-width: 0;
 }
 
 .developer-config-actions .developer-status-badge {
@@ -171,6 +181,18 @@
   overflow-wrap: anywhere;
 }
 
+@container (max-width: 34rem) {
+  .developer-config-item {
+    grid-template-columns: minmax(1.4em, 0.08fr) minmax(0, 1fr);
+  }
+
+  .developer-config-actions {
+    grid-column: 1 / -1;
+    grid-row: auto;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 6rem), 1fr));
+  }
+}
+
 .developer-config-action:hover:not(:disabled),
 .developer-config-action:focus-visible:not(:disabled) {
   border-color: #2ea043;
@@ -186,8 +208,10 @@
   cursor: default;
 }
 
-.developer-config-demo-group {
+.developer-config-group {
+  flex: 0 0 auto;
   align-self: start;
+  width: 100%;
   min-width: 0;
   border: 1px solid #263241;
   border-radius: 8px;
@@ -195,13 +219,13 @@
   overflow: hidden;
 }
 
-.developer-config-demo-group summary {
+.developer-config-group summary {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  min-block-size: 2.4rem;
-  padding: 0 10px;
+  gap: var(--developer-config-card-gap);
+  min-block-size: var(--developer-config-header-height);
+  padding: 0 var(--developer-config-card-padding);
   cursor: pointer;
   color: #dce8f7;
   font-size: 12px;
@@ -209,11 +233,11 @@
   list-style: none;
 }
 
-.developer-config-demo-group summary::-webkit-details-marker {
+.developer-config-group summary::-webkit-details-marker {
   display: none;
 }
 
-.developer-config-demo-group summary::before {
+.developer-config-group summary::before {
   content: "";
   inline-size: 0;
   block-size: 0;
@@ -223,11 +247,11 @@
   transition: transform 120ms ease;
 }
 
-.developer-config-demo-group[open] summary::before {
+.developer-config-group[open] summary::before {
   transform: rotate(90deg);
 }
 
-.developer-config-demo-group summary small {
+.developer-config-group summary small {
   min-width: 0;
   overflow: hidden;
   color: var(--muted);
@@ -237,10 +261,10 @@
   white-space: nowrap;
 }
 
-.developer-config-demo-list {
+.developer-config-group-list {
   display: grid;
-  gap: 8px;
-  padding: 8px;
+  gap: var(--developer-config-card-gap);
+  padding: var(--developer-config-group-padding);
   border-top: 1px solid #263241;
 }
 

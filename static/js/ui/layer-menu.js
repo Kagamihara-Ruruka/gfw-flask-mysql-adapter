@@ -39,13 +39,53 @@ function applyLayerAlpha(layerId) {
   }
 }
 
+function isImportedLayer(layerId) {
+  return state.importedLayers?.[layerId] !== false;
+}
+
+function setLayerItemAvailability(layerId, available) {
+  const item = document.querySelector(`[data-layer-id="${layerId}"]`);
+  if (item) {
+    item.hidden = !available;
+    item.classList.toggle("is-not-imported", !available);
+  }
+  const inputId = layerId === "eez" ? "eez-toggle" : `layer-${layerId}`;
+  const input = $(inputId);
+  if (input) {
+    input.disabled = !available;
+    if (!available) {
+      input.checked = false;
+    }
+  }
+}
+
+function enforceImportedLayerState() {
+  for (const layerId of ["gfw", "ais", "eez"]) {
+    setLayerItemAvailability(layerId, isImportedLayer(layerId));
+  }
+  if (state.dataLayer && !isImportedLayer(state.dataLayer)) {
+    const removedLayer = state.dataLayer;
+    state.dataLayer = null;
+    if (removedLayer === "gfw") {
+      removeGfwLayer();
+    }
+    if (removedLayer === "ais") {
+      removeAisLayer();
+    }
+  }
+  if (!isImportedLayer("eez")) {
+    syncEezLayer();
+  }
+}
+
 function updateDataLayerMenu() {
-  $("layer-gfw").checked = state.dataLayer === "gfw";
-  $("layer-ais").checked = state.dataLayer === "ais";
+  enforceImportedLayerState();
+  $("layer-gfw").checked = isImportedLayer("gfw") && state.dataLayer === "gfw";
+  $("layer-ais").checked = isImportedLayer("ais") && state.dataLayer === "ais";
   const labels = [];
   if (state.dataLayer === "gfw") labels.push("GFW");
   if (state.dataLayer === "ais") labels.push("AIS");
-  if ($("eez-toggle").checked) labels.push("EEZ");
+  if (isImportedLayer("eez") && $("eez-toggle").checked) labels.push("EEZ");
   $("data-layer-summary").textContent = labels.length ? labels.join(" + ") : "無";
   updatePlaybackControls();
   applyLayerOrder();
@@ -128,6 +168,10 @@ function bindLayerSettingsModalControls() {
 
 async function selectDataLayer(layerId) {
   if (!["gfw", "ais"].includes(layerId)) {
+    updateDataLayerMenu();
+    return;
+  }
+  if (!isImportedLayer(layerId)) {
     updateDataLayerMenu();
     return;
   }

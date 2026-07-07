@@ -6,6 +6,7 @@ from pathlib import Path
 
 from AisIngestService import run_ais_ingest_forever
 from DatabaseConnect import import_duckdb_to_mysql, load_config, server_settings
+from DependencyCheck import check_runtime_dependencies
 from Interface import run_server, run_server_pair
 from TestDataBootstrap import ensure_test_data
 
@@ -31,6 +32,8 @@ def command_serve(args: argparse.Namespace) -> int:
     bootstrap = config.get("test_data_bootstrap", {})
     if bootstrap.get("auto_on_serve", False):
         ensure_test_data(config, reason="serve")
+    dependency_status = check_runtime_dependencies(config)
+    print(json.dumps({"status": "dependencies_ready", **dependency_status}, ensure_ascii=False))
     server = server_settings(config)
     host = args.host or server["host"]
     port = args.port if args.port is not None else server["port"]
@@ -53,6 +56,14 @@ def command_serve(args: argparse.Namespace) -> int:
 def command_bootstrap_test_data(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     ensure_test_data(config, reason="manual")
+    return 0
+
+
+def command_check_dependencies(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    config["__config_path"] = str((Path(args.config) if args.config else Path("config/adapter.local.json")).resolve())
+    status = check_runtime_dependencies(config)
+    print(json.dumps({"status": "dependencies_ready", **status}, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -87,6 +98,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     bootstrap_parser = subparsers.add_parser("bootstrap-test-data", help="Download temporary test datasets.")
     bootstrap_parser.set_defaults(func=command_bootstrap_test_data)
+
+    dependency_parser = subparsers.add_parser("check-dependencies", help="Check runtime services such as PostGIS.")
+    dependency_parser.set_defaults(func=command_check_dependencies)
 
     ingest_ais_parser = subparsers.add_parser("ingest-ais", help="Run AISStream to SQL latest-state ingest only.")
     ingest_ais_parser.add_argument(
