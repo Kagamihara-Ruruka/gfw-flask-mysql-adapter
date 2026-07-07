@@ -34,7 +34,7 @@
 }
 
 .developer-status-table-wrap {
-  max-height: 30vh;
+  max-block-size: min(34vh, 22rem);
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -42,8 +42,14 @@
 
 .developer-status-machines {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
+}
+
+@media (min-width: 92rem) {
+  .developer-status-machines {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .developer-status-machine {
@@ -58,6 +64,7 @@
 
 .developer-status-table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 12px;
 }
@@ -69,6 +76,8 @@
   color: var(--muted);
   text-align: left;
   vertical-align: top;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .developer-status-table th {
@@ -82,8 +91,8 @@
 .developer-bit {
   display: inline-grid;
   place-items: center;
-  inline-size: 24px;
-  block-size: 20px;
+  inline-size: 2em;
+  block-size: 1.65em;
   border-radius: 999px;
   border: 1px solid #344861;
   color: #7f8ea3;
