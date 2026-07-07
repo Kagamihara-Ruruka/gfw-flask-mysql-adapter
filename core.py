@@ -6,7 +6,7 @@ from pathlib import Path
 
 from AisIngestService import run_ais_ingest_forever
 from DatabaseConnect import import_duckdb_to_mysql, load_config, server_settings
-from Interface import run_server
+from Interface import run_server, run_server_pair
 from TestDataBootstrap import ensure_test_data
 
 
@@ -35,7 +35,18 @@ def command_serve(args: argparse.Namespace) -> int:
     host = args.host or server["host"]
     port = args.port if args.port is not None else server["port"]
     debug = args.debug if args.debug is not None else server["debug"]
-    run_server(config, host=host, port=port, debug=debug, kill_port_if_busy=server["kill_port_if_busy"])
+    if args.no_developer_server:
+        run_server(config, host=host, port=port, debug=debug, kill_port_if_busy=server["kill_port_if_busy"])
+    else:
+        developer_port = args.developer_port if args.developer_port is not None else port + 1
+        run_server_pair(
+            config,
+            host=host,
+            port=port,
+            developer_port=developer_port,
+            debug=debug,
+            kill_port_if_busy=server["kill_port_if_busy"],
+        )
     return 0
 
 
@@ -69,6 +80,8 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser = subparsers.add_parser("serve", help="Start the Flask server.")
     serve_parser.add_argument("--host", default=None)
     serve_parser.add_argument("--port", type=int, default=None)
+    serve_parser.add_argument("--developer-port", type=int, default=None)
+    serve_parser.add_argument("--no-developer-server", action="store_true")
     serve_parser.add_argument("--debug", action="store_true", default=None)
     serve_parser.set_defaults(func=command_serve)
 
@@ -93,6 +106,8 @@ def main() -> int:
         args.func = command_serve
         args.host = None
         args.port = None
+        args.developer_port = None
+        args.no_developer_server = False
         args.debug = None
     return args.func(args)
 

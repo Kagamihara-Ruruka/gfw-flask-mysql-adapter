@@ -13,6 +13,7 @@ const ControlButtons = (() => {
 
   function setIcon(id, iconName, fallback, label) {
     const button = $(id);
+    if (!button) return;
     button.title = label;
     button.setAttribute("aria-label", label);
     button.innerHTML = [
@@ -38,6 +39,7 @@ const ControlButtons = (() => {
   function bindFeedback(ids) {
     for (const id of ids) {
       const button = $(id);
+      if (!button) continue;
       button.addEventListener("pointerdown", () => setPressedFeedback(button, true));
       button.addEventListener("pointerup", () => setPressedFeedback(button, false));
       button.addEventListener("pointerleave", () => setPressedFeedback(button, false));

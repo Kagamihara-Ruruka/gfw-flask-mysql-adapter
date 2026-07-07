@@ -1,0 +1,14 @@
+{
+  "active_configs": [
+    "config/adapter.example.json"
+  ],
+  "locked_configs": [],
+  "config_notes": {
+    "config/adapter.example.json": "Demo database router config. Copy to config/adapter.local.json before real use.",
+    "config/adapter.ais_collector.example.json": "Demo websocket collector config. Copy to a local config before real use."
+  },
+  "config_groups": {
+    "config/adapter.example.json": "database",
+    "config/adapter.ais_collector.example.json": "websocket"
+  }
+}

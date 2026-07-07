@@ -10,7 +10,7 @@ window.__rrkalMap = map;
 
 const BASEMAPS = {
   carto_light: {
-    label: "Light",
+    label: "CARTO 淺色",
     url: "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
     options: {
       attribution: "OpenStreetMap, CARTO",
@@ -19,7 +19,7 @@ const BASEMAPS = {
     },
   },
   carto_dark: {
-    label: "Dark",
+    label: "CARTO 深色",
     url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
     options: {
       attribution: "OpenStreetMap, CARTO",
@@ -27,16 +27,34 @@ const BASEMAPS = {
       maxZoom: 19,
     },
   },
+  carto_voyager: {
+    label: "CARTO Voyager",
+    url: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
+    options: {
+      attribution: "OpenStreetMap, CARTO",
+      subdomains: "abcd",
+      maxZoom: 19,
+    },
+  },
   osm_standard: {
-    label: "OSM",
+    label: "OSM 標準",
     url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
     options: {
       attribution: "OpenStreetMap contributors",
       maxZoom: 19,
     },
   },
+  osm_hot: {
+    label: "OSM Humanitarian",
+    url: "https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png",
+    options: {
+      attribution: "OpenStreetMap contributors, HOT",
+      subdomains: "abc",
+      maxZoom: 19,
+    },
+  },
   opentopo_terrain: {
-    label: "Terrain",
+    label: "OpenTopo 地形",
     url: "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
     options: {
       attribution: "OpenStreetMap, SRTM, OpenTopoMap",
@@ -44,8 +62,32 @@ const BASEMAPS = {
       maxZoom: 17,
     },
   },
+  esri_ocean: {
+    label: "Esri Ocean",
+    url: "https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}",
+    options: {
+      attribution: "Esri, GEBCO, NOAA, National Geographic, Garmin, HERE, Geonames.org, and other contributors",
+      maxZoom: 13,
+    },
+  },
+  esri_topo: {
+    label: "Esri 地形",
+    url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
+    options: {
+      attribution: "Esri and contributors",
+      maxZoom: 19,
+    },
+  },
+  esri_streets: {
+    label: "Esri 街道",
+    url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
+    options: {
+      attribution: "Esri and contributors",
+      maxZoom: 19,
+    },
+  },
   esri_imagery: {
-    label: "Satellite",
+    label: "Esri 衛星",
     url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
     options: {
       attribution: "Esri, Maxar, Earthstar Geographics, and the GIS User Community",
@@ -65,6 +107,11 @@ function setBasemap(basemapId) {
   currentBasemapLayer = L.tileLayer(definition.url, definition.options).addTo(map);
   currentBasemapLayer.setZIndex(100);
   state.mapSettings.basemapId = nextBasemapId;
+}
+
+function getCurrentBasemapAttribution() {
+  const definition = BASEMAPS[state.mapSettings.basemapId] || BASEMAPS.carto_light;
+  return definition.options.attribution;
 }
 
 function createOverlayPane(name, zIndex) {

@@ -3,7 +3,7 @@
   "$id": "https://example.local/gfw-mysql-adapter/config.schema.json",
   "title": "GFW Flask adapter config",
   "type": "object",
-  "required": ["sql_backend", "mysql", "query_policy", "server", "default_dataset", "datasets"],
+  "required": ["sql_backend", "query_policy", "server", "default_dataset", "datasets"],
   "additionalProperties": false,
   "properties": {
     "sql_backend": {
@@ -13,7 +13,7 @@
       "properties": {
         "kind": {
           "type": "string",
-          "enum": ["mysql", "hive"]
+          "enum": ["mysql", "hive", "spark", "postgresql", "mongodb", "duckdb", "custom"]
         },
         "driver": {
           "type": "string",
@@ -45,7 +45,7 @@
         "properties": {
           "kind": {
             "type": "string",
-            "enum": ["mysql", "hive"]
+            "enum": ["mysql", "hive", "spark", "postgresql", "mongodb", "duckdb", "custom"]
           },
           "driver": { "type": "string", "minLength": 1 },
           "host": { "type": "string", "minLength": 1 },
@@ -223,7 +223,7 @@
           "label": { "type": "string", "minLength": 1 },
           "backend": {
             "type": "string",
-            "enum": ["mysql", "hive"]
+            "enum": ["mysql", "hive", "spark", "postgresql", "mongodb", "duckdb", "custom"]
           },
           "connection_ref": { "$ref": "#/$defs/sqlIdentifier" },
           "duckdb_source_table": {

@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>開發者路由器控制面</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/styles.css?v=developer-split-v3">
+  <link rel="stylesheet" href="/static/css/developer.css?v=developer-split-v3">
+</head>
+<body class="developer-control-body{% if embedded %} is-embedded{% endif %}">
+  {% if not embedded %}
+  <header class="app-header developer-control-header">
+    <div class="app-title-block">
+      <nav class="app-tabs" aria-label="開發者控制面">
+        <a class="app-tab" href="{{ consumer_url }}" target="_top" rel="noreferrer">回到儀表板</a>
+        <span class="app-tab is-active" aria-selected="true">開發者</span>
+      </nav>
+      <h1>開發者路由器控制面</h1>
+      <p>管理資料後端路由器 config file、啟用狀態與連線檢查。</p>
+    </div>
+    <div class="status" id="status">開發者服務</div>
+  </header>
+  {% endif %}
+
+  <main class="layout page-panel is-active developer-control-main">
+    <section class="settings-page page-panel is-active">
+      <div class="settings-page-card">
+        <div class="developer-page-grid">
+          <details class="settings-toggle-card developer-toggle-card" open>
+            <summary class="settings-toggle-summary">
+              <span class="settings-toggle-caret" aria-hidden="true"></span>
+              <span>
+                <span class="settings-toggle-title">Config 路由器</span>
+                <span class="settings-toggle-description">左側匯入與啟用 config，右側檢視所選 JSON。</span>
+              </span>
+            </summary>
+            <div class="settings-toggle-content">
+              <section id="developer-config-wizard" class="developer-config-wizard" hidden aria-label="Config 引導精靈" role="dialog" aria-modal="true">
+                <div class="developer-config-wizard-dialog">
+                <header class="developer-wizard-header">
+                  <div>
+                    <h3>Config 引導精靈</h3>
+                    <p>依步驟建立資料庫路由 config。完成後會匯入受管清單，但不會自動啟用。</p>
+                  </div>
+                  <button id="developer-config-wizard-close" class="developer-config-action" type="button">關閉</button>
+                </header>
+                <ol class="developer-wizard-steps" aria-label="精靈步驟">
+                  <li data-wizard-indicator="1">1. 類型</li>
+                  <li data-wizard-indicator="2">2. 連線</li>
+                  <li data-wizard-indicator="3">3. 資料集</li>
+                  <li data-wizard-indicator="4">4. 預覽</li>
+                </ol>
+
+                <div class="developer-wizard-stage" data-wizard-step="1">
+                  <div class="developer-wizard-grid">
+                    <label>
+                      <span>Backend 類型</span>
+                      <select id="wizard-backend-kind">
+                        <option value="mysql">MySQL</option>
+                        <option value="hive">Hive / HiveServer2</option>
+                        <option value="spark">Spark SQL / Thrift</option>
+                        <option value="postgresql">PostgreSQL / PostGIS</option>
+                        <option value="mongodb">MongoDB</option>
+                        <option value="duckdb">DuckDB</option>
+                        <option value="custom">自訂</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>Config 檔名</span>
+                      <input id="wizard-config-name" type="text" value="adapter.generated.mysql.json" spellcheck="false">
+                    </label>
+                    <label>
+                      <span>自訂 kind</span>
+                      <input id="wizard-custom-kind" type="text" value="" placeholder="custom_backend" spellcheck="false">
+                    </label>
+                    <label>
+                      <span>Driver</span>
+                      <input id="wizard-driver" type="text" value="pymysql" spellcheck="false">
+                    </label>
+                  </div>
+                </div>
+
+                <div class="developer-wizard-stage" data-wizard-step="2" hidden>
+                  <div class="developer-wizard-grid">
+                    <label>
+                      <span>Connection ref</span>
+                      <input id="wizard-connection-ref" type="text" value="local_mysql" spellcheck="false">
+                    </label>
+                    <label>
+                      <span>Host</span>
+                      <input id="wizard-host" type="text" value="127.0.0.1" spellcheck="false">
+                    </label>
+                    <label>
+                      <span>Port</span>
+                      <input id="wizard-port" type="number" min="0" max="65535" value="3306">
+                    </label>
+                    <label>
+                      <span>User</span>
+                      <input id="wizard-user" type="text" value="root" spellcheck="false">
+                    </label>
+                    <label>
+                      <span>Password / env</span>
+                      <input id="wizard-password" type="text" value="env:RRKAL_DB_PASSWORD" spellcheck="false">
+                    </label>
+                    <label>
+                      <span>Database / schema</span>
+                      <input id="wizard-database" type="text" value="ocean_fishery" spellcheck="false">
+                    </label>
+                  </div>
+                </div>
+
+                <div class="developer-wizard-stage" data-wizard-step="3" hidden>
+                  <div class="developer-wizard-grid">
+                    <label>
+                      <span>Dataset id</span>
+                      <input id="wizard-dataset-id" type="text" value="dataset_main" spellcheck="false">
+                    </label>
+                    <label>
+                      <span>Dataset 顯示名稱</span>
+                      <input id="wizard-dataset-label" type="text" value="Generated dataset" spellcheck="false">
+                    </label>
+                    <label>
+                      <span>Table / collection</span>
+                      <input id="wizard-table" type="text" value="gold_grid" spellcheck="false">
+                    </label>
+                    <label>
+                      <span>時間欄位</span>
+                      <input id="wizard-time-column" type="text" value="obs_date" spellcheck="false">
+                    </label>
+                    <label>
+                      <span>緯度欄位</span>
+                      <input id="wizard-lat-column" type="text" value="lat" spellcheck="false">
+                    </label>
+                    <label>
+                      <span>經度欄位</span>
+                      <input id="wizard-lon-column" type="text" value="lon" spellcheck="false">
+                    </label>
+                    <label>
+                      <span>ID 欄位</span>
+                      <input id="wizard-id-column" type="text" value="grid_id" spellcheck="false">
+                    </label>
+                    <label>
+                      <span>查詢上限</span>
+                      <input id="wizard-max-limit" type="text" value="100000" spellcheck="false">
+                    </label>
+                    <label class="developer-wizard-wide">
+                      <span>顯示欄位（逗號分隔）</span>
+                      <input id="wizard-display-columns" type="text" value="obs_date,grid_id,lat,lon" spellcheck="false">
+                    </label>
+                    <label>
+                      <span>數值欄位</span>
+                      <input id="wizard-metric-columns" type="text" value="" spellcheck="false">
+                    </label>
+                    <label>
+                      <span>分類欄位</span>
+                      <input id="wizard-category-columns" type="text" value="" spellcheck="false">
+                    </label>
+                  </div>
+                </div>
+
+                <div class="developer-wizard-stage" data-wizard-step="4" hidden>
+                  <label class="developer-note-field">
+                    <span>使用者註記</span>
+                    <textarea id="wizard-note" rows="2" maxlength="500" placeholder="例如：上游 Hive sink、Airflow 測試庫、本機 PostgreSQL 空間資料。"></textarea>
+                  </label>
+                  <textarea id="wizard-preview" class="developer-config-textarea developer-wizard-preview" spellcheck="false" readonly></textarea>
+                </div>
+
+                <footer class="developer-wizard-footer">
+                  <button id="wizard-prev" class="small-button" type="button">上一步</button>
+                  <button id="wizard-next" class="small-button" type="button">下一步</button>
+                  <button id="wizard-import" class="small-button" type="button" hidden>生成並匯入</button>
+                </footer>
+                </div>
+              </section>
+              <section id="developer-config-note-modal" class="developer-note-modal" hidden aria-label="Config 註記" role="dialog" aria-modal="true">
+                <div class="developer-note-dialog">
+                  <header class="developer-wizard-header">
+                    <div>
+                      <h3>Config 註記</h3>
+                      <p id="developer-config-note-modal-meta">描述這份 config 的用途。</p>
+                    </div>
+                    <button id="developer-config-note-close" class="developer-config-action" type="button">關閉</button>
+                  </header>
+                  <label class="developer-note-field">
+                    <span>使用者註記</span>
+                    <textarea id="developer-config-note-modal-text" rows="5" maxlength="500" placeholder="例如：本機 MySQL 測試、上游 Hive sink、Airflow 交接樣本。"></textarea>
+                  </label>
+                  <footer class="developer-wizard-footer">
+                    <button id="developer-config-note-cancel" class="small-button" type="button">取消</button>
+                    <button id="developer-config-note-save" class="small-button" type="button">💾 儲存</button>
+                  </footer>
+                </div>
+              </section>
+              <section id="developer-config-import-modal" class="developer-note-modal" hidden aria-label="匯入 Config" role="dialog" aria-modal="true">
+                <div class="developer-note-dialog">
+                  <header class="developer-wizard-header">
+                    <div>
+                      <h3>匯入 Config</h3>
+                      <p>先選擇分類，再選擇 JSON 檔案；確認後才會寫入受管 config。</p>
+                    </div>
+                    <button id="developer-config-import-close" class="developer-config-action" type="button">關閉</button>
+                  </header>
+                  <div class="developer-import-modal-grid">
+                    <label id="developer-config-import-file-field" class="developer-note-field">
+                      <span>分類</span>
+                      <select id="developer-config-import-modal-group" class="developer-group-select">
+                        <option value="database">DATABASE</option>
+                        <option value="websocket">WEBSOCKET</option>
+                        <option value="demo">DEMO</option>
+                      </select>
+                    </label>
+                    <label class="developer-note-field">
+                      <span>檔案</span>
+                      <input id="developer-config-import-modal-file" type="file" accept="application/json,.json">
+                    </label>
+                    <p id="developer-config-import-file-name" class="developer-import-file-name">尚未選擇檔案。</p>
+                  </div>
+                  <footer class="developer-wizard-footer">
+                    <button id="developer-config-import-cancel" class="small-button" type="button">取消</button>
+                    <button id="developer-config-import-confirm" class="small-button" type="button">確定匯入</button>
+                  </footer>
+                </div>
+              </section>
+              <div class="developer-router-grid">
+                <section class="developer-config-browser" aria-label="Config 瀏覽器">
+                  <header class="developer-panel-header">
+                    <div>
+                      <h3>Config 瀏覽器</h3>
+                      <p>拖拉或選取標準 JSON 匯入。</p>
+                    </div>
+                    <div class="developer-panel-actions">
+                      <button id="developer-config-wizard-toggle" class="small-button" type="button">引導精靈</button>
+                      <button id="developer-config-import-open" class="small-button developer-import-button" type="button">匯入</button>
+                    </div>
+                  </header>
+                  <div id="developer-config-dropzone" class="developer-config-dropzone">
+                    <span>拖拉 config JSON 到這裡</span>
+                  </div>
+                  <div id="developer-config-list" class="developer-config-list" role="listbox" aria-label="受管 config 清單">
+                    <div class="developer-empty-state">讀取 config 中...</div>
+                  </div>
+                </section>
+                <section class="developer-config-editor" aria-label="Config 編輯器">
+                  <header class="developer-panel-header">
+                    <div>
+                      <h3>Config 檢視器</h3>
+                      <p id="developer-config-editor-meta">尚未選取 config。</p>
+                    </div>
+                    <span id="developer-config-parse-badge" class="developer-status-badge is-idle">待命</span>
+                  </header>
+                  <div class="developer-editor-toolbar">
+                    <label class="developer-config-group-control">
+                      <span>分類</span>
+                      <select id="developer-config-group" class="developer-group-select" disabled>
+                        <option value="database">DATABASE</option>
+                        <option value="websocket">WEBSOCKET</option>
+                        <option value="demo">DEMO</option>
+                      </select>
+                    </label>
+                    <button id="developer-config-save" class="small-button" type="button" hidden>儲存</button>
+                    <button id="developer-config-cancel" class="small-button" type="button" hidden>取消</button>
+                  </div>
+                  <textarea id="developer-config-editor" class="developer-config-textarea" spellcheck="false" readonly placeholder="請從左側選取 config file。"></textarea>
+                </section>
+              </div>
+            </div>
+          </details>
+
+          <details class="settings-toggle-card developer-toggle-card" open>
+            <summary class="settings-toggle-summary">
+              <span class="settings-toggle-caret" aria-hidden="true"></span>
+              <span>
+                <span class="settings-toggle-title">路由狀態機</span>
+                <span class="settings-toggle-description">檢查啟用狀態與資料庫連線狀態。</span>
+              </span>
+            </summary>
+            <div class="settings-toggle-content">
+              <section class="developer-router-status" aria-label="路由狀態機">
+                <header class="developer-panel-header">
+                  <div>
+                    <h3>路由狀態機</h3>
+                    <p>每列顯示 config 是否啟用，以及它對應的資料庫是否可連線。</p>
+                  </div>
+                </header>
+                <div class="developer-status-machines">
+                  <section class="developer-status-machine" aria-label="資料庫路由狀態機">
+                    <h4>DATABASE</h4>
+                    <div class="developer-status-table-wrap">
+                      <table class="developer-status-table">
+                        <thead>
+                          <tr>
+                            <th>Config</th>
+                            <th>Connection</th>
+                            <th>Backend</th>
+                            <th>啟用</th>
+                            <th>連線</th>
+                            <th>細節</th>
+                          </tr>
+                        </thead>
+                        <tbody id="developer-router-status-body">
+                          <tr>
+                            <td colspan="6">等待狀態資料。</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                  <section class="developer-status-machine" aria-label="WebSocket 狀態機">
+                    <h4>WEBSOCKET</h4>
+                    <div class="developer-status-table-wrap">
+                      <table class="developer-status-table">
+                        <thead>
+                          <tr>
+                            <th>Config</th>
+                            <th>Provider</th>
+                            <th>Endpoint</th>
+                            <th>啟用</th>
+                            <th>設定</th>
+                            <th>細節</th>
+                          </tr>
+                        </thead>
+                        <tbody id="developer-websocket-status-body">
+                          <tr>
+                            <td colspan="6">等待 WebSocket 狀態資料。</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                </div>
+              </section>
+            </div>
+          </details>
+        </div>
+        <div id="developer-config-message" class="developer-config-message" role="status"></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/js/ui/developer-utils.js?v=developer-split-v3"></script>
+  <script src="/static/js/ui/developer-api.js?v=developer-split-v3"></script>
+  <script src="/static/js/ui/developer-config-list.js?v=developer-split-v3"></script>
+  <script src="/static/js/ui/developer-status-machines.js?v=developer-split-v3"></script>
+  <script src="/static/js/ui/developer-import.js?v=developer-split-v3"></script>
+  <script src="/static/js/ui/developer-wizard.js?v=developer-split-v3"></script>
+  <script src="/static/js/ui/developer-configs.js?v=developer-split-v3"></script>
+  <script>
+    window.addEventListener("DOMContentLoaded", () => {
+      if (typeof bindDeveloperConfigControls === "function") {
+        bindDeveloperConfigControls();
+      }
+    });
+  </script>
+</body>
+</html>

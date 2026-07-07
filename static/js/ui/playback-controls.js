@@ -1,94 +1,63 @@
 const TIME_CONTROL_LAYER_IDS = new Set(["gfw"]);
-const PLAYBACK_CACHE_LAYER_IDS = new Set(["gfw"]);
-const PLAYBACK_CONTROL_IDS = ["latest-date", "replay", "prev-day", "play-toggle", "playback-settings-toggle", "next-day"];
-const BYTES_PER_GB = 1024 * 1024 * 1024;
+const PLAYBACK_CONTROL_IDS = ["latest-date", "replay", "prev-day", "play-toggle", "next-day"];
 
 function syncPlayToggleIcon() {
   if (state.isPlaying) {
     ControlButtons.setIcon("play-toggle", "pause", "II", "暫停");
+    if (typeof syncFullscreenPlayToggleIcon === "function") {
+      syncFullscreenPlayToggleIcon();
+    }
     return;
   }
   ControlButtons.setIcon("play-toggle", "play", ">", "播放");
+  if (typeof syncFullscreenPlayToggleIcon === "function") {
+    syncFullscreenPlayToggleIcon();
+  }
 }
 
 function bindPlaybackControlFeedback() {
   ControlButtons.bindFeedback(PLAYBACK_CONTROL_IDS);
 }
 
-function setPlaybackSettingsModal(open) {
-  const modal = $("playback-settings-modal");
-  if (!modal) return;
-  modal.hidden = !open;
-  $("playback-settings-toggle")?.setAttribute("aria-expanded", String(open));
-}
+function syncPlaybackCacheCapacityMeter() {
+  const stats = state.gfwRecordCache?.stats || {};
+  const usedBytes = Math.max(0, Number(stats.cacheBytes || 0));
+  const limitBytes = Math.max(0, Number(stats.cacheLimitBytes || state.gfwRecordCache?.maxBytes || 0));
+  const ratio = limitBytes > 0 ? Math.min(1, usedBytes / limitBytes) : 0;
+  const percent = Math.round(ratio * 100);
+  const capacityText = $("playback-cache-capacity-text");
+  const capacityPercent = $("playback-cache-capacity-percent");
+  const capacityFill = $("playback-cache-capacity-fill");
 
-function playbackCacheOptions() {
-  return {
-    mode: state.playbackCache?.mode || "before_play",
-    concurrency: Math.max(1, Number(state.playbackCache?.concurrency || 1)),
-    maxDates: Math.max(0, Number(state.playbackCache?.maxDates || 0)),
-    maxGb: Math.max(0.25, Number(state.gfwRecordCache?.maxBytes || 2 * BYTES_PER_GB) / BYTES_PER_GB),
-  };
-}
-
-function formatBytes(bytes) {
-  const value = Math.max(0, Number(bytes || 0));
-  if (value >= BYTES_PER_GB) return `${(value / BYTES_PER_GB).toFixed(2)} GB`;
-  if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(0)} MB`;
-  if (value >= 1024) return `${(value / 1024).toFixed(0)} KB`;
-  return `${value.toFixed(0)} B`;
+  if (capacityText) {
+    capacityText.textContent = `快取容量：${PlaybackCacheService.formatBytes(usedBytes)} / ${PlaybackCacheService.formatBytes(limitBytes)}`;
+  }
+  if (capacityPercent) {
+    capacityPercent.textContent = `${percent}%`;
+  }
+  if (capacityFill) {
+    capacityFill.style.width = `${percent}%`;
+  }
 }
 
 function updatePlaybackCacheStatus(text) {
-  const status = $("playback-cache-status");
-  if (status) {
-    status.textContent = text;
-  }
-  const progress = $("playback-cache-progress");
-  const stats = state.playbackCache?.stats || {};
-  const total = Math.max(0, Number(stats.queued || 0));
-  const completed = Math.min(total, Number(stats.completed || 0));
-  if (progress) {
-    progress.max = total || 1;
-    progress.value = completed;
-  }
+  syncPlaybackCacheCapacityMeter();
 }
 
 function syncPlaybackSettingsInputs() {
-  const options = playbackCacheOptions();
+  const options = PlaybackCacheService.options();
   if ($("playback-cache-mode")) $("playback-cache-mode").value = options.mode;
   if ($("playback-cache-concurrency")) $("playback-cache-concurrency").value = String(options.concurrency);
   if ($("playback-cache-max-dates")) $("playback-cache-max-dates").value = String(options.maxDates);
   if ($("playback-cache-max-gb")) $("playback-cache-max-gb").value = String(Math.round(options.maxGb * 100) / 100);
   if ($("gfw-transition-ms")) $("gfw-transition-ms").value = String(Math.max(0, Number(state.gfwTransitionMs || 0)));
-  if ($("gfw-zoom-blur-px")) $("gfw-zoom-blur-px").value = String(Math.max(0, Number(state.gfwZoomBlurPx || 0)));
-  const stats = state.playbackCache?.stats || {};
-  const cacheStats = state.gfwRecordCache?.stats || {};
-  const cacheText = `記憶體 ${formatBytes(cacheStats.cacheBytes)} / ${formatBytes(cacheStats.cacheLimitBytes || state.gfwRecordCache?.maxBytes)}`;
-  const total = Number(stats.queued || 0);
-  if (state.playbackCache?.isPreheating) {
-    updatePlaybackCacheStatus(`預熱中 ${Number(stats.completed || 0)} / ${total}，${cacheText}`);
-  } else if (total > 0) {
-    updatePlaybackCacheStatus(`就緒：${Number(stats.completed || 0)} / ${total}，快取命中 ${Number(stats.cacheHits || 0)}，已抓取 ${Number(stats.fetched || 0)}，${cacheText}`);
-  } else {
-    updatePlaybackCacheStatus(`閒置，${cacheText}`);
-  }
+  const blurPx = Math.max(0, Number(state.gfwZoomBlurPx || 0));
+  if ($("gfw-zoom-blur-px")) $("gfw-zoom-blur-px").value = String(blurPx);
+  if ($("gfw-zoom-blur-value")) $("gfw-zoom-blur-value").textContent = `${blurPx}px`;
+  updatePlaybackCacheStatus(PlaybackCacheService.statusText());
 }
 
 function bindPlaybackSettingsControls() {
-  const toggle = $("playback-settings-toggle");
-  const close = $("playback-settings-close");
-  const modal = $("playback-settings-modal");
-  toggle?.addEventListener("click", () => {
-    syncPlaybackSettingsInputs();
-    setPlaybackSettingsModal(modal?.hidden ?? true);
-  });
-  close?.addEventListener("click", () => setPlaybackSettingsModal(false));
-  modal?.addEventListener("click", (event) => {
-    if (event.target === modal) {
-      setPlaybackSettingsModal(false);
-    }
-  });
   $("playback-cache-mode")?.addEventListener("change", (event) => {
     state.playbackCache.mode = event.target.value;
     syncPlaybackSettingsInputs();
@@ -103,8 +72,21 @@ function bindPlaybackSettingsControls() {
   });
   $("playback-cache-max-gb")?.addEventListener("change", (event) => {
     const maxGb = Math.max(0.25, Number(event.target.value || 2));
-    state.gfwRecordCache.maxBytes = Math.round(maxGb * BYTES_PER_GB);
+    state.gfwRecordCache.maxBytes = Math.round(maxGb * PlaybackCacheService.BYTES_PER_GB);
     GfwRecordCache.enforceBudget?.();
+    syncPlaybackSettingsInputs();
+  });
+  $("playback-cache-clear")?.addEventListener("click", () => {
+    GfwRecordCache.clear?.();
+    state.playbackCache.isPreheating = false;
+    state.playbackCache.stats = {
+      queued: 0,
+      completed: 0,
+      cacheHits: 0,
+      fetched: 0,
+      failed: 0,
+    };
+    setStatus("播放快取已釋放");
     syncPlaybackSettingsInputs();
   });
   $("gfw-transition-ms")?.addEventListener("change", (event) => {
@@ -135,11 +117,7 @@ function hasSelectedTimeControlLayer() {
 }
 
 function hasPlaybackCacheLayer() {
-  return PLAYBACK_CACHE_LAYER_IDS.has(state.dataLayer);
-}
-
-function playbackCacheLayerLabel() {
-  return String(state.dataLayer || "layer").toUpperCase();
+  return PlaybackCacheService.isEnabledForCurrentLayer();
 }
 
 function setAvailableDates(dates) {
@@ -165,15 +143,6 @@ function datesInSelectedRange() {
     [start, end] = [end, start];
   }
   return state.availableDates.filter((date) => date >= start && date <= end);
-}
-
-function datesForPlaybackPreheat() {
-  const dates = datesInSelectedRange();
-  const { maxDates } = playbackCacheOptions();
-  if (maxDates > 0 && dates.length > maxDates) {
-    return dates.slice(0, maxDates);
-  }
-  return dates;
 }
 
 function clampDateToSelectedRange(value) {
@@ -214,14 +183,17 @@ function updatePlaybackControls() {
   $("replay").disabled = isPreheating || !timeSequenceEnabled;
   $("play-toggle").disabled = isPreheating || !timeSequenceEnabled || dates.length <= 1;
   $("play-speed").disabled = isPreheating || !timeSequenceEnabled || dates.length <= 1;
-  if ($("playback-settings-toggle")) {
-    $("playback-settings-toggle").disabled = !playbackCacheEnabled || dates.length <= 1;
-  }
   if (timeSequence) {
     timeSequence.classList.toggle("is-disabled", !timeSequenceEnabled);
     timeSequence.setAttribute("aria-disabled", String(!timeSequenceEnabled));
   }
   syncPlayToggleIcon();
+  if (typeof syncFullscreenPlaybackControls === "function") {
+    syncFullscreenPlaybackControls();
+  }
+  if (typeof syncFullscreenPlaybackHud === "function") {
+    syncFullscreenPlaybackHud();
+  }
 }
 
 function stopPlayback() {
@@ -266,58 +238,18 @@ async function preparePlaybackStart() {
 }
 
 async function preheatPlaybackCache({ blocking = true } = {}) {
-  const options = playbackCacheOptions();
-  if (options.mode === "off" || !hasPlaybackCacheLayer()) {
-    return true;
-  }
-  const dates = datesForPlaybackPreheat();
-  if (dates.length <= 1) {
-    return true;
-  }
   const limit = Number(state.queryPolicy?.max_limit || state.queryPolicy?.default_limit || 100000);
-  const bbox = currentBbox();
-  const requests = dates.map((date) => ({
+  return PlaybackCacheService.preheat({
+    dates: datesInSelectedRange(),
+    bbox: currentBbox(),
     datasetId: state.datasetId,
-    date,
-    bbox,
     limit,
-  }));
-  state.playbackCache.isPreheating = true;
-  state.playbackCache.stats = {
-    queued: requests.length,
-    completed: 0,
-    cacheHits: 0,
-    fetched: 0,
-    failed: 0,
-  };
-  updatePlaybackControls();
-  syncPlaybackSettingsInputs();
-  const layerLabel = playbackCacheLayerLabel();
-  setStatus(`正在預熱 ${layerLabel} 播放快取 0 / ${requests.length}`);
-  const run = GfwRecordCache.prefetchRequests(requests, {
-    concurrency: options.concurrency,
-    onProgress: (event) => {
-      const stats = state.playbackCache.stats;
-      stats.completed = Math.min(stats.queued, Number(stats.completed || 0) + 1);
-      if (event.ok && event.cacheHit) stats.cacheHits = Number(stats.cacheHits || 0) + 1;
-      if (event.ok && !event.cacheHit) stats.fetched = Number(stats.fetched || 0) + 1;
-      if (!event.ok) stats.failed = Number(stats.failed || 0) + 1;
+    blocking,
+    onStateChange: () => {
+      updatePlaybackControls();
       syncPlaybackSettingsInputs();
-      setStatus(`正在預熱 ${layerLabel} 播放快取 ${stats.completed} / ${stats.queued}`);
     },
-  }).finally(() => {
-    state.playbackCache.isPreheating = false;
-    updatePlaybackControls();
-    syncPlaybackSettingsInputs();
-    const stats = state.playbackCache.stats;
-    setStatus(`${layerLabel} 播放快取就緒 ${stats.completed} / ${stats.queued}`);
   });
-  if (options.mode === "progressive" || !blocking) {
-    run.catch((err) => setStatus(err.message, true));
-    return true;
-  }
-  await run;
-  return true;
 }
 
 async function advancePlaybackDay() {
@@ -361,7 +293,7 @@ async function setPlayback(active) {
     stopPlayback();
     return;
   }
-  const options = playbackCacheOptions();
+  const options = PlaybackCacheService.options();
   if (options.mode === "before_play") {
     await preheatPlaybackCache({ blocking: true });
   } else if (options.mode === "progressive") {
@@ -369,6 +301,9 @@ async function setPlayback(active) {
   }
   state.isPlaying = true;
   state.playIntervalMs = Number($("play-speed").value || state.playIntervalMs);
+  if (typeof syncFullscreenPlaybackControls === "function") {
+    syncFullscreenPlaybackControls();
+  }
   updatePlaybackControls();
   schedulePlaybackTick();
 }
@@ -389,8 +324,13 @@ async function normalizeDateInputs({ reload = true } = {}) {
   }
 }
 
-function updatePlaybackSpeed() {
-  state.playIntervalMs = Number($("play-speed").value || state.playIntervalMs);
+function updatePlaybackSpeed(sourceId = "play-speed") {
+  const source = $(sourceId) || $("play-speed");
+  state.playIntervalMs = Number(source.value || state.playIntervalMs);
+  $("play-speed").value = String(state.playIntervalMs);
+  if (typeof syncFullscreenPlaybackControls === "function") {
+    syncFullscreenPlaybackControls();
+  }
   if (state.isPlaying) {
     setPlayback(true);
   }

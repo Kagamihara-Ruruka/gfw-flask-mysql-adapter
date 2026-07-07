@@ -10,6 +10,7 @@ data/
 config/adapter.local.json
 config/adapter.ais_collector.local.json
 config/ais_collector.local.json
+config/router_manifest.local.json
 handoff/airflow_ais_crawler/ais_collector.handoff.json
 handoff_dist/
 flask_pid.txt

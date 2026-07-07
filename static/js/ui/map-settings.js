@@ -13,6 +13,7 @@ function syncMapSettingsControls() {
   if (basemapSelect) {
     basemapSelect.value = state.mapSettings.basemapId;
   }
+  syncBasemapAttribution();
   const pairs = [
     ["map-setting-scale", "scaleVisible"],
     ["map-setting-zoom-control", "zoomControlVisible"],
@@ -22,11 +23,13 @@ function syncMapSettingsControls() {
     ["map-setting-double-click", "doubleClickZoom"],
     ["map-setting-dragging", "dragging"],
     ["map-setting-keyboard", "keyboard"],
+    ["map-setting-vignette", "vignetteVisible"],
   ];
   for (const [id, key] of pairs) {
     const input = $(id);
     if (input) input.checked = Boolean(state.mapSettings[key]);
   }
+  syncMapVignetteControls();
   const graticuleAlpha = $("map-setting-graticule-alpha");
   if (graticuleAlpha) {
     graticuleAlpha.value = String(state.mapSettings.graticuleAlpha);
@@ -45,10 +48,50 @@ function syncMapSettingsControls() {
   }
 }
 
+function syncBasemapAttribution() {
+  const attribution = $("map-basemap-attribution");
+  if (!attribution) return;
+  attribution.textContent = `底圖來源：${getCurrentBasemapAttribution()}`;
+}
+
+function syncMapVignetteControls() {
+  const inset = $("map-setting-vignette-inset");
+  const insetValue = $("map-setting-vignette-inset-value");
+  const strength = $("map-setting-vignette-strength");
+  const strengthValue = $("map-setting-vignette-strength-value");
+  if (inset) {
+    inset.value = String(state.mapSettings.vignetteInsetPct);
+  }
+  if (insetValue) {
+    insetValue.textContent = `${state.mapSettings.vignetteInsetPct}%`;
+  }
+  if (strength) {
+    strength.value = String(state.mapSettings.vignetteStrength);
+  }
+  if (strengthValue) {
+    strengthValue.textContent = `${state.mapSettings.vignetteStrength}%`;
+  }
+}
+
+function applyMapVignetteSettings() {
+  const shell = $("map-shell");
+  if (!shell) return;
+  const insetPct = Math.max(0, Math.min(5, Number(state.mapSettings.vignetteInsetPct) || 0));
+  const strength = Math.max(0, Math.min(100, Number(state.mapSettings.vignetteStrength) || 0));
+  const strengthRatio = strength / 100;
+  shell.classList.toggle("is-vignette-disabled", !state.mapSettings.vignetteVisible || strength <= 0);
+  shell.style.setProperty("--map-edge-vignette-inset", `${insetPct}%`);
+  shell.style.setProperty("--map-edge-vignette-alpha", String(0.08 + 0.36 * strengthRatio));
+  shell.style.setProperty("--map-edge-vignette-soft-alpha", String(0.04 + 0.24 * strengthRatio));
+  shell.style.setProperty("--map-edge-vignette-blur", `${0.45 + 1.9 * strengthRatio}rem`);
+  shell.style.setProperty("--map-edge-vignette-soft-blur", `${0.16 + 0.52 * strengthRatio}rem`);
+}
+
 function bindMapSettingsControls() {
   const openButton = $("map-settings-open");
   const closeButton = $("map-settings-close");
   const modal = $("map-settings-modal");
+  applyMapVignetteSettings();
   if (openButton) {
     openButton.addEventListener("click", (event) => {
       event.stopPropagation();
@@ -77,12 +120,27 @@ function bindMapSettingsControls() {
 
   $("map-basemap-select")?.addEventListener("change", (event) => {
     setBasemap(event.target.value);
+    syncBasemapAttribution();
   });
   $("map-setting-scale")?.addEventListener("change", (event) => {
     setMapScaleVisible(event.target.checked);
   });
   $("map-setting-zoom-control")?.addEventListener("change", (event) => {
     setMapZoomControlVisible(event.target.checked);
+  });
+  $("map-setting-vignette")?.addEventListener("change", (event) => {
+    state.mapSettings.vignetteVisible = event.target.checked;
+    applyMapVignetteSettings();
+  });
+  $("map-setting-vignette-inset")?.addEventListener("input", (event) => {
+    state.mapSettings.vignetteInsetPct = Number(event.target.value);
+    syncMapVignetteControls();
+    applyMapVignetteSettings();
+  });
+  $("map-setting-vignette-strength")?.addEventListener("input", (event) => {
+    state.mapSettings.vignetteStrength = Number(event.target.value);
+    syncMapVignetteControls();
+    applyMapVignetteSettings();
   });
   $("map-setting-graticule")?.addEventListener("change", (event) => {
     state.mapSettings.graticuleVisible = event.target.checked;

@@ -532,7 +532,24 @@ const GfwRecordCache = (() => {
     prewarmTimer = null;
   }
 
+  function clear() {
+    prewarmGeneration += 1;
+    clearTimeout(prewarmTimer);
+    prewarmTimer = null;
+    cache.clear();
+    metadata.clear();
+    packetSizes.clear();
+    inflight.clear();
+    cacheBytes = 0;
+    syncCacheStats({
+      prewarmQueued: 0,
+      prewarmCompleted: 0,
+      skippedOversizeBytes: 0,
+    });
+  }
+
   return {
+    clear,
     fetchPacket,
     hasPacket,
     prefetchRequests,

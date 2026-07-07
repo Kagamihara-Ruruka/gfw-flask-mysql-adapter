@@ -6,7 +6,7 @@
   <title>大可愛海事資料儀表板</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/static/vendor/leaflet-1.9.4.css?v=1.9.4">
-  <link rel="stylesheet" href="/static/styles.css?v=zh-tw-v94">
+  <link rel="stylesheet" href="/static/styles.css?v=basemap-list-v1">
 </head>
 <body>
   <header class="app-header">
@@ -14,6 +14,7 @@
       <nav class="app-tabs" aria-label="主要頁面">
         <button class="app-tab is-active" type="button" data-page-tab="dashboard" aria-selected="true">儀表板</button>
         <button class="app-tab" type="button" data-page-tab="settings" aria-selected="false">設定</button>
+        <button class="app-tab" type="button" data-page-tab="developer" aria-selected="false">開發者</button>
       </nav>
       <h1>大可愛海事資料儀表板</h1>
       <p>海事資料圖層、時間播放、效能測速與資料庫轉接測試介面。</p>
@@ -84,7 +85,6 @@
           <button id="replay" class="play-button" type="button" title="回到開始日期" aria-label="回到開始日期"><span class="control-icon-fallback" aria-hidden="true">↺</span><i class="control-icon" data-lucide="rotate-ccw" aria-hidden="true"></i></button>
           <button id="prev-day" class="small-button" type="button" title="上一日" aria-label="上一日"><span class="control-icon-fallback" aria-hidden="true">‹</span><i class="control-icon" data-lucide="skip-back" aria-hidden="true"></i></button>
           <button id="play-toggle" class="play-button" type="button" title="播放" aria-label="播放"><span class="control-icon-fallback" aria-hidden="true">▶</span><i class="control-icon" data-lucide="play" aria-hidden="true"></i></button>
-          <button id="playback-settings-toggle" class="playback-settings-button" type="button" title="播放快取設定" aria-label="播放快取設定" aria-expanded="false"><span aria-hidden="true">⚙</span></button>
           <button id="next-day" class="small-button" type="button" title="下一日" aria-label="下一日"><span class="control-icon-fallback" aria-hidden="true">›</span><i class="control-icon" data-lucide="skip-forward" aria-hidden="true"></i></button>
           <label class="speed-control">
             速度
@@ -140,15 +140,47 @@
       </section>
     </details>
 
-    <section class="workspace">
-      <div id="map-shell" class="map-shell">
+    <section class="workspace records-panel-hidden">
+        <div id="map-shell" class="map-shell">
         <div id="map" aria-label="地圖"></div>
+        <div id="fullscreen-playback-hud" class="fullscreen-playback-hud" aria-live="polite">快照：--</div>
         <div class="map-tool-stack" aria-label="地圖工具">
-          <button id="map-fullscreen" class="map-tool-button" type="button" title="地圖全螢幕" aria-label="地圖全螢幕">全螢幕</button>
+          <button id="map-fullscreen" class="map-tool-button" type="button" title="地圖全螢幕" aria-label="地圖全螢幕">
+            <span class="control-icon-fallback" aria-hidden="true">⛶</span>
+            <i class="control-icon" data-lucide="maximize-2" aria-hidden="true"></i>
+          </button>
+        </div>
+        <div class="fullscreen-playback-hover-zone" aria-hidden="true"></div>
+        <div id="fullscreen-playback-controls" class="fullscreen-playback-controls" aria-label="全螢幕播放控制">
+          <label>
+            <span>資料日期</span>
+            <input id="fs-date" type="date">
+          </label>
+          <label>
+            <span>開始</span>
+            <input id="fs-start-date" type="date">
+          </label>
+          <label>
+            <span>結束</span>
+            <input id="fs-end-date" type="date">
+          </label>
+          <button id="fs-replay" class="playback-control-button" type="button" title="回到開始日期" aria-label="回到開始日期"><span class="control-icon-fallback" aria-hidden="true">↺</span><i class="control-icon" data-lucide="rotate-ccw" aria-hidden="true"></i></button>
+          <button id="fs-prev-day" class="playback-control-button" type="button" title="往前一日" aria-label="往前一日"><span class="control-icon-fallback" aria-hidden="true">‹</span><i class="control-icon" data-lucide="skip-back" aria-hidden="true"></i></button>
+          <button id="fs-play-toggle" class="playback-control-button is-primary" type="button" title="播放" aria-label="播放"><span class="control-icon-fallback" aria-hidden="true">▶</span><i class="control-icon" data-lucide="play" aria-hidden="true"></i></button>
+          <button id="fs-next-day" class="playback-control-button" type="button" title="往後一日" aria-label="往後一日"><span class="control-icon-fallback" aria-hidden="true">›</span><i class="control-icon" data-lucide="skip-forward" aria-hidden="true"></i></button>
+          <label class="fullscreen-speed-control">
+            <span>速度</span>
+            <select id="fs-play-speed">
+              <option value="2200">0.5x</option>
+              <option value="1400">1x</option>
+              <option value="850">2x</option>
+              <option value="420">4x</option>
+            </select>
+          </label>
         </div>
         <button id="map-settings-open" class="map-settings-button" type="button" title="地圖設定" aria-label="地圖設定">⚙</button>
       </div>
-      <aside class="table-panel">
+      <aside class="table-panel" aria-hidden="true">
         <div class="table-title">
           <h2>資料列</h2>
           <span id="table-note">等待資料</span>
@@ -160,13 +192,157 @@
           </table>
         </div>
       </aside>
+      <aside class="bi-panel" aria-label="BI 分析區">
+        <div class="bi-panel-header">
+          <h2>BI</h2>
+          <span>待設計</span>
+        </div>
+      </aside>
     </section>
   </main>
 
   <section class="settings-page page-panel" data-page-panel="settings" hidden>
     <div class="settings-page-card">
       <h2>設定</h2>
-      <p>尚無全域設定。</p>
+      <p>集中管理播放、地圖與資料服務的全域選項。</p>
+      <div class="settings-page-grid">
+        <details class="settings-toggle-card" open>
+          <summary class="settings-toggle-summary">
+            <span class="settings-toggle-caret" aria-hidden="true"></span>
+            <span>
+              <span class="settings-toggle-title">硬體加速</span>
+              <span class="settings-toggle-description">依瀏覽器與顯示卡能力選擇 WebGL 或 CPU/Canvas 渲染。</span>
+            </span>
+          </summary>
+          <div class="settings-toggle-content">
+            <section class="settings-section hardware-settings-section">
+              <h3>狀態機</h3>
+              <div class="hardware-state-grid" aria-label="硬體加速狀態">
+                <div id="hardware-chip-webgl2" class="render-chip is-off">
+                  <span id="hardware-light-webgl2" class="render-light is-off"></span>
+                  <span>WebGL2</span>
+                  <strong id="hardware-bit-webgl2">0</strong>
+                  <small id="hardware-detail-webgl2">偵測中</small>
+                </div>
+                <div id="hardware-chip-webgl" class="render-chip is-off">
+                  <span id="hardware-light-webgl" class="render-light is-off"></span>
+                  <span>WebGL</span>
+                  <strong id="hardware-bit-webgl">0</strong>
+                  <small id="hardware-detail-webgl">偵測中</small>
+                </div>
+                <div id="hardware-chip-webgpu" class="render-chip is-off">
+                  <span id="hardware-light-webgpu" class="render-light is-off"></span>
+                  <span>WebGPU</span>
+                  <strong id="hardware-bit-webgpu">0</strong>
+                  <small id="hardware-detail-webgpu">偵測中</small>
+                </div>
+              </div>
+              <p id="hardware-acceleration-detail" class="setting-note">正在偵測瀏覽器圖形能力。</p>
+            </section>
+            <section class="settings-section hardware-settings-section">
+              <h3>渲染偏好</h3>
+              <div class="hardware-radio-list" role="radiogroup" aria-label="硬體加速模式">
+                <label class="radio-setting-row">
+                  <input id="hardware-mode-auto" name="hardware-acceleration-mode" type="radio" value="auto">
+                  <span id="hardware-mode-auto-label">自動</span>
+                </label>
+                <label class="radio-setting-row">
+                  <input id="hardware-mode-webgl" name="hardware-acceleration-mode" type="radio" value="webgl">
+                  <span id="hardware-mode-webgl-label">WebGL</span>
+                </label>
+                <label class="radio-setting-row">
+                  <input id="hardware-mode-cpu" name="hardware-acceleration-mode" type="radio" value="off">
+                  <span id="hardware-mode-cpu-label">CPU / Canvas</span>
+                </label>
+              </div>
+              <p class="setting-note">自動模式會優先使用可用的 WebGL，失敗時回退到 CPU/Canvas；沒有 GPU/WebGL 能力時，硬體加速選項會自動停用。</p>
+            </section>
+          </div>
+        </details>
+        <details class="settings-toggle-card" open>
+          <summary class="settings-toggle-summary">
+            <span class="settings-toggle-caret" aria-hidden="true"></span>
+            <span>
+              <span class="settings-toggle-title">播放器</span>
+              <span class="settings-toggle-description">播放快取預熱、容量、淡入淡出與高斯模糊。</span>
+            </span>
+          </summary>
+          <div class="settings-toggle-content">
+            <section class="settings-section playback-settings-section">
+              <h3>快取預熱</h3>
+              <label>
+                模式
+                <select id="playback-cache-mode">
+                  <option value="before_play">播放前完整預熱</option>
+                  <option value="progressive">播放時漸進預熱</option>
+                  <option value="off">關閉</option>
+                </select>
+              </label>
+              <label>
+                並行預熱數
+                <input id="playback-cache-concurrency" type="number" min="1" max="12" step="1" value="2">
+              </label>
+              <label>
+                日期上限
+                <span class="setting-control-with-note">
+                  <input id="playback-cache-max-dates" type="number" min="0" max="366" step="1" value="0">
+                  <span class="inline-setting-note">0 = 無上限</span>
+                </span>
+              </label>
+              <label>
+                快取上限 (GB)
+                <input id="playback-cache-max-gb" type="number" min="0.25" max="16" step="0.25" value="2">
+              </label>
+              <p class="setting-note">日期上限為 0 時，使用目前日期範圍；並行預熱數代表同時抓取幾個日期快照；快取上限用來避免一次預熱過大範圍造成記憶體壓力。</p>
+              <div class="playback-cache-meter" aria-label="播放快取容量">
+                <div class="playback-cache-meter-label">
+                  <span id="playback-cache-capacity-text">快取容量：0 B / 2.00 GB</span>
+                  <span class="playback-cache-meter-actions">
+                    <span id="playback-cache-capacity-percent">0%</span>
+                    <button id="playback-cache-clear" class="cache-clear-button" type="button">釋放快取</button>
+                  </span>
+                </div>
+                <div class="playback-cache-meter-track">
+                  <div id="playback-cache-capacity-fill" class="playback-cache-meter-fill"></div>
+                </div>
+              </div>
+            </section>
+            <section class="settings-section playback-settings-section">
+              <h3>轉場</h3>
+              <label>
+                淡入淡出時間 (ms)
+                <input id="gfw-transition-ms" type="number" min="0" max="1200" step="20" value="180">
+              </label>
+              <label>
+                高斯模糊半徑 (px)
+                <span class="setting-control-with-value">
+                  <input id="gfw-zoom-blur-px" type="range" min="0" max="8" step="0.5" value="2">
+                  <span id="gfw-zoom-blur-value" class="setting-value-pill">2 px</span>
+                </span>
+              </label>
+              <p class="setting-note">0 表示不套用模糊；2px 是輕微柔化；4px 以上會明顯霧化，適合遮住縮放或淡入淡出的切換感。</p>
+            </section>
+          </div>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <section class="settings-page page-panel" data-page-panel="developer" hidden>
+    <div class="settings-page-card">
+      <h2>開發者</h2>
+      {% if developer_url %}
+      <p>這個頁籤只是控制面入口；實際開發者服務位於 {{ developer_url }}，未來註銷這個頁籤即可與消費端分離。</p>
+      <iframe
+        id="developer-control-frame"
+        class="developer-control-frame"
+        title="開發者路由器控制面"
+        src="{{ developer_url }}/?embedded=1"
+      ></iframe>
+      {% else %}
+      <p>這個頁籤只是控制面入口；目前未啟用開發者服務，未來註銷這個頁籤即可與消費端分離。</p>
+      <div class="developer-empty-state">開發者服務未啟用。</div>
+      {% endif %}
     </div>
   </section>
 
@@ -273,57 +449,6 @@
     </section>
   </div>
 
-  <div id="playback-settings-modal" class="modal-backdrop" hidden>
-    <section class="modal-window playback-settings-window" role="dialog" aria-modal="true" aria-labelledby="playback-settings-title">
-      <header class="modal-header">
-        <div>
-          <h2 id="playback-settings-title">播放設定</h2>
-          <p>播放前預熱指定日期的地圖快照，並調整轉場遮罩。</p>
-        </div>
-        <button id="playback-settings-close" class="icon-button" type="button" aria-label="關閉播放設定">關閉</button>
-      </header>
-      <div class="modal-body">
-        <section class="settings-section">
-          <h3>快取預熱</h3>
-          <label>
-            模式
-            <select id="playback-cache-mode">
-              <option value="before_play">播放前完整預熱</option>
-              <option value="progressive">播放時漸進預熱</option>
-              <option value="off">關閉</option>
-            </select>
-          </label>
-          <label>
-            工作數
-            <input id="playback-cache-concurrency" type="number" min="1" max="12" step="1" value="2">
-          </label>
-          <label>
-            最多日期數
-            <input id="playback-cache-max-dates" type="number" min="0" max="366" step="1" value="0">
-          </label>
-          <label>
-            快取上限 (GB)
-            <input id="playback-cache-max-gb" type="number" min="0.25" max="16" step="0.25" value="2">
-          </label>
-          <p class="setting-note">最多日期數為 0 代表使用開始到結束的所有日期。快取上限用來限制瀏覽器記憶體；舊快照會先被釋放。</p>
-          <progress id="playback-cache-progress" max="1" value="0"></progress>
-          <div id="playback-cache-status" class="diagnostics-result">閒置</div>
-        </section>
-        <section class="settings-section">
-          <h3>轉場</h3>
-          <label>
-            淡入淡出時間 (ms)
-            <input id="gfw-transition-ms" type="number" min="0" max="1200" step="20" value="180">
-          </label>
-          <label>
-            縮放模糊 (px)
-            <input id="gfw-zoom-blur-px" type="range" min="0" max="8" step="0.5" value="2">
-          </label>
-        </section>
-      </div>
-    </section>
-  </div>
-
   <div id="map-settings-modal" class="modal-backdrop" hidden>
     <section class="modal-window map-settings-window" role="dialog" aria-modal="true" aria-labelledby="map-settings-title">
       <header class="modal-header">
@@ -339,13 +464,20 @@
           <label>
             底圖
             <select id="map-basemap-select">
-              <option value="carto_light">淺色</option>
-              <option value="carto_dark">深色</option>
+              <option value="carto_light">CARTO 淺色</option>
+              <option value="carto_dark">CARTO 深色</option>
+              <option value="carto_voyager">CARTO Voyager</option>
               <option value="osm_standard">OSM 標準</option>
-              <option value="opentopo_terrain">地形</option>
-              <option value="esri_imagery">衛星</option>
+              <option value="osm_hot">OSM Humanitarian</option>
+              <option value="opentopo_terrain">OpenTopo 地形</option>
+              <option value="esri_ocean">Esri Ocean</option>
+              <option value="esri_topo">Esri 地形</option>
+              <option value="esri_streets">Esri 街道</option>
+              <option value="esri_imagery">Esri 衛星</option>
             </select>
           </label>
+          <p id="map-basemap-attribution" class="setting-note">底圖來源：OpenStreetMap, CARTO</p>
+          <p class="setting-note">註：底圖會依目前視窗連網下載圖磚；若離線或來源限流，地圖可能暫時空白。</p>
           <label class="switch-row">
             <input id="map-setting-scale" type="checkbox" checked>
             <span>比例尺</span>
@@ -354,6 +486,27 @@
             <input id="map-setting-zoom-control" type="checkbox" checked>
             <span>縮放按鈕</span>
           </label>
+          <details class="nested-settings" open>
+            <summary>邊緣霧化</summary>
+            <label class="switch-row">
+              <input id="map-setting-vignette" type="checkbox">
+              <span>啟用霧化遮罩</span>
+            </label>
+            <label>
+              內縮比例
+              <span class="setting-control-with-value">
+                <input id="map-setting-vignette-inset" type="range" min="0" max="5" step="0.25" value="1">
+                <strong id="map-setting-vignette-inset-value">1%</strong>
+              </span>
+            </label>
+            <label>
+              霧化強度
+              <span class="setting-control-with-value">
+                <input id="map-setting-vignette-strength" type="range" min="0" max="100" step="5" value="55">
+                <strong id="map-setting-vignette-strength-value">55%</strong>
+              </span>
+            </label>
+          </details>
           <details class="nested-settings">
             <summary>經緯度格線</summary>
             <label class="switch-row">
@@ -460,33 +613,36 @@
   <script src="/static/vendor/lucide.min.js?v=0.468.0"></script>
   <script src="/static/vendor/html2canvas.min.js?v=1.4.1"></script>
   <script src="/static/vendor/Leaflet.VectorGrid.bundled.min.js?v=1.3.0"></script>
-  <script src="/static/TimingMetrics.js?v=zh-tw-v94"></script>
-  <script src="/static/js/core/state.js?v=zh-tw-v94"></script>
-  <script src="/static/js/core/dom.js?v=zh-tw-v94"></script>
-  <script src="/static/js/core/render-state.js?v=zh-tw-v94"></script>
-  <script src="/static/js/core/map.js?v=zh-tw-v94"></script>
-  <script src="/static/js/core/geo.js?v=zh-tw-v94"></script>
-  <script src="/static/js/rendering/render-capability.js?v=zh-tw-v94"></script>
-  <script src="/static/js/rendering/gfw-paint.js?v=zh-tw-v94"></script>
-  <script src="/static/js/rendering/gfw-webgl-renderer.js?v=zh-tw-v94"></script>
-  <script src="/static/js/rendering/renderer-registry.js?v=zh-tw-v94"></script>
-  <script src="/static/js/core/render-refresh.js?v=zh-tw-v94"></script>
-  <script src="/static/js/layers/eez-layer.js?v=zh-tw-v94"></script>
-  <script src="/static/js/layers/graticule-layer.js?v=zh-tw-v94"></script>
-  <script src="/static/js/layers/ais-layer.js?v=zh-tw-v94"></script>
-  <script src="/static/js/layers/gfw-layer.js?v=zh-tw-v94"></script>
-  <script src="/static/js/ui/table-view.js?v=zh-tw-v94"></script>
-  <script src="/static/js/ui/control-buttons.js?v=zh-tw-v94"></script>
-  <script src="/static/js/ui/playback-controls.js?v=zh-tw-v94"></script>
-  <script src="/static/js/ui/map-settings.js?v=zh-tw-v94"></script>
-  <script src="/static/js/ui/map-export.js?v=zh-tw-v94"></script>
-  <script src="/static/js/ui/layer-style-controls.js?v=zh-tw-v94"></script>
-  <script src="/static/js/ui/eez-settings.js?v=zh-tw-v94"></script>
-  <script src="/static/js/ui/gfw-settings.js?v=zh-tw-v94"></script>
-  <script src="/static/js/ui/ais-settings.js?v=zh-tw-v94"></script>
-  <script src="/static/js/ui/layer-menu.js?v=zh-tw-v94"></script>
-  <script src="/static/js/services/gfw-record-cache.js?v=zh-tw-v94"></script>
-  <script src="/static/js/services/api-client.js?v=zh-tw-v94"></script>
-  <script src="/static/app.js?v=zh-tw-v94"></script>
+  <script src="/static/TimingMetrics.js?v=zh-tw-v99"></script>
+  <script src="/static/js/core/state.js?v=vignette-default-off-v1"></script>
+  <script src="/static/js/core/dom.js?v=zh-tw-v99"></script>
+  <script src="/static/js/core/render-state.js?v=zh-tw-v99"></script>
+  <script src="/static/js/core/map.js?v=basemap-list-v1"></script>
+  <script src="/static/js/core/geo.js?v=zh-tw-v99"></script>
+  <script src="/static/js/rendering/render-capability.js?v=zh-tw-v99"></script>
+  <script src="/static/js/rendering/gfw-paint.js?v=zh-tw-v99"></script>
+  <script src="/static/js/rendering/gfw-webgl-renderer.js?v=zh-tw-v99"></script>
+  <script src="/static/js/rendering/renderer-registry.js?v=zh-tw-v99"></script>
+  <script src="/static/js/core/render-refresh.js?v=zh-tw-v99"></script>
+  <script src="/static/js/layers/eez-layer.js?v=zh-tw-v99"></script>
+  <script src="/static/js/layers/graticule-layer.js?v=zh-tw-v99"></script>
+  <script src="/static/js/layers/ais-layer.js?v=zh-tw-v99"></script>
+  <script src="/static/js/layers/gfw-layer.js?v=zh-tw-v99"></script>
+  <script src="/static/js/ui/table-view.js?v=zh-tw-v99"></script>
+  <script src="/static/js/ui/control-buttons.js?v=map-fullscreen-icon-v1"></script>
+  <script src="/static/js/ui/map-settings.js?v=vignette-default-off-v1"></script>
+  <script src="/static/js/ui/map-export.js?v=zh-tw-v99"></script>
+  <script src="/static/js/ui/layer-style-controls.js?v=zh-tw-v99"></script>
+  <script src="/static/js/ui/eez-settings.js?v=zh-tw-v99"></script>
+  <script src="/static/js/ui/gfw-settings.js?v=zh-tw-v99"></script>
+  <script src="/static/js/ui/ais-settings.js?v=zh-tw-v99"></script>
+  <script src="/static/js/ui/layer-menu.js?v=zh-tw-v99"></script>
+  <script src="/static/js/services/gfw-record-cache.js?v=zh-tw-v99"></script>
+  <script src="/static/js/services/playback-cache-service.js?v=zh-tw-v99"></script>
+  <script src="/static/js/ui/hardware-settings.js?v=zh-tw-v99"></script>
+  <script src="/static/js/ui/playback-controls.js?v=fullscreen-svg-v1"></script>
+  <script src="/static/js/ui/fullscreen-playback-controls.js?v=fullscreen-svg-v1"></script>
+  <script src="/static/js/services/api-client.js?v=zh-tw-v99"></script>
+  <script src="/static/app.js?v=config-import-v1"></script>
 </body>
 </html>

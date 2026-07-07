@@ -1,6 +1,7 @@
 async function init() {
   try {
     await loadRenderCapability();
+    syncHardwareSettingsControls();
     await loadDatasets();
     await loadSchema();
     await reloadActiveLayer();
@@ -26,8 +27,12 @@ async function toggleMapFullscreen() {
 
 function syncMapFullscreenButton() {
   const active = document.fullscreenElement === $("map-shell");
-  $("map-fullscreen").textContent = active ? "退出" : "全螢幕";
-  $("map-fullscreen").title = active ? "退出地圖全螢幕" : "地圖全螢幕";
+  ControlButtons.setIcon(
+    "map-fullscreen",
+    active ? "minimize-2" : "maximize-2",
+    active ? "×" : "⛶",
+    active ? "退出地圖全螢幕" : "地圖全螢幕",
+  );
   $("map-settings-open").hidden = active;
   if (active && typeof setMapSettingsModal === "function") {
     setMapSettingsModal(false);
@@ -86,7 +91,12 @@ function bindControls() {
   bindLayerSettingsModalControls();
   bindAisSettingsControls();
   bindPlaybackControlFeedback();
+  bindFullscreenPlaybackControls();
+  bindHardwareSettingsControls();
   bindPlaybackSettingsControls();
+  if (typeof bindDeveloperConfigControls === "function") {
+    bindDeveloperConfigControls();
+  }
   RenderState.sync();
   $("ais-render-strategy").addEventListener("change", () => {
     if (state.dataLayer === "ais") {
@@ -111,6 +121,7 @@ function bindControls() {
   $("map-fullscreen").addEventListener("click", () => {
     toggleMapFullscreen().catch((err) => setStatus(err.message, true));
   });
+  ControlButtons.bindFeedback(["map-fullscreen"]);
   document.addEventListener("fullscreenchange", syncMapFullscreenButton);
   $("eez-toggle").addEventListener("change", () => {
     updateDataLayerMenu();

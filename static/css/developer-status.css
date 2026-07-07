@@ -1,0 +1,103 @@
+.developer-status-badge {
+  display: inline-grid;
+  place-items: center;
+  width: fit-content;
+  min-width: 0;
+  padding: 4px 10px;
+  border: 1px solid #2a394b;
+  border-radius: 999px;
+  color: #9fb2ca;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.developer-panel-header > .developer-status-badge {
+  align-self: start;
+  justify-self: end;
+  min-width: 76px;
+}
+
+.developer-status-badge.is-ok {
+  border-color: #2ea043;
+  color: #9ee6aa;
+}
+
+.developer-status-badge.is-error {
+  border-color: #da3633;
+  color: #ffb4ae;
+}
+
+.developer-status-badge.is-idle {
+  border-color: #3d4d63;
+  color: #9fb2ca;
+}
+
+.developer-status-table-wrap {
+  max-height: 30vh;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.developer-status-machines {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.developer-status-machine {
+  min-width: 0;
+}
+
+.developer-status-machine h4 {
+  margin: 0 0 8px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.developer-status-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.developer-status-table th,
+.developer-status-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  text-align: left;
+  vertical-align: top;
+}
+
+.developer-status-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #10161f;
+  color: var(--text);
+}
+
+.developer-bit {
+  display: inline-grid;
+  place-items: center;
+  inline-size: 24px;
+  block-size: 20px;
+  border-radius: 999px;
+  border: 1px solid #344861;
+  color: #7f8ea3;
+  font-weight: 700;
+}
+
+.developer-bit.is-on {
+  border-color: #2ea043;
+  color: #9ee6aa;
+  background: rgb(46 160 67 / 12%);
+}
+
+.developer-bit.is-off {
+  border-color: #da3633;
+  color: #ffb4ae;
+  background: rgb(218 54 51 / 10%);
+}

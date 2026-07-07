@@ -6,6 +6,7 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,22 @@ from DatabaseConnect import (
     query_policy,
     records_packet,
     schema_packet,
+)
+from DeveloperConfigService import (
+    connection_status_from_config,
+    delete_managed_config,
+    discover_config_files,
+    load_router_manifest,
+    normalize_config_ref,
+    read_config_json,
+    resolve_config_ref,
+    save_router_manifest,
+    set_config_group,
+    set_config_locked,
+    set_config_note,
+    summarize_config_file,
+    unique_managed_config_path,
+    write_config_json_content,
 )
 from LodOverlayService import eez_boundary_mvt_tile_packet, eez_geojson_packet, eez_mvt_tile_packet
 from RenderCapability import server_render_capability
@@ -166,18 +183,254 @@ def force_exit_previous_server_instance(*, enabled: bool) -> None:
     time.sleep(0.5)
 
 
-def write_server_pid_file(*, host: str, port: int) -> None:
+def write_server_pid_file(*, host: str, port: int, developer_port: int | None = None) -> None:
     payload = {
         "pid": os.getpid(),
         "cwd": str(Path.cwd()),
         "host": host,
         "port": port,
+        "developer_port": developer_port,
         "started_at": int(time.time()),
     }
     SERVER_PID_FILE.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="ascii")
 
 
-def create_app(config: dict[str, Any]) -> Flask:
+def public_url(host: str, port: int) -> str:
+    display_host = "127.0.0.1" if host in {"0.0.0.0", ""} else host
+    return f"http://{display_host}:{port}"
+
+
+def register_developer_routes(app: Flask) -> None:
+    @app.get("/api/developer/configs")
+    def developer_configs():
+        try:
+            manifest = load_router_manifest()
+            active_refs = set(manifest["active_configs"])
+            locked_refs = set(manifest["locked_configs"])
+            files = [summarize_config_file(path, active_refs, locked_refs) for path in discover_config_files()]
+            return jsonify({"manifest": manifest, "configs": files})
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.get("/api/developer/configs/content")
+    def developer_config_content():
+        try:
+            config_ref = request.args.get("path", "")
+            path = resolve_config_ref(config_ref)
+            if not path.exists():
+                return jsonify({"error": "config file not found"}), 404
+            data, error = read_config_json(path)
+            return jsonify(
+                {
+                    "path": normalize_config_ref(path),
+                    "name": path.name,
+                    "parse_ok": error is None,
+                    "error": error,
+                    "content": path.read_text(encoding="utf-8"),
+                    "summary": summarize_config_file(
+                        path,
+                        set(load_router_manifest()["active_configs"]),
+                        set(load_router_manifest()["locked_configs"]),
+                    ),
+                }
+            )
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.put("/api/developer/configs/content")
+    def developer_config_content_update():
+        try:
+            payload = request.get_json(silent=True) or {}
+            config_ref = str(payload.get("path") or "")
+            content = str(payload.get("content") or "")
+            return jsonify(write_config_json_content(config_ref, content))
+        except json.JSONDecodeError as exc:
+            return jsonify({"error": f"invalid JSON: {exc}"}), 400
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.post("/api/developer/configs/import")
+    def developer_config_import():
+        try:
+            uploaded = request.files.get("config")
+            if uploaded is None or not uploaded.filename:
+                return jsonify({"error": "missing config file"}), 400
+            raw = uploaded.read()
+            if len(raw) > 1024 * 1024:
+                return jsonify({"error": "config file is larger than 1 MB"}), 400
+            text = raw.decode("utf-8-sig")
+            parsed = json.loads(text)
+            if not isinstance(parsed, dict):
+                return jsonify({"error": "config root must be a JSON object"}), 400
+            destination = unique_managed_config_path(uploaded.filename)
+            destination.write_text(json.dumps(parsed, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            group = str(request.form.get("group") or "")
+            if group:
+                set_config_group(str(destination), group)
+            manifest = load_router_manifest()
+            active_refs = set(manifest["active_configs"])
+            locked_refs = set(manifest["locked_configs"])
+            return jsonify(
+                {
+                    "status": "ok",
+                    "config": summarize_config_file(destination, active_refs, locked_refs),
+                    "message": f"已匯入 {destination.name}",
+                }
+            )
+        except UnicodeDecodeError:
+            return jsonify({"error": "config file must be UTF-8 JSON"}), 400
+        except json.JSONDecodeError as exc:
+            return jsonify({"error": f"invalid JSON: {exc}"}), 400
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.post("/api/developer/configs/active")
+    def developer_config_active():
+        try:
+            payload = request.get_json(silent=True) or {}
+            config_ref = str(payload.get("path") or "")
+            active = bool(payload.get("active"))
+            path = resolve_config_ref(config_ref)
+            if not path.exists():
+                return jsonify({"error": "config file not found"}), 404
+            if path.name.endswith(".example.json"):
+                return jsonify({"error": "example config is demo-only and cannot be activated"}), 400
+            summary = summarize_config_file(path, set(), set())
+            if summary.get("group") != "database":
+                return jsonify({"error": "only DATABASE config can be activated as a route"}), 400
+            data, error = read_config_json(path)
+            if active and (error or data is None):
+                return jsonify({"error": f"invalid config JSON: {error}"}), 400
+            manifest = load_router_manifest()
+            active_refs = set(manifest["active_configs"])
+            normalized = normalize_config_ref(path)
+            if active:
+                active_refs.add(normalized)
+            else:
+                active_refs.discard(normalized)
+            save_router_manifest(
+                {
+                    "active_configs": sorted(active_refs),
+                    "locked_configs": manifest["locked_configs"],
+                    "config_notes": manifest.get("config_notes") or {},
+                    "config_groups": manifest.get("config_groups") or {},
+                }
+            )
+            updated_manifest = load_router_manifest()
+            return jsonify({"status": "ok", "manifest": updated_manifest})
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.post("/api/developer/configs/locked")
+    def developer_config_locked():
+        try:
+            payload = request.get_json(silent=True) or {}
+            config_ref = str(payload.get("path") or "")
+            locked = bool(payload.get("locked"))
+            return jsonify(set_config_locked(config_ref, locked))
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.post("/api/developer/configs/note")
+    def developer_config_note():
+        try:
+            payload = request.get_json(silent=True) or {}
+            config_ref = str(payload.get("path") or "")
+            note = str(payload.get("note") or "")
+            return jsonify(set_config_note(config_ref, note))
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.post("/api/developer/configs/group")
+    def developer_config_group():
+        try:
+            payload = request.get_json(silent=True) or {}
+            config_ref = str(payload.get("path") or "")
+            group = str(payload.get("group") or "")
+            return jsonify(set_config_group(config_ref, group))
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.delete("/api/developer/configs")
+    def developer_config_delete():
+        try:
+            payload = request.get_json(silent=True) or {}
+            config_ref = str(payload.get("path") or "")
+            return jsonify({"status": "ok", **delete_managed_config(config_ref)})
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.get("/api/developer/router-status")
+    def developer_router_status():
+        try:
+            manifest = load_router_manifest()
+            active_refs = set(manifest["active_configs"])
+            rows: list[dict[str, Any]] = []
+            for path in discover_config_files():
+                if path.name.endswith(".example.json"):
+                    continue
+                ref = normalize_config_ref(path)
+                if ref not in active_refs:
+                    continue
+                summary = summarize_config_file(path, active_refs, set(manifest["locked_configs"]))
+                if summary.get("group") != "database":
+                    continue
+                data, error = read_config_json(path)
+                if error or data is None:
+                    rows.append(
+                        {
+                            "config_path": ref,
+                            "connection_ref": "-",
+                            "backend": "unknown",
+                            "enabled": ref in active_refs,
+                            "connected": False,
+                            "detail": error,
+                        }
+                    )
+                    continue
+                rows.extend(connection_status_from_config(ref, data, ref in active_refs))
+            return jsonify({"manifest": manifest, "rows": rows})
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.get("/api/developer/websocket-status")
+    def developer_websocket_status():
+        try:
+            manifest = load_router_manifest()
+            locked_refs = set(manifest["locked_configs"])
+            rows: list[dict[str, Any]] = []
+            for path in discover_config_files():
+                summary = summarize_config_file(path, set(), locked_refs)
+                if summary.get("group") != "websocket":
+                    continue
+                ref = normalize_config_ref(path)
+                data, error = read_config_json(path)
+                provider = "-"
+                endpoint = "-"
+                configured = False
+                enabled = False
+                if data:
+                    provider = str(data.get("provider") or data.get("stream_provider") or "websocket")
+                    endpoint = str(data.get("stream_url") or data.get("url") or data.get("endpoint") or "-")
+                    ingest = data.get("ingest") if isinstance(data.get("ingest"), dict) else {}
+                    enabled = bool(ingest.get("enabled", True))
+                    configured = bool(provider and endpoint != "-")
+                rows.append(
+                    {
+                        "config_path": ref,
+                        "provider": provider,
+                        "endpoint": endpoint,
+                        "enabled": enabled,
+                        "configured": configured and not error,
+                        "detail": error or ("設定可用" if configured else "缺少 provider 或 endpoint"),
+                    }
+                )
+            return jsonify({"manifest": manifest, "rows": rows})
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 400
+
+
+def create_app(config: dict[str, Any], *, developer_url: str | None = None) -> Flask:
     app = Flask(__name__)
     app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
     sock = Sock(app)
@@ -208,7 +461,7 @@ def create_app(config: dict[str, Any]) -> Flask:
 
     @app.get("/")
     def index():
-        return render_template("index.html")
+        return render_template("index.html", developer_url=developer_url)
 
     @app.get("/favicon.ico")
     def favicon():
@@ -570,6 +823,29 @@ def create_app(config: dict[str, Any]) -> Flask:
     return app
 
 
+def create_developer_app(config: dict[str, Any], *, consumer_url: str) -> Flask:
+    app = Flask(__name__)
+    app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+
+    @app.after_request
+    def no_store_static(response):
+        if request.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.get("/")
+    def developer_index():
+        embedded = request.args.get("embedded") == "1"
+        return render_template("developer.html", consumer_url=consumer_url, embedded=embedded)
+
+    @app.get("/favicon.ico")
+    def favicon():
+        return "", 204
+
+    register_developer_routes(app)
+    return app
+
+
 def sql_ais_live_ws(
     ws,
     *,
@@ -659,4 +935,32 @@ def run_server(config: dict[str, Any], *, host: str, port: int, debug: bool, kil
     free_configured_port_if_needed(host, port, enabled=kill_port_if_busy)
     write_server_pid_file(host=host, port=port)
     app = create_app(config)
+    app.run(host=host, port=port, debug=debug, use_reloader=False)
+
+
+def run_server_pair(
+    config: dict[str, Any],
+    *,
+    host: str,
+    port: int,
+    developer_port: int,
+    debug: bool,
+    kill_port_if_busy: bool,
+) -> None:
+    force_exit_previous_server_instance(enabled=kill_port_if_busy)
+    free_configured_port_if_needed(host, port, enabled=kill_port_if_busy)
+    free_configured_port_if_needed(host, developer_port, enabled=kill_port_if_busy)
+    write_server_pid_file(host=host, port=port, developer_port=developer_port)
+
+    consumer_url = public_url(host, port)
+    developer_url = public_url(host, developer_port)
+    developer_app = create_developer_app(config, consumer_url=consumer_url)
+    developer_thread = threading.Thread(
+        target=lambda: developer_app.run(host=host, port=developer_port, debug=debug, use_reloader=False),
+        name="developer-config-server",
+        daemon=True,
+    )
+    developer_thread.start()
+
+    app = create_app(config, developer_url=developer_url)
     app.run(host=host, port=port, debug=debug, use_reloader=False)

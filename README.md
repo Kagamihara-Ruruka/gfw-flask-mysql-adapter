@@ -11,6 +11,8 @@ The current app renders:
 
 It is an experimental local tool. It is not a production GIS system.
 
+Traditional Chinese documentation is available in [`README.zh-TW.md`](README.zh-TW.md).
+
 ## Upstream Handoff
 
 Use `handoff/` when sharing this repo with upstream owners:
@@ -39,7 +41,7 @@ The frontend is deliberately split by responsibility:
 
 - `static/app.js`: bootstraps the app and wires UI events.
 - `static/js/core`: shared state, DOM, map, and geographic helpers.
-- `static/js/services`: API client calls and GFW record cache/prewarm behavior.
+- `static/js/services`: API client calls, GFW record cache/prewarm behavior, and playback cache/preheat orchestration.
 - `static/js/layers`: GFW, AIS, and EEZ rendering behavior.
 - `static/js/rendering`: renderer capability checks, renderer selection, WebGL/canvas paint helpers, and GFW paint configuration.
 - `static/js/ui`: table, playback, layer selector, map settings, and shared layer style controls.

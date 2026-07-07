@@ -1,0 +1,44 @@
+@media (max-width: 980px) {
+  .developer-status-machines {
+    grid-template-columns: 1fr;
+  }
+}
+
+.developer-config-message {
+  min-height: 18px;
+  margin-top: 10px;
+  color: #9ee6aa;
+  font-size: 12px;
+}
+
+.developer-config-message.is-error {
+  color: #ffb4ae;
+}
+
+.developer-control-body {
+  min-height: 100vh;
+  background: var(--bg);
+}
+
+.developer-control-body.is-embedded {
+  min-height: auto;
+}
+
+.developer-control-main {
+  min-height: auto;
+}
+
+.developer-control-body.is-embedded .developer-control-main,
+.developer-control-body.is-embedded .settings-page {
+  padding: 0;
+}
+
+.developer-control-body.is-embedded .settings-page-card {
+  min-height: auto;
+}
+
+@media (max-width: 980px) {
+  .developer-router-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
