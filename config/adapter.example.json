@@ -32,8 +32,8 @@
     }
   },
   "query_policy": {
-    "default_limit": 5000,
-    "max_limit": 100000,
+    "default_limit": null,
+    "max_limit": null,
     "table_preview_limit": 300,
     "require_time_or_bbox_filter": true
   },

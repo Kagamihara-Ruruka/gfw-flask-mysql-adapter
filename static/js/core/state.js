@@ -116,5 +116,5 @@ const state = {
   playTimer: null,
   playIntervalMs: 1400,
   isBootstrapping: true,
-  queryPolicy: { default_limit: 100000, max_limit: 100000, table_preview_limit: 300 },
+  queryPolicy: { default_limit: null, max_limit: null, table_preview_limit: 300 },
 };

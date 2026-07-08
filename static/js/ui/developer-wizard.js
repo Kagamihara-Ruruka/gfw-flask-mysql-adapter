@@ -62,10 +62,10 @@
   function wizardMaxLimitValue() {
     const value = String(wizardValue("wizard-max-limit") || "").trim().toLowerCase();
     if (!value || value === "max" || value === "all" || value === "unbounded" || value === "null") {
-      return 100000;
+      return null;
     }
     const parsed = Number.parseInt(value, 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : 100000;
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
   }
 
   function buildWizardConfig() {
@@ -107,7 +107,7 @@
         [connectionRef]: connection,
       },
       query_policy: {
-        default_limit: 5000,
+        default_limit: null,
         max_limit: wizardMaxLimitValue(),
         table_preview_limit: 300,
         require_time_or_bbox_filter: true,

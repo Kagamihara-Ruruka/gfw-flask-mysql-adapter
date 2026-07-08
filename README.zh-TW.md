@@ -282,7 +282,7 @@ docker compose up -d postgis
 GET /api/health
 GET /api/datasets
 GET /api/datasets/<dataset_id>/schema
-GET /api/datasets/<dataset_id>/records?date=YYYY-MM-DD&bbox=west,south,east,north&limit=100000
+GET /api/datasets/<dataset_id>/records?date=YYYY-MM-DD&bbox=west,south,east,north&limit=max
 GET /api/overlays/eez
 GET /api/overlays/eez/tiles/<z>/<x>/<y>.pbf
 GET /api/overlays/eez/boundary/tiles/<z>/<x>/<y>.pbf

@@ -783,7 +783,7 @@ def create_app(config: dict[str, Any], *, developer_url: str | None = None) -> F
                 dataset,
                 date_value=request.args.get("date"),
                 bbox=parse_bbox(request.args.get("bbox")),
-                limit=int(request.args.get("limit", str(query_policy(config)["default_limit"]))),
+                limit=request.args.get("limit", query_policy(config)["default_limit"]),
                 offset=int(request.args.get("offset", "0")),
                 column_profile=request.args.get("columns"),
             )
@@ -815,7 +815,7 @@ def create_app(config: dict[str, Any], *, developer_url: str | None = None) -> F
                 start_date=start_date,
                 end_date=end_date,
                 bbox=parse_bbox(request.args.get("bbox")),
-                limit=int(request.args.get("limit", str(query_policy(config)["default_limit"]))),
+                limit=request.args.get("limit", query_policy(config)["default_limit"]),
                 column_profile=request.args.get("columns") or "render",
             )
             packet["dataset_id"] = dataset_id

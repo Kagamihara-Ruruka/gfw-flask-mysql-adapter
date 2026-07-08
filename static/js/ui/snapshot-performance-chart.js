@@ -132,6 +132,12 @@ class SnapshotPerformanceChart {
       autosize: true,
       font: { color: "#94a3b8", family: "Inter, system-ui, sans-serif", size: 11 },
       hovermode: "x unified",
+      hoverlabel: {
+        bgcolor: "#0f172a",
+        bordercolor: "rgba(74, 222, 128, 0.72)",
+        font: { color: "#e5eefb", family: "Inter, system-ui, sans-serif", size: 12 },
+        align: "left",
+      },
       legend: {
         orientation: "h",
         x: 0,

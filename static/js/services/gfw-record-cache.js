@@ -291,7 +291,7 @@ const GfwRecordCache = (() => {
   function urlFor({ datasetId, date, bbox, limit, columns }) {
     const params = new URLSearchParams();
     params.set("date", date);
-    params.set("limit", String(limit));
+    params.set("limit", limit == null ? "max" : String(limit));
     params.set("bbox", bbox);
     if (columns) params.set("columns", columns);
     return `/api/datasets/${datasetId}/records?${params}`;
@@ -301,13 +301,18 @@ const GfwRecordCache = (() => {
     const params = new URLSearchParams();
     params.set("start", start);
     params.set("end", end);
-    params.set("limit", String(limit));
+    params.set("limit", limit == null ? "max" : String(limit));
     params.set("bbox", bbox);
     if (columns) params.set("columns", columns);
     return `/api/datasets/${datasetId}/records/range?${params}`;
   }
 
   function packetFromRangeSnapshot(rangePacket, request, rows) {
+    const snapshotCount = Math.max(1, Number(rangePacket.snapshot_count || 1));
+    const timing = rangePacket.timing || {};
+    const amortizedQueryMs = Number(timing.query_ms || 0) / snapshotCount;
+    const amortizedSplitMs = Number(timing.split_ms || 0) / snapshotCount;
+    const amortizedServerTotalMs = Number(timing.server_total_ms || 0) / snapshotCount;
     return {
       rows,
       row_count: rows.length,
@@ -320,8 +325,16 @@ const GfwRecordCache = (() => {
       dataset_id: rangePacket.dataset_id,
       runtime: rangePacket.runtime,
       timing: {
-        ...(rangePacket.timing || {}),
+        ...timing,
+        range_query_ms: timing.query_ms,
+        range_split_ms: timing.split_ms,
+        range_server_total_ms: timing.server_total_ms,
+        query_ms: amortizedQueryMs,
+        split_ms: amortizedSplitMs,
+        server_total_ms: amortizedServerTotalMs,
+        amortized_range_ms: true,
         range_preheat: true,
+        range_snapshot_count: snapshotCount,
         range_start: rangePacket.start,
         range_end: rangePacket.end,
         snapshot_date: request.date,
@@ -577,7 +590,7 @@ const GfwRecordCache = (() => {
     const snapshots = rangePacket.snapshots || {};
     for (const request of missing) {
       const rows = Array.isArray(snapshots[request.date]) ? snapshots[request.date] : [];
-      if (!rows.length && rangePacket.truncated) {
+      if (!rows.length && rangePacket.truncated && rangePacket.limit_mode !== "per_snapshot") {
         try {
           await fetchPacket(request);
           fetched += 1;

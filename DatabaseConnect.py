@@ -47,7 +47,11 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("sql_backend.kind must be mysql or hive")
     validate_connections(config)
     policy = query_policy(config)
-    if policy["default_limit"] > policy["max_limit"]:
+    if (
+        policy["default_limit"] is not None
+        and policy["max_limit"] is not None
+        and policy["default_limit"] > policy["max_limit"]
+    ):
         raise ValueError("query_policy.default_limit must not exceed query_policy.max_limit")
     server = server_settings(config)
     if server["default_command"] != "serve":
@@ -211,11 +215,29 @@ def elapsed_ms(start: float) -> float:
 def query_policy(config: dict[str, Any]) -> dict[str, Any]:
     policy = config.get("query_policy", {})
     return {
-        "default_limit": int(policy.get("default_limit", 1000)),
-        "max_limit": int(policy.get("max_limit", 5000)),
+        "default_limit": optional_query_limit(policy.get("default_limit", 1000)),
+        "max_limit": optional_query_limit(policy.get("max_limit")),
         "table_preview_limit": int(policy.get("table_preview_limit", 300)),
         "require_time_or_bbox_filter": bool(policy.get("require_time_or_bbox_filter", True)),
     }
+
+
+def optional_query_limit(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip().lower() in {"", "max", "none", "null", "unlimited"}:
+        return None
+    parsed = int(value)
+    return None if parsed <= 0 else parsed
+
+
+def effective_records_limit(limit: Any, policy: dict[str, Any]) -> int | None:
+    parsed = optional_query_limit(limit)
+    if parsed is None:
+        return policy["max_limit"]
+    if policy["max_limit"] is None:
+        return parsed
+    return min(parsed, policy["max_limit"])
 
 
 def server_settings(config: dict[str, Any]) -> dict[str, Any]:
@@ -244,7 +266,7 @@ def _records_cache_key(
     column_profile: str | None,
     date_value: str | None,
     bbox: tuple[float, float, float, float] | None,
-    limit: int,
+    limit: Any,
     offset: int,
 ) -> str:
     return "|".join(
@@ -513,7 +535,7 @@ def _mysql_records_packet(
     lon_column = dataset["lon_column"]
     columns = resolve_dataset_columns(dataset, column_profile)
     policy = query_policy(config)
-    limit = max(1, min(int(limit), policy["max_limit"]))
+    limit = effective_records_limit(limit, policy)
     offset = max(0, int(offset))
     if policy["require_time_or_bbox_filter"] and not date_value and not bbox:
         raise ValueError("records query requires date or bbox filter")
@@ -545,11 +567,14 @@ def _mysql_records_packet(
     where_sql = "WHERE " + " AND ".join(where_parts) if where_parts else ""
     column_sql = ", ".join(mysql_quote(column) for column in columns)
     order_sql = f"{mysql_quote(time_column)}, {mysql_quote(lat_column)}, {mysql_quote(lon_column)}"
-    sql = (
-        f"SELECT {column_sql} FROM {mysql_quote(table)} {where_sql} "
-        f"ORDER BY {order_sql} LIMIT %s OFFSET %s"
-    )
-    params.extend([limit, offset])
+    sql = f"SELECT {column_sql} FROM {mysql_quote(table)} {where_sql} ORDER BY {order_sql}"
+    if limit is None:
+        if offset:
+            sql += " LIMIT 18446744073709551615 OFFSET %s"
+            params.append(offset)
+    else:
+        sql += " LIMIT %s OFFSET %s"
+        params.extend([limit, offset])
 
     total_start = time.perf_counter()
     query_start = time.perf_counter()
@@ -564,6 +589,7 @@ def _mysql_records_packet(
         "rows": rows,
         "row_count": len(rows),
         "limit": limit,
+        "limit_mode": "unlimited" if limit is None else "limited",
         "offset": offset,
         "column_profile": column_profile or "display",
         "columns": columns,
@@ -586,7 +612,7 @@ def _mysql_records_range_packet(
     start_date: str,
     end_date: str,
     bbox: tuple[float, float, float, float] | None,
-    limit: int,
+    limit: Any,
     column_profile: str | None = None,
 ) -> dict[str, Any]:
     from SnapshotSplitService import split_rows_by_date
@@ -598,7 +624,7 @@ def _mysql_records_range_packet(
     lon_column = dataset["lon_column"]
     columns = resolve_dataset_columns(dataset, column_profile or "render")
     policy = query_policy(config)
-    limit = max(1, min(int(limit), policy["max_limit"]))
+    limit = effective_records_limit(limit, policy)
     if not start_date or not end_date:
         raise ValueError("range records query requires start and end")
     if start_date > end_date:
@@ -616,11 +642,25 @@ def _mysql_records_range_packet(
     where_sql = "WHERE " + " AND ".join(where_parts)
     column_sql = ", ".join(mysql_quote(column) for column in columns)
     order_sql = f"{mysql_quote(time_column)}, {mysql_quote(lat_column)}, {mysql_quote(lon_column)}"
-    sql = (
-        f"SELECT {column_sql} FROM {mysql_quote(table)} {where_sql} "
-        f"ORDER BY {order_sql} LIMIT %s"
-    )
-    params.append(limit)
+    if limit is None:
+        sql = f"SELECT {column_sql} FROM {mysql_quote(table)} {where_sql} ORDER BY {order_sql}"
+        limit_mode = "unlimited"
+    else:
+        # Range playback preheat needs one capped snapshot per date. A single global
+        # LIMIT makes early dates consume the whole range budget and forces the
+        # browser back into slow per-day fallback requests.
+        rank_column = "__rrkal_snapshot_rank"
+        sql = (
+            f"SELECT {column_sql} FROM ("
+            f"SELECT {column_sql}, "
+            f"ROW_NUMBER() OVER (PARTITION BY {mysql_quote(time_column)} ORDER BY {order_sql}) AS {mysql_quote(rank_column)} "
+            f"FROM {mysql_quote(table)} {where_sql}"
+            f") AS ranked "
+            f"WHERE {mysql_quote(rank_column)} <= %s "
+            f"ORDER BY {order_sql}"
+        )
+        params.append(limit)
+        limit_mode = "per_snapshot"
 
     total_start = time.perf_counter()
     query_start = time.perf_counter()
@@ -637,8 +677,9 @@ def _mysql_records_range_packet(
         "dates": split["dates"],
         "snapshot_count": int(split["snapshot_count"]),
         "row_count": row_count,
-        "truncated": bool(row_count >= limit),
+        "truncated": False if limit is None else any(len(snapshot_rows) >= limit for snapshot_rows in split["snapshots"].values()),
         "limit": limit,
+        "limit_mode": limit_mode,
         "column_profile": column_profile or "render",
         "columns": columns,
         "query_policy": policy,
@@ -678,7 +719,7 @@ class MySqlReadBackend:
         *,
         date_value: str | None,
         bbox: tuple[float, float, float, float] | None,
-        limit: int,
+        limit: Any,
         offset: int,
         column_profile: str | None = None,
     ) -> dict[str, Any]:
@@ -701,7 +742,7 @@ class MySqlReadBackend:
         start_date: str,
         end_date: str,
         bbox: tuple[float, float, float, float] | None,
-        limit: int,
+        limit: Any,
         column_profile: str | None = None,
     ) -> dict[str, Any]:
         packet = _mysql_records_range_packet(

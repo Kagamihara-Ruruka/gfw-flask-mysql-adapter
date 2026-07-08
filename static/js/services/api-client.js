@@ -220,6 +220,7 @@ function applyAisPacket(packet, bboxes, timing) {
     throw new Error(packet.error || packet.message || "AIS 即時來源失敗");
   }
   const rows = packet.rows || [];
+  TimingMetrics.markRenderStart?.("AIS WebSocket");
   renderAisMap(rows);
   renderTable(rows, AIS_COLUMNS, { layer: "ais", wrappedBboxCount: bboxes.length });
   TimingMetrics.setText("query-ms", `${Number(packet.timing?.query_ms || 0).toFixed(3)} ms`);
@@ -357,6 +358,7 @@ async function reloadAisRecordsRest() {
       rows.push(row);
     }
   }
+  TimingMetrics.markRenderStart?.("AIS REST");
   renderAisMap(rows);
   renderTable(rows, AIS_COLUMNS, { layer: "ais", wrappedBboxCount: bboxes.length });
   TimingMetrics.setText("query-ms", `${queryMs.toFixed(3)} ms`);
@@ -382,17 +384,13 @@ async function reloadGfwRecords() {
   TimingMetrics.resetSnapshotPersistent?.({ render: false });
   RenderState.loading("gfw", "查詢中");
   setStatus("正在載入 GFW");
-  const requestedLimit = Number(state.queryPolicy.max_limit || state.queryPolicy.default_limit || 100000);
   const requestedDate = $("date").value;
-  const requestContext = {
-    datasetId: state.datasetId,
+  const renderIntent = RenderIntentService.snapshot({
     date: requestedDate,
-    bbox: currentBbox(),
-    limit: requestedLimit,
-    columns: "render",
-    center: map.getCenter(),
-    zoom: map.getZoom(),
-  };
+    layerId: "gfw",
+    renderProfile: "dashboard.snapshot",
+  });
+  const requestContext = RenderIntentService.toGfwPacketRequest(renderIntent);
   const dateChanged = state.renderedGfwDate && state.renderedGfwDate !== requestedDate;
   if (dateChanged) {
     fadeOutGfwLayer();
@@ -405,6 +403,7 @@ async function reloadGfwRecords() {
     schedulePrimaryReload(80);
     return;
   }
+  TimingMetrics.markRenderStart?.("GFW");
   const renderResult = renderGfwMap(packet.rows);
   renderTable(packet.rows, state.datasets[state.datasetId].display_columns, { layer: "gfw", date: requestedDate });
   const serverCacheHit = Boolean(packet.timing?.cache_hit);

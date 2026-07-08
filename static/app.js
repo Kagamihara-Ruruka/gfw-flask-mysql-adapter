@@ -114,11 +114,11 @@ function bindControls() {
   $("replay").addEventListener("click", () => replayFromStart().catch((err) => setStatus(err.message, true)));
   $("prev-day").addEventListener("click", () => {
     stopPlayback();
-    stepDay(-1).catch((err) => setStatus(err.message, true));
+    stepDay(-1, "往前一日").catch((err) => setStatus(err.message, true));
   });
   $("next-day").addEventListener("click", () => {
     stopPlayback();
-    stepDay(1).catch((err) => setStatus(err.message, true));
+    stepDay(1, "往後一日").catch((err) => setStatus(err.message, true));
   });
   $("play-toggle").addEventListener("click", () => setPlayback(!state.isPlaying).catch((err) => setStatus(err.message, true)));
   $("play-speed").addEventListener("change", updatePlaybackSpeed);

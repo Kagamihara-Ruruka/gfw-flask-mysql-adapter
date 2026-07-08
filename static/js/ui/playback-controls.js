@@ -50,12 +50,12 @@ function sleep(ms) {
 }
 
 function playbackRequestContext() {
-  const limit = Number(state.queryPolicy?.max_limit || state.queryPolicy?.default_limit || 100000);
-  return {
-    bbox: currentBbox(),
-    datasetId: state.datasetId,
-    limit,
-  };
+  const intent = RenderIntentService.snapshot({
+    date: $("date")?.value,
+    layerId: state.dataLayer,
+    renderProfile: "dashboard.playback",
+  });
+  return RenderIntentService.toGfwPacketRequest(intent);
 }
 
 function playbackBufferText() {
@@ -310,7 +310,10 @@ function stopPlayback({ cancelPending = true } = {}) {
   syncPlaybackSettingsInputs();
 }
 
-async function stepDay(delta) {
+async function stepDay(delta, interactionLabel = "") {
+  if (interactionLabel) {
+    TimingMetrics.markInteraction?.(interactionLabel);
+  }
   const dates = datesInSelectedRange();
   const index = dates.indexOf($("date").value);
   if (index < 0) {
@@ -345,13 +348,17 @@ async function preparePlaybackStart() {
 }
 
 async function preheatPlaybackCache({ blocking = true } = {}) {
-  const limit = Number(state.queryPolicy?.max_limit || state.queryPolicy?.default_limit || 100000);
-  return PlaybackCacheService.preheat({
-    dates: datesInSelectedRange(),
-    bbox: currentBbox(),
-    datasetId: state.datasetId,
-    limit,
+  const dates = datesInSelectedRange();
+  const intent = RenderIntentService.range({
+    dates,
+    start: dates[0],
+    end: dates[dates.length - 1],
     anchorDate: $("date").value,
+    layerId: state.dataLayer,
+    renderProfile: "dashboard.playback",
+  });
+  return PlaybackCacheService.preheat({
+    intent,
     blocking,
     onStateChange: () => {
       updatePlaybackControls();
@@ -415,6 +422,7 @@ async function setPlayback(active) {
     stopPlayback();
     return;
   }
+  TimingMetrics.markInteraction?.("播放");
   const generation = nextPlaybackGeneration();
   TimingMetrics.resetSnapshotHistory?.("playback_start");
   releasePlaybackRenderArtifacts("playback_start");
@@ -478,6 +486,7 @@ async function replayFromStart() {
   if (!dates.length) return;
   stopPlayback();
   TimingMetrics.resetSnapshotHistory?.("replay_from_start");
+  TimingMetrics.markInteraction?.("回到開始日期");
   releasePlaybackRenderArtifacts("replay_from_start");
   $("date").value = dates[0];
   updatePlaybackControls();
@@ -487,6 +496,7 @@ async function replayFromStart() {
 async function jumpToLatestDate() {
   if (!hasSelectedTimeControlLayer() || !state.availableDates.length) return;
   stopPlayback();
+  TimingMetrics.markInteraction?.("最後一日");
   $("date").value = state.availableDates[state.availableDates.length - 1];
   updatePlaybackControls();
   await reloadActiveLayer();

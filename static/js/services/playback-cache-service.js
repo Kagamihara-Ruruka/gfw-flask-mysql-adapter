@@ -122,8 +122,14 @@ const PlaybackCacheService = (() => {
     let selected = allDates;
     if (anchorDate && allDates.includes(anchorDate)) {
       const anchorIndex = allDates.indexOf(anchorDate);
+      const remainingDates = Math.max(1, allDates.length - anchorIndex);
+      const policy = bufferPolicy({
+        intervalMs: state.playIntervalMs,
+        remainingDates,
+      });
+      const dynamicWindowAhead = Math.max(windowAhead, policy.resume);
       const start = Math.max(0, anchorIndex - windowBehind);
-      const end = Math.min(allDates.length, anchorIndex + windowAhead + 1);
+      const end = Math.min(allDates.length, anchorIndex + dynamicWindowAhead + 1);
       selected = allDates.slice(start, end);
     }
     if (maxDates > 0 && selected.length > maxDates) {
@@ -157,18 +163,40 @@ const PlaybackCacheService = (() => {
     if (!event.ok) stats.failed = Number(stats.failed || 0) + 1;
   }
 
-  async function preheat({ dates, bbox, datasetId, limit, anchorDate, blocking = true, onStateChange } = {}) {
+  function resolveRangeRequest({ intent, dates, bbox, datasetId, limit, anchorDate } = {}) {
+    if (intent && typeof RenderIntentService !== "undefined") {
+      return RenderIntentService.toGfwRangeRequest(intent);
+    }
+    return {
+      dates: Array.isArray(dates) ? dates : [],
+      bbox,
+      datasetId,
+      limit,
+      columns: "render",
+      anchorDate,
+    };
+  }
+
+  async function preheat({ intent, dates, bbox, datasetId, limit, anchorDate, blocking = true, onStateChange } = {}) {
     const cacheOptions = options();
     if (cacheOptions.mode === "off" || !isEnabledForCurrentLayer()) {
       return true;
     }
 
-    const preheatDates = selectDates(dates, { anchorDate });
+    const resolved = resolveRangeRequest({ intent, dates, bbox, datasetId, limit, anchorDate });
+    const preheatDates = selectDates(resolved.dates, { anchorDate: resolved.anchorDate });
     if (preheatDates.length <= 1) {
       return true;
     }
 
-    const requests = requestsForDates(preheatDates, { bbox, datasetId, limit, anchorDate, columns: "render" });
+    const requestContext = {
+      bbox: resolved.bbox,
+      datasetId: resolved.datasetId,
+      limit: resolved.limit,
+      anchorDate: resolved.anchorDate,
+      columns: resolved.columns || "render",
+    };
+    const requests = requestsForDates(preheatDates, requestContext);
     const label = layerLabel();
 
     const background = cacheOptions.mode === "progressive" || !blocking;
@@ -179,7 +207,13 @@ const PlaybackCacheService = (() => {
     setStatus(`正在預熱 ${label} 播放快取 0 / ${requests.length}`);
 
     const prefetch = typeof GfwRecordCache.prefetchRange === "function"
-      ? GfwRecordCache.prefetchRange.bind(GfwRecordCache, { dates: preheatDates, bbox, datasetId, limit, columns: "render" })
+      ? GfwRecordCache.prefetchRange.bind(GfwRecordCache, {
+        dates: preheatDates,
+        bbox: resolved.bbox,
+        datasetId: resolved.datasetId,
+        limit: resolved.limit,
+        columns: requestContext.columns,
+      })
       : GfwRecordCache.prefetchRequests.bind(GfwRecordCache, requests);
     const run = prefetch({
       concurrency: cacheOptions.resolvedConcurrency,

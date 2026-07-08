@@ -87,11 +87,11 @@ function bindFullscreenPlaybackControls() {
   $("fs-replay")?.addEventListener("click", () => replayFromStart().catch((err) => setStatus(err.message, true)));
   $("fs-prev-day")?.addEventListener("click", () => {
     stopPlayback();
-    stepDay(-1).catch((err) => setStatus(err.message, true));
+    stepDay(-1, "全螢幕往前一日").catch((err) => setStatus(err.message, true));
   });
   $("fs-next-day")?.addEventListener("click", () => {
     stopPlayback();
-    stepDay(1).catch((err) => setStatus(err.message, true));
+    stepDay(1, "全螢幕往後一日").catch((err) => setStatus(err.message, true));
   });
   $("fs-play-toggle")?.addEventListener("click", () => setPlayback(!state.isPlaying).catch((err) => setStatus(err.message, true)));
   $("fs-play-speed")?.addEventListener("change", () => updatePlaybackSpeed("fs-play-speed"));

@@ -550,7 +550,7 @@ Datasets:
 ```text
 GET /api/datasets
 GET /api/datasets/<dataset_id>/schema
-GET /api/datasets/<dataset_id>/records?date=YYYY-MM-DD&bbox=west,south,east,north&limit=100000
+GET /api/datasets/<dataset_id>/records?date=YYYY-MM-DD&bbox=west,south,east,north&limit=max
 ```
 
 EEZ:

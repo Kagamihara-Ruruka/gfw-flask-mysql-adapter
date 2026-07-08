@@ -12,6 +12,7 @@
     serialize: { label: "序列化", value: null, text: "-", status: "idle" },
     api: { label: "API / 傳輸", value: null, text: "-", status: "idle" },
     client: { label: "前端到畫面", value: null, text: "-", status: "idle" },
+    interaction: { label: "按鍵到渲染開始", value: null, text: "-", status: "idle", source: "" },
     draw: { label: "渲染繪製", value: null, text: "-", status: "idle", source: "" },
     eez: { label: "EEZ 靜態圖層", value: null, text: "-", status: "idle" },
   };
@@ -23,6 +24,7 @@
   const snapshotHistory = [];
   const snapshotHistoryLimit = 48;
   let lastSnapshotSignature = "";
+  let activeInteraction = null;
 
   function formatMs(value) {
     if (value === undefined || value === null || !Number.isFinite(Number(value))) {
@@ -86,6 +88,35 @@
       setDomText("eez-ms", "-");
     }
     if (options.render !== false) renderTimeline();
+  }
+
+  function markInteraction(label = "使用者操作") {
+    activeInteraction = {
+      label,
+      startedAt: performance.now(),
+    };
+    metrics.interaction = {
+      ...metrics.interaction,
+      value: null,
+      text: `${label} 等待渲染`,
+      status: "pending",
+      source: label,
+    };
+    renderTimeline();
+  }
+
+  function markRenderStart(source = "渲染") {
+    if (!activeInteraction) return;
+    const elapsed = performance.now() - activeInteraction.startedAt;
+    metrics.interaction = {
+      ...metrics.interaction,
+      value: elapsed,
+      text: formatMs(elapsed),
+      status: "ok",
+      source: `${activeInteraction.label} -> ${source}`,
+    };
+    activeInteraction = null;
+    renderTimeline();
   }
 
   function setText(id, value) {
@@ -221,11 +252,26 @@
       const knownBeforeClient = Math.max(0, api + (draw || 0));
       const browserTail = Math.max(0, client - knownBeforeClient);
       if (browserTail > 0.5) {
-        stages.push(stage("前端排程 / 狀態更新", browserTail, metrics.client.status, "", "browser"));
+        stages.push(stage("前端收尾 / DOM 同步", browserTail, metrics.client.status, "", "browser"));
       }
     }
 
     return stages.filter((item) => item.value !== null && item.value >= 0);
+  }
+
+  function buildInteractionStages() {
+    if (metrics.interaction.value !== null) {
+      return [
+        stage(
+          metrics.interaction.label || "按鍵到渲染開始",
+          metrics.interaction.value,
+          metrics.interaction.status,
+          metrics.interaction.source,
+          "interaction"
+        ),
+      ];
+    }
+    return [];
   }
 
   function buildPersistentStages() {
@@ -245,7 +291,8 @@
       serialize: "後端把查詢結果整理成 API 可以回傳的 JSON payload。",
       transport: "API 總耗時扣除 SQL 與序列化後的傳輸、Flask 包裝與路由開銷。",
       draw: "前端把資料畫到 WebGL 或 Canvas 圖層上的實際繪製耗時。",
-      browser: "扣除 API 與繪製後仍留在前端的未歸因時間，通常是事件排程、快取整理、狀態機同步與 DOM 更新；它不是一個獨立資料圖層。",
+      browser: "快照已開始處理後，扣除 API 與繪製仍留在前端的未歸因時間，通常是快取整理、狀態機同步與 DOM 更新；它不是按鍵到渲染開始的等待時間。",
+      interaction: "使用者按下播放、回到開始日期、前後一日等控制後，到第一個實際渲染函式被呼叫前的等待時間。",
       eez: "持久圖層的瓦片或快取準備時間；通常不會每張快照都重新查詢。",
       generic: "未分類的資料流階段。",
     }[item.kind || "generic"];
@@ -343,17 +390,21 @@
   function renderTimeline() {
     const root = document.getElementById("pipeline-timeline");
     if (!root) return;
+    const interactionStages = buildInteractionStages();
     const dynamicStages = buildDynamicStages();
     const persistentStages = buildPersistentStages();
     const scaleTotal = Math.max(
+      interactionStages.reduce((sum, item) => sum + Math.max(item.value || 0, 0), 0),
       dynamicStages.reduce((sum, item) => sum + Math.max(item.value || 0, 0), 0),
       persistentStages.reduce((sum, item) => sum + Math.max(item.value || 0, 0), 0),
       details.persistentScaleMs || 0,
       1
     );
-    const rows = [
-      renderRow("動態資料流", "本張快照需要查詢、序列化、傳輸與繪製", dynamicStages, scaleTotal),
-    ];
+    const rows = [];
+    if (interactionStages.length) {
+      rows.push(renderRow("互動延遲", "使用者操作到第一個渲染呼叫；不與快照耗時相加", interactionStages, scaleTotal));
+    }
+    rows.push(renderRow("動態資料流", "本張快照需要查詢、序列化、傳輸與繪製", dynamicStages, scaleTotal));
     if (persistentStages.length) {
       rows.push(renderRow("持久圖層快取", "本張快照通常沿用；啟動或縮放階梯變更時更新", persistentStages, scaleTotal));
     }
@@ -424,6 +475,8 @@
     setMetricText,
     resetSnapshotPersistent,
     resetSnapshotHistory,
+    markInteraction,
+    markRenderStart,
     updateSummary,
     stopwatch,
     waitForLayers,

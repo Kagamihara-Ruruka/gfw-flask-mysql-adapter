@@ -1290,6 +1290,10 @@ button {
   background: linear-gradient(180deg, rgba(28, 139, 122, 0.94), rgba(19, 96, 88, 0.94));
 }
 
+.pipeline-segment.kind-interaction {
+  background: linear-gradient(180deg, rgba(86, 100, 218, 0.94), rgba(54, 68, 166, 0.94));
+}
+
 .pipeline-segment.kind-serialize {
   background: linear-gradient(180deg, rgba(108, 117, 220, 0.94), rgba(73, 81, 166, 0.94));
 }
