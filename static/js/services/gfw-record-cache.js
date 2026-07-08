@@ -100,8 +100,8 @@ const GfwRecordCache = (() => {
     syncCacheStats();
   }
 
-  function requestKey({ datasetId, date, bbox, limit }) {
-    return [datasetId, date, bbox, limit].join("|");
+  function requestKey({ datasetId, date, bbox, limit, columns }) {
+    return [datasetId, date, bbox, limit, columns || "display"].join("|");
   }
 
   function parseBbox(bbox) {
@@ -171,6 +171,7 @@ const GfwRecordCache = (() => {
       && meta.datasetId === request.datasetId
       && meta.date === request.date
       && String(meta.limit) === String(request.limit)
+      && String(meta.columns || "display") === String(request.columns || "display")
       && meta.box;
   }
 
@@ -287,11 +288,12 @@ const GfwRecordCache = (() => {
     return true;
   }
 
-  function urlFor({ datasetId, date, bbox, limit }) {
+  function urlFor({ datasetId, date, bbox, limit, columns }) {
     const params = new URLSearchParams();
     params.set("date", date);
     params.set("limit", String(limit));
     params.set("bbox", bbox);
+    if (columns) params.set("columns", columns);
     return `/api/datasets/${datasetId}/records?${params}`;
   }
 
@@ -485,7 +487,10 @@ const GfwRecordCache = (() => {
     for (let index = 0; index < immediateHits; index += 1) {
       onProgress?.({ cacheHit: true, ok: true, immediate: true });
     }
-    const workerCount = Math.min(Math.max(1, Number(concurrency || 1)), Math.max(1, queue.length));
+    const workerCount = PlaybackWorkerPolicy.resolve(concurrency, {
+      task: "prefetch",
+      total: Math.max(1, queue.length),
+    });
     if (!queue.length) {
       return { total: unique.length, fetched: 0, cacheHits: immediateHits, failed: 0 };
     }

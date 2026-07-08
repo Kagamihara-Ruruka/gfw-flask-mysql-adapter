@@ -204,6 +204,50 @@ GFW records use a viewport/zoom-aware cache:
 
 EEZ is treated closer to a basemap overlay: local vector data and PostGIS vector tiles are reused as much as possible, and pan-only movement should not force a full EEZ reload.
 
+### EEZ bootstrap and spatial route injection
+
+EEZ is a SPATIAL route, not a DATABASE route. Its portable contract lives in `config/spatial.eez.example.json`.
+
+The route has four boundaries:
+
+1. Source asset: a public Marine Regions EEZ zip is downloaded into `data/eez/` when the GPKG is missing.
+2. Spatial provider: `provider: "postgis"` imports the cached GPKG into the configured PostGIS tables.
+3. Layer contract: EEZ is exposed as an overlay layer, not as a normal SQL dataset.
+4. Frontend renderer: Leaflet consumes MVT/vector packets and applies the existing EEZ LOD/cache behavior.
+
+The source file is an app-managed cache, not a browser cache. Closing the browser does not remove it. In Docker or another deployed environment, mount `data/eez/` or another configured cache path as a persistent volume.
+
+Default source:
+
+```json
+{
+  "source": {
+    "kind": "remote_gpkg_zip",
+    "url": "https://www.marineregions.org/download_file.php?name=World_EEZ_v12_20231025_gpkg.zip",
+    "source_page": "https://www.marineregions.org/downloads.php",
+    "archive_path": "data/eez/World_EEZ_v12_20231025_gpkg.zip",
+    "cache_path": "data/eez/eez_v12.gpkg"
+  },
+  "auto_download": true,
+  "auto_import": true
+}
+```
+
+Manual bootstrap:
+
+```powershell
+.\.venv\Scripts\python.exe core.py --config config\adapter.local.json bootstrap-eez
+```
+
+Normal startup:
+
+```powershell
+docker compose up -d postgis
+.\.venv\Scripts\python.exe core.py --config config\adapter.local.json serve
+```
+
+`serve` now runs the same EEZ bootstrap before dependency checks. If `data/eez/eez_v12.gpkg` is absent, it downloads and extracts it. If PostGIS is enabled and the EEZ tables are missing or empty, it imports the GPKG into `eez_v12`, `eez_v12_tile`, and `eez_v12_boundary`.
+
 ### AIS upstream ingest
 
 AIS live data is intentionally split into two processes:
@@ -388,16 +432,10 @@ Start the local PostGIS service:
 docker compose up -d postgis
 ```
 
-Make sure the test data exists:
+Download/cache the public Marine Regions EEZ GPKG and import it into PostGIS:
 
 ```powershell
-.\.venv\Scripts\python.exe core.py --config config\adapter.local.json bootstrap-test-data
-```
-
-Import EEZ into PostGIS:
-
-```powershell
-.\.venv\Scripts\python.exe scripts\import_eez_to_postgis.py --config config\adapter.local.json --replace
+.\.venv\Scripts\python.exe core.py --config config\adapter.local.json bootstrap-eez
 ```
 
 Check runtime dependencies before serving:
@@ -406,7 +444,7 @@ Check runtime dependencies before serving:
 .\.venv\Scripts\python.exe core.py --config config\adapter.local.json check-dependencies
 ```
 
-`core.py serve` runs the same dependency check before opening the Flask server. If `eez_v12`, `eez_v12_tile`, or `eez_v12_boundary` is missing or empty, startup fails with the import command instead of leaving the UI in a half-working EEZ state.
+`core.py serve` runs the EEZ bootstrap and then the dependency check before opening the Flask server. If the GPKG is missing, startup downloads it. If `eez_v12`, `eez_v12_tile`, or `eez_v12_boundary` is missing or empty and `auto_import` is true, startup imports it.
 
 For AIS, use an environment variable instead of committing a password:
 

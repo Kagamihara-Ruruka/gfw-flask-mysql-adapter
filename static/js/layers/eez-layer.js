@@ -73,6 +73,45 @@ function clearEezLayerForReload() {
   setEezPaneVisibility(state.eezActivePane, false);
 }
 
+function hasActiveEezVectorTiles() {
+  return state.eezMode === "mvt" && state.eezLayer && state.eezTileLayers.length > 0;
+}
+
+function markEezTilesUpdating(reason = "瓦片更新中") {
+  if (!$("eez-toggle").checked || !hasActiveEezVectorTiles()) return false;
+  RenderState.loading("eez", reason);
+  TimingMetrics.setText("eez-ms", "更新中");
+  return true;
+}
+
+async function refreshEezTileReadiness(reason = "瓦片快取") {
+  if (!$("eez-toggle").checked) {
+    TimingMetrics.setText("eez-ms", "關閉");
+    RenderState.off("eez", "關閉");
+    return;
+  }
+  if (!hasActiveEezVectorTiles()) {
+    await reloadEezLayer();
+    return;
+  }
+  const timing = TimingMetrics.stopwatch();
+  const seq = ++state.eezSeq;
+  const transaction = RenderState.begin("eez", ["eez"]);
+  RenderState.loading("eez", reason);
+  try {
+    await TimingMetrics.waitForLayers(state.eezTileLayers, 180);
+  } catch (err) {
+    // Persistent vector grids may already have enough tiles and emit no fresh load event.
+    // Settle quickly so static EEZ bookkeeping never blocks dynamic data layers.
+  }
+  if (seq !== state.eezSeq || !RenderState.isCurrent(transaction)) return;
+  setRenderedLodZoom("eez");
+  setEezPaneVisibility(state.eezActivePane, true);
+  TimingMetrics.setMs("eez-ms", timing.elapsed());
+  TimingMetrics.updateSummary();
+  RenderState.finish(transaction, { eez: "瓦片就緒" });
+}
+
 function createEezVectorTileLayer(paneName) {
   const rendererFactory = L.canvas?.tile || L.svg.tile;
   const fillLayer = createEezVectorGrid("/api/overlays/eez/tiles/{z}/{x}/{y}.pbf?v=eez-fill-lod-v6", {
@@ -99,7 +138,13 @@ function createEezVectorTileLayer(paneName) {
   };
 }
 
-async function reloadEezLayer() {
+async function reloadEezLayer(options = {}) {
+  const force = Boolean(options.force);
+  if (!force && hasActiveEezVectorTiles()) {
+    syncEezLayer();
+    await refreshEezTileReadiness("瓦片快取");
+    return;
+  }
   const timing = TimingMetrics.stopwatch();
   TimingMetrics.setText("eez-ms", "載入中");
   const seq = ++state.eezSeq;
@@ -207,6 +252,6 @@ function repaintEezLayer() {
   state.eezTileLayers = [];
   state.eezMode = null;
   if (wasVisible) {
-    reloadEezLayer().catch((err) => console.error("EEZ overlay failed", err));
+    reloadEezLayer({ force: true }).catch((err) => console.error("EEZ overlay failed", err));
   }
 }

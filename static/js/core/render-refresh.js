@@ -23,8 +23,7 @@ function invalidatePrimaryRenderForViewport({ lodChanging = false } = {}) {
 
 function invalidateEezRenderForZoom() {
   if (!$("eez-toggle").checked) return;
-  state.eezSeq += 1;
-  clearEezLayerForReload();
+  if (markEezTilesUpdating("縮放更新")) return;
   RenderState.loading("eez", "縮放變更");
   TimingMetrics.setText("eez-ms", "載入中");
 }
@@ -78,8 +77,8 @@ function bindMapRefresh() {
     }
     if (eezZoomPrepared && $("eez-toggle").checked) {
       eezTimer = setTimeout(() => {
-        reloadEezLayer().catch((err) => console.error("EEZ overlay failed", err));
-      }, 900);
+        refreshEezTileReadiness("縮放更新").catch((err) => console.error("EEZ overlay failed", err));
+      }, 120);
     }
     primaryPrepared = false;
     primaryLodPrepared = false;

@@ -99,47 +99,6 @@
       </div>
     </section>
 
-    <details class="metrics-drawer">
-      <summary>
-        <span>測速</span>
-        <strong id="metrics-summary">就緒</strong>
-      </summary>
-      <section class="metrics" aria-label="測速指標">
-        <div><span>SQL 查詢</span><strong id="query-ms">-</strong></div>
-        <div><span>序列化</span><strong id="serialize-ms">-</strong></div>
-        <div><span>API 總耗時</span><strong id="api-ms">-</strong></div>
-        <div><span>抓取到渲染</span><strong id="client-ms">-</strong></div>
-        <div><span>EEZ 瓦片</span><strong id="eez-ms">-</strong></div>
-        <div><span>資料列</span><strong id="row-count">-</strong></div>
-      </section>
-      <section class="render-gate" aria-label="渲染就緒狀態">
-        <div class="render-gate-header">
-          <span>渲染就緒</span>
-          <strong id="render-gate-summary">GFW 0 / AIS 0 / EEZ 0</strong>
-        </div>
-        <div class="render-gate-grid">
-          <div id="render-chip-gfw" class="render-chip is-off">
-            <span id="render-light-gfw" class="render-light is-off"></span>
-            <span>GFW</span>
-            <strong id="render-bit-gfw">0</strong>
-            <small id="render-detail-gfw">關閉</small>
-          </div>
-          <div id="render-chip-ais" class="render-chip is-off">
-            <span id="render-light-ais" class="render-light is-off"></span>
-            <span>AIS</span>
-            <strong id="render-bit-ais">0</strong>
-            <small id="render-detail-ais">關閉</small>
-          </div>
-          <div id="render-chip-eez" class="render-chip is-off">
-            <span id="render-light-eez" class="render-light is-off"></span>
-            <span>EEZ</span>
-            <strong id="render-bit-eez">0</strong>
-            <small id="render-detail-eez">關閉</small>
-          </div>
-        </div>
-      </section>
-    </details>
-
     <section class="workspace records-panel-hidden">
         <div id="map-shell" class="map-shell">
         <div id="map" aria-label="地圖"></div>
@@ -199,6 +158,14 @@
         </div>
       </aside>
     </section>
+
+    <details class="metrics-drawer">
+      <summary>
+        <span>測速</span>
+        <strong id="metrics-summary">就緒</strong>
+      </summary>
+      <section id="pipeline-timeline" class="pipeline-timeline" aria-label="資料到畫面時間軸"></section>
+    </details>
   </main>
 
   <section class="settings-page page-panel" data-page-panel="settings" hidden>
@@ -264,23 +231,31 @@
             <span class="settings-toggle-caret" aria-hidden="true"></span>
             <span>
               <span class="settings-toggle-title">播放器</span>
-              <span class="settings-toggle-description">播放快取預熱、容量、淡入淡出與高斯模糊。</span>
+              <span class="settings-toggle-description">時間序列查詢策略、播放快取、淡入淡出與高斯模糊。</span>
             </span>
           </summary>
           <div class="settings-toggle-content">
             <section class="settings-section playback-settings-section">
-              <h3>快取預熱</h3>
+              <h3>查詢策略</h3>
               <label>
-                模式
+                播放模式
                 <select id="playback-cache-mode">
-                  <option value="before_play">播放前完整預熱</option>
-                  <option value="progressive">播放時漸進預熱</option>
-                  <option value="off">關閉</option>
+                  <option value="before_play">播放前完整預熱（快取優先）</option>
+                  <option value="progressive">背景預載（保序緩衝）</option>
+                  <option value="off">逐張查詢（不使用播放快取）</option>
                 </select>
               </label>
               <label>
                 並行預熱數
-                <input id="playback-cache-concurrency" type="number" min="1" max="12" step="1" value="2">
+                <select id="playback-cache-concurrency">
+                  <option value="auto">Auto</option>
+                  <option value="1">1</option>
+                  <option value="2">2</option>
+                  <option value="4">4</option>
+                  <option value="6">6</option>
+                  <option value="8">8</option>
+                  <option value="12">12</option>
+                </select>
               </label>
               <label>
                 日期上限
@@ -291,9 +266,11 @@
               </label>
               <label>
                 快取上限 (GB)
+                <input id="playback-cache-window-behind" type="number" min="0" max="30" step="1" value="1" hidden>
+                <input id="playback-cache-window-ahead" type="number" min="1" max="60" step="1" value="8" hidden>
                 <input id="playback-cache-max-gb" type="number" min="0.25" max="16" step="0.25" value="2">
               </label>
-              <p class="setting-note">日期上限為 0 時，使用目前日期範圍；並行預熱數代表同時抓取幾個日期快照；快取上限用來避免一次預熱過大範圍造成記憶體壓力。</p>
+              <p class="setting-note">查詢策略決定播放器如何取得時間序列快照：播放前完整預熱會先把日期區間寫入快取再播放；漸進補查會邊播放邊補缺口；逐張查詢則每張快照即時查詢。日期上限為 0 時，使用目前日期範圍；並行預熱數代表同時抓取幾個日期快照；快取上限用來避免一次預熱過大範圍造成記憶體壓力。</p>
               <div class="playback-cache-meter" aria-label="播放快取容量">
                 <div class="playback-cache-meter-label">
                   <span id="playback-cache-capacity-text">快取容量：0 B / 2.00 GB</span>
@@ -305,6 +282,10 @@
                 <div class="playback-cache-meter-track">
                   <div id="playback-cache-capacity-fill" class="playback-cache-meter-fill"></div>
                 </div>
+              </div>
+              <div id="playback-buffer-status" class="playback-buffer-status" hidden>
+                <span class="playback-buffer-spinner" aria-hidden="true"></span>
+                <span id="playback-buffer-status-text">緩衝中</span>
               </div>
             </section>
             <section class="settings-section playback-settings-section">
@@ -613,7 +594,7 @@
   <script src="/static/vendor/lucide.min.js?v=0.468.0"></script>
   <script src="/static/vendor/html2canvas.min.js?v=1.4.1"></script>
   <script src="/static/vendor/Leaflet.VectorGrid.bundled.min.js?v=1.3.0"></script>
-  <script src="/static/TimingMetrics.js?v=zh-tw-v99"></script>
+  <script src="/static/TimingMetrics.js?v=pipeline-gantt-v4"></script>
   <script src="/static/js/core/state.js?v=layer-imports-v1"></script>
   <script src="/static/js/core/dom.js?v=zh-tw-v99"></script>
   <script src="/static/js/core/render-state.js?v=zh-tw-v99"></script>
@@ -637,10 +618,13 @@
   <script src="/static/js/ui/gfw-settings.js?v=zh-tw-v99"></script>
   <script src="/static/js/ui/ais-settings.js?v=zh-tw-v99"></script>
   <script src="/static/js/ui/layer-menu.js?v=layer-imports-v1"></script>
+  <script src="/static/js/services/playback-worker-policy.js?v=playback-worker-policy-v1"></script>
+  <script src="/static/js/services/playback-snapshot-splitter.js?v=playback-snapshot-splitter-v1"></script>
+  <script src="/static/js/services/gfw-render-artifact-cache.js?v=gfw-render-artifact-cache-v1"></script>
   <script src="/static/js/services/gfw-record-cache.js?v=zh-tw-v99"></script>
-  <script src="/static/js/services/playback-cache-service.js?v=zh-tw-v99"></script>
+  <script src="/static/js/services/playback-cache-service.js?v=playback-buffer-v1"></script>
   <script src="/static/js/ui/hardware-settings.js?v=zh-tw-v99"></script>
-  <script src="/static/js/ui/playback-controls.js?v=fullscreen-svg-v1"></script>
+  <script src="/static/js/ui/playback-controls.js?v=playback-buffer-v1"></script>
   <script src="/static/js/ui/fullscreen-playback-controls.js?v=fullscreen-svg-v1"></script>
   <script src="/static/js/services/api-client.js?v=layer-imports-v1"></script>
   <script src="/static/app.js?v=layer-imports-v1"></script>

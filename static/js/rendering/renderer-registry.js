@@ -16,6 +16,13 @@ const RendererRegistry = (() => {
     return Number(rowCount || 0) >= minRows;
   }
 
+  function gpuAvailable() {
+    const currentPolicy = policy();
+    if (currentPolicy.force_cpu || currentPolicy.hardware_acceleration === "off") return false;
+    if (currentPolicy.allow_webgl === false) return false;
+    return Boolean(browserWebgl().available && window.GfwWebglLayer?.isSupported?.());
+  }
+
   function chooseGfwLayer(rows, canvasLayerClass) {
     const rowCount = Array.isArray(rows) ? rows.length : 0;
     if (webglAllowed(rowCount) && window.GfwWebglLayer?.isSupported?.()) {
@@ -28,11 +35,16 @@ const RendererRegistry = (() => {
     const formatted = TimingMetrics.formatMs(drawMs);
     state.rendering.gfwMode = backend;
     state.rendering.gfwBackend = `${backend} 渲染 ${formatted}`;
+    TimingMetrics.setMetricMs?.("draw", drawMs, {
+      label: backend === "webgl" ? "WebGL 繪製" : "Canvas 繪製",
+      source: backend,
+    });
     return state.rendering.gfwBackend;
   }
 
   return {
     chooseGfwLayer,
+    gpuAvailable,
     recordGfwRender,
   };
 })();

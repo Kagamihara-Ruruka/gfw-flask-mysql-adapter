@@ -173,6 +173,37 @@ def rows_json_ready(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{key: json_ready(value) for key, value in row.items()} for row in rows]
 
 
+def dataset_render_columns(dataset: dict[str, Any]) -> list[str]:
+    columns: list[str] = []
+    for key in ["time_column", "id_column", "lat_column", "lon_column"]:
+        value = dataset.get(key)
+        if value and value not in columns:
+            columns.append(value)
+    for column in ["fish_sum", "fish_ratio", "vessels"]:
+        if column in dataset.get("display_columns", []) and column not in columns:
+            columns.append(column)
+    return columns or list(dataset.get("display_columns", []))
+
+
+def resolve_dataset_columns(dataset: dict[str, Any], column_profile: str | None) -> list[str]:
+    if not column_profile or column_profile == "display":
+        return list(dataset["display_columns"])
+    if column_profile == "render":
+        return dataset_render_columns(dataset)
+    requested = [part.strip() for part in column_profile.split(",") if part.strip()]
+    allowed = set(dataset.get("display_columns", []))
+    columns: list[str] = []
+    for column in requested:
+        validate_identifier(column, "requested column")
+        if column not in allowed:
+            raise ValueError(f"requested column is not in dataset display_columns: {column}")
+        if column not in columns:
+            columns.append(column)
+    if not columns:
+        raise ValueError("requested columns must not be empty")
+    return columns
+
+
 def elapsed_ms(start: float) -> float:
     return round((time.perf_counter() - start) * 1000, 3)
 
@@ -210,6 +241,7 @@ def _records_cache_key(
     database: str,
     table: str,
     columns: list[str],
+    column_profile: str | None,
     date_value: str | None,
     bbox: tuple[float, float, float, float] | None,
     limit: int,
@@ -221,6 +253,7 @@ def _records_cache_key(
             str(connection.get("port", "")),
             database,
             table,
+            str(column_profile or "display"),
             ",".join(columns),
             str(date_value or ""),
             "" if bbox is None else ",".join(f"{value:.6f}" for value in bbox),
@@ -471,13 +504,14 @@ def _mysql_records_packet(
     bbox: tuple[float, float, float, float] | None,
     limit: int,
     offset: int,
+    column_profile: str | None = None,
 ) -> dict[str, Any]:
     table = mysql_dataset_table(dataset)
     database = validate_identifier(dataset.get("database") or connection["database"], "database")
     time_column = dataset["time_column"]
     lat_column = dataset["lat_column"]
     lon_column = dataset["lon_column"]
-    columns = dataset["display_columns"]
+    columns = resolve_dataset_columns(dataset, column_profile)
     policy = query_policy(config)
     limit = max(1, min(int(limit), policy["max_limit"]))
     offset = max(0, int(offset))
@@ -499,6 +533,7 @@ def _mysql_records_packet(
         database=database,
         table=table,
         columns=columns,
+        column_profile=column_profile,
         date_value=date_value,
         bbox=bbox,
         limit=limit,
@@ -530,6 +565,8 @@ def _mysql_records_packet(
         "row_count": len(rows),
         "limit": limit,
         "offset": offset,
+        "column_profile": column_profile or "display",
+        "columns": columns,
         "query_policy": policy,
         "timing": {
             "query_ms": query_ms,
@@ -567,6 +604,7 @@ class MySqlReadBackend:
         bbox: tuple[float, float, float, float] | None,
         limit: int,
         offset: int,
+        column_profile: str | None = None,
     ) -> dict[str, Any]:
         packet = _mysql_records_packet(
             self.config,
@@ -576,6 +614,7 @@ class MySqlReadBackend:
             bbox=bbox,
             limit=limit,
             offset=offset,
+            column_profile=column_profile,
         )
         packet["backend"] = {"kind": self.kind, "connection_ref": self.connection_ref}
         return packet
@@ -602,6 +641,7 @@ class HiveReadBackend:
         bbox: tuple[float, float, float, float] | None,
         limit: int,
         offset: int,
+        column_profile: str | None = None,
     ) -> dict[str, Any]:
         raise UnsupportedBackendOperation(
             "hive",
@@ -627,12 +667,14 @@ def records_packet(
     bbox: tuple[float, float, float, float] | None,
     limit: int,
     offset: int,
+    column_profile: str | None = None,
 ) -> dict[str, Any]:
     return read_backend(config, dataset).records_packet(
         date_value=date_value,
         bbox=bbox,
         limit=limit,
         offset=offset,
+        column_profile=column_profile,
     )
 
 

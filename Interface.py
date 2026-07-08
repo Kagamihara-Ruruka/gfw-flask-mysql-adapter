@@ -784,6 +784,7 @@ def create_app(config: dict[str, Any], *, developer_url: str | None = None) -> F
                 bbox=parse_bbox(request.args.get("bbox")),
                 limit=int(request.args.get("limit", str(query_policy(config)["default_limit"]))),
                 offset=int(request.args.get("offset", "0")),
+                column_profile=request.args.get("columns"),
             )
             packet["dataset_id"] = dataset_id
             packet["runtime"] = runtime

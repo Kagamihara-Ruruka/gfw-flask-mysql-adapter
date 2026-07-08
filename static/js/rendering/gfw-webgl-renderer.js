@@ -23,13 +23,24 @@ const GfwWebglLayer = L.Layer.extend({
   },
   onRemove(targetMap) {
     targetMap.off("move zoom resize", this._reset, this);
+    this.releaseGpuResources();
     if (this._canvas) {
       L.DomUtil.remove(this._canvas);
     }
     this._canvas = null;
     this._gl = null;
-    this._program = null;
-    this._buffer = null;
+  },
+  releaseGpuResources() {
+    const gl = this._gl;
+    if (!gl) return;
+    if (this._buffer) {
+      gl.deleteBuffer(this._buffer);
+      this._buffer = null;
+    }
+    if (this._program) {
+      gl.deleteProgram(this._program);
+      this._program = null;
+    }
   },
   setRows(rows) {
     this._rows = rows;

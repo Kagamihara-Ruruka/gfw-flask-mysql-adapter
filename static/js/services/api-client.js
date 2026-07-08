@@ -257,6 +257,7 @@ function applyAisPacket(packet, bboxes, timing) {
 function startAisWebSocket() {
   const seq = ++state.aisLiveSeq;
   const timing = TimingMetrics.stopwatch();
+  TimingMetrics.resetSnapshotPersistent?.({ render: false });
   const bboxes = currentWrappedBboxes();
   closeAisSocket();
   RenderState.loading("ais", "連線中");
@@ -319,6 +320,7 @@ function startAisWebSocket() {
 async function reloadAisRecordsRest() {
   const seq = ++state.aisLiveSeq;
   const timing = TimingMetrics.stopwatch();
+  TimingMetrics.resetSnapshotPersistent?.({ render: false });
   RenderState.loading("ais", "REST 備援");
   setStatus("正在載入 AIS REST 備援");
   const bboxes = currentWrappedBboxes();
@@ -377,6 +379,7 @@ async function reloadGfwRecords() {
   // Drop stale responses after pan/zoom/date changes.
   const seq = ++state.fetchSeq;
   const timing = TimingMetrics.stopwatch();
+  TimingMetrics.resetSnapshotPersistent?.({ render: false });
   RenderState.loading("gfw", "查詢中");
   setStatus("正在載入 GFW");
   const requestedLimit = Number(state.queryPolicy.max_limit || state.queryPolicy.default_limit || 100000);
@@ -386,6 +389,7 @@ async function reloadGfwRecords() {
     date: requestedDate,
     bbox: currentBbox(),
     limit: requestedLimit,
+    columns: "render",
     center: map.getCenter(),
     zoom: map.getZoom(),
   };

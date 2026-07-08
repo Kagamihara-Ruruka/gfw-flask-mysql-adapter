@@ -794,6 +794,41 @@ body {
   transition: width 160ms ease;
 }
 
+.playback-buffer-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 6px 10px;
+  border: 1px solid rgba(126, 231, 135, 0.38);
+  border-radius: 999px;
+  background: rgba(46, 160, 67, 0.12);
+  color: #b7f7c2;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.playback-buffer-status[hidden] {
+  display: none;
+}
+
+.playback-buffer-spinner {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  border: 2px solid rgba(183, 247, 194, 0.28);
+  border-top-color: #7ee787;
+  border-radius: 50%;
+  animation: playback-buffer-spin 0.8s linear infinite;
+}
+
+@keyframes playback-buffer-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .modal-header {
   display: flex;
   align-items: start;
@@ -1084,6 +1119,8 @@ button {
 }
 
 .metrics-drawer {
+  width: 100%;
+  margin-top: 0.875rem;
   margin-bottom: 12px;
   background: var(--panel);
   border: 1px solid var(--line);
@@ -1141,6 +1178,234 @@ button {
 .metrics strong {
   font-size: 16px;
   font-variant-numeric: tabular-nums;
+}
+
+.pipeline-timeline {
+  display: grid;
+  gap: 10px;
+  padding: 0 12px 12px;
+  border-top: 1px solid var(--line);
+}
+
+.pipeline-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.18fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: stretch;
+  padding-top: 10px;
+}
+
+.pipeline-row-label {
+  display: grid;
+  align-content: center;
+  gap: 3px;
+  min-width: 0;
+}
+
+.pipeline-row-label strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.pipeline-row-label span {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.pipeline-track {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  min-height: 38px;
+  overflow: visible;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px) 0 0 / 10% 100%,
+    #0d141c;
+}
+
+.pipeline-track.is-empty {
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pipeline-segment {
+  position: relative;
+  flex: 0 0 var(--segment-width);
+  display: grid;
+  align-content: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 5px 8px;
+  border-right: 1px solid rgba(255, 255, 255, 0.14);
+  background: linear-gradient(180deg, rgba(54, 115, 255, 0.9), rgba(37, 86, 201, 0.9));
+  color: #f5f8ff;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.pipeline-boundary {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  right: -4px;
+  width: 8px;
+  height: 100%;
+  cursor: crosshair;
+}
+
+.pipeline-boundary::before {
+  content: "";
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  left: 3px;
+  width: 2px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow: 0 0 0 1px rgba(3, 9, 16, 0.42), 0 0 8px rgba(43, 217, 143, 0);
+  opacity: 0.5;
+  transition: opacity 120ms ease, box-shadow 120ms ease, background 120ms ease;
+}
+
+.pipeline-boundary:hover::before {
+  background: rgba(79, 230, 164, 0.95);
+  box-shadow: 0 0 0 1px rgba(3, 9, 16, 0.6), 0 0 10px rgba(43, 217, 143, 0.6);
+  opacity: 1;
+}
+
+.pipeline-offset {
+  flex: 0 0 var(--offset-width);
+  min-width: 0;
+  border-right: 1px dashed rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.pipeline-segment.kind-query {
+  background: linear-gradient(180deg, rgba(28, 139, 122, 0.94), rgba(19, 96, 88, 0.94));
+}
+
+.pipeline-segment.kind-serialize {
+  background: linear-gradient(180deg, rgba(108, 117, 220, 0.94), rgba(73, 81, 166, 0.94));
+}
+
+.pipeline-segment.kind-transport {
+  background: linear-gradient(180deg, rgba(44, 124, 214, 0.94), rgba(31, 84, 154, 0.94));
+}
+
+.pipeline-segment.kind-draw {
+  background: linear-gradient(180deg, rgba(210, 128, 48, 0.94), rgba(151, 86, 31, 0.94));
+}
+
+.pipeline-segment.kind-browser {
+  background: linear-gradient(180deg, rgba(126, 141, 157, 0.94), rgba(78, 91, 105, 0.94));
+}
+
+.pipeline-segment.kind-eez {
+  background: linear-gradient(180deg, rgba(62, 151, 176, 0.94), rgba(36, 103, 128, 0.94));
+}
+
+.pipeline-segment:last-child {
+  border-right: 0;
+}
+
+.pipeline-segment b,
+.pipeline-segment em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-style: normal;
+}
+
+.pipeline-segment.is-compact {
+  padding-inline: 0;
+}
+
+.pipeline-segment.is-compact b,
+.pipeline-segment.is-compact em {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pipeline-segment em {
+  opacity: 0.86;
+}
+
+.pipeline-segment::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  z-index: 40;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  width: min(320px, 68vw);
+  transform: translateX(-50%) translateY(4px);
+  padding: 9px 10px;
+  border: 1px solid rgba(70, 203, 143, 0.45);
+  border-radius: 7px;
+  background: rgba(8, 13, 19, 0.96);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.38);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-line;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.pipeline-segment:hover::after {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.pipeline-segment:has(.pipeline-boundary:hover)::after {
+  opacity: 0;
+}
+
+.pipeline-boundary::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  z-index: 50;
+  right: 0;
+  bottom: calc(100% + 8px);
+  width: min(300px, 68vw);
+  padding: 9px 10px;
+  border: 1px solid rgba(43, 217, 143, 0.5);
+  border-radius: 8px;
+  background: rgba(6, 12, 20, 0.96);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-line;
+  box-shadow: var(--shadow);
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 120ms ease, transform 120ms ease;
+  pointer-events: none;
+}
+
+.pipeline-boundary:hover::after {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.pipeline-segment.is-text {
+  background: repeating-linear-gradient(
+    135deg,
+    rgba(38, 166, 120, 0.9),
+    rgba(38, 166, 120, 0.9) 8px,
+    rgba(28, 121, 88, 0.9) 8px,
+    rgba(28, 121, 88, 0.9) 16px
+  );
+}
+
+.pipeline-segment.is-idle {
+  background: linear-gradient(180deg, rgba(120, 132, 150, 0.7), rgba(74, 84, 96, 0.7));
 }
 
 .render-gate {
@@ -1699,6 +1964,10 @@ td {
   }
 
   .render-gate-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .pipeline-row {
     grid-template-columns: 1fr;
   }
 

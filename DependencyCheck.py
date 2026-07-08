@@ -53,19 +53,19 @@ def check_eez_postgis_dependency(config: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:
         raise DependencyCheckError(
             "EEZ requires a reachable PostgreSQL/PostGIS service. "
-            "Start it with `docker compose up -d postgis`, then import EEZ data."
+            "Start it with `docker compose up -d postgis`, then run `python core.py bootstrap-eez`."
         ) from exc
 
     if missing or empty:
         config_path = config.get("__config_path") or "config/adapter.local.json"
-        gpkg_path = settings.get("full_gpkg_path") or "data/eez_v12.gpkg"
+        gpkg_path = settings.get("full_gpkg_path") or "data/eez/eez_v12.gpkg"
         gpkg_hint = ""
         if gpkg_path and not Path(str(gpkg_path)).exists():
-            gpkg_hint = f" Also make sure `{gpkg_path}` exists; run `python core.py --config {config_path} bootstrap-test-data` first."
+            gpkg_hint = f" Also make sure `{gpkg_path}` exists; run `python core.py --config {config_path} bootstrap-eez` first."
         raise DependencyCheckError(
             "EEZ PostGIS dependency is not ready. "
             f"Missing tables: {missing or 'none'}; empty tables: {empty or 'none'}. "
-            f"Run `python scripts/import_eez_to_postgis.py --config {config_path} --replace`."
+            f"Run `python core.py --config {config_path} bootstrap-eez`."
             f"{gpkg_hint}"
         )
 

@@ -1,14 +1,17 @@
 {
   "active_configs": [
-    "config/adapter.example.json"
+    "config/adapter.example.json",
+    "config/spatial.eez.example.json"
   ],
   "locked_configs": [],
   "config_notes": {
     "config/adapter.example.json": "Demo database router config. Copy to config/adapter.local.json before real use.",
+    "config/spatial.eez.example.json": "Demo spatial router config. Downloads public Marine Regions EEZ GPKG into data/eez/ and imports PostGIS when enabled.",
     "config/adapter.ais_collector.example.json": "Demo websocket collector config. Copy to a local config before real use."
   },
   "config_groups": {
     "config/adapter.example.json": "database",
+    "config/spatial.eez.example.json": "spatial",
     "config/adapter.ais_collector.example.json": "websocket"
   }
 }
