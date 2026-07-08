@@ -4,16 +4,29 @@ import argparse
 import json
 from pathlib import Path
 
-from AisIngestService import run_ais_ingest_forever
-from DatabaseConnect import import_duckdb_to_mysql, load_config, server_settings
-from DependencyCheck import check_runtime_dependencies
-from EezBootstrapService import ensure_eez_runtime_assets
-from Interface import run_server, run_server_pair
-from TestDataBootstrap import ensure_test_data
+from common_adapter.ais.ingest import run_ais_ingest_forever
+from common_adapter.config.materialize import materialize_route_fragments
+from common_adapter.config.paths import runtime_config_path as resolve_runtime_config_path
+from common_adapter.db.connect import import_duckdb_to_mysql, load_config, server_settings
+from common_adapter.http.server import run_server, run_server_pair
+from common_adapter.spatial.dependency import check_runtime_dependencies
+from common_adapter.spatial.eez_bootstrap import ensure_eez_runtime_assets
+
+
+def runtime_config_path(value: str | None) -> Path | None:
+    return resolve_runtime_config_path(value)
+
+
+def prepare_runtime_config(value: str | None) -> Path | None:
+    config_path = runtime_config_path(value)
+    if config_path is not None:
+        materialize_route_fragments(config_path)
+    return config_path
 
 
 def command_import(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
+    config_path = prepare_runtime_config(args.config)
+    config = load_config(config_path)
     dataset_id = args.dataset or config.get("default_dataset")
     result = import_duckdb_to_mysql(
         config,
@@ -28,12 +41,10 @@ def command_import(args: argparse.Namespace) -> int:
 
 
 def command_serve(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
-    config_path = str((Path(args.config) if args.config else Path("config/adapter.local.json")).resolve())
+    selected_config_path = prepare_runtime_config(args.config)
+    config = load_config(selected_config_path)
+    config_path = str(selected_config_path.resolve()) if selected_config_path else str(Path(config["__config_path"]).resolve())
     config["__config_path"] = config_path
-    bootstrap = config.get("test_data_bootstrap", {})
-    if bootstrap.get("auto_on_serve", False):
-        ensure_test_data(config, reason="serve")
     eez_status = ensure_eez_runtime_assets(config, config_path=config_path, reason="serve")
     print(json.dumps(eez_status, ensure_ascii=False))
     dependency_status = check_runtime_dependencies(config)
@@ -53,19 +64,14 @@ def command_serve(args: argparse.Namespace) -> int:
             developer_port=developer_port,
             debug=debug,
             kill_port_if_busy=server["kill_port_if_busy"],
-        )
-    return 0
-
-
-def command_bootstrap_test_data(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
-    ensure_test_data(config, reason="manual")
+    )
     return 0
 
 
 def command_bootstrap_eez(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
-    config_path = str((Path(args.config) if args.config else Path("config/adapter.local.json")).resolve())
+    selected_config_path = prepare_runtime_config(args.config)
+    config = load_config(selected_config_path)
+    config_path = str(selected_config_path.resolve()) if selected_config_path else str(Path(config["__config_path"]).resolve())
     config["__config_path"] = config_path
     status = ensure_eez_runtime_assets(config, config_path=config_path, reason="manual")
     print(json.dumps(status, ensure_ascii=False, indent=2))
@@ -73,15 +79,17 @@ def command_bootstrap_eez(args: argparse.Namespace) -> int:
 
 
 def command_check_dependencies(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
-    config["__config_path"] = str((Path(args.config) if args.config else Path("config/adapter.local.json")).resolve())
+    selected_config_path = prepare_runtime_config(args.config)
+    config = load_config(selected_config_path)
+    config["__config_path"] = str(selected_config_path.resolve()) if selected_config_path else str(Path(config["__config_path"]).resolve())
     status = check_runtime_dependencies(config)
     print(json.dumps({"status": "dependencies_ready", **status}, ensure_ascii=False, indent=2))
     return 0
 
 
 def command_ingest_ais(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
+    config_path = prepare_runtime_config(args.config)
+    config = load_config(config_path)
     if args.collector_config:
         config.setdefault("live", {}).setdefault("ais", {})["collector_config_path"] = args.collector_config
     run_ais_ingest_forever(config)
@@ -89,7 +97,7 @@ def command_ingest_ais(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="GFW Flask/PyMySQL adapter.")
+    parser = argparse.ArgumentParser(description="Common Flask/MySQL data adapter.")
     parser.add_argument("--config", default=None, help="Path to adapter config JSON.")
     subparsers = parser.add_subparsers(dest="command")
 
@@ -108,9 +116,6 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--no-developer-server", action="store_true")
     serve_parser.add_argument("--debug", action="store_true", default=None)
     serve_parser.set_defaults(func=command_serve)
-
-    bootstrap_parser = subparsers.add_parser("bootstrap-test-data", help="Download temporary test datasets.")
-    bootstrap_parser.set_defaults(func=command_bootstrap_test_data)
 
     eez_bootstrap_parser = subparsers.add_parser(
         "bootstrap-eez",

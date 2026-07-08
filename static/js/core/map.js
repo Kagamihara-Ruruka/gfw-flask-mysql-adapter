@@ -62,7 +62,7 @@ const BASEMAPS = {
       maxZoom: 17,
     },
   },
-  esri_ocean: {
+  esri_ocean_basemap: {
     label: "Esri Ocean",
     url: "https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}",
     options: {
@@ -96,10 +96,15 @@ const BASEMAPS = {
   },
 };
 
+const BASEMAP_ALIASES = {
+  esri_ocean: "esri_ocean_basemap",
+};
+
 let currentBasemapLayer = null;
 
 function setBasemap(basemapId) {
-  const nextBasemapId = BASEMAPS[basemapId] ? basemapId : "carto_light";
+  const normalizedBasemapId = BASEMAP_ALIASES[basemapId] || basemapId;
+  const nextBasemapId = BASEMAPS[normalizedBasemapId] ? normalizedBasemapId : "carto_light";
   const definition = BASEMAPS[nextBasemapId];
   if (currentBasemapLayer) {
     map.removeLayer(currentBasemapLayer);

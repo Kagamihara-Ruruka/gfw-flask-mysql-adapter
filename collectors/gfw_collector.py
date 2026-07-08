@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from DatabaseConnect import import_duckdb_to_mysql, load_config  # noqa: E402
+from common_adapter.db.connect import import_duckdb_to_mysql, load_config  # noqa: E402
 
 
 def load_json(path: str | Path) -> dict[str, Any]:
@@ -26,7 +26,7 @@ def command_import(args: argparse.Namespace) -> int:
     sink = collector.get("sink", {})
     source = collector.get("source", {})
 
-    adapter_config_path = args.adapter_config or sink.get("adapter_config") or "config/adapter.local.json"
+    adapter_config_path = args.adapter_config or sink.get("adapter_config") or "config/runtime/adapter.local.json"
     adapter_config = load_config(adapter_config_path)
 
     duckdb_path = Path(args.source or source["duckdb_path"])
@@ -51,7 +51,7 @@ def command_import(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Reusable GFW upstream collector/importer.")
-    parser.add_argument("--collector-config", default="config/gfw_collector.example.json")
+    parser.add_argument("--collector-config", default="config/examples/collectors/gfw_collector.example.json")
     parser.add_argument("--adapter-config", default=None)
     subparsers = parser.add_subparsers(dest="command", required=True)
 

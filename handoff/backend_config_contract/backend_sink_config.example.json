@@ -20,8 +20,20 @@
       "port": 10000,
       "user": "hive",
       "password": "env:RRKAL_BACKEND_HIVE_PASSWORD",
-      "database": "ocean_warehouse",
+      "database": "common_warehouse",
       "capability_key": "database_backend.hive",
+      "enabled": false
+    },
+    "spark_iceberg_read_model": {
+      "kind": "spark",
+      "driver": "placeholder",
+      "host": "spark-thrift.local",
+      "port": 10001,
+      "user": "spark",
+      "password": "env:RRKAL_BACKEND_SPARK_PASSWORD",
+      "database": "common_warehouse",
+      "catalog": "iceberg",
+      "capability_key": "database_backend.spark",
       "enabled": false
     }
   },

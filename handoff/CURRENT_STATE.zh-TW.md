@@ -101,17 +101,19 @@ python core.py serve --port 5057
 ## 重要檔案
 
 - `core.py`：主啟動入口。
-- `Interface.py`：主 Flask API 與頁面路由。
-- `DatabaseConnect.py`：資料庫連線與查詢入口。
+- `common_adapter/http/interface.py`：Flask app factory 與 route assembly。
+- `common_adapter/http/routes/`：主服務、dataset、overlay、live 與 developer routes。
+- `common_adapter/http/server.py`：server lifecycle、PID 與 port helper。
+- `common_adapter/db/connect.py`：資料庫連線與查詢入口。
+- `common_adapter/db/backends/`：MySQL 已實作 backend，以及 Hive/Spark unsupported stubs。
 - `DeveloperConfigService.py`：開發者 config / route 管理。
-- `SchemaInspector.py`：關聯式 schema 探測。
-- `LayerContractService.py`：圖層合約生成。
-- `LayerRuntimeService.py`：runtime 圖層狀態。
-- `LodOverlayService.py`：EEZ / overlay LOD。
+- `common_adapter/developer/schema_inspector.py`：關聯式 schema 探測。
+- `common_adapter/layers/contracts.py`：圖層合約生成。
+- `common_adapter/layers/runtime.py`：runtime 圖層狀態。
+- `common_adapter/spatial/lod.py`：EEZ / overlay LOD。
 - `static/TimingMetrics.js`：測速甘特圖與互動延遲。
 - `static/js/ui/snapshot-performance-chart.js`：Plotly 快照耗時線圖。
-- `static/js/services/playback-cache-service.js`：播放快取與預熱。
+- `static/js/playback/playback-cache-service.js`：播放快取與預熱。
 - `static/js/services/render-intent-service.js`：渲染意圖服務。
 - `templates/index.html`：主儀表板。
 - `templates/developer.html`：開發者路由控制台。
-

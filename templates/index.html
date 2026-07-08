@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8">
@@ -240,9 +240,9 @@
               <label>
                 播放模式
                 <select id="playback-cache-mode">
-                  <option value="before_play">播放前完整預熱（快取優先）</option>
-                  <option value="progressive">背景預載（保序緩衝）</option>
-                  <option value="off">逐張查詢（不使用播放快取）</option>
+                  <option value="before_play">完整預熱後播放（Range）</option>
+                  <option value="progressive" selected>短緩衝播放（背景預載）</option>
+                  <option value="off">逐張查詢（不主動預載）</option>
                 </select>
               </label>
               <label>
@@ -270,7 +270,7 @@
                 <input id="playback-cache-window-ahead" type="number" min="1" max="60" step="1" value="8" hidden>
                 <input id="playback-cache-max-gb" type="number" min="0.25" max="16" step="0.25" value="2">
               </label>
-              <p class="setting-note">查詢策略決定播放器如何取得時間序列快照：播放前完整預熱會先把日期區間寫入快取再播放；漸進補查會邊播放邊補缺口；逐張查詢則每張快照即時查詢。日期上限為 0 時，使用目前日期範圍；並行預熱數代表同時抓取幾個日期快照；快取上限用來避免一次預熱過大範圍造成記憶體壓力。</p>
+              <p class="setting-note">查詢策略決定播放器如何取得時間序列快照：完整預熱後播放會先把本次播放序列寫入快取再播放；短緩衝播放會用逐日期背景預載補前方窗口；逐張查詢不主動預載，但仍可讀取既有快取。日期上限為 0 時不限制；並行預熱數只控制逐日期背景預載；快取上限用來避免一次預熱過大範圍造成記憶體壓力。</p>
               <div class="playback-cache-meter" aria-label="播放快取容量">
                 <div class="playback-cache-meter-label">
                   <span id="playback-cache-capacity-text">快取容量：0 B / 2.00 GB</span>
@@ -451,7 +451,7 @@
               <option value="osm_standard">OSM 標準</option>
               <option value="osm_hot">OSM Humanitarian</option>
               <option value="opentopo_terrain">OpenTopo 地形</option>
-              <option value="esri_ocean">Esri Ocean</option>
+              <option value="esri_ocean_basemap">Esri Ocean</option>
               <option value="esri_topo">Esri 地形</option>
               <option value="esri_streets">Esri 街道</option>
               <option value="esri_imagery">Esri 衛星</option>
@@ -595,7 +595,7 @@
   <script src="/static/vendor/html2canvas.min.js?v=1.4.1"></script>
   <script src="/static/vendor/Leaflet.VectorGrid.bundled.min.js?v=1.3.0"></script>
   <script src="/static/vendor/plotly-basic-3.6.0.min.js?v=3.6.0"></script>
-  <script src="/static/js/ui/snapshot-performance-chart.js?v=plotly-snapshot-object-v6"></script>
+  <script src="/static/js/ui/telemetry/snapshot-performance-chart.js?v=plotly-snapshot-object-v6"></script>
   <script src="/static/TimingMetrics.js?v=plotly-snapshot-chart-v3"></script>
   <script src="/static/js/core/state.js?v=layer-imports-v1"></script>
   <script src="/static/js/core/dom.js?v=zh-tw-v99"></script>
@@ -611,24 +611,24 @@
   <script src="/static/js/layers/graticule-layer.js?v=zh-tw-v99"></script>
   <script src="/static/js/layers/ais-layer.js?v=zh-tw-v99"></script>
   <script src="/static/js/layers/gfw-layer.js?v=zh-tw-v99"></script>
-  <script src="/static/js/ui/table-view.js?v=zh-tw-v99"></script>
-  <script src="/static/js/ui/control-buttons.js?v=map-fullscreen-icon-v1"></script>
-  <script src="/static/js/ui/map-settings.js?v=vignette-default-off-v1"></script>
-  <script src="/static/js/ui/map-export.js?v=zh-tw-v99"></script>
-  <script src="/static/js/ui/layer-style-controls.js?v=zh-tw-v99"></script>
-  <script src="/static/js/ui/eez-settings.js?v=zh-tw-v99"></script>
-  <script src="/static/js/ui/gfw-settings.js?v=zh-tw-v99"></script>
-  <script src="/static/js/ui/ais-settings.js?v=zh-tw-v99"></script>
-  <script src="/static/js/ui/layer-menu.js?v=layer-imports-v1"></script>
-  <script src="/static/js/services/playback-worker-policy.js?v=playback-worker-policy-v1"></script>
-  <script src="/static/js/services/playback-snapshot-splitter.js?v=playback-snapshot-splitter-v1"></script>
+  <script src="/static/js/ui/map/table-view.js?v=zh-tw-v99"></script>
+  <script src="/static/js/ui/map/control-buttons.js?v=map-fullscreen-icon-v1"></script>
+  <script src="/static/js/ui/map/map-settings.js?v=vignette-default-off-v1"></script>
+  <script src="/static/js/ui/map/map-export.js?v=zh-tw-v99"></script>
+  <script src="/static/js/ui/layers/layer-style-controls.js?v=zh-tw-v99"></script>
+  <script src="/static/js/ui/layers/eez-settings.js?v=zh-tw-v99"></script>
+  <script src="/static/js/ui/layers/gfw-settings.js?v=zh-tw-v99"></script>
+  <script src="/static/js/ui/layers/ais-settings.js?v=zh-tw-v99"></script>
+  <script src="/static/js/ui/layers/layer-menu.js?v=layer-imports-v1"></script>
+  <script src="/static/js/playback/playback-worker-policy.js?v=playback-worker-policy-v1"></script>
+  <script src="/static/js/playback/playback-snapshot-splitter.js?v=playback-snapshot-splitter-v1"></script>
   <script src="/static/js/services/gfw-render-artifact-cache.js?v=gfw-render-artifact-cache-v1"></script>
   <script src="/static/js/services/render-intent-service.js?v=render-intent-v1"></script>
   <script src="/static/js/services/gfw-record-cache.js?v=zh-tw-v99"></script>
-  <script src="/static/js/services/playback-cache-service.js?v=playback-buffer-v1"></script>
-  <script src="/static/js/ui/hardware-settings.js?v=zh-tw-v99"></script>
-  <script src="/static/js/ui/playback-controls.js?v=playback-buffer-v1"></script>
-  <script src="/static/js/ui/fullscreen-playback-controls.js?v=fullscreen-svg-v1"></script>
+  <script src="/static/js/playback/playback-cache-service.js?v=playback-buffer-v1"></script>
+  <script src="/static/js/ui/settings/hardware-settings.js?v=zh-tw-v99"></script>
+  <script src="/static/js/playback/playback-controls.js?v=playback-buffer-v1"></script>
+  <script src="/static/js/playback/fullscreen-playback-controls.js?v=fullscreen-svg-v1"></script>
   <script src="/static/js/services/api-client.js?v=plotly-snapshot-active-v1"></script>
   <script src="/static/app.js?v=layer-imports-v1"></script>
 </body>

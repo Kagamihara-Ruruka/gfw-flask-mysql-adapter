@@ -1,4 +1,4 @@
-# GFW Flask MySQL Adapter row-scale benchmark
+# Common Adapter row-scale benchmark
 
 測試日期：2026-06-11
 
@@ -15,7 +15,7 @@
 
 ## 測試資料
 
-母表：`ocean_fishery.gold_grid`
+母表：legacy local DB 的 `gold_grid` table
 
 總 row 數：2,840,514
 

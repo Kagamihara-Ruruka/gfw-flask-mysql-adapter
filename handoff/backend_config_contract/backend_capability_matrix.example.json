@@ -1,4 +1,4 @@
-{
+﻿{
   "schema": "rrkal.backend.capability_matrix.v1",
   "stable_sink_contract": {
     "declared": true,
@@ -14,16 +14,24 @@
       "implemented": true,
       "enabled": true,
       "owner": "backend/system",
-      "runtime_entry": "DatabaseConnect.MySqlReadBackend",
-      "activation_gate": "config/adapter.schema.json validates and MySQL smoke test passes"
+      "runtime_entry": "common_adapter.db.backends.mysql.MySqlReadBackend",
+      "activation_gate": "config/schemas/adapter.schema.json validates and MySQL smoke test passes"
     },
     "hive": {
       "declared": true,
       "implemented": false,
       "enabled": false,
       "owner": "backend/system",
-      "runtime_entry": "DatabaseConnect.HiveReadBackend",
+      "runtime_entry": "common_adapter.db.backends.hive.HiveReadBackend",
       "activation_gate": "Hive/Trino driver, schema_packet, records_packet, and viewport query tests are implemented"
+    },
+    "spark": {
+      "declared": true,
+      "implemented": false,
+      "enabled": false,
+      "owner": "backend/system",
+      "runtime_entry": "common_adapter.db.backends.spark.SparkReadBackend",
+      "activation_gate": "Spark SQL/Iceberg driver, schema_packet, records_packet, and viewport query tests are implemented"
     }
   },
   "dataset_contract": {
@@ -50,14 +58,6 @@
       "backend": "mysql",
       "connection_ref": "local_mysql",
       "activation_gate": "frontend history/timeline query route is implemented"
-    },
-    "nasa_ocean_4km_daily": {
-      "declared": true,
-      "implemented": false,
-      "enabled": false,
-      "backend": "array_store_plus_sql_read_model",
-      "connection_ref": "pending",
-      "activation_gate": "Zarr/xarray store, metadata table, and tile-stat read model are stable"
     }
   },
   "skin_display_contract": {

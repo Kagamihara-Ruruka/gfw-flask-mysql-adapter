@@ -12,8 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from DatabaseConnect import load_config
-from SpatialOverlay import gpkg_geometry_to_geojson, overlay_settings, validate_identifier
+from common_adapter.db.connect import load_config
+from common_adapter.spatial.overlay import gpkg_geometry_to_geojson, overlay_settings, validate_identifier
 
 
 def ring_wkt(ring: list[list[float]]) -> str:

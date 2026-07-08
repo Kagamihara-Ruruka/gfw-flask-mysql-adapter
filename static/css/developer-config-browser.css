@@ -47,6 +47,7 @@
 }
 
 .developer-config-item {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(1.4em, 0.08fr) minmax(0, 1fr) minmax(8rem, 0.42fr);
   gap: var(--developer-config-card-gap);
@@ -59,7 +60,14 @@
   background: #0d131c;
   color: var(--text);
   text-align: left;
-  cursor: pointer;
+  cursor: default;
+}
+
+.developer-config-file-type-badge {
+  position: absolute;
+  top: var(--developer-config-card-padding);
+  right: var(--developer-config-card-padding);
+  min-width: 3.2rem;
 }
 
 .developer-config-item:hover,
@@ -76,6 +84,11 @@
 .developer-config-item.is-non-routable:not(.is-demo) {
   border-color: #244466;
   background: #0b1521;
+}
+
+.developer-staging-config-item {
+  border-color: #315c85;
+  background: #0a1420;
 }
 
 .developer-config-active {
@@ -159,11 +172,6 @@
   min-width: 0;
 }
 
-.developer-config-actions .developer-status-badge {
-  grid-column: 1 / -1;
-  width: 100%;
-}
-
 .developer-config-action.is-danger {
   grid-column: auto;
 }
@@ -177,8 +185,25 @@
   background: #111a26;
   color: #dce8f7;
   font-size: 11px;
-  cursor: pointer;
+  cursor: default;
   overflow-wrap: anywhere;
+}
+
+.developer-staging-actions {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.developer-staging-group-select {
+  grid-column: 1 / -1;
+  min-width: 0;
+  min-block-size: 1.8rem;
+  padding: 4px 6px;
+  border: 1px solid #344861;
+  border-radius: 6px;
+  background: #111a26;
+  color: #dce8f7;
+  font-size: 11px;
+  cursor: default;
 }
 
 @container (max-width: 34rem) {
@@ -190,6 +215,10 @@
     grid-column: 1 / -1;
     grid-row: auto;
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 6rem), 1fr));
+  }
+
+  .developer-config-main {
+    padding-right: 3.8rem;
   }
 }
 
@@ -220,17 +249,26 @@
 }
 
 .developer-config-group summary {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1rem minmax(0, 1fr) 1rem;
   align-items: center;
-  justify-content: space-between;
   gap: var(--developer-config-card-gap);
   min-block-size: var(--developer-config-header-height);
   padding: 0 var(--developer-config-card-padding);
-  cursor: pointer;
+  cursor: default;
   color: #dce8f7;
   font-size: 12px;
   font-weight: 700;
   list-style: none;
+}
+
+.developer-config-group-title {
+  display: grid;
+  gap: 2px;
+  justify-items: center;
+  justify-self: center;
+  min-width: 0;
+  text-align: center;
 }
 
 .developer-config-group summary::-webkit-details-marker {
@@ -239,6 +277,7 @@
 
 .developer-config-group summary::before {
   content: "";
+  justify-self: start;
   inline-size: 0;
   block-size: 0;
   border-top: 4px solid transparent;
@@ -249,6 +288,13 @@
 
 .developer-config-group[open] summary::before {
   transform: rotate(90deg);
+}
+
+.developer-config-group summary::after {
+  content: "";
+  justify-self: end;
+  inline-size: 6px;
+  block-size: 8px;
 }
 
 .developer-config-group summary small {
@@ -275,6 +321,28 @@
   gap: 8px;
   margin-bottom: 10px;
   min-width: 0;
+}
+
+.developer-config-group-select {
+  min-width: min(100%, 14rem);
+  min-block-size: 1.8rem;
+  padding: 4px 8px;
+  border: 1px solid #344861;
+  border-radius: 6px;
+  background: #111a26;
+  color: #dce8f7;
+  font: inherit;
+}
+
+.developer-note-field input[type="text"] {
+  min-width: 0;
+  min-block-size: 1.8rem;
+  padding: 4px 8px;
+  border: 1px solid #344861;
+  border-radius: 6px;
+  background: #111a26;
+  color: #dce8f7;
+  font: inherit;
 }
 
 .developer-note-field {

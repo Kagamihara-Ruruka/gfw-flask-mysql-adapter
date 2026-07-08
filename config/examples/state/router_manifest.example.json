@@ -1,0 +1,18 @@
+{
+  "active_configs": [
+    "config/sources/database/local.json",
+    "config/sources/spatial/eez.local.json",
+    "config/sources/websocket/aisstream.local.json"
+  ],
+  "locked_configs": [],
+  "config_notes": {
+    "config/sources/database/local.json": "Local database source config.",
+    "config/sources/spatial/eez.local.json": "Local spatial source config. Downloads public Marine Regions EEZ GPKG into data/eez/ and imports PostGIS when enabled.",
+    "config/sources/websocket/aisstream.local.json": "Local websocket source config."
+  },
+  "config_groups": {
+    "config/sources/database/local.json": "database",
+    "config/sources/spatial/eez.local.json": "spatial",
+    "config/sources/websocket/aisstream.local.json": "websocket"
+  }
+}

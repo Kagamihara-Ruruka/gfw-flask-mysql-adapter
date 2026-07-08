@@ -1,6 +1,6 @@
-# GFW Flask MySQL Adapter
+﻿# Common Adapter
 
-This is a small local map adapter for exploring ocean datasets with Flask, MySQL, PostGIS, and Leaflet.
+This is a local data adapter for exploring pluggable datasets with Flask, MySQL, PostGIS, and Leaflet.
 
 The current app renders:
 
@@ -18,32 +18,38 @@ Traditional Chinese documentation is available in [`README.zh-TW.md`](README.zh-
 Use `handoff/` when sharing this repo with upstream owners:
 
 - `handoff/airflow_ais_crawler/` is for the Airflow/crawler owner. It explains the AISStream to SQL collector, the handoff JSON, SQL sink, timing, and health checks.
-- `handoff/backend_config_contract/` is for the backend/system owner. It explains database config JSON, MySQL/Hive switching, dataset fields, and the capability matrix for disabled future skin/display settings.
+- `handoff/backend_config_contract/` is for the backend/system owner. It explains database config JSON, MySQL/Hive/Spark boundary planning, dataset fields, and the capability matrix for disabled future skin/display settings.
 
-Do not send real API keys through tracked files. `config/adapter.local.json` and `config/ais_collector.local.json` are local ignored files.
+Do not send real API keys through tracked files. `config/runtime/adapter.local.json` and `config/sources/websocket/ais_collector.local.json` are local ignored files.
 
 ## Architecture
 
 ```text
 core.py
-  -> Interface.py              Flask routes and HTTP service
-  -> DatabaseConnect.py        Dataset read backend dispatch and compatibility wrappers
-  -> database/registry.py      @database_backend registry for read-model adapters
-  -> AisLiveService.py         AIS live query packet
-  -> AisIngestService.py       AISStream upstream collector to SQL latest-state table
-  -> SpatialOverlay.py         EEZ overlay fallback helpers
-  -> LodOverlayService.py      PostGIS / MVT EEZ tile helpers
+  -> common_adapter/http/interface.py       Flask app factory and route assembly
+  -> common_adapter/http/server.py          server lifecycle, PID, and port helpers
+  -> common_adapter/http/routes/*           system, dataset, overlay, live, and developer routes
+  -> common_adapter/db/connect.py           Dataset read backend dispatch
+  -> common_adapter/db/backends/*           MySQL and future backend adapters
+  -> common_adapter/db/registry.py          @database_backend registry
+  -> common_adapter/ais/live.py             AIS live query packet
+  -> common_adapter/ais/ingest.py           AISStream collector to SQL latest-state table
+  -> common_adapter/spatial/overlay.py      EEZ overlay fallback helpers
+  -> common_adapter/spatial/lod.py          PostGIS / MVT EEZ tile helpers
   -> templates/index.html      Leaflet UI shell
   -> static/js/*               Frontend state, API, layer, and UI modules
 ```
+
+Legacy root module names such as `Interface.py` and `DatabaseConnect.py` remain as compatibility wrappers while the backend is moved into `common_adapter/`.
 
 The frontend is deliberately split by responsibility:
 
 - `static/app.js`: bootstraps the app and wires UI events.
 - `static/js/core`: shared state, DOM, map, and geographic helpers.
-- `static/js/services`: API client calls, GFW record cache/prewarm behavior, and playback cache/preheat orchestration.
+- `static/js/services`: API client calls, GFW record cache/prewarm behavior, render intent, and shared service helpers.
 - `static/js/layers`: GFW, AIS, and EEZ rendering behavior.
 - `static/js/rendering`: renderer capability checks, renderer selection, WebGL/canvas paint helpers, and GFW paint configuration.
+- `static/js/playback`: playback controls, buffer/preheat service, worker policy, and snapshot splitting helpers.
 - `static/js/ui`: table, playback, layer selector, map settings, and shared layer style controls.
 
 Runtime pipeline:
@@ -51,38 +57,38 @@ Runtime pipeline:
 ```mermaid
 flowchart TD
   UI["Browser UI / Leaflet / WebGL"]
-  API["Interface.py / Flask API"]
-  READ["DatabaseConnect.py / read_backend"]
+  API["common_adapter/http/routes/* / Flask API"]
+  READ["common_adapter/db/connect.py / read_backend"]
   REG["database.registry / backend registry"]
   MYSQL["MySQL read backend"]
   HIVE["Hive read backend stub"]
+  SPARK["Spark/Iceberg read backend stub"]
   EEZ["EEZ overlay services / MVT + cache"]
   AISREAD["AIS SQL consumer"]
   AISCOLLECT["AIS ingest collector"]
   AISUP["AISStream upstream"]
   SQLAIS["BDDE38No1 AIS tables"]
   GFW["GFW gold_grid table"]
-  NASA["NASA OceanColor future array store"]
 
   UI --> API
   API --> READ
   READ --> REG
   REG --> MYSQL
   REG --> HIVE
+  REG --> SPARK
   MYSQL --> GFW
   API --> EEZ
   API --> AISREAD
   AISREAD --> SQLAIS
   AISUP --> AISCOLLECT
   AISCOLLECT --> SQLAIS
-  NASA --> READ
 ```
 
 The database read path is also split by responsibility:
 
 - Decorators register available backend implementations, such as `@database_backend("mysql")`.
 - JSON config selects the backend and connection per dataset.
-- Route handlers call `schema_packet()` and `records_packet()` without knowing whether a dataset is backed by MySQL or a future Hive/Trino read model.
+- Route handlers call `schema_packet()` and `records_packet()` without knowing whether a dataset is backed by MySQL or a future Hive/Trino/Spark/Iceberg read model.
 
 Example dataset routing:
 
@@ -97,7 +103,7 @@ Example dataset routing:
       "port": 3307,
       "user": "root",
       "password": "env:MYSQL_PASSWORD",
-      "database": "ocean_fishery"
+      "database": "common_fishery"
     },
     "class_hive": {
       "kind": "hive",
@@ -106,7 +112,7 @@ Example dataset routing:
       "port": 10000,
       "user": "hive",
       "password": "env:HIVE_PASSWORD",
-      "database": "ocean_warehouse"
+      "database": "common_warehouse"
     }
   },
   "datasets": {
@@ -119,13 +125,13 @@ Example dataset routing:
 }
 ```
 
-Hive is intentionally registered only as an explicit unsupported stub in this version. It is a reserved read-model extension point, not a claimed working Hive integration.
+Hive and Spark are intentionally registered only as explicit unsupported stubs in this version. They are reserved read-model extension points, not claimed working Hive, Spark, or Iceberg integrations.
 
 Backend contract:
 
-- `Interface.py` owns HTTP shape only. It must not know vendor-specific SQL/Hive query details.
-- `DatabaseConnect.py` owns dataset read dispatch and compatibility wrappers.
-- `database/registry.py` owns backend registration and backend instantiation.
+- `common_adapter/http/interface.py` owns Flask app assembly only; route modules own HTTP shape. Neither layer should know vendor-specific SQL, Hive, Spark, or Iceberg query details.
+- `common_adapter/db/connect.py` owns config, shared query helpers, and dataset read dispatch. Backend classes live under `common_adapter/db/backends/`. The root `DatabaseConnect.py` file is only a compatibility wrapper.
+- `common_adapter/db/registry.py` owns backend registration and backend instantiation. The root `database/registry.py` path is a compatibility wrapper.
 - `config/*.json` owns backend selection, connection refs, and table/read-model names.
 - Collector jobs own source-specific ingestion and sink-specific writes.
 - Frontend layer code must consume API packets, not raw database credentials, raw source files, or collector paths.
@@ -204,13 +210,121 @@ GFW records use a viewport/zoom-aware cache:
 
 EEZ is treated closer to a basemap overlay: local vector data and PostGIS vector tiles are reused as much as possible, and pan-only movement should not force a full EEZ reload.
 
+### GFW playback frame lifecycle
+
+GFW playback frames are not read from a per-frame file. A frame is a records packet identified by:
+
+```text
+datasetId + date + bbox + limit + columns
+```
+
+For the local GFW route, `datasetId = gfw_full` resolves through config and layer mapping to the MySQL table `ocean_fishery.gold_grid`. The mapping/config layer is a route contract: it says which backend, connection, table, and time/lat/lon columns to use. It is not the frame data itself. On a cold miss, the frame rows come from MySQL; on a warm path, they come from the browser `GfwRecordCache` or the Flask-side records cache.
+
+`columns=render` intentionally requests only the columns needed by the renderer, such as time/id/lat/lon and available render metrics like `fish_sum`, `fish_ratio`, and `vessels`. It is separate from the full display-table column set.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor User
+  participant UI as Dashboard UI
+  participant Playback as PlaybackControls
+  participant Preload as PlaybackCacheService
+  participant BrowserCache as GfwRecordCache browser cache
+  participant API as Flask records API
+  participant ServerCache as Flask records cache
+  participant DB as MySQL ocean_fishery.gold_grid
+  participant Renderer as GFW renderer
+  participant Map as Leaflet map
+
+  User->>UI: Press Play
+  UI->>Playback: setPlayback(true)
+  Playback->>Preload: progressive short-buffer preload
+  Preload->>BrowserCache: prefetchRequests(date + bbox + columns=render)
+
+  alt before_play mode only
+    Preload->>API: GET /api/datasets/{datasetId}/records/range
+    API->>DB: range SELECT for start/end + bbox
+    API-->>BrowserCache: split range packet into date packets
+  end
+
+  loop Each playback tick
+    Playback->>Playback: advancePlaybackDay()
+    Playback->>UI: date = nextDate
+    Playback->>BrowserCache: fetchPacket(datasetId + date + bbox + columns)
+
+    alt Browser cache hit
+      BrowserCache-->>Playback: packet(rows)
+    else Browser cache miss
+      BrowserCache->>API: GET /api/datasets/{datasetId}/records
+      API->>ServerCache: lookup records cache
+      alt Server cache hit
+        ServerCache-->>API: cached packet
+      else Server cache miss
+        API->>DB: SELECT render columns WHERE obs_date + bbox
+        DB-->>API: rows
+        API->>ServerCache: remember packet
+      end
+      API-->>BrowserCache: packet(rows + timing)
+      BrowserCache-->>Playback: packet(rows)
+    end
+
+    Playback->>Renderer: renderGfwMap(rows)
+    Renderer->>Renderer: aggregateGfwRowsForRender()
+    Renderer->>Renderer: compute cell colors from fish_sum
+    Renderer->>Map: draw via WebGL or Canvas
+  end
+```
+
+Frame source resolution:
+
+```mermaid
+flowchart TD
+  A["Frame request: datasetId + date + bbox + columns"] --> B{"Browser cache hit?"}
+  B -->|yes| C["Return packet(rows)"]
+  B -->|no| D["Call Flask /records API"]
+
+  D --> E{"Flask records cache hit?"}
+  E -->|yes| F["Return cached packet"]
+  E -->|no| G["Query MySQL ocean_fishery.gold_grid"]
+
+  G --> H["WHERE obs_date = date AND lon/lat inside bbox"]
+  H --> I["Return rows"]
+  I --> J["Remember server cache packet"]
+  J --> K["Return packet to browser"]
+
+  F --> L["Store or reuse browser packet"]
+  K --> L
+  C --> M["renderGfwMap(rows)"]
+  L --> M
+
+  M --> N["Aggregate rows into render cells"]
+  N --> O{"WebGL allowed and available?"}
+  O -->|yes| P["WebGL canvas draw"]
+  O -->|no| Q["2D Canvas draw"]
+  P --> R["Visible Leaflet layer"]
+  Q --> R
+```
+
+Config and layer mapping role:
+
+```mermaid
+flowchart LR
+  A["config / layer mapping"] --> B["datasetId = gfw_full"]
+  B --> C["backend = mysql"]
+  C --> D["connection = local_mysql"]
+  D --> E["database = ocean_fishery"]
+  E --> F["table = gold_grid"]
+  F --> G["time=obs_date, lat=lat, lon=lon"]
+  G --> H["Frame requests use this contract to build SQL"]
+```
+
 ### EEZ bootstrap and spatial route injection
 
-EEZ is a SPATIAL route, not a DATABASE route. Its portable contract lives in `config/spatial.eez.example.json`.
+EEZ is a SPATIAL route, not a DATABASE route. Its portable contract lives in `config/examples/sources/spatial/eez.example.json`.
 
 The route has four boundaries:
 
-1. Source asset: a public Marine Regions EEZ zip is downloaded into `data/eez/` when the GPKG is missing.
+1. Source asset: a cached Marine Regions EEZ GPKG or zip lives under `data/eez/` when a PostGIS import is needed.
 2. Spatial provider: `provider: "postgis"` imports the cached GPKG into the configured PostGIS tables.
 3. Layer contract: EEZ is exposed as an overlay layer, not as a normal SQL dataset.
 4. Frontend renderer: Leaflet consumes MVT/vector packets and applies the existing EEZ LOD/cache behavior.
@@ -226,27 +340,37 @@ Default source:
     "url": "https://www.marineregions.org/download_file.php?name=World_EEZ_v12_20231025_gpkg.zip",
     "source_page": "https://www.marineregions.org/downloads.php",
     "archive_path": "data/eez/World_EEZ_v12_20231025_gpkg.zip",
-    "cache_path": "data/eez/eez_v12.gpkg"
+    "cache_path": "data/eez/eez_v12.gpkg",
+    "form": {
+      "name": "RRKAL Common Adapter",
+      "organisation": "RRKAL",
+      "email": "rrkal.common.adapter@example.com",
+      "country": "Taiwan (Province of China)",
+      "user_category": "academia",
+      "purpose_category": "Data exploration & testing"
+    }
   },
   "auto_download": true,
   "auto_import": true
 }
 ```
 
+Marine Regions returns an interactive download form before serving the zip. The downloader automates that form using `source.form`, preserves cookies from the first request, submits the disclaimer agreement, and validates that the final response is a real zip before saving it. You can replace the form metadata in local config if the project should report a different contact.
+
 Manual bootstrap:
 
 ```powershell
-.\.venv\Scripts\python.exe core.py --config config\adapter.local.json bootstrap-eez
+.\.venv\Scripts\python.exe core.py --config config\runtime\adapter.local.json bootstrap-eez
 ```
 
 Normal startup:
 
 ```powershell
 docker compose up -d postgis
-.\.venv\Scripts\python.exe core.py --config config\adapter.local.json serve
+.\.venv\Scripts\python.exe core.py --config config\runtime\adapter.local.json serve
 ```
 
-`serve` now runs the same EEZ bootstrap before dependency checks. If `data/eez/eez_v12.gpkg` is absent, it downloads and extracts it. If PostGIS is enabled and the EEZ tables are missing or empty, it imports the GPKG into `eez_v12`, `eez_v12_tile`, and `eez_v12_boundary`.
+`serve` runs the same EEZ bootstrap before dependency checks. If `data/eez/eez_v12.gpkg` is absent and `auto_download` is true, startup downloads the Marine Regions zip through the automated form flow and extracts the matching GPKG. If PostGIS is enabled and the EEZ tables are missing or empty, startup imports the GPKG into `eez_v12`, `eez_v12_tile`, and `eez_v12_boundary`.
 
 ### AIS upstream ingest
 
@@ -270,7 +394,7 @@ This is a strict boundary:
 - The collector writes SQL rows and a collector heartbeat row into `live.ais.ingest_meta_table`.
 - The map reads SQL only after its locally configured collector key matches the collector key fingerprint in SQL metadata.
 
-That internal key check is not a public auth system. It is a local boundary marker for this prototype: a normal user configures the AIS key once in the UI, the UI writes only a key fingerprint into the active WEBSOCKET route config, writes the raw key into the crawler handoff file at `config/ais_collector.local.json`, and the map verifies that the SQL table is being maintained by the matching collector before it reads from it. Do not return the raw key from HTTP APIs, and do not use this key check as permission to blur the consumer/upstream boundary.
+That internal key check is not a public auth system. It is a local boundary marker for this prototype: a normal user configures the AIS key once in the UI, the UI writes only a key fingerprint into the active WEBSOCKET route config, writes the raw key into the crawler handoff file at `config/sources/websocket/ais_collector.local.json`, and the map verifies that the SQL table is being maintained by the matching collector before it reads from it. Do not return the raw key from HTTP APIs, and do not use this key check as permission to blur the consumer/upstream boundary.
 
 Future public setup can replace the local handoff file with a K8 Secret, Airflow variable, or upstream service registration. That handoff belongs to the crawler/upstream side, not to the map rendering path.
 
@@ -312,66 +436,11 @@ If historical tracks are needed later, add a separate history/events table with 
 
 ### Upstream collectors
 
-GFW and NASA ingestion are reusable upstream collector jobs, not frontend features:
+GFW ingestion is a reusable upstream collector job, not a frontend feature:
 
 - `collectors/gfw_collector.py` imports a configured GFW DuckDB source into the SQL read model.
-- `collectors/nasa_ocean_collector.py` lists NASA OceanColor files, downloads authorized files, inspects NetCDF/HDF grids, and converts local files to Zarr.
 
-The map UI must not learn raw source paths such as D-drive data folders, NASA download URLs, Zarr chunk paths, or temporary manifests. Those belong to collector configuration. The app should consume SQL tables or later service responses only.
-
-For GFW, the collector currently writes the MySQL table consumed by the map. For NASA OceanColor grids, do not flatten all 4 km daily pixels into MySQL. The intended path is:
-
-```text
-NASA NetCDF/HDF source files
-  -> collector-managed raw file cache
-  -> collector-managed Zarr/xarray or TileDB array store
-  -> DuckDB/SQL metadata, asset index, and tile-stat read model
-  -> map/BI consumer queries
-```
-
-This keeps large scientific arrays in an array-native store and uses SQL for metadata, summaries, and query coordination. If the upstream owner later uses Hive, only the collector sink adapter and config should change; the map remains a consumer of the agreed read model.
-
-NASA OceanColor downloads require Earthdata credentials supplied outside git, for example:
-
-```powershell
-$env:EARTHDATA_USERNAME = "your-earthdata-username"
-$env:EARTHDATA_PASSWORD = "your-earthdata-password"
-```
-
-or:
-
-```powershell
-$env:EARTHDATA_TOKEN = "your-earthdata-token"
-```
-
-Initialize the D-drive NASA database:
-
-```powershell
-.\.venv\Scripts\python.exe collectors\nasa_ocean_collector.py --collector-config config\nasa_ocean_collector.example.json init-db
-```
-
-List the 2024 daily 4 km four-product manifest:
-
-```powershell
-.\.venv\Scripts\python.exe collectors\nasa_ocean_collector.py --collector-config config\nasa_ocean_collector.example.json list --start-date 2024-01-01 --end-date 2024-12-31 --output data\nasa_ocean_manifest_2024_daily_4km_four_products.json
-```
-
-Ingest the manifest into the D-drive NASA database:
-
-```powershell
-.\.venv\Scripts\python.exe collectors\nasa_ocean_collector.py --collector-config config\nasa_ocean_collector.example.json ingest-manifest --manifest data\nasa_ocean_manifest_2024_daily_4km_four_products.json --replace
-```
-
-Download, inspect, convert, and ingest a tiny first sample before starting a full-year download:
-
-```powershell
-.\.venv\Scripts\python.exe collectors\nasa_ocean_collector.py --collector-config config\nasa_ocean_collector.example.json download --manifest data\nasa_ocean_manifest_2024_daily_4km_four_products.json --max-files 1
-.\.venv\Scripts\python.exe collectors\nasa_ocean_collector.py --collector-config config\nasa_ocean_collector.example.json inspect --path "D:\RRKAL_tools\nasa_ocean_store\raw\<dataset>\<year>\<file>.nc"
-.\.venv\Scripts\python.exe collectors\nasa_ocean_collector.py --collector-config config\nasa_ocean_collector.example.json to-zarr --path "D:\RRKAL_tools\nasa_ocean_store\raw\<dataset>\<year>\<file>.nc"
-.\.venv\Scripts\python.exe collectors\nasa_ocean_collector.py --collector-config config\nasa_ocean_collector.example.json ingest-grid --path "D:\RRKAL_tools\nasa_ocean_store\raw\<dataset>\<year>\<file>.nc" --replace
-```
-
-The configured 2024 NASA products are `CHL.chlor_a`, `FLH.nflh`, `KD.Kd_490`, and `SST.sst`. Treat these as schema discovery inputs until the first real files have been downloaded and inspected.
+The map UI must not learn raw source paths or temporary manifests. Those belong to collector configuration. The app should consume SQL tables or later service responses only.
 
 ## Requirements
 
@@ -390,37 +459,12 @@ From the repo root:
 ```powershell
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-Copy-Item config\adapter.example.json config\adapter.local.json -Force
+Copy-Item config\examples\runtime\adapter.example.json config\runtime\adapter.local.json -Force
 ```
 
 Use `config\router_manifest.local.json` to select the active route fragments. Keep local database settings in a DATABASE fragment such as `config\database.local.json`, spatial overlay settings in a SPATIAL fragment such as `config\spatial.eez.local.json`, and websocket/source settings in a WEBSOCKET fragment such as `config\websocket.aisstream.local.json`.
 
 Local config files are ignored by git. Keep real passwords in local fragments or in environment variables.
-
-## Temporary Test Data Bootstrap
-
-This repo does not commit large datasets. For repeatable demos, `config/adapter.example.json` includes a temporary `test_data_bootstrap` section.
-
-When `auto_on_serve` is true, running the app downloads the public `.7z` test-data archive listed in `config/test_data.example.json` if the expected files are missing:
-
-```text
-data/gfw_full.duckdb
-data/eez_v12.gpkg
-```
-
-The archive is hosted as a GitHub Release asset:
-
-```text
-https://github.com/Kagamihara-Ruruka/gfw-flask-mysql-adapter/releases/tag/test-data-v1
-```
-
-You can also run the bootstrap step manually:
-
-```powershell
-.\.venv\Scripts\python.exe core.py --config config\adapter.local.json bootstrap-test-data
-```
-
-This is a test-only convenience path. It is intentionally isolated in `TestDataBootstrap.py` and `config/test_data.example.json` so it can be removed later without touching the app core.
 
 ## EEZ PostGIS Dependency
 
@@ -432,19 +476,19 @@ Start the local PostGIS service:
 docker compose up -d postgis
 ```
 
-Download/cache the public Marine Regions EEZ GPKG and import it into PostGIS:
+Download/cache the Marine Regions EEZ GPKG and import it into PostGIS:
 
 ```powershell
-.\.venv\Scripts\python.exe core.py --config config\adapter.local.json bootstrap-eez
+.\.venv\Scripts\python.exe core.py --config config\runtime\adapter.local.json bootstrap-eez
 ```
 
 Check runtime dependencies before serving:
 
 ```powershell
-.\.venv\Scripts\python.exe core.py --config config\adapter.local.json check-dependencies
+.\.venv\Scripts\python.exe core.py --config config\runtime\adapter.local.json check-dependencies
 ```
 
-`core.py serve` runs the EEZ bootstrap and then the dependency check before opening the Flask server. If the GPKG is missing, startup downloads it. If `eez_v12`, `eez_v12_tile`, or `eez_v12_boundary` is missing or empty and `auto_import` is true, startup imports it.
+`core.py serve` checks EEZ runtime assets and then runs the dependency check before opening the Flask server. If the local GPKG cache is missing and `auto_download` is true, startup downloads and extracts it first. If `eez_v12`, `eez_v12_tile`, or `eez_v12_boundary` is missing or empty and `auto_import` is true, startup imports from the GPKG before serving.
 
 For AIS, use an environment variable instead of committing a password:
 
@@ -455,23 +499,23 @@ $env:RRKAL_AIS_MYSQL_PASSWORD = "your-password"
 Start only the AIS upstream collector:
 
 ```powershell
-.\.venv\Scripts\python.exe core.py --config config\adapter.local.json ingest-ais
+.\.venv\Scripts\python.exe core.py --config config\runtime\adapter.local.json ingest-ais
 ```
 
 Or pass an explicit crawler handoff JSON for an Airflow/K8 worker:
 
 ```powershell
-.\.venv\Scripts\python.exe core.py --config config\adapter.local.json ingest-ais --collector-config config\ais_collector.local.json
+.\.venv\Scripts\python.exe core.py --config config\runtime\adapter.local.json ingest-ais --collector-config config\sources\websocket\ais_collector.local.json
 ```
 
-`ingest-ais` reads `config/ais_collector.local.json` when it exists, then writes the latest-state table and the `ais_ingest_meta` heartbeat table. The handoff file is gitignored because it contains the upstream AIS key. The active WEBSOCKET route config should keep only the key fingerprint for the consumer-side SQL read gate.
+`ingest-ais` reads `config/sources/websocket/ais_collector.local.json` when it exists, then writes the latest-state table and the `ais_ingest_meta` heartbeat table. The handoff file is gitignored because it contains the upstream AIS key. The active WEBSOCKET route config should keep only the key fingerprint for the consumer-side SQL read gate.
 
 For Airflow, Windows Task Scheduler, NSSM, Docker, or K8, run the same command as the collector task and provide the same SQL connection plus the crawler handoff/secret. The Flask UI does not need to be running for the collector to keep warming SQL.
 
 Start the map UI:
 
 ```powershell
-.\.venv\Scripts\python.exe core.py --config config\adapter.local.json serve
+.\.venv\Scripts\python.exe core.py --config config\runtime\adapter.local.json serve
 ```
 
 The server is intentionally single-instance. On startup it reads `flask_pid.txt`, force-exits the previous local Flask server when it is still running, clears the configured port when needed, and writes the new PID. This prevents duplicate AIS or database query loops from running at the same time.
@@ -487,47 +531,14 @@ http://127.0.0.1:5057
 Import a DuckDB table into MySQL:
 
 ```powershell
-.\.venv\Scripts\python.exe core.py --config config\adapter.local.json import --source "C:\path\to\gfw_full.duckdb" --replace
+.\.venv\Scripts\python.exe core.py --config config\runtime\adapter.local.json import --source "C:\path\to\gfw_full.duckdb" --replace
 ```
 
 Import a smaller sample:
 
 ```powershell
-.\.venv\Scripts\python.exe core.py --config config\adapter.local.json import --source "C:\path\to\gfw_full.duckdb" --replace --row-limit 5000
+.\.venv\Scripts\python.exe core.py --config config\runtime\adapter.local.json import --source "C:\path\to\gfw_full.duckdb" --replace --row-limit 5000
 ```
-
-## NASA OceanColor Warehouse Seed
-
-NASA OceanColor ingestion is an upstream warehouse task. The consumer map should read SQL/database service responses, not raw NetCDF files or Zarr paths.
-
-Install the scientific stack:
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
-
-Create or refresh the 2024 daily 4 km manifest for the four starter variables:
-
-```powershell
-.\.venv\Scripts\python.exe collectors\nasa_ocean_collector.py list --output data\nasa_ocean_manifest_2024_daily_4km_four_products.json
-.\.venv\Scripts\python.exe collectors\nasa_ocean_collector.py ingest-manifest --manifest data\nasa_ocean_manifest_2024_daily_4km_four_products.json
-```
-
-Run the resumable full pipeline after setting Earthdata credentials in the environment:
-
-```powershell
-$env:EARTHDATA_USERNAME="..."
-$env:EARTHDATA_PASSWORD="..."
-.\.venv\Scripts\python.exe collectors\nasa_ocean_collector.py pipeline --manifest data\nasa_ocean_manifest_2024_daily_4km_four_products.json --timeout-seconds 600
-```
-
-The pipeline writes:
-
-- raw NetCDF files under `D:\RRKAL_tools\nasa_ocean_store\raw`
-- Zarr stores under `D:\RRKAL_tools\nasa_ocean_store\zarr`
-- DuckDB read-model tables under `D:\RRKAL_tools\nasa_ocean_store\db\nasa_ocean.duckdb`
-
-The first read-model tables are `nasa_ocean_assets`, `nasa_ocean_schema_snapshots`, and `nasa_ocean_tile_stats`. `nasa_ocean_tile_stats` is the initial map/BI query surface; downstream UI code should not depend on raw file locations.
 
 ## Docker Compose
 
@@ -551,6 +562,7 @@ Datasets:
 GET /api/datasets
 GET /api/datasets/<dataset_id>/schema
 GET /api/datasets/<dataset_id>/records?date=YYYY-MM-DD&bbox=west,south,east,north&limit=max
+GET /api/datasets/<dataset_id>/records/range?start=YYYY-MM-DD&end=YYYY-MM-DD&bbox=west,south,east,north&limit=max
 ```
 
 EEZ:
@@ -595,7 +607,7 @@ git diff --check -- static templates *.py config requirements.txt docker-compose
 
 ## Notes
 
-- Do not commit `config/adapter.local.json`.
+- Do not commit `config/runtime/adapter.local.json`.
 - Do not commit runtime logs, PID files, database files, or downloaded datasets.
 - Use environment variables for local secrets.
 - This app is designed as a small local exploratory adapter. Keep data access, rendering, and UI behavior separated as the feature set grows.

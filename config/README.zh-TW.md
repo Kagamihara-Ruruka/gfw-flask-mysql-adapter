@@ -1,34 +1,34 @@
 # Config 合約分層
 
-本專案的 runtime 入口仍是 `config/adapter.local.json`，但它現在只是一份 profile，不直接持有資料庫、空間圖層或 websocket 來源的細節。實際啟用的 route fragments 以 `config/router_manifest.local.json` 的 `active_configs` 為唯一真相來源。
+本專案的 runtime 入口是 `config/runtime/adapter.local.json`，但它只是啟動用 JSON，不是資料源。它不直接持有資料庫、空間圖層或 websocket 來源的細節。實際啟用的 source configs 以 `config/state/router_manifest.local.json` 的 `active_configs` 為唯一真相來源。
 
-## Profile
+## Runtime JSON
 
-`adapter.local.json` 負責：
+`config/runtime/adapter.local.json` 負責：
 
 - Flask 服務與 port 設定
 - 啟動時必要的 bootstrap 設定
 - 舊版相容用的 `default_dataset`
 
-它不應該直接塞 MySQL、PostGIS、AISStream API 等具體協定細節，也不再持有另一份啟用路由集合。
+它不應該直接塞 MySQL、PostGIS、AISStream API 等具體協定細節，也不再持有另一份啟用路由集合。開發者頁若顯示它，只能把它視為一般 JSON runtime 入口；它不是 `DATABASE`、`WEBSOCKET`、`SPATIAL` 之外的第四種 router。
 
 ## DATABASE
 
-`database.local.json` 負責消費端資料庫路由：
+`config/sources/database/local.json` 負責消費端資料庫資料源：
 
 - `sql_backend`
 - `connections`
 - `query_policy`
-- 舊版 `datasets`
-- 舊版欄位映射，例如 `time_column`、`lat_column`、`lon_column`
+- 啟動時可遷移成 Mapping Controller 產物的 `datasets`
+- 初始欄位提示，例如 `time_column`、`lat_column`、`lon_column`
 
-未來切 Hive、Spark、MongoDB 或其他 backend 時，應新增或修改 DATABASE fragment，而不是把值塞回 profile。
+未來切到其他關聯式或 SQL-like backend 時，應新增或修改對應 source JSON，而不是把值塞回 runtime JSON；source kind 由 `config/sources/<kind>/` 的父資料夾與 JSON 宣告共同決定，probe adapter 只負責探測與下游注入能力。
 
-目前舊版 `datasets` 仍可運作。後端會把它正規化成 `rrkal.layer_contract.v1`，讓新舊合約可以同時被系統吃下來。
+`datasets` 是相容輸入，不是儀表板最終真相。啟動或 bootstrap 時，系統會把可用的 relational dataset 欄位定義遷移成 `config/artifacts/layer_mappings.local.json`；後續資料圖層導入與儀表板資料圖層都應吃 Mapping Controller 產物。
 
 ## SPATIAL
 
-`spatial.eez.local.json` 負責空間圖層路由：
+`config/sources/spatial/eez.local.json` 負責空間圖層資料源：
 
 - EEZ / PostGIS overlay 設定
 - PostGIS host、port、database、table、tile table
@@ -38,7 +38,7 @@ SPATIAL 不是一般資料集查詢路由；它服務地圖 overlay。EEZ 不應
 
 ## WEBSOCKET
 
-`websocket.aisstream.local.json` 負責 websocket/source 設定：
+`config/sources/websocket/aisstream.local.json` 負責 websocket/source 設定：
 
 - AISStream provider
 - websocket endpoint
@@ -49,54 +49,66 @@ SPATIAL 不是一般資料集查詢路由；它服務地圖 overlay。EEZ 不應
 
 ## Router Manifest
 
-`router_manifest.local.json` 是開發者控制面板的狀態檔：
+`config/state/router_manifest.local.json` 是開發者控制面板的狀態檔：
 
-- `active_configs`：目前啟用的 route fragments，也是 runtime 組裝路由的唯一真相來源
+- `active_configs`：目前啟用的 source configs，也是 runtime 組裝資料來源的唯一真相來源
 - `locked_configs`：禁止 UI 修改的 config
-- `config_groups`：把 config 分到 `database`、`spatial`、`websocket`、`demo`
+- `config_groups`：記錄 JSON 用途覆寫；未覆寫時由 JSON 內容推斷 route group
 - `config_notes`：使用者註記
 - `imported_layers`：由已啟用路由提供、且已導入儀表板的資料圖層
 
-DEMO 不會進入路由狀態機，也不能被啟用。
+`DATABASE`、`WEBSOCKET`、`SPATIAL` 是目前已實作 probe adapter 的內建 source kind，不是資料源類型的永久上限。未來新增 Iceberg、Spark 或其他資料源時，應先新增 `config/sources/<kind>/` 與對應 JSON；若尚未有 probe adapter，控制頁可以列出 source config，但不會把它注入下游 Schema、Mapping 或 Layer Contract。
+
+不在 `config/sources/*/*.json` 底下的 config 不會進入資料源瀏覽器；`config/runtime/`、`config/state/`、`config/artifacts/` 與 `config/examples/` 都不是資料源。
+
+## 持久化產物
+
+這些 `.local.json` 是本機持久狀態，不是暫存快取。可以把它們想像成瀏覽器 cookie 或 local storage：系統會自動生成與更新，但不會因為服務重啟就自動清除。
+
+- `config/state/router_manifest.local.json`：目前啟用的 source、鎖定狀態、導入狀態與註記。
+- `config/sources/database/local.json`、`config/sources/spatial/eez.local.json`、`config/sources/websocket/aisstream.local.json`：由 runtime JSON 展開後的 source configs。
+- `config/artifacts/layer_mappings.local.json`：Mapping Controller 生成的欄位語意與資料圖層 contract 來源。
+
+若要清除或重建這些產物，必須由使用者在控制頁操作，或明確刪除對應 local 檔案。自動化只負責生成、遷移與接線，不負責偷偷清空使用者已形成的本機狀態。
 
 ## Schema Inspector
 
-`SchemaInspector.py` 是純後端探測器。
+`common_adapter/developer/schema_inspector.py` 是純後端探測器。
 
 它只做三件事：
 
-- 依照目前啟用的 DATABASE route 連到關聯式資料庫
+- 接收路由狀態機判定為啟用、已連線、可探測的 DATABASE route
 - 讀取 schema、table、column、型別、索引與 nullable 等資訊
 - 產生保守的候選提示，例如 `time_candidate`、`latitude_candidate`、`numeric_candidate`
 
-它不決定欄位語意，不建立圖層，也不修改 config。使用者要在 Mapping Controller 裡手動決定欄位如何對應。
+它不決定欄位語意，不建立圖層，也不修改 route config。它只把上方路由狀態機的結果往下游注入。
 
 ## Mapping Controller
 
-Mapping Controller 是前後端共同的控制器，前端位置在開發者頁的「路由狀態機」與「路由提供圖層」之間。
+Mapping Controller 是前後端共同的控制器，前端位置在開發者頁的「路由狀態機」與「資料圖層導入」之間。它不是 router，也不屬於 `DATABASE`、`WEBSOCKET` 或 `SPATIAL` 分類。
 
-它的責任是把 Schema Inspector 探測到的欄位暴露給使用者，讓使用者手動定義：
+它的責任是消費 Schema Inspector 探測到的欄位，生成持久化 mapping 產物：
 
 - 哪個 table 要形成資料圖層
 - 哪些欄位是時間、經度、緯度、識別欄
 - 哪些欄位要作為顯示欄、指標欄或分類欄
 
-目前第一階段先顯示 schema profile 與舊合約候選映射。後續若要真正保存使用者映射，應寫回獨立 mapping contract，再由 Layer Contract 正規化。
+使用者不需要手動串接 source、schema、mapping、layer contract 與 dashboard。系統會把 mapping 寫入 `config/artifacts/layer_mappings.local.json`，使用者只需要在頁面上勾選是否把已生成的資料圖層導入儀表板。Mapping 產物可以引用 `DATABASE` source 作為上游資料來源，但它本身是服務內部協議。
 
 ## Layer Contract
 
-`LayerContractService.py` 是後端 Layer Contract 正規化層。
+`common_adapter/layers/contracts.py` 是後端 Layer Contract 正規化層。
 
 它把不同來源整理成一致的資料圖層合約：
 
-- 舊版 `datasets` 會變成 `contract_source = legacy_dataset_contract`
+- Mapping Controller 產物會變成 `contract_source = mapping_controller_contract`，並標成 `contract_group = mapping`
 - WEBSOCKET route 會變成 `contract_source = websocket_route_contract`
 - SPATIAL route 會變成 `contract_source = spatial_route_contract`
 
-Layer Contract 是儀表板資料圖層導入的後端語意來源。它不是 UI 狀態，也不是資料庫 schema 本身。
+Layer Contract 是「資料圖層導入」的後端語意來源。被導入的 layer 才會進入儀表板資料圖層；儀表板不直接吃 schema inspector，也不直接吃 route config。Mapping contract 的來源路由會以 `source_route_group = database` 表示，不會把 mapping 自己放進 DATABASE router。
 
 ## Runtime 組裝流程
 
-`core.py --config config/adapter.local.json serve` 會先讀 profile，再由 `ConfigContracts.py` 讀取 `router_manifest.local.json.active_configs`，依序組裝 DATABASE、SPATIAL、WEBSOCKET fragments。
+`core.py --config config/runtime/adapter.local.json serve` 會先讀 runtime JSON，再由 `common_adapter/config/contracts.py` 讀取 `config/state/router_manifest.local.json.active_configs`，依序組裝 DATABASE、SPATIAL、WEBSOCKET source configs。
 
 開發者控制面與主服務不各自維護兩套啟用集合。runtime 的啟用真相就是 manifest。

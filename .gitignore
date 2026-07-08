@@ -13,6 +13,11 @@ config/ais_collector.local.json
 config/*.local.json
 config/router_manifest.local.json
 config/managed/*.json
+config/runtime/*.local.json
+config/sources/**/*.local.json
+config/sources/**/local.json
+config/state/*.local.json
+config/artifacts/*.local.json
 handoff/airflow_ais_crawler/ais_collector.handoff.json
 handoff_dist/
 flask_pid.txt
@@ -24,3 +29,4 @@ headless_*.png
 chrome_*_stderr.log
 last_records_response.json
 frontend_verified*.png
+work/

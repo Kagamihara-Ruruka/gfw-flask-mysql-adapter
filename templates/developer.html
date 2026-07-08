@@ -1,3 +1,17 @@
+{% macro developer_toggle_card(title, description, class_names='', open=True) -%}
+          <details class="settings-toggle-card developer-toggle-card{% if class_names %} {{ class_names }}{% endif %}"{% if open %} open{% endif %}>
+            <summary class="settings-toggle-summary">
+              <span class="settings-toggle-caret" aria-hidden="true"></span>
+              <span>
+                <span class="settings-toggle-title">{{ title }}</span>
+                <span class="settings-toggle-description">{{ description }}</span>
+              </span>
+            </summary>
+            <div class="settings-toggle-content">
+              {{ caller() }}
+            </div>
+          </details>
+{%- endmacro %}
 <!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -5,8 +19,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>開發者路由器控制面</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="/static/styles.css?v=config-browser-groups-v1">
-  <link rel="stylesheet" href="/static/css/developer.css?v=config-browser-groups-v1">
+  <link rel="stylesheet" href="/static/styles.css?v=config-drawer-centered-v34">
+  <link rel="stylesheet" href="/static/css/developer.css?v=config-drawer-centered-v34">
 </head>
 <body class="developer-control-body{% if embedded %} is-embedded{% endif %}">
   {% if not embedded %}
@@ -27,15 +41,7 @@
     <section class="settings-page page-panel is-active">
       <div class="settings-page-card">
         <div class="developer-page-grid">
-          <details class="settings-toggle-card developer-toggle-card" open>
-            <summary class="settings-toggle-summary">
-              <span class="settings-toggle-caret" aria-hidden="true"></span>
-              <span>
-                <span class="settings-toggle-title">Config 路由器</span>
-                <span class="settings-toggle-description">左側匯入與啟用 config，右側檢視所選 JSON。</span>
-              </span>
-            </summary>
-            <div class="settings-toggle-content">
+          {% call developer_toggle_card("Config 路由器", "左側匯入與啟用 config，右側檢視所選 JSON。") %}
               <section id="developer-config-wizard" class="developer-config-wizard" hidden aria-label="Config 引導精靈" role="dialog" aria-modal="true">
                 <div class="developer-config-wizard-dialog">
                 <header class="developer-wizard-header">
@@ -59,7 +65,7 @@
                       <select id="wizard-backend-kind">
                         <option value="mysql">MySQL</option>
                         <option value="hive">Hive / HiveServer2</option>
-                        <option value="spark">Spark SQL / Thrift</option>
+                        <option value="spark">Spark SQL / Iceberg</option>
                         <option value="postgresql">PostgreSQL / PostGIS</option>
                         <option value="mongodb">MongoDB</option>
                         <option value="duckdb">DuckDB</option>
@@ -105,7 +111,7 @@
                     </label>
                     <label>
                       <span>Database / schema</span>
-                      <input id="wizard-database" type="text" value="ocean_fishery" spellcheck="false">
+                      <input id="wizard-database" type="text" value="common_adapter" spellcheck="false">
                     </label>
                   </div>
                 </div>
@@ -178,7 +184,7 @@
                 <div class="developer-note-dialog">
                   <header class="developer-wizard-header">
                     <div>
-                      <h3>Config 註記</h3>
+                      <h3 id="developer-config-note-modal-title">Config 註記</h3>
                       <p id="developer-config-note-modal-meta">描述這份 config 的用途。</p>
                     </div>
                     <button id="developer-config-note-close" class="developer-config-action" type="button">關閉</button>
@@ -193,25 +199,16 @@
                   </footer>
                 </div>
               </section>
-              <section id="developer-config-import-modal" class="developer-note-modal" hidden aria-label="匯入 Config" role="dialog" aria-modal="true">
+              <section id="developer-config-import-modal" class="developer-note-modal" hidden aria-label="暫存 Config" role="dialog" aria-modal="true">
                 <div class="developer-note-dialog">
                   <header class="developer-wizard-header">
                     <div>
-                      <h3>匯入 Config</h3>
-                      <p>先選擇分類，再選擇 JSON 檔案；確認後才會寫入受管 config。</p>
+                      <h3>暫存 Config</h3>
+                      <p>選擇 JSON 檔案；系統會先放入 staging，選定資料源 group 後才導入正式路由。</p>
                     </div>
                     <button id="developer-config-import-close" class="developer-config-action" type="button">關閉</button>
                   </header>
                   <div class="developer-import-modal-grid">
-                    <label id="developer-config-import-file-field" class="developer-note-field">
-                      <span>分類</span>
-                      <select id="developer-config-import-modal-group" class="developer-group-select">
-                        <option value="database">DATABASE</option>
-                        <option value="websocket">WEBSOCKET</option>
-                        <option value="spatial">SPATIAL</option>
-                        <option value="demo">DEMO</option>
-                      </select>
-                    </label>
                     <label class="developer-note-field">
                       <span>檔案</span>
                       <input id="developer-config-import-modal-file" type="file" accept="application/json,.json">
@@ -220,7 +217,26 @@
                   </div>
                   <footer class="developer-wizard-footer">
                     <button id="developer-config-import-cancel" class="small-button" type="button">取消</button>
-                    <button id="developer-config-import-confirm" class="small-button" type="button">確定匯入</button>
+                    <button id="developer-config-import-confirm" class="small-button" type="button">確定暫存</button>
+                  </footer>
+                </div>
+              </section>
+              <section id="developer-source-group-modal" class="developer-note-modal" hidden aria-label="新增資料源群組" role="dialog" aria-modal="true">
+                <div class="developer-note-dialog">
+                  <header class="developer-wizard-header">
+                    <div>
+                      <h3>新增資料源群組</h3>
+                      <p>命名新的 source group 卡片。</p>
+                    </div>
+                    <button id="developer-source-group-close" class="developer-config-action" type="button">關閉</button>
+                  </header>
+                  <label class="developer-note-field">
+                    <span>群組名稱</span>
+                    <input id="developer-source-group-input" type="text" maxlength="64" placeholder="例如 spark">
+                  </label>
+                  <footer class="developer-wizard-footer">
+                    <button id="developer-source-group-cancel" class="small-button" type="button">取消</button>
+                    <button id="developer-source-group-confirm" class="small-button" type="button">建立</button>
                   </footer>
                 </div>
               </section>
@@ -229,15 +245,15 @@
                   <header class="developer-panel-header">
                     <div>
                       <h3>Config 瀏覽器</h3>
-                      <p>拖拉或選取標準 JSON 匯入。</p>
+                      <p>拖拉或選取標準 JSON 進入 staging。</p>
                     </div>
                     <div class="developer-panel-actions">
                       <button id="developer-config-wizard-toggle" class="small-button developer-primary-action" type="button">引導精靈</button>
-                      <button id="developer-config-import-open" class="small-button developer-primary-action developer-import-button" type="button">匯入</button>
+                      <button id="developer-config-import-open" class="small-button developer-primary-action developer-import-button" type="button">導入</button>
                     </div>
                   </header>
                   <div id="developer-config-dropzone" class="developer-config-dropzone">
-                    <span>拖拉 config JSON 到這裡</span>
+                    <span>拖拉 config JSON 到 staging</span>
                   </div>
                   <div id="developer-config-list" class="developer-config-list" role="listbox" aria-label="受管 config 清單">
                     <div class="developer-empty-state">讀取 config 中...</div>
@@ -252,38 +268,21 @@
                     <span id="developer-config-parse-badge" class="developer-status-badge is-idle">待命</span>
                   </header>
                   <div class="developer-editor-toolbar">
-                    <label class="developer-config-group-control">
-                      <span>分類</span>
-                      <select id="developer-config-group" class="developer-group-select" disabled>
-                        <option value="database">DATABASE</option>
-                        <option value="websocket">WEBSOCKET</option>
-                        <option value="spatial">SPATIAL</option>
-                        <option value="demo">DEMO</option>
-                      </select>
-                    </label>
+                    <select id="developer-config-group-select" class="developer-config-group-select" hidden aria-label="選擇 config 所屬群組"></select>
                     <button id="developer-config-save" class="small-button" type="button" hidden>儲存</button>
                     <button id="developer-config-cancel" class="small-button" type="button" hidden>取消</button>
                   </div>
                   <textarea id="developer-config-editor" class="developer-config-textarea" spellcheck="false" readonly placeholder="請從左側選取 config file。"></textarea>
                 </section>
               </div>
-            </div>
-          </details>
+          {% endcall %}
 
-          <details class="settings-toggle-card developer-toggle-card" open>
-            <summary class="settings-toggle-summary">
-              <span class="settings-toggle-caret" aria-hidden="true"></span>
-              <span>
-                <span class="settings-toggle-title">路由狀態機</span>
-                <span class="settings-toggle-description">檢查啟用狀態與資料庫連線狀態。</span>
-              </span>
-            </summary>
-            <div class="settings-toggle-content">
+          {% call developer_toggle_card("路由狀態機", "檢查啟用狀態與資料庫連線狀態。") %}
               <section class="developer-router-status" aria-label="路由狀態機">
                 <header class="developer-panel-header">
                   <div>
                     <h3>路由狀態機</h3>
-                    <p>每列顯示 config 是否啟用，以及它對應的資料庫是否可連線。</p>
+                    <p>依照已啟用的 JSON config 探測資料來源，並交給目前已實作的 probe adapter 檢查連線與下游能力。</p>
                   </div>
                 </header>
                 <div class="developer-status-machines">
@@ -298,12 +297,13 @@
                             <th>Backend</th>
                             <th>啟用</th>
                             <th>連線</th>
+                            <th>Schema</th>
                             <th>細節</th>
                           </tr>
                         </thead>
                         <tbody id="developer-router-status-body">
                           <tr>
-                            <td colspan="6">等待狀態資料。</td>
+                            <td colspan="7">等待狀態資料。</td>
                           </tr>
                         </tbody>
                       </table>
@@ -356,47 +356,29 @@
                   </section>
                 </div>
               </section>
-            </div>
-          </details>
+          {% endcall %}
 
-          <details class="settings-toggle-card developer-toggle-card developer-mapping-card" open>
-            <summary class="settings-toggle-summary">
-              <span class="settings-toggle-caret" aria-hidden="true"></span>
-              <span>
-                <span class="settings-toggle-title">Schema / Mapping 控制器</span>
-                <span class="settings-toggle-description">後端探測啟用的關聯式路由；前端在這裡檢視可用表格與欄位。</span>
-              </span>
-            </summary>
-            <div class="settings-toggle-content">
+          {% call developer_toggle_card("Schema / Mapping 控制器", "接收路由狀態機已連線、可探測的關聯式 DATABASE row，建立 query 與圖層導入 mapping。", "developer-mapping-card") %}
               <section class="developer-mapping-panel" aria-label="Schema Mapping 控制器">
                 <header class="developer-panel-header">
                   <div>
                     <h3>關聯式 Schema 探測</h3>
-                    <p>Inspector 只列出資料庫 schema 與候選提示；欄位語意由後續 Mapping Controller 手動決定。</p>
+                    <p>此區消費上方路由狀態機可探測的連線，勾選欄位角色並儲存 mapping 產物。</p>
                   </div>
                   <span id="developer-schema-profile-status" class="developer-status-badge is-idle">待命</span>
                 </header>
                 <div id="developer-schema-profile-list" class="developer-schema-profile-list">
-                  <div class="developer-schema-empty">等待 schema profile。</div>
+                  <div class="developer-schema-empty">等待 Schema 探測結果。</div>
                 </div>
               </section>
-            </div>
-          </details>
+          {% endcall %}
 
-          <details class="settings-toggle-card developer-toggle-card developer-layer-imports-card" open>
-            <summary class="settings-toggle-summary">
-              <span class="settings-toggle-caret" aria-hidden="true"></span>
-              <span>
-                <span class="settings-toggle-title">資料圖層導入</span>
-                <span class="settings-toggle-description">從啟用路由提供的圖層中，選擇要放進儀表板候選清單的項目。</span>
-              </span>
-            </summary>
-            <div class="settings-toggle-content">
+          {% call developer_toggle_card("資料圖層導入", "接收 Mapping Controller 產生的圖層，選擇要注入儀表板資料圖層的項目。", "developer-layer-imports-card") %}
               <section class="developer-layer-imports-panel" aria-label="資料圖層導入">
                 <header class="developer-panel-header">
                   <div>
-                    <h3>路由提供圖層</h3>
-                    <p>勾選代表導入儀表板的「資料圖層」候選清單；儀表板再決定是否查詢與渲染。</p>
+                    <h3>合約提供圖層</h3>
+                    <p>勾選代表把已生成的資料圖層合約導入儀表板；來源路由只負責提供資料或服務。</p>
                   </div>
                 </header>
                 <div class="developer-status-table-wrap is-layer-imports-wrap">
@@ -405,6 +387,7 @@
                       <tr>
                         <th>導入</th>
                         <th>圖層</th>
+                        <th>合約</th>
                         <th>來源路由</th>
                         <th>來源資料</th>
                         <th>Config</th>
@@ -413,27 +396,31 @@
                     </thead>
                     <tbody id="developer-layer-imports-body">
                       <tr>
-                        <td colspan="6">等待路由圖層資料。</td>
+                        <td colspan="7">等待資料圖層合約。</td>
                       </tr>
                     </tbody>
                   </table>
                 </div>
               </section>
-            </div>
-          </details>
+          {% endcall %}
         </div>
         <div id="developer-config-message" class="developer-config-message" role="status"></div>
       </div>
     </section>
   </main>
 
-  <script src="/static/js/ui/developer-utils.js?v=config-browser-groups-v1"></script>
-  <script src="/static/js/ui/developer-api.js?v=config-browser-groups-v1"></script>
-  <script src="/static/js/ui/developer-config-list.js?v=config-browser-groups-v1"></script>
-  <script src="/static/js/ui/developer-status-machines.js?v=config-browser-groups-v1"></script>
-  <script src="/static/js/ui/developer-import.js?v=config-browser-groups-v1"></script>
-  <script src="/static/js/ui/developer-wizard.js?v=config-browser-groups-v1"></script>
-  <script src="/static/js/ui/developer-configs.js?v=config-browser-groups-v1"></script>
+  <script src="/static/js/ui/developer/developer-utils.js?v=config-drawer-centered-v34"></script>
+  <script src="/static/js/ui/developer/developer-api.js?v=config-drawer-centered-v34"></script>
+  <script src="/static/js/ui/developer/developer-config-list.js?v=config-drawer-centered-v34"></script>
+  <script src="/static/js/ui/developer/developer-status-table.js?v=config-drawer-centered-v34"></script>
+  <script src="/static/js/ui/developer/developer-mapping-controller.js?v=config-drawer-centered-v34"></script>
+  <script src="/static/js/ui/developer/developer-status-machines.js?v=config-drawer-centered-v34"></script>
+  <script src="/static/js/ui/developer/developer-import.js?v=config-drawer-centered-v34"></script>
+  <script src="/static/js/ui/developer/developer-wizard.js?v=config-drawer-centered-v34"></script>
+  <script src="/static/js/ui/developer/developer-source-group-selector.js?v=config-source-selector-v35"></script>
+  <script src="/static/js/ui/developer/developer-config-editor.js?v=config-controller-split-v36"></script>
+  <script src="/static/js/ui/developer/developer-config-note-modal.js?v=config-controller-split-v36"></script>
+  <script src="/static/js/ui/developer/developer-configs.js?v=config-controller-split-v36"></script>
   <script>
     window.addEventListener("DOMContentLoaded", () => {
       if (typeof bindDeveloperConfigControls === "function") {

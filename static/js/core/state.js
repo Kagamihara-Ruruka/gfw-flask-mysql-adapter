@@ -75,7 +75,7 @@ const state = {
     },
   },
   playbackCache: {
-    mode: "before_play",
+    mode: "progressive",
     concurrency: "auto",
     maxDates: 0,
     windowBehind: 1,

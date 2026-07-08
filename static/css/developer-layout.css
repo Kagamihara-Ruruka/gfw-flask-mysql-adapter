@@ -138,30 +138,3 @@
   background: #0b121b;
   font-size: 12px;
 }
-
-.developer-group-select {
-  min-width: min(100%, 140px);
-  padding: 7px 9px;
-  border: 1px solid #2a3a4f;
-  border-radius: 7px;
-  background: #0b121b;
-  color: var(--text);
-  font: inherit;
-}
-
-.developer-group-select:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.developer-config-group-control {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.developer-config-group-control .developer-group-select {
-  min-width: 132px;
-}

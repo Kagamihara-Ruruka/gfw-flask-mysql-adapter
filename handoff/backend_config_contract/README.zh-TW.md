@@ -1,4 +1,4 @@
-# Backend / System Config Contract Handoff
+﻿# Backend / System Config Contract Handoff
 
 ## 目的
 
@@ -6,7 +6,7 @@
 
 1. 小可愛目前如何用 JSON 選資料庫、資料集與欄位。
 2. MySQL 現在怎麼跑。
-3. Hive 怎麼切，但為什麼目前還不能啟用。
+3. Hive/Spark 怎麼切，但為什麼目前還不能啟用。
 4. 他要回傳什麼樣的欄位/skin 設定給我們。
 5. 能力矩陣如何防止未完成能力被誤開。
 
@@ -14,11 +14,11 @@
 
 目前 runtime config 權威：
 
-- `config/adapter.schema.json`
-- `config/adapter.example.json`
-- `DatabaseConnect.py`
+- `config/schemas/adapter.schema.json`
+- `config/examples/runtime/adapter.example.json`
+- `common_adapter/db/connect.py`
 - `database/registry.py`
-- `AisLiveService.py`
+- `common_adapter/ais/live.py`
 
 提案/交接用能力矩陣：
 
@@ -61,7 +61,7 @@
       "port": 3307,
       "user": "root",
       "password": "env:MYSQL_PASSWORD",
-      "database": "ocean_fishery"
+      "database": "common_fishery"
     },
     "class_hive": {
       "kind": "hive",
@@ -70,7 +70,7 @@
       "port": 10000,
       "user": "hive",
       "password": "env:HIVE_PASSWORD",
-      "database": "ocean_warehouse"
+      "database": "common_warehouse"
     }
   }
 }
@@ -130,7 +130,7 @@
 }
 ```
 
-## MySQL 到 Hive 的切換方式
+## MySQL 到 Hive/Spark 的切換方式
 
 現有程式已經有 backend registry：
 
@@ -142,13 +142,17 @@ class MySqlReadBackend:
 @database_backend("hive")
 class HiveReadBackend:
     ...
+
+@database_backend("spark")
+class SparkReadBackend:
+    ...
 ```
 
-MySQL 是已實作。Hive 是明確 unsupported stub。
+MySQL 是已實作。Hive 與 Spark 是明確 unsupported stub。Spark 在這裡代表未來可能由 Spark SQL / Iceberg read model 接入的邊界，不代表目前已經完成查詢。
 
-若要切到 Hive，後端/系統需要提供：
+若要切到 Hive 或 Spark/Iceberg，後端/系統需要提供：
 
-1. Hive/Trino driver 選型。
+1. Hive/Trino 或 Spark SQL/Iceberg driver 選型。
 2. connection JSON。
 3. dataset table/read-model 欄位。
 4. `schema_packet()` 查 schema 的實作。
@@ -172,12 +176,17 @@ Runtime config 切換語意如下：
 }
 ```
 
-但在 `HiveReadBackend` 實作完成前，能力矩陣必須維持：
+但在 `HiveReadBackend` 或 `SparkReadBackend` 實作完成前，能力矩陣必須維持：
 
 ```json
 {
   "database_backend": {
     "hive": {
+      "declared": true,
+      "implemented": false,
+      "enabled": false
+    },
+    "spark": {
       "declared": true,
       "implemented": false,
       "enabled": false
@@ -188,15 +197,15 @@ Runtime config 切換語意如下：
 
 這就是能力矩陣的用途：設定可以先存在，但未完成能力不能啟用。
 
-### 用能力矩陣切 Hive 的實際步驟
+### 用能力矩陣切 Hive/Spark 的實際步驟
 
-1. 後端/系統先在 `backend_sink_config.example.json` 的副本中填好 Hive sink，例如 `hive_class_read_model`。
+1. 後端/系統先在 `backend_sink_config.example.json` 的副本中填好 Hive 或 Spark sink，例如 `hive_class_read_model` 或 `spark_iceberg_read_model`。
 2. 後端/系統回傳 dataset 欄位 patch，確認 `time_column`、`lat_column`、`lon_column`、`id_column` 與 read-model table。
-3. `backend_capability_matrix.example.json` 中 `database_backend.hive.implemented` 仍維持 `false`，直到 `HiveReadBackend` 真正實作並通過測試。
-4. Hive driver、`schema_packet()`、`records_packet()`、date/bbox/limit 查詢都通過後，才能把 `implemented` 改為 `true`。
-5. 最後一關才是把 `enabled` 改為 `true`，並把 dataset 的 `sink_ref` 或 `connection_ref` 指向 Hive。
+3. `backend_capability_matrix.example.json` 中對應 backend 的 `implemented` 仍維持 `false`，直到 read backend 真正實作並通過測試。
+4. Driver、`schema_packet()`、`records_packet()`、date/bbox/limit 查詢都通過後，才能把 `implemented` 改為 `true`。
+5. 最後一關才是把 `enabled` 改為 `true`，並把 dataset 的 `sink_ref` 或 `connection_ref` 指向該 backend。
 
-換句話說：改 JSON 只是宣告 sink，不等於啟用 Hive。是否啟用由能力矩陣決定。
+換句話說：改 JSON 只是宣告 sink，不等於啟用 Hive、Spark 或 Iceberg。是否啟用由能力矩陣決定。
 
 ## 後端需要回傳的原始欄位
 
@@ -220,7 +229,7 @@ Runtime config 切換語意如下：
 }
 ```
 
-這份 patch 回來後，我們再決定是否合進 `config/adapter.local.json` 或新的 schema。
+這份 patch 回來後，我們再決定是否合進 `config/runtime/adapter.local.json` 或新的 schema。
 
 若欄位 patch 會改變既有 sink 語意，請不要覆寫舊 `dataset_id`。請改用新的 `dataset_id`，例如 `gfw_full_hive_v1`，讓前端和舊資料集可以並存。
 
@@ -254,7 +263,7 @@ Skin 設定是「顯示語意」，不是資料庫查詢語意。它可以描述
 
 - 可以先收資料。
 - 可以先放進 handoff/proposed config。
-- 不要直接放進 `config/adapter.example.json`，除非 schema 已更新。
+- 不要直接放進 `config/examples/runtime/adapter.example.json`，除非 schema 已更新。
 - 不要因為有 skin 設定就宣稱該資料集 ready。
 
 ## 能力矩陣規則
@@ -285,4 +294,4 @@ Skin 設定是「顯示語意」，不是資料庫查詢語意。它可以描述
 - 能力矩陣決定宣告能力是否能被 runtime 使用；JSON 有值不代表能力已啟用。
 - AIS crawler 的 API key 不屬於後端 config patch。
 - Skin/display patch 不等於 database schema。
-- Hive config 存在不代表 Hive 已經可用。
+- Hive/Spark config 存在不代表 Hive、Spark 或 Iceberg 已經可用。

@@ -1,0 +1,51 @@
+{
+  "schema": "rrkal.adapter.spatial.v1",
+  "role": "spatial_route",
+  "description": "Spatial overlay route contract. Owns EEZ source cache and PostGIS overlay settings only; it is not a DATABASE route.",
+  "kind": "postgis_overlay",
+  "overlays": {
+    "eez": {
+      "enabled": true,
+      "provider": "postgis",
+      "full_gpkg_path": "data/eez/eez_v12.gpkg",
+      "source": {
+        "kind": "remote_gpkg_zip",
+        "url": "https://www.marineregions.org/download_file.php?name=World_EEZ_v12_20231025_gpkg.zip",
+        "source_page": "https://www.marineregions.org/downloads.php",
+        "version": "v12_20231025",
+        "archive_path": "data/eez/World_EEZ_v12_20231025_gpkg.zip",
+        "cache_path": "data/eez/eez_v12.gpkg",
+        "remove_archive": false,
+        "retry_seconds": 15,
+        "max_attempts": 0,
+        "form": {
+          "name": "RRKAL Common Adapter",
+          "organisation": "RRKAL",
+          "email": "rrkal.common.adapter@example.com",
+          "country": "Taiwan (Province of China)",
+          "user_category": "academia",
+          "purpose_category": "Data exploration & testing"
+        }
+      },
+      "auto_download": true,
+      "auto_import": true,
+      "auto_replace": true,
+      "gpkg_table": "eez_v12",
+      "gpkg_geometry_column": "geom",
+      "force_full": false,
+      "tile_cache_max": 2048,
+      "postgis": {
+        "host": "127.0.0.1",
+        "port": 5433,
+        "user": "postgres",
+        "password": "spatial123",
+        "database": "common_spatial",
+        "table": "eez_v12",
+        "tile_table": "eez_v12_tile",
+        "boundary_table": "eez_v12_boundary",
+        "geometry_column": "geom",
+        "mvt_layer": "eez"
+      }
+    }
+  }
+}

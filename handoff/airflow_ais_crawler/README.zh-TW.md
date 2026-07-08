@@ -1,4 +1,4 @@
-# Airflow AIS Crawler Handoff
+﻿# Airflow AIS Crawler Handoff
 
 ## 目的
 
@@ -21,12 +21,12 @@ AIS crawler 的交接模型是「設定一次，長駐運作」。Airflow owner 
 
 Airflow owner 只需要看這些：
 
-- `AisIngestService.py`
-- `AisStreamProvider.py`
-- `AisLiveService.py`
-- `DatabaseConnect.py`
+- `common_adapter/ais/ingest.py`
+- `common_adapter/ais/stream.py`
+- `common_adapter/ais/live.py`
+- `common_adapter/db/connect.py`
 - `core.py`
-- `config/adapter.ais_collector.example.json`
+- `config/examples/runtime/adapter.ais_collector.example.json`
 - `handoff/airflow_ais_crawler/ais_collector.handoff.example.json`
 - `handoff/airflow_ais_crawler/ais_collector.handoff.json`（實交接檔，若存在則含真 AISStream API key）
 - `scripts/run_ais_collector.ps1`
@@ -40,22 +40,22 @@ Airflow owner 只需要看這些：
 本機直接跑：
 
 ```powershell
-Copy-Item config\adapter.ais_collector.example.json config\adapter.ais_collector.local.json
-Copy-Item handoff\airflow_ais_crawler\ais_collector.handoff.example.json config\ais_collector.local.json
-.\.venv\Scripts\python.exe core.py --config config\adapter.ais_collector.local.json ingest-ais --collector-config config\ais_collector.local.json
+Copy-Item config\examples\runtime\adapter.ais_collector.example.json config\runtime\adapter.ais_collector.local.json
+Copy-Item handoff\airflow_ais_crawler\ais_collector.handoff.example.json config\sources\websocket\ais_collector.local.json
+.\.venv\Scripts\python.exe core.py --config config\runtime\adapter.ais_collector.local.json ingest-ais --collector-config config\sources\websocket\ais_collector.local.json
 ```
 
 如果交給 Airflow/K8，核心仍然是同一個 command：
 
 ```powershell
-python core.py --config config/adapter.ais_collector.local.json ingest-ais --collector-config config/ais_collector.local.json
+python core.py --config config/runtime/adapter.ais_collector.local.json ingest-ais --collector-config config/sources/websocket/ais_collector.local.json
 ```
 
-`config/adapter.ais_collector.example.json` 是 crawler 專用的最小 adapter config。上游應複製成 `config/adapter.ais_collector.local.json` 後填入自己的 SQL connection。
+`config/examples/runtime/adapter.ais_collector.example.json` 是 crawler 專用的最小 adapter config。上游應複製成 `config/runtime/adapter.ais_collector.local.json` 後填入自己的 SQL connection。
 
-`config/ais_collector.local.json` 可以由 Airflow variable、K8 Secret 或 volume mount 產生。不要 commit。
+`config/sources/websocket/ais_collector.local.json` 可以由 Airflow variable、K8 Secret 或 volume mount 產生。不要 commit。
 
-若只拿到兩個 JSON，代表交接包拿錯了。Airflow owner 需要 crawler 本體與 runner；至少要包含 `AisIngestService.py`、`AisStreamProvider.py`、`AisLiveService.py`、`DatabaseConnect.py`、`database/registry.py`、`core.py`、`requirements.txt` 與本 README。
+若只拿到兩個 JSON，代表交接包拿錯了。Airflow owner 需要 crawler 本體與 runner；至少要包含 `common_adapter/ais/ingest.py`、`common_adapter/ais/stream.py`、`common_adapter/ais/live.py`、`common_adapter/db/connect.py`、`common_adapter/db/registry.py`、`core.py`、`requirements.txt` 與本 README。
 
 ## API key 交付方式
 
@@ -77,7 +77,7 @@ Crawler handoff JSON 的 `api_key` 支援兩種模式：
 
 - `ais_collector.handoff.example.json` 是無密鑰模板。
 - `ais_collector.handoff.json` 是實交接檔，已授權可寫入真 AISStream API key。
-- Airflow/K8 owner 可以直接把實交接檔內容轉成 Airflow variable、K8 Secret 或 volume-mounted `config/ais_collector.local.json`。
+- Airflow/K8 owner 可以直接把實交接檔內容轉成 Airflow variable、K8 Secret 或 volume-mounted `config/sources/websocket/ais_collector.local.json`。
 
 注意：小可愛前端只保存 API key fingerprint。真正的 API key 屬於 crawler handoff，不屬於前端 rendering path。
 
@@ -183,4 +183,4 @@ Meta table 是內部憑證與健康狀態：
 
 ## 邊界聲明
 
-AIS crawler 是上游 feeder。它可以連外部 AISStream，可以寫 SQL，但不負責地圖顯示、LOD、EEZ、GFW 或 NASA。小可愛是 consumer，只查 SQL/read model。
+AIS crawler 是上游 feeder。它可以連外部 AISStream，可以寫 SQL，但不負責地圖顯示、LOD、EEZ 或 GFW。小可愛是 consumer，只查 SQL/read model。

@@ -6,10 +6,3 @@ cryptography==49.0.0
 pandas==2.3.3
 duckdb==1.5.3
 psycopg[binary]==3.2.9
-xarray==2026.4.0
-zarr==3.2.1
-h5netcdf==1.8.1
-h5py==3.16.0
-netCDF4==1.7.4
-dask[array]==2026.6.0
-tiledb==0.36.1
