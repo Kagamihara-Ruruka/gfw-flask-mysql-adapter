@@ -89,6 +89,7 @@ const state = {
     bufferResume: 0,
     bufferCurrentDate: "",
     generation: 0,
+    timeline: null,
     stats: {
       queued: 0,
       completed: 0,

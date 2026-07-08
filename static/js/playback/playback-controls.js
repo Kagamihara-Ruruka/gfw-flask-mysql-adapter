@@ -92,6 +92,62 @@ function isPlaybackGenerationActive(generation) {
   return state.playbackCache.generation === generation;
 }
 
+function normalizedPlaybackInterval() {
+  return Math.max(1, Number(state.playIntervalMs || $("play-speed")?.value || 1400));
+}
+
+function clearPlaybackTimeline() {
+  state.playbackCache.timeline = null;
+}
+
+function startPlaybackTimeline(generation, { firstDelayMs = 0 } = {}) {
+  const intervalMs = normalizedPlaybackInterval();
+  state.playbackCache.timeline = {
+    generation,
+    intervalMs,
+    startedAt: nowMs() + Math.max(0, Number(firstDelayMs || 0)),
+    nextFrameNumber: 0,
+  };
+  return state.playbackCache.timeline;
+}
+
+function playbackTimeline(generation) {
+  const timeline = state.playbackCache?.timeline;
+  if (timeline && timeline.generation === generation) return timeline;
+  return startPlaybackTimeline(generation);
+}
+
+function delayUntilNextPlaybackFrame(generation) {
+  const timeline = playbackTimeline(generation);
+  const targetMs = Number(timeline.startedAt || 0)
+    + Number(timeline.nextFrameNumber || 0) * Number(timeline.intervalMs || normalizedPlaybackInterval());
+  return Math.max(0, targetMs - nowMs());
+}
+
+function markPlaybackFrameShown(generation) {
+  const timeline = playbackTimeline(generation);
+  timeline.nextFrameNumber = Number(timeline.nextFrameNumber || 0) + 1;
+}
+
+function shiftPlaybackTimeline(generation, deltaMs) {
+  const amount = Math.max(0, Number(deltaMs || 0));
+  if (amount <= 0) return;
+  const timeline = playbackTimeline(generation);
+  timeline.startedAt = Number(timeline.startedAt || nowMs()) + amount;
+}
+
+function reschedulePlaybackTimelineAfterSpeedChange(generation) {
+  const timeline = playbackTimeline(generation);
+  const intervalMs = normalizedPlaybackInterval();
+  const nextFrameNumber = Number(timeline.nextFrameNumber || 0);
+  state.playbackCache.timeline = {
+    generation,
+    intervalMs,
+    startedAt: nowMs() + intervalMs - nextFrameNumber * intervalMs,
+    nextFrameNumber,
+  };
+}
+
 function updatePlaybackBufferState({ dates, startIndex, generation, status = "buffering" }) {
   if (!isPlaybackGenerationActive(generation)) return false;
   const context = playbackRequestContext();
@@ -335,6 +391,7 @@ function stopPlayback({ cancelPending = true } = {}) {
   }
   state.isPlaying = false;
   PlaybackCacheService.clearBufferState();
+  clearPlaybackTimeline();
   clearTimeout(state.playTimer);
   state.playTimer = null;
   updatePlaybackControls();
@@ -424,24 +481,29 @@ async function ensurePlaybackCanAdvance(generation) {
   });
 }
 
-function schedulePlaybackTick(generation = state.playbackCache.generation, delayMs = state.playIntervalMs) {
+function schedulePlaybackTick(generation = state.playbackCache.generation) {
   clearTimeout(state.playTimer);
+  const delayMs = delayUntilNextPlaybackFrame(generation);
   state.playTimer = setTimeout(async () => {
     if (!state.isPlaying || !isPlaybackGenerationActive(generation)) return;
-    const tickStartMs = nowMs();
     try {
+      const bufferStartMs = nowMs();
       if (!(await ensurePlaybackCanAdvance(generation))) {
         if (isPlaybackGenerationActive(generation)) stopPlayback();
         return;
+      }
+      const bufferElapsedMs = nowMs() - bufferStartMs;
+      if (bufferElapsedMs > 50) {
+        shiftPlaybackTimeline(generation, bufferElapsedMs);
       }
       const advanced = await advancePlaybackDay();
       if (!advanced) {
         stopPlayback();
         return;
       }
+      markPlaybackFrameShown(generation);
       if (state.isPlaying && isPlaybackGenerationActive(generation)) {
-        const elapsedMs = nowMs() - tickStartMs;
-        schedulePlaybackTick(generation, Math.max(0, state.playIntervalMs - elapsedMs));
+        schedulePlaybackTick(generation);
       }
     } catch (err) {
       stopPlayback();
@@ -463,6 +525,7 @@ async function setPlayback(active) {
     stopPlayback();
     return;
   }
+  state.playIntervalMs = Number($("play-speed").value || state.playIntervalMs);
   const options = PlaybackCacheService.options();
   if (options.mode === "before_play") {
     await preheatPlaybackCache({ blocking: true });
@@ -477,7 +540,7 @@ async function setPlayback(active) {
     }
   }
   state.isPlaying = true;
-  state.playIntervalMs = Number($("play-speed").value || state.playIntervalMs);
+  startPlaybackTimeline(generation);
   if (typeof syncFullscreenPlaybackControls === "function") {
     syncFullscreenPlaybackControls();
   }
@@ -509,6 +572,7 @@ function updatePlaybackSpeed(sourceId = "play-speed") {
     syncFullscreenPlaybackControls();
   }
   if (state.isPlaying) {
+    reschedulePlaybackTimelineAfterSpeedChange(state.playbackCache.generation);
     schedulePlaybackTick(state.playbackCache.generation);
   }
   syncPlaybackSettingsInputs();

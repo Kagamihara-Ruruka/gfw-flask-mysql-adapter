@@ -180,6 +180,8 @@ GFW currently supports:
 - play/pause
 - playback speed
 
+Playback scheduling is timeline-driven. After playback starts, the next frame is scheduled immediately, and later frame targets are derived from `playStartedAt + frameNumber * interval`. Query and render work do not add another full interval after each frame. The default behavior is analysis-oriented: dates are not skipped; when the required frame buffer is not ready, playback buffers and shifts the timeline forward instead of bursting through missed dates.
+
 AIS is live viewport mode and does not use the date player.
 
 ### Timing panel

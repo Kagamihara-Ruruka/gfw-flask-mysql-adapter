@@ -142,6 +142,8 @@ GFW 支援：
 - 播放速度
 - 播放前預熱快取
 
+播放排程以時間線為主控：播放開始後會立即排下一個 frame，後續 frame 的目標時間由 `playStartedAt + frameNumber * interval` 推出。查詢與渲染工作不會在每格後再額外疊一個完整 interval。預設採分析取向：不跳日期；若必要的 frame buffer 尚未 ready，就進入 buffering 並把時間線往後平移，避免資料回來後爆衝追趕。
+
 AIS live 模式目前不走日期播放器。
 
 ## 播放快取與預熱
