@@ -36,6 +36,7 @@ from DatabaseConnect import (
     mysql_connection,
     parse_bbox,
     query_policy,
+    records_range_packet,
     records_packet,
     schema_packet,
 )
@@ -785,6 +786,37 @@ def create_app(config: dict[str, Any], *, developer_url: str | None = None) -> F
                 limit=int(request.args.get("limit", str(query_policy(config)["default_limit"]))),
                 offset=int(request.args.get("offset", "0")),
                 column_profile=request.args.get("columns"),
+            )
+            packet["dataset_id"] = dataset_id
+            packet["runtime"] = runtime
+            packet["timing"]["api_total_ms"] = elapsed_ms(request_start)
+            return jsonify(packet)
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.get("/api/datasets/<dataset_id>/records/range")
+    def records_range(dataset_id: str):
+        request_start = time.perf_counter()
+        try:
+            dataset = get_dataset(dataset_id)
+            start_date = request.args.get("start") or request.args.get("start_date")
+            end_date = request.args.get("end") or request.args.get("end_date")
+            if not start_date or not end_date:
+                return jsonify({"error": "range records requires start and end"}), 400
+            runtime = {
+                "layer_id": dataset_layer_id(dataset_id, dataset),
+                "source": dataset.get("__runtime_source", "legacy_dataset_contract"),
+                "mapping_id": dataset.get("__runtime_mapping_id"),
+                "config_path": dataset.get("__runtime_config_path"),
+            }
+            packet = records_range_packet(
+                config,
+                dataset,
+                start_date=start_date,
+                end_date=end_date,
+                bbox=parse_bbox(request.args.get("bbox")),
+                limit=int(request.args.get("limit", str(query_policy(config)["default_limit"]))),
+                column_profile=request.args.get("columns") or "render",
             )
             packet["dataset_id"] = dataset_id
             packet["runtime"] = runtime

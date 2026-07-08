@@ -1,4 +1,4 @@
-const TimingMetrics = (() => {
+﻿const TimingMetrics = (() => {
   const metricById = {
     "query-ms": "query",
     "serialize-ms": "serialize",
@@ -20,6 +20,9 @@ const TimingMetrics = (() => {
     rows: "-",
     persistentScaleMs: 0,
   };
+  const snapshotHistory = [];
+  const snapshotHistoryLimit = 48;
+  let lastSnapshotSignature = "";
 
   function formatMs(value) {
     if (value === undefined || value === null || !Number.isFinite(Number(value))) {
@@ -65,6 +68,9 @@ const TimingMetrics = (() => {
     if (key === "eez" && parsed !== null) {
       details.persistentScaleMs = Math.max(0, parsed);
     }
+    if (key === "client" && parsed !== null) {
+      rememberSnapshotSample(parsed);
+    }
     if (options.render !== false) renderTimeline();
   }
 
@@ -92,6 +98,64 @@ const TimingMetrics = (() => {
     setDomText(id, formatMs(value));
     const key = metricById[id];
     if (key) setMetricMs(key, value, { render: false });
+  }
+
+  function currentSnapshotLabel() {
+    const candidates = [
+      document.getElementById("date")?.value,
+      document.getElementById("single-date")?.value,
+      document.getElementById("time-current-date")?.textContent,
+      document.getElementById("start-date")?.value,
+    ];
+    return candidates.find((value) => String(value || "").trim()) || `#${snapshotHistory.length + 1}`;
+  }
+
+  function rememberSnapshotSample(totalMs) {
+    const sample = {
+      index: snapshotHistory.length + 1,
+      label: currentSnapshotLabel(),
+      rows: details.rows || "-",
+      total: totalMs,
+      query: metrics.query.value,
+      serialize: metrics.serialize.value,
+      api: metrics.api.value,
+      draw: metrics.draw.value,
+      recordedAt: performance.now(),
+    };
+    const signature = [
+      sample.label,
+      sample.rows,
+      Math.round(sample.total || 0),
+      Math.round(sample.query || 0),
+      Math.round(sample.api || 0),
+      Math.round(sample.draw || 0),
+    ].join("|");
+    const previous = snapshotHistory[snapshotHistory.length - 1];
+    if (signature === lastSnapshotSignature && previous) {
+      snapshotHistory[snapshotHistory.length - 1] = { ...previous, ...sample, index: previous.index };
+      return;
+    }
+    lastSnapshotSignature = signature;
+    snapshotHistory.push(sample);
+    while (snapshotHistory.length > snapshotHistoryLimit) {
+      snapshotHistory.shift();
+    }
+    snapshotHistory.forEach((item, idx) => {
+      item.index = idx + 1;
+    });
+  }
+
+  function resetSnapshotHistory(reason = "") {
+    window.SnapshotPerformanceChart?.purge?.();
+    snapshotHistory.length = 0;
+    lastSnapshotSignature = "";
+    if (reason) {
+      metrics.client = {
+        ...metrics.client,
+        source: reason,
+      };
+    }
+    renderTimeline();
   }
 
   function setCount(id, value) {
@@ -234,10 +298,10 @@ const TimingMetrics = (() => {
       const tooltip = escapeHtml(stageTooltip(item, title));
       const checkpoint = escapeHtml(boundaryTooltip(item, title, cumulative, total, scale));
       return `
-        <span class="pipeline-segment is-${item.status || "ok"} kind-${item.kind || "generic"}${compactClass}" style="--segment-width: ${width}%" title="${tooltip}" data-tooltip="${tooltip}">
+        <span class="pipeline-segment is-${item.status || "ok"} kind-${item.kind || "generic"}${compactClass}" style="--segment-width: ${width}%" title="${tooltip}">
           <b>${label}</b>
           <em>${item.text}</em>
-          <i class="pipeline-boundary" title="${checkpoint}" data-tooltip="${checkpoint}" aria-label="${checkpoint}"></i>
+          <i class="pipeline-boundary" title="${checkpoint}" aria-label="${checkpoint}"></i>
         </span>
       `;
     }).join("");
@@ -252,6 +316,27 @@ const TimingMetrics = (() => {
         </div>
         <div class="pipeline-track">${offsetHtml}${segments}</div>
       </div>
+    `;
+  }
+
+  function renderPerformancePlotly() {
+    window.SnapshotPerformanceChart?.renderWhenReady?.(snapshotHistory.slice());
+  }
+
+  function renderPerformanceChart() {
+    const samples = snapshotHistory.slice();
+    const latest = samples[samples.length - 1];
+    const summary = samples.length >= 2 && latest
+      ? `最近 ${samples.length} 張 / 最新 ${formatMs(latest.total)}`
+      : "播放或回到開始日期後重新累積";
+    return `
+      <section class="pipeline-chart-card">
+        <div class="pipeline-chart-header">
+          <strong>快照耗時線圖</strong>
+          <span>${summary}</span>
+        </div>
+        <div id="snapshot-performance-chart" class="pipeline-plotly-chart" aria-label="每張快照耗時折線圖"></div>
+      </section>
     `;
   }
 
@@ -272,7 +357,13 @@ const TimingMetrics = (() => {
     if (persistentStages.length) {
       rows.push(renderRow("持久圖層快取", "本張快照通常沿用；啟動或縮放階梯變更時更新", persistentStages, scaleTotal));
     }
-    root.innerHTML = rows.join("");
+    root.innerHTML = rows.join("") + renderPerformanceChart();
+    window.requestAnimationFrame(() => {
+      renderPerformancePlotly();
+      window.requestAnimationFrame(() => {
+        window.SnapshotPerformanceChart?.refresh?.();
+      });
+    });
   }
 
   function updateSummary() {
@@ -332,6 +423,7 @@ const TimingMetrics = (() => {
     setMetricMs,
     setMetricText,
     resetSnapshotPersistent,
+    resetSnapshotHistory,
     updateSummary,
     stopwatch,
     waitForLayers,

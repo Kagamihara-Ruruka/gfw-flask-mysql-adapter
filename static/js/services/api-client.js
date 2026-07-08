@@ -225,8 +225,8 @@ function applyAisPacket(packet, bboxes, timing) {
   TimingMetrics.setText("query-ms", `${Number(packet.timing?.query_ms || 0).toFixed(3)} ms`);
   TimingMetrics.setText("serialize-ms", "-");
   TimingMetrics.setText("api-ms", "WebSocket");
-  TimingMetrics.setMs("client-ms", timing.elapsed());
   TimingMetrics.setCount("row-count", rows.length);
+  TimingMetrics.setMs("client-ms", timing.elapsed());
   TimingMetrics.updateSummary();
   RenderState.ready("ais", `${rows.length.toLocaleString()} 筆`);
   const stream = packet.stream
@@ -362,8 +362,8 @@ async function reloadAisRecordsRest() {
   TimingMetrics.setText("query-ms", `${queryMs.toFixed(3)} ms`);
   TimingMetrics.setText("serialize-ms", "-");
   TimingMetrics.setText("api-ms", "REST");
-  TimingMetrics.setMs("client-ms", timing.elapsed());
   TimingMetrics.setCount("row-count", rows.length);
+  TimingMetrics.setMs("client-ms", timing.elapsed());
   TimingMetrics.updateSummary();
   RenderState.ready("ais", `${rows.length.toLocaleString()} 筆`);
   setStatus(`AIS REST 完成，可見船舶 ${rows.length.toLocaleString()} 艘，${bboxes.length} 個循環邊界框`);
@@ -417,8 +417,8 @@ async function reloadGfwRecords() {
     TimingMetrics.setMs("serialize-ms", packet.timing.serialize_ms);
     TimingMetrics.setMs("api-ms", packet.timing.api_total_ms);
   }
-  TimingMetrics.setMs("client-ms", timing.elapsed());
   TimingMetrics.setCount("row-count", packet.row_count);
+  TimingMetrics.setMs("client-ms", timing.elapsed());
   TimingMetrics.updateSummary();
   const sourceDetail = cacheHit ? "瀏覽器快取" : serverCacheHit ? "伺服器快取" : "SQL";
   RenderState.ready(

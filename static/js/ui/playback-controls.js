@@ -416,6 +416,7 @@ async function setPlayback(active) {
     return;
   }
   const generation = nextPlaybackGeneration();
+  TimingMetrics.resetSnapshotHistory?.("playback_start");
   releasePlaybackRenderArtifacts("playback_start");
   if (!(await preparePlaybackStart())) {
     stopPlayback();
@@ -476,6 +477,7 @@ async function replayFromStart() {
   const dates = datesInSelectedRange();
   if (!dates.length) return;
   stopPlayback();
+  TimingMetrics.resetSnapshotHistory?.("replay_from_start");
   releasePlaybackRenderArtifacts("replay_from_start");
   $("date").value = dates[0];
   updatePlaybackControls();

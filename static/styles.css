@@ -233,7 +233,6 @@ body {
   color: var(--muted);
   font-size: 12px;
 }
-
 .date-control.is-disabled {
   color: #5f6b78;
   opacity: 0.55;
@@ -1336,63 +1335,54 @@ button {
   opacity: 0.86;
 }
 
-.pipeline-segment::after {
-  content: attr(data-tooltip);
-  position: absolute;
-  z-index: 40;
-  left: 50%;
-  bottom: calc(100% + 8px);
-  width: min(320px, 68vw);
-  transform: translateX(-50%) translateY(4px);
-  padding: 9px 10px;
-  border: 1px solid rgba(70, 203, 143, 0.45);
-  border-radius: 7px;
-  background: rgba(8, 13, 19, 0.96);
-  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.38);
+.pipeline-chart-card {
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 0.7rem;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 0.55rem;
+  background: rgba(9, 15, 22, 0.78);
+}
+
+.pipeline-chart-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.8rem;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.pipeline-chart-header strong {
   color: var(--text);
-  font-size: 11px;
-  line-height: 1.45;
-  white-space: pre-line;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 140ms ease, transform 140ms ease;
+  font-size: 0.86rem;
 }
 
-.pipeline-segment:hover::after {
-  opacity: 1;
-  transform: translateX(-50%) translateY(0);
+.pipeline-chart-header span {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-variant-numeric: tabular-nums;
 }
 
-.pipeline-segment:has(.pipeline-boundary:hover)::after {
-  opacity: 0;
+.pipeline-plotly-chart {
+  width: 100%;
+  min-height: clamp(12rem, 18vw, 17rem);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 0.35rem;
+  background: rgba(5, 10, 16, 0.58);
 }
 
-.pipeline-boundary::after {
-  content: attr(data-tooltip);
-  position: absolute;
-  z-index: 50;
-  right: 0;
-  bottom: calc(100% + 8px);
-  width: min(300px, 68vw);
-  padding: 9px 10px;
-  border: 1px solid rgba(43, 217, 143, 0.5);
-  border-radius: 8px;
-  background: rgba(6, 12, 20, 0.96);
-  color: var(--text);
-  font-size: 11px;
-  line-height: 1.45;
-  white-space: pre-line;
-  box-shadow: var(--shadow);
-  opacity: 0;
-  transform: translateY(4px);
-  transition: opacity 120ms ease, transform 120ms ease;
-  pointer-events: none;
+.pipeline-chart-empty {
+  display: grid;
+  min-height: 4.5rem;
+  place-items: center;
+  border: 1px dashed var(--line);
+  border-radius: 0.45rem;
+  color: var(--muted);
+  font-size: 0.78rem;
 }
 
-.pipeline-boundary:hover::after {
-  opacity: 1;
-  transform: translateY(0);
-}
 
 .pipeline-segment.is-text {
   background: repeating-linear-gradient(

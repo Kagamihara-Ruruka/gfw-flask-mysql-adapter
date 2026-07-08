@@ -50,12 +50,13 @@ const PlaybackCacheService = (() => {
     return `待命：${cacheText}`;
   }
 
-  function requestForDate(date, { bbox, datasetId, limit } = {}) {
+  function requestForDate(date, { bbox, datasetId, limit, columns = "render" } = {}) {
     return {
       datasetId,
       date,
       bbox,
       limit,
+      columns,
     };
   }
 
@@ -167,7 +168,7 @@ const PlaybackCacheService = (() => {
       return true;
     }
 
-    const requests = requestsForDates(preheatDates, { bbox, datasetId, limit, anchorDate });
+    const requests = requestsForDates(preheatDates, { bbox, datasetId, limit, anchorDate, columns: "render" });
     const label = layerLabel();
 
     const background = cacheOptions.mode === "progressive" || !blocking;
@@ -177,7 +178,10 @@ const PlaybackCacheService = (() => {
     onStateChange?.();
     setStatus(`正在預熱 ${label} 播放快取 0 / ${requests.length}`);
 
-    const run = GfwRecordCache.prefetchRequests(requests, {
+    const prefetch = typeof GfwRecordCache.prefetchRange === "function"
+      ? GfwRecordCache.prefetchRange.bind(GfwRecordCache, { dates: preheatDates, bbox, datasetId, limit, columns: "render" })
+      : GfwRecordCache.prefetchRequests.bind(GfwRecordCache, requests);
+    const run = prefetch({
       concurrency: cacheOptions.resolvedConcurrency,
       onProgress: (event) => {
         updateStats(event);

@@ -297,6 +297,38 @@ const GfwRecordCache = (() => {
     return `/api/datasets/${datasetId}/records?${params}`;
   }
 
+  function rangeUrlFor({ datasetId, start, end, bbox, limit, columns }) {
+    const params = new URLSearchParams();
+    params.set("start", start);
+    params.set("end", end);
+    params.set("limit", String(limit));
+    params.set("bbox", bbox);
+    if (columns) params.set("columns", columns);
+    return `/api/datasets/${datasetId}/records/range?${params}`;
+  }
+
+  function packetFromRangeSnapshot(rangePacket, request, rows) {
+    return {
+      rows,
+      row_count: rows.length,
+      limit: request.limit,
+      offset: 0,
+      column_profile: rangePacket.column_profile || request.columns || "render",
+      columns: rangePacket.columns || [],
+      query_policy: rangePacket.query_policy || {},
+      backend: rangePacket.backend,
+      dataset_id: rangePacket.dataset_id,
+      runtime: rangePacket.runtime,
+      timing: {
+        ...(rangePacket.timing || {}),
+        range_preheat: true,
+        range_start: rangePacket.start,
+        range_end: rangePacket.end,
+        snapshot_date: request.date,
+      },
+    };
+  }
+
   async function fetchAndRemember(request) {
     const key = requestKey(request);
     if (cache.has(key)) return cache.get(key);
@@ -400,6 +432,7 @@ const GfwRecordCache = (() => {
             date,
             limit: context.limit,
             bbox: context.bbox,
+            columns: context.columns || "render",
           });
         }
       }
@@ -411,6 +444,7 @@ const GfwRecordCache = (() => {
             date,
             limit: context.limit,
             bbox: context.bbox,
+            columns: context.columns || "render",
           });
         }
       }
@@ -420,6 +454,7 @@ const GfwRecordCache = (() => {
       date: context.date,
       limit: context.limit,
       bbox: bboxForCenterZoom(context.center, zoom),
+      columns: context.columns || "render",
     })));
     return requests;
   }
@@ -505,6 +540,66 @@ const GfwRecordCache = (() => {
     return { total: unique.length, ...progress };
   }
 
+  async function prefetchRange({ dates, bbox, datasetId, limit, columns = "render" }, { concurrency = 2, onProgress } = {}) {
+    prewarmGeneration += 1;
+    clearTimeout(prewarmTimer);
+    prewarmTimer = null;
+    const uniqueDates = [...new Set((dates || []).filter(Boolean))].sort();
+    if (!uniqueDates.length) {
+      return { total: 0, fetched: 0, cacheHits: 0, failed: 0, range: false };
+    }
+    const requests = uniqueDates.map((date) => ({ datasetId, date, bbox, limit, columns }));
+    const missing = requests.filter((request) => !hasPacket(request));
+    const immediateHits = requests.length - missing.length;
+    for (let index = 0; index < immediateHits; index += 1) {
+      onProgress?.({ cacheHit: true, ok: true, immediate: true });
+    }
+    if (!missing.length) {
+      return { total: requests.length, fetched: 0, cacheHits: immediateHits, failed: 0, range: true };
+    }
+
+    let rangePacket;
+    try {
+      rangePacket = await fetchJson(rangeUrlFor({
+        datasetId,
+        start: uniqueDates[0],
+        end: uniqueDates[uniqueDates.length - 1],
+        bbox,
+        limit,
+        columns,
+      }));
+    } catch (err) {
+      console.warn("GFW range preheat failed; falling back to per-date prefetch", err);
+      return prefetchRequests(missing, { concurrency, onProgress });
+    }
+    let fetched = 0;
+    let failed = 0;
+    const snapshots = rangePacket.snapshots || {};
+    for (const request of missing) {
+      const rows = Array.isArray(snapshots[request.date]) ? snapshots[request.date] : [];
+      if (!rows.length && rangePacket.truncated) {
+        try {
+          await fetchPacket(request);
+          fetched += 1;
+          onProgress?.({ request, cacheHit: false, ok: true, rangeFallback: "truncated_missing_date" });
+        } catch (err) {
+          failed += 1;
+          onProgress?.({ request, cacheHit: false, ok: false, error: err });
+        }
+        continue;
+      }
+      const key = requestKey(request);
+      const ok = remember(key, packetFromRangeSnapshot(rangePacket, request, rows), request);
+      if (ok) {
+        fetched += 1;
+      } else {
+        failed += 1;
+      }
+      onProgress?.({ request, cacheHit: false, ok });
+    }
+    return { total: requests.length, fetched, cacheHits: immediateHits, failed, range: true };
+  }
+
   async function prewarmQueue(context, generation) {
     const queue = prewarmRequests(context).filter((request) => {
       const key = requestKey(request);
@@ -557,6 +652,7 @@ const GfwRecordCache = (() => {
     clear,
     fetchPacket,
     hasPacket,
+    prefetchRange,
     prefetchRequests,
     enforceBudget,
     schedulePrewarm,

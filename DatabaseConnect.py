@@ -578,6 +578,82 @@ def _mysql_records_packet(
     return packet
 
 
+def _mysql_records_range_packet(
+    config: dict[str, Any],
+    dataset: dict[str, Any],
+    *,
+    connection: dict[str, Any],
+    start_date: str,
+    end_date: str,
+    bbox: tuple[float, float, float, float] | None,
+    limit: int,
+    column_profile: str | None = None,
+) -> dict[str, Any]:
+    from SnapshotSplitService import split_rows_by_date
+
+    table = mysql_dataset_table(dataset)
+    database = validate_identifier(dataset.get("database") or connection["database"], "database")
+    time_column = dataset["time_column"]
+    lat_column = dataset["lat_column"]
+    lon_column = dataset["lon_column"]
+    columns = resolve_dataset_columns(dataset, column_profile or "render")
+    policy = query_policy(config)
+    limit = max(1, min(int(limit), policy["max_limit"]))
+    if not start_date or not end_date:
+        raise ValueError("range records query requires start and end")
+    if start_date > end_date:
+        start_date, end_date = end_date, start_date
+
+    where_parts = [f"{mysql_quote(time_column)} BETWEEN %s AND %s"]
+    params: list[Any] = [start_date, end_date]
+    if bbox:
+        west, south, east, north = bbox
+        where_parts.append(f"{mysql_quote(lon_column)} BETWEEN %s AND %s")
+        params.extend([west, east])
+        where_parts.append(f"{mysql_quote(lat_column)} BETWEEN %s AND %s")
+        params.extend([south, north])
+
+    where_sql = "WHERE " + " AND ".join(where_parts)
+    column_sql = ", ".join(mysql_quote(column) for column in columns)
+    order_sql = f"{mysql_quote(time_column)}, {mysql_quote(lat_column)}, {mysql_quote(lon_column)}"
+    sql = (
+        f"SELECT {column_sql} FROM {mysql_quote(table)} {where_sql} "
+        f"ORDER BY {order_sql} LIMIT %s"
+    )
+    params.append(limit)
+
+    total_start = time.perf_counter()
+    query_start = time.perf_counter()
+    with mysql_connection(config, database, dict_cursor=True, connection=connection) as conn, conn.cursor() as cur:
+        cur.execute(sql, params)
+        raw_rows = cur.fetchall()
+    query_ms = elapsed_ms(query_start)
+    split = split_rows_by_date(raw_rows, date_column=time_column)
+    row_count = int(split["row_count"])
+    packet = {
+        "start": start_date,
+        "end": end_date,
+        "snapshots": split["snapshots"],
+        "dates": split["dates"],
+        "snapshot_count": int(split["snapshot_count"]),
+        "row_count": row_count,
+        "truncated": bool(row_count >= limit),
+        "limit": limit,
+        "column_profile": column_profile or "render",
+        "columns": columns,
+        "query_policy": policy,
+        "splitter": split["engine"],
+        "worker_hint": split["worker_hint"],
+        "timing": {
+            "query_ms": query_ms,
+            "split_ms": split["split_ms"],
+            "serialize_ms": 0,
+            "server_total_ms": elapsed_ms(total_start),
+        },
+    }
+    return packet
+
+
 @database_backend("mysql")
 class MySqlReadBackend:
     def __init__(self, config: dict[str, Any], dataset: dict[str, Any]) -> None:
@@ -619,6 +695,28 @@ class MySqlReadBackend:
         packet["backend"] = {"kind": self.kind, "connection_ref": self.connection_ref}
         return packet
 
+    def records_range_packet(
+        self,
+        *,
+        start_date: str,
+        end_date: str,
+        bbox: tuple[float, float, float, float] | None,
+        limit: int,
+        column_profile: str | None = None,
+    ) -> dict[str, Any]:
+        packet = _mysql_records_range_packet(
+            self.config,
+            self.dataset,
+            connection=self.connection,
+            start_date=start_date,
+            end_date=end_date,
+            bbox=bbox,
+            limit=limit,
+            column_profile=column_profile,
+        )
+        packet["backend"] = {"kind": self.kind, "connection_ref": self.connection_ref}
+        return packet
+
 
 @database_backend("hive")
 class HiveReadBackend:
@@ -649,6 +747,21 @@ class HiveReadBackend:
             "define the Hive/Trino viewport query contract before enabling this dataset",
         )
 
+    def records_range_packet(
+        self,
+        *,
+        start_date: str,
+        end_date: str,
+        bbox: tuple[float, float, float, float] | None,
+        limit: int,
+        column_profile: str | None = None,
+    ) -> dict[str, Any]:
+        raise UnsupportedBackendOperation(
+            "hive",
+            "records_range_packet",
+            "define the Hive/Trino range query contract before enabling this dataset",
+        )
+
 
 def read_backend(config: dict[str, Any], dataset: dict[str, Any]):
     kind = dataset_backend_kind(config, dataset)
@@ -674,6 +787,32 @@ def records_packet(
         bbox=bbox,
         limit=limit,
         offset=offset,
+        column_profile=column_profile,
+    )
+
+
+def records_range_packet(
+    config: dict[str, Any],
+    dataset: dict[str, Any],
+    *,
+    start_date: str,
+    end_date: str,
+    bbox: tuple[float, float, float, float] | None,
+    limit: int,
+    column_profile: str | None = None,
+) -> dict[str, Any]:
+    backend = read_backend(config, dataset)
+    if not hasattr(backend, "records_range_packet"):
+        raise UnsupportedBackendOperation(
+            dataset_backend_kind(config, dataset),
+            "records_range_packet",
+            "range preheat is not supported by this backend",
+        )
+    return backend.records_range_packet(
+        start_date=start_date,
+        end_date=end_date,
+        bbox=bbox,
+        limit=limit,
         column_profile=column_profile,
     )
 
