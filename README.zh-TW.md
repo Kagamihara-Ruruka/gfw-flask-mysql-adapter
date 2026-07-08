@@ -142,7 +142,7 @@ GFW 支援：
 - 播放速度
 - 播放前預熱快取
 
-播放排程以時間線為主控：播放開始後會立即排下一個 frame，後續 frame 的目標時間由 `playStartedAt + frameNumber * interval` 推出。查詢與渲染工作不會在每格後再額外疊一個完整 interval。預設採分析取向：不跳日期；若必要的 frame buffer 尚未 ready，就進入 buffering 並把時間線往後平移，避免資料回來後爆衝追趕。
+播放排程以時間線為主控：播放速度是時間軸倍率，不是 frame 與 frame 中間的等待值。`playIntervalMs` 保持為固定顯示節拍，`playbackRate` 只決定每個到點 tick 要落到哪一個日期 offset。查詢與渲染工作不會在每格後再額外疊一個完整 interval。progressive 模式不會為了完整 prebuffer 阻塞開播；每個 tick 會顯示 target date 或它之前最接近且 ready 的 frame，若完全沒有 ready frame，就先維持目前畫面並讓背景預熱追上。
 
 AIS live 模式目前不走日期播放器。
 
@@ -153,7 +153,7 @@ AIS live 模式目前不走日期播放器。
 - `static/js/playback/playback-cache-service.js` 負責播放前預熱、進度統計、快取容量顯示與預熱策略。
 - `static/js/playback/playback-controls.js` 保留控制器事件、按鈕狀態、播放節奏與設定視窗。
 - 預熱模式可設定為關閉、播放前完整預熱、或漸進式背景預熱。
-- 預熱時播放按鈕會被防呆，避免資料還沒 ready 就開始播放。
+- before_play 或明確預熱時，播放按鈕會被防呆；progressive 模式則讓時間線先跑，資料由背景預熱供應。
 - 快取有容量上限，預設 2 GB，可在播放設定中調整。
 - 快取生命週期以瀏覽器頁面為主；關閉頁面後可視為釋放。
 
@@ -187,7 +187,8 @@ sequenceDiagram
 
   User->>UI: 按下播放
   UI->>Playback: setPlayback(true)
-  Playback->>Preload: progressive 短緩衝背景預載
+  Playback->>Playback: 啟動時間線(display cadence + playback rate)
+  Playback->>Preload: progressive 背景預載
   Preload->>BrowserCache: prefetchRequests(date + bbox + columns=render)
 
   alt 只有 before_play 模式
@@ -197,30 +198,37 @@ sequenceDiagram
   end
 
   loop 每一個播放 tick
-    Playback->>Playback: advancePlaybackDay()
-    Playback->>UI: date = nextDate
-    Playback->>BrowserCache: fetchPacket(datasetId + date + bbox + columns)
+    Playback->>Playback: dueFrame = elapsed / displayCadence
+    Playback->>Playback: targetDateIndex = baseDateIndex + dueFrame * playbackRate
 
-    alt 瀏覽器快取命中
-      BrowserCache-->>Playback: packet(rows)
-    else 瀏覽器快取未命中
-      BrowserCache->>API: GET /api/datasets/{datasetId}/records
-      API->>ServerCache: 查 server-side records cache
-      alt Server cache 命中
-        ServerCache-->>API: cached packet
-      else Server cache 未命中
-        API->>DB: SELECT render columns WHERE obs_date + bbox
-        DB-->>API: rows
-        API->>ServerCache: remember packet
+    alt target 或前一個可用 frame 已 ready
+      Playback->>UI: date = selected frame date
+      Playback->>BrowserCache: fetchPacket(datasetId + date + bbox + columns)
+
+      alt 瀏覽器快取命中
+        BrowserCache-->>Playback: packet(rows)
+      else 瀏覽器快取未命中
+        BrowserCache->>API: GET /api/datasets/{datasetId}/records
+        API->>ServerCache: 查 server-side records cache
+        alt Server cache 命中
+          ServerCache-->>API: cached packet
+        else Server cache 未命中
+          API->>DB: SELECT render columns WHERE obs_date + bbox
+          DB-->>API: rows
+          API->>ServerCache: remember packet
+        end
+        API-->>BrowserCache: packet(rows + timing)
+        BrowserCache-->>Playback: packet(rows)
       end
-      API-->>BrowserCache: packet(rows + timing)
-      BrowserCache-->>Playback: packet(rows)
-    end
 
-    Playback->>Renderer: renderGfwMap(rows)
-    Renderer->>Renderer: aggregateGfwRowsForRender()
-    Renderer->>Renderer: 依 fish_sum 計算 cell 顏色
-    Renderer->>Map: WebGL 或 Canvas 畫到地圖
+      Playback->>Renderer: renderGfwMap(rows)
+      Renderer->>Renderer: aggregateGfwRowsForRender()
+      Renderer->>Renderer: 依 fish_sum 計算 cell 顏色
+      Renderer->>Map: WebGL 或 Canvas 畫到地圖
+    else progressive target frame 尚未 ready
+      Playback->>Preload: 以 target date 為 anchor 預熱窗口
+      Playback->>UI: 維持目前顯示 frame
+    end
   end
 ```
 

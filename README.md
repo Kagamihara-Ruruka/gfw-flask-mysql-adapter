@@ -180,7 +180,7 @@ GFW currently supports:
 - play/pause
 - playback speed
 
-Playback scheduling is timeline-driven. After playback starts, the next frame is scheduled immediately, and later frame targets are derived from `playStartedAt + frameNumber * interval`. Query and render work do not add another full interval after each frame. The default behavior is analysis-oriented: dates are not skipped; when the required frame buffer is not ready, playback buffers and shifts the timeline forward instead of bursting through missed dates.
+Playback scheduling is timeline-driven. Playback speed is a timeline rate, not a frame-to-frame delay. `playIntervalMs` stays as the display cadence, while `playbackRate` maps each due display tick to a target date offset. Query and render work do not add another full interval after each frame. In progressive mode, playback starts without blocking for a full prebuffer; each tick displays the closest ready frame at or before the target date, or holds the current frame while background preheat catches up.
 
 AIS is live viewport mode and does not use the date player.
 
@@ -240,7 +240,8 @@ sequenceDiagram
 
   User->>UI: Press Play
   UI->>Playback: setPlayback(true)
-  Playback->>Preload: progressive short-buffer preload
+  Playback->>Playback: start timeline(display cadence + playback rate)
+  Playback->>Preload: progressive background preload
   Preload->>BrowserCache: prefetchRequests(date + bbox + columns=render)
 
   alt before_play mode only
@@ -250,30 +251,37 @@ sequenceDiagram
   end
 
   loop Each playback tick
-    Playback->>Playback: advancePlaybackDay()
-    Playback->>UI: date = nextDate
-    Playback->>BrowserCache: fetchPacket(datasetId + date + bbox + columns)
+    Playback->>Playback: dueFrame = elapsed / displayCadence
+    Playback->>Playback: targetDateIndex = baseDateIndex + dueFrame * playbackRate
 
-    alt Browser cache hit
-      BrowserCache-->>Playback: packet(rows)
-    else Browser cache miss
-      BrowserCache->>API: GET /api/datasets/{datasetId}/records
-      API->>ServerCache: lookup records cache
-      alt Server cache hit
-        ServerCache-->>API: cached packet
-      else Server cache miss
-        API->>DB: SELECT render columns WHERE obs_date + bbox
-        DB-->>API: rows
-        API->>ServerCache: remember packet
+    alt Target or nearest prior frame is ready
+      Playback->>UI: date = selected frame date
+      Playback->>BrowserCache: fetchPacket(datasetId + date + bbox + columns)
+
+      alt Browser cache hit
+        BrowserCache-->>Playback: packet(rows)
+      else Browser cache miss
+        BrowserCache->>API: GET /api/datasets/{datasetId}/records
+        API->>ServerCache: lookup records cache
+        alt Server cache hit
+          ServerCache-->>API: cached packet
+        else Server cache miss
+          API->>DB: SELECT render columns WHERE obs_date + bbox
+          DB-->>API: rows
+          API->>ServerCache: remember packet
+        end
+        API-->>BrowserCache: packet(rows + timing)
+        BrowserCache-->>Playback: packet(rows)
       end
-      API-->>BrowserCache: packet(rows + timing)
-      BrowserCache-->>Playback: packet(rows)
-    end
 
-    Playback->>Renderer: renderGfwMap(rows)
-    Renderer->>Renderer: aggregateGfwRowsForRender()
-    Renderer->>Renderer: compute cell colors from fish_sum
-    Renderer->>Map: draw via WebGL or Canvas
+      Playback->>Renderer: renderGfwMap(rows)
+      Renderer->>Renderer: aggregateGfwRowsForRender()
+      Renderer->>Renderer: compute cell colors from fish_sum
+      Renderer->>Map: draw via WebGL or Canvas
+    else Progressive target frame is not ready
+      Playback->>Preload: preheat window anchored at target date
+      Playback->>UI: hold current displayed frame
+    end
   end
 ```
 

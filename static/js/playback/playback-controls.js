@@ -1,5 +1,6 @@
 const TIME_CONTROL_LAYER_IDS = new Set(["gfw"]);
 const PLAYBACK_CONTROL_IDS = ["latest-date", "replay", "prev-day", "play-toggle", "next-day"];
+const DEFAULT_PLAYBACK_INTERVAL_MS = 1400;
 
 function syncPlayToggleIcon() {
   if (state.isPlaying) {
@@ -43,10 +44,6 @@ function syncPlaybackCacheCapacityMeter() {
 function updatePlaybackCacheStatus(text) {
   syncPlaybackCacheCapacityMeter();
   updatePlaybackBufferStatus();
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function nowMs() {
@@ -93,7 +90,25 @@ function isPlaybackGenerationActive(generation) {
 }
 
 function normalizedPlaybackInterval() {
-  return Math.max(1, Number(state.playIntervalMs || $("play-speed")?.value || 1400));
+  return Math.max(1, Number(state.playIntervalMs || DEFAULT_PLAYBACK_INTERVAL_MS));
+}
+
+function normalizedPlaybackRateValue(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return 1;
+  if (numeric > 16) {
+    return Math.max(0.25, DEFAULT_PLAYBACK_INTERVAL_MS / numeric);
+  }
+  return Math.max(0.25, numeric);
+}
+
+function normalizedPlaybackRate() {
+  const selected = $("play-speed")?.value;
+  return normalizedPlaybackRateValue(state.playbackRate ?? selected ?? 1);
+}
+
+function currentPlaybackDateIndex(dates = datesInSelectedRange()) {
+  return dates.indexOf($("date")?.value);
 }
 
 function clearPlaybackTimeline() {
@@ -102,11 +117,15 @@ function clearPlaybackTimeline() {
 
 function startPlaybackTimeline(generation, { firstDelayMs = 0 } = {}) {
   const intervalMs = normalizedPlaybackInterval();
+  const dates = datesInSelectedRange();
+  const currentIndex = currentPlaybackDateIndex(dates);
   state.playbackCache.timeline = {
     generation,
     intervalMs,
-    startedAt: nowMs() + Math.max(0, Number(firstDelayMs || 0)),
-    nextFrameNumber: 0,
+    rate: normalizedPlaybackRate(),
+    baseDateIndex: Math.max(0, currentIndex),
+    startedAt: nowMs() + Math.max(0, Number(firstDelayMs || 0)) - intervalMs,
+    nextFrameNumber: 1,
   };
   return state.playbackCache.timeline;
 }
@@ -120,55 +139,40 @@ function playbackTimeline(generation) {
 function delayUntilNextPlaybackFrame(generation) {
   const timeline = playbackTimeline(generation);
   const targetMs = Number(timeline.startedAt || 0)
-    + Number(timeline.nextFrameNumber || 0) * Number(timeline.intervalMs || normalizedPlaybackInterval());
+    + Number(timeline.nextFrameNumber || 1) * Number(timeline.intervalMs || normalizedPlaybackInterval());
   return Math.max(0, targetMs - nowMs());
 }
 
-function markPlaybackFrameShown(generation) {
+function duePlaybackFrameNumber(generation) {
   const timeline = playbackTimeline(generation);
-  timeline.nextFrameNumber = Number(timeline.nextFrameNumber || 0) + 1;
+  const intervalMs = Math.max(1, Number(timeline.intervalMs || normalizedPlaybackInterval()));
+  const elapsedFrames = Math.floor((nowMs() - Number(timeline.startedAt || 0)) / intervalMs);
+  return Math.max(1, Number(timeline.nextFrameNumber || 1), elapsedFrames);
 }
 
-function shiftPlaybackTimeline(generation, deltaMs) {
-  const amount = Math.max(0, Number(deltaMs || 0));
-  if (amount <= 0) return;
+function markPlaybackFrameShown(generation, frameNumber = null) {
   const timeline = playbackTimeline(generation);
-  timeline.startedAt = Number(timeline.startedAt || nowMs()) + amount;
+  const shownFrameNumber = Number(frameNumber || duePlaybackFrameNumber(generation));
+  timeline.nextFrameNumber = Math.max(Number(timeline.nextFrameNumber || 1), shownFrameNumber + 1);
 }
 
 function reschedulePlaybackTimelineAfterSpeedChange(generation) {
-  const timeline = playbackTimeline(generation);
   const intervalMs = normalizedPlaybackInterval();
-  const nextFrameNumber = Number(timeline.nextFrameNumber || 0);
-  state.playbackCache.timeline = {
-    generation,
-    intervalMs,
-    startedAt: nowMs() + intervalMs - nextFrameNumber * intervalMs,
-    nextFrameNumber,
-  };
+  startPlaybackTimeline(generation, { firstDelayMs: intervalMs });
 }
 
-function updatePlaybackBufferState({ dates, startIndex, generation, status = "buffering" }) {
-  if (!isPlaybackGenerationActive(generation)) return false;
-  const context = playbackRequestContext();
-  const remainingDates = Math.max(1, dates.length - startIndex);
-  const policy = PlaybackCacheService.bufferPolicy({
-    intervalMs: state.playIntervalMs,
-    remainingDates,
-  });
-  const ready = PlaybackCacheService.countReadyPrefix(dates, startIndex, context);
-  const required = status === "resume" ? policy.resume : policy.required;
-  PlaybackCacheService.setBufferState({
-    buffering: ready < required,
-    status,
-    ready,
-    required,
-    resume: policy.resume,
-    currentDate: dates[startIndex] || "",
-  });
-  updatePlaybackControls();
-  syncPlaybackSettingsInputs();
-  return ready >= required;
+function playbackTargetDateIndex(generation, frameNumber) {
+  const dates = datesInSelectedRange();
+  if (!dates.length) return -1;
+  const timeline = playbackTimeline(generation);
+  const baseIndex = Math.min(
+    dates.length - 1,
+    Math.max(0, Number(timeline.baseDateIndex ?? currentPlaybackDateIndex(dates) ?? 0)),
+  );
+  const rate = Math.max(0.25, Number(timeline.rate || normalizedPlaybackRate()));
+  const scaledOffset = Math.max(1, Number(frameNumber || 1)) * rate;
+  const offset = Math.max(1, rate < 1 ? Math.ceil(scaledOffset) : Math.floor(scaledOffset));
+  return Math.min(dates.length - 1, baseIndex + offset);
 }
 
 function shouldQueueProgressivePreheat({ startIndex = null } = {}) {
@@ -183,6 +187,7 @@ function shouldQueueProgressivePreheat({ startIndex = null } = {}) {
   const remainingDates = Math.max(1, dates.length - index);
   const policy = PlaybackCacheService.bufferPolicy({
     intervalMs: state.playIntervalMs,
+    rate: normalizedPlaybackRate(),
     remainingDates,
   });
   const ready = PlaybackCacheService.countReadyPrefix(dates, index, context);
@@ -191,29 +196,14 @@ function shouldQueueProgressivePreheat({ startIndex = null } = {}) {
 
 function queueProgressivePreheat({ startIndex = null } = {}) {
   if (!shouldQueueProgressivePreheat({ startIndex })) return;
-  preheatPlaybackCache({ blocking: false }).catch((err) => setStatus(err.message, true));
-}
-
-async function waitForPlaybackBuffer({ generation, status = "prebuffering", startIndex = null } = {}) {
   const dates = datesInSelectedRange();
-  const index = startIndex ?? dates.indexOf($("date").value);
-  if (index < 0 || index >= dates.length) return false;
-  while (isPlaybackGenerationActive(generation)) {
-    if (updatePlaybackBufferState({ dates, startIndex: index, generation, status })) {
-      PlaybackCacheService.clearBufferState();
-      updatePlaybackControls();
-      syncPlaybackSettingsInputs();
-      return true;
-    }
-    setStatus(playbackBufferText() || "緩衝中");
-    queueProgressivePreheat({ startIndex: index });
-    await sleep(180);
-  }
-  return false;
+  const anchorDate = startIndex == null ? $("date").value : dates[startIndex];
+  preheatPlaybackCache({ blocking: false, anchorDate }).catch((err) => setStatus(err.message, true));
 }
 
 function syncPlaybackSettingsInputs() {
   const options = PlaybackCacheService.options();
+  if ($("play-speed")) $("play-speed").value = String(normalizedPlaybackRate());
   if ($("playback-cache-mode")) $("playback-cache-mode").value = options.mode;
   if ($("playback-cache-concurrency")) $("playback-cache-concurrency").value = String(options.concurrency);
   if ($("playback-cache-max-dates")) $("playback-cache-max-dates").value = String(options.maxDates);
@@ -435,13 +425,13 @@ async function preparePlaybackStart() {
   return true;
 }
 
-async function preheatPlaybackCache({ blocking = true } = {}) {
+async function preheatPlaybackCache({ blocking = true, anchorDate = $("date").value } = {}) {
   const dates = datesInSelectedRange();
   const intent = RenderIntentService.range({
     dates,
     start: dates[0],
     end: dates[dates.length - 1],
-    anchorDate: $("date").value,
+    anchorDate,
     layerId: state.dataLayer,
     renderProfile: "dashboard.playback",
   });
@@ -455,30 +445,71 @@ async function preheatPlaybackCache({ blocking = true } = {}) {
   });
 }
 
-async function advancePlaybackDay() {
-  const dates = datesInSelectedRange();
-  const index = dates.indexOf($("date").value);
-  if (index < 0 || index >= dates.length - 1) {
-    return false;
+function readyPlaybackTargetIndex(dates, currentIndex, targetIndex) {
+  const options = PlaybackCacheService.options();
+  if (options.mode !== "progressive" || !hasPlaybackCacheLayer()) {
+    return targetIndex;
   }
-  $("date").value = dates[index + 1];
-  updatePlaybackControls();
-  await reloadActiveLayer();
-  queueProgressivePreheat();
-  return true;
+  const context = playbackRequestContext();
+  for (let index = targetIndex; index > currentIndex; index -= 1) {
+    if (PlaybackCacheService.hasDate(dates[index], context)) {
+      return index;
+    }
+  }
+  return -1;
 }
 
-async function ensurePlaybackCanAdvance(generation) {
-  const options = PlaybackCacheService.options();
-  if (options.mode !== "progressive") return true;
-  const dates = datesInSelectedRange();
-  const index = dates.indexOf($("date").value);
-  if (index < 0 || index >= dates.length - 1) return false;
-  return waitForPlaybackBuffer({
-    generation,
-    status: "resume",
-    startIndex: index + 1,
+function markPlaybackTargetWaiting(dates, targetIndex) {
+  PlaybackCacheService.setBufferState({
+    buffering: true,
+    status: "waiting",
+    ready: 0,
+    required: 1,
+    resume: 1,
+    currentDate: dates[targetIndex] || "",
   });
+  updatePlaybackControls();
+  syncPlaybackSettingsInputs();
+  setStatus(playbackBufferText() || "緩衝中");
+  queueProgressivePreheat({ startIndex: targetIndex });
+}
+
+async function renderPlaybackDateIndex(dates, targetIndex) {
+  $("date").value = dates[targetIndex];
+  updatePlaybackControls();
+  await reloadActiveLayer();
+  queueProgressivePreheat({ startIndex: targetIndex });
+}
+
+async function advancePlaybackToTimelineTarget(generation, frameNumber) {
+  const dates = datesInSelectedRange();
+  const currentIndex = currentPlaybackDateIndex(dates);
+  if (currentIndex < 0) {
+    return { advanced: false, done: false };
+  }
+  if (currentIndex >= dates.length - 1) {
+    return { advanced: false, done: true };
+  }
+
+  const targetIndex = playbackTargetDateIndex(generation, frameNumber);
+  if (targetIndex <= currentIndex) {
+    return { advanced: true, held: true, done: false };
+  }
+
+  const renderIndex = readyPlaybackTargetIndex(dates, currentIndex, targetIndex);
+  if (renderIndex < 0) {
+    markPlaybackTargetWaiting(dates, targetIndex);
+    return { advanced: true, held: true, done: false };
+  }
+
+  if (renderIndex < targetIndex) {
+    queueProgressivePreheat({ startIndex: targetIndex });
+  }
+  PlaybackCacheService.clearBufferState();
+  updatePlaybackControls();
+  syncPlaybackSettingsInputs();
+  await renderPlaybackDateIndex(dates, renderIndex);
+  return { advanced: true, rendered: true, done: renderIndex >= dates.length - 1 };
 }
 
 function schedulePlaybackTick(generation = state.playbackCache.generation) {
@@ -487,21 +518,17 @@ function schedulePlaybackTick(generation = state.playbackCache.generation) {
   state.playTimer = setTimeout(async () => {
     if (!state.isPlaying || !isPlaybackGenerationActive(generation)) return;
     try {
-      const bufferStartMs = nowMs();
-      if (!(await ensurePlaybackCanAdvance(generation))) {
-        if (isPlaybackGenerationActive(generation)) stopPlayback();
-        return;
-      }
-      const bufferElapsedMs = nowMs() - bufferStartMs;
-      if (bufferElapsedMs > 50) {
-        shiftPlaybackTimeline(generation, bufferElapsedMs);
-      }
-      const advanced = await advancePlaybackDay();
-      if (!advanced) {
+      const frameNumber = duePlaybackFrameNumber(generation);
+      const result = await advancePlaybackToTimelineTarget(generation, frameNumber);
+      if (!result.advanced && result.done) {
         stopPlayback();
         return;
       }
-      markPlaybackFrameShown(generation);
+      if (!result.advanced) {
+        stopPlayback();
+        return;
+      }
+      markPlaybackFrameShown(generation, frameNumber);
       if (state.isPlaying && isPlaybackGenerationActive(generation)) {
         schedulePlaybackTick(generation);
       }
@@ -525,7 +552,7 @@ async function setPlayback(active) {
     stopPlayback();
     return;
   }
-  state.playIntervalMs = Number($("play-speed").value || state.playIntervalMs);
+  state.playbackRate = normalizedPlaybackRate();
   const options = PlaybackCacheService.options();
   if (options.mode === "before_play") {
     await preheatPlaybackCache({ blocking: true });
@@ -534,10 +561,6 @@ async function setPlayback(active) {
     state.isPlaying = true;
     updatePlaybackControls();
     preheatPlaybackCache({ blocking: false }).catch((err) => setStatus(err.message, true));
-    if (!(await waitForPlaybackBuffer({ generation, status: "prebuffering" }))) {
-      if (isPlaybackGenerationActive(generation)) stopPlayback();
-      return;
-    }
   }
   state.isPlaying = true;
   startPlaybackTimeline(generation);
@@ -565,9 +588,9 @@ async function normalizeDateInputs({ reload = true } = {}) {
 }
 
 function updatePlaybackSpeed(sourceId = "play-speed") {
-  const source = $(sourceId) || $("play-speed");
-  state.playIntervalMs = Number(source.value || state.playIntervalMs);
-  $("play-speed").value = String(state.playIntervalMs);
+  const source = sourceId?.target || $(sourceId) || $("play-speed");
+  state.playbackRate = normalizedPlaybackRateValue(source.value || state.playbackRate);
+  $("play-speed").value = String(state.playbackRate);
   if (typeof syncFullscreenPlaybackControls === "function") {
     syncFullscreenPlaybackControls();
   }

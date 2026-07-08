@@ -116,6 +116,7 @@ const state = {
   isPlaying: false,
   playTimer: null,
   playIntervalMs: 1400,
+  playbackRate: 1,
   isBootstrapping: true,
   queryPolicy: { default_limit: null, max_limit: null, table_preview_limit: 300 },
 };

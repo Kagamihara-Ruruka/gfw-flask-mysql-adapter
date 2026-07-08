@@ -86,9 +86,10 @@ const PlaybackCacheService = (() => {
     return ready;
   }
 
-  function bufferPolicy({ intervalMs, remainingDates } = {}) {
+  function bufferPolicy({ intervalMs, remainingDates, rate } = {}) {
     const interval = Math.max(1, Number(intervalMs || 1400));
-    const speed = Math.max(0.25, 1400 / interval);
+    const timelineRate = Math.max(0.25, Number(rate || state.playbackRate || 1));
+    const speed = Math.max(0.25, (1400 / interval) * timelineRate);
     const required = Math.max(2, Math.ceil(speed * 3));
     const resume = Math.max(required, Math.ceil(speed * 4));
     const remaining = Math.max(1, Number(remainingDates || required));
@@ -132,6 +133,7 @@ const PlaybackCacheService = (() => {
       const remainingDates = Math.max(1, allDates.length - anchorIndex);
       const policy = bufferPolicy({
         intervalMs: state.playIntervalMs,
+        rate: state.playbackRate,
         remainingDates,
       });
       const dynamicWindowAhead = Math.max(windowAhead, policy.resume);
