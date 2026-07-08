@@ -246,6 +246,13 @@
                 </select>
               </label>
               <label>
+                步進策略
+                <select id="playback-step-mode">
+                  <option value="sequential" selected>逐張播放（不跳過）</option>
+                  <option value="fluid">流暢播放（允許跳格）</option>
+                </select>
+              </label>
+              <label>
                 並行預熱數
                 <select id="playback-cache-concurrency">
                   <option value="auto">Auto</option>
@@ -270,7 +277,7 @@
                 <input id="playback-cache-window-ahead" type="number" min="1" max="60" step="1" value="8" hidden>
                 <input id="playback-cache-max-gb" type="number" min="0.25" max="16" step="0.25" value="2">
               </label>
-              <p class="setting-note">查詢策略決定播放器如何取得時間序列快照：完整預熱後播放會先把本次播放序列寫入快取再播放；短緩衝播放會用逐日期背景預載補前方窗口；逐張查詢不主動預載，但仍可讀取既有快取。日期上限為 0 時不限制；並行預熱數只控制逐日期背景預載；快取上限用來避免一次預熱過大範圍造成記憶體壓力。</p>
+              <p class="setting-note">查詢策略決定播放器如何取得時間序列快照：完整預熱後播放會先把本次播放序列寫入快取再播放；短緩衝播放會用逐日期背景預載補前方窗口；逐張查詢不主動預載，但仍可讀取既有快取。步進策略決定播放器是否保證每張快照都顯示；逐張播放不跳日期，流暢播放允許追時間軸時跳到較新的 ready frame。日期上限為 0 時不限制；並行預熱數只控制逐日期背景預載；快取上限用來避免一次預熱過大範圍造成記憶體壓力。</p>
               <div class="playback-cache-meter" aria-label="播放快取容量">
                 <div class="playback-cache-meter-label">
                   <span id="playback-cache-capacity-text">快取容量：0 B / 2.00 GB</span>
@@ -597,7 +604,7 @@
   <script src="/static/vendor/plotly-basic-3.6.0.min.js?v=3.6.0"></script>
   <script src="/static/js/ui/telemetry/snapshot-performance-chart.js?v=plotly-snapshot-object-v6"></script>
   <script src="/static/TimingMetrics.js?v=plotly-snapshot-chart-v3"></script>
-  <script src="/static/js/core/state.js?v=layer-imports-v1"></script>
+  <script src="/static/js/core/state.js?v=playback-step-mode-v1"></script>
   <script src="/static/js/core/dom.js?v=zh-tw-v99"></script>
   <script src="/static/js/core/render-state.js?v=zh-tw-v99"></script>
   <script src="/static/js/core/map.js?v=basemap-list-v1"></script>
@@ -627,7 +634,7 @@
   <script src="/static/js/services/gfw-record-cache.js?v=zh-tw-v99"></script>
   <script src="/static/js/playback/playback-cache-service.js?v=playback-buffer-v1"></script>
   <script src="/static/js/ui/settings/hardware-settings.js?v=zh-tw-v99"></script>
-  <script src="/static/js/playback/playback-controls.js?v=playback-buffer-v1"></script>
+  <script src="/static/js/playback/playback-controls.js?v=playback-step-mode-v1"></script>
   <script src="/static/js/playback/fullscreen-playback-controls.js?v=fullscreen-svg-v1"></script>
   <script src="/static/js/services/api-client.js?v=plotly-snapshot-active-v1"></script>
   <script src="/static/app.js?v=layer-imports-v1"></script>

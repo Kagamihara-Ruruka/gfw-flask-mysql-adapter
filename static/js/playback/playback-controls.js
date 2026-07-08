@@ -1,6 +1,7 @@
 const TIME_CONTROL_LAYER_IDS = new Set(["gfw"]);
 const PLAYBACK_CONTROL_IDS = ["latest-date", "replay", "prev-day", "play-toggle", "next-day"];
 const DEFAULT_PLAYBACK_INTERVAL_MS = 1400;
+const PLAYBACK_BUFFER_RETRY_MS = 180;
 
 function syncPlayToggleIcon() {
   if (state.isPlaying) {
@@ -89,7 +90,21 @@ function isPlaybackGenerationActive(generation) {
   return state.playbackCache.generation === generation;
 }
 
-function normalizedPlaybackInterval() {
+function playbackStepMode() {
+  return state.playbackCache?.stepMode === "fluid" ? "fluid" : "sequential";
+}
+
+function normalizedPlaybackInterval(stepMode = playbackStepMode(), rate = normalizedPlaybackRate()) {
+  const baseInterval = basePlaybackInterval();
+  if (stepMode === "fluid") return baseInterval;
+  return Math.max(1, Math.round(baseInterval / Math.max(0.25, Number(rate || 1))));
+}
+
+function timelineStepMode(timeline) {
+  return timeline?.stepMode === "fluid" ? "fluid" : "sequential";
+}
+
+function basePlaybackInterval() {
   return Math.max(1, Number(state.playIntervalMs || DEFAULT_PLAYBACK_INTERVAL_MS));
 }
 
@@ -116,13 +131,16 @@ function clearPlaybackTimeline() {
 }
 
 function startPlaybackTimeline(generation, { firstDelayMs = 0 } = {}) {
-  const intervalMs = normalizedPlaybackInterval();
+  const stepMode = playbackStepMode();
+  const rate = normalizedPlaybackRate();
+  const intervalMs = normalizedPlaybackInterval(stepMode, rate);
   const dates = datesInSelectedRange();
   const currentIndex = currentPlaybackDateIndex(dates);
   state.playbackCache.timeline = {
     generation,
     intervalMs,
-    rate: normalizedPlaybackRate(),
+    rate,
+    stepMode,
     baseDateIndex: Math.max(0, currentIndex),
     startedAt: nowMs() + Math.max(0, Number(firstDelayMs || 0)) - intervalMs,
     nextFrameNumber: 1,
@@ -152,8 +170,19 @@ function duePlaybackFrameNumber(generation) {
 
 function markPlaybackFrameShown(generation, frameNumber = null) {
   const timeline = playbackTimeline(generation);
-  const shownFrameNumber = Number(frameNumber || duePlaybackFrameNumber(generation));
-  timeline.nextFrameNumber = Math.max(Number(timeline.nextFrameNumber || 1), shownFrameNumber + 1);
+  if (timelineStepMode(timeline) === "fluid") {
+    const shownFrameNumber = Number(frameNumber || duePlaybackFrameNumber(generation));
+    timeline.nextFrameNumber = Math.max(Number(timeline.nextFrameNumber || 1), shownFrameNumber + 1);
+    return;
+  }
+  timeline.nextFrameNumber = Number(timeline.nextFrameNumber || 1) + 1;
+}
+
+function shiftPlaybackTimeline(generation, deltaMs) {
+  const amount = Math.max(0, Number(deltaMs || 0));
+  if (amount <= 0) return;
+  const timeline = playbackTimeline(generation);
+  timeline.startedAt = Number(timeline.startedAt || nowMs()) + amount;
 }
 
 function reschedulePlaybackTimelineAfterSpeedChange(generation) {
@@ -165,6 +194,11 @@ function playbackTargetDateIndex(generation, frameNumber) {
   const dates = datesInSelectedRange();
   if (!dates.length) return -1;
   const timeline = playbackTimeline(generation);
+  if (timelineStepMode(timeline) === "sequential") {
+    const currentIndex = currentPlaybackDateIndex(dates);
+    if (currentIndex < 0) return -1;
+    return Math.min(dates.length - 1, currentIndex + 1);
+  }
   const baseIndex = Math.min(
     dates.length - 1,
     Math.max(0, Number(timeline.baseDateIndex ?? currentPlaybackDateIndex(dates) ?? 0)),
@@ -205,6 +239,7 @@ function syncPlaybackSettingsInputs() {
   const options = PlaybackCacheService.options();
   if ($("play-speed")) $("play-speed").value = String(normalizedPlaybackRate());
   if ($("playback-cache-mode")) $("playback-cache-mode").value = options.mode;
+  if ($("playback-step-mode")) $("playback-step-mode").value = playbackStepMode();
   if ($("playback-cache-concurrency")) $("playback-cache-concurrency").value = String(options.concurrency);
   if ($("playback-cache-max-dates")) $("playback-cache-max-dates").value = String(options.maxDates);
   if ($("playback-cache-window-behind")) $("playback-cache-window-behind").value = String(options.windowBehind);
@@ -225,6 +260,14 @@ function releasePlaybackRenderArtifacts(reason) {
 function bindPlaybackSettingsControls() {
   $("playback-cache-mode")?.addEventListener("change", (event) => {
     state.playbackCache.mode = event.target.value;
+    syncPlaybackSettingsInputs();
+  });
+  $("playback-step-mode")?.addEventListener("change", (event) => {
+    state.playbackCache.stepMode = event.target.value === "fluid" ? "fluid" : "sequential";
+    if (state.isPlaying) {
+      reschedulePlaybackTimelineAfterSpeedChange(state.playbackCache.generation);
+      schedulePlaybackTick(state.playbackCache.generation);
+    }
     syncPlaybackSettingsInputs();
   });
   $("playback-cache-concurrency")?.addEventListener("change", (event) => {
@@ -482,6 +525,7 @@ async function renderPlaybackDateIndex(dates, targetIndex) {
 }
 
 async function advancePlaybackToTimelineTarget(generation, frameNumber) {
+  const timeline = playbackTimeline(generation);
   const dates = datesInSelectedRange();
   const currentIndex = currentPlaybackDateIndex(dates);
   if (currentIndex < 0) {
@@ -499,7 +543,10 @@ async function advancePlaybackToTimelineTarget(generation, frameNumber) {
   const renderIndex = readyPlaybackTargetIndex(dates, currentIndex, targetIndex);
   if (renderIndex < 0) {
     markPlaybackTargetWaiting(dates, targetIndex);
-    return { advanced: true, held: true, done: false };
+    if (timelineStepMode(timeline) === "fluid") {
+      return { advanced: true, held: true, done: false };
+    }
+    return { advanced: false, buffering: true, done: false };
   }
 
   if (renderIndex < targetIndex) {
@@ -520,6 +567,13 @@ function schedulePlaybackTick(generation = state.playbackCache.generation) {
     try {
       const frameNumber = duePlaybackFrameNumber(generation);
       const result = await advancePlaybackToTimelineTarget(generation, frameNumber);
+      if (result.buffering) {
+        shiftPlaybackTimeline(generation, PLAYBACK_BUFFER_RETRY_MS);
+        if (state.isPlaying && isPlaybackGenerationActive(generation)) {
+          schedulePlaybackTick(generation);
+        }
+        return;
+      }
       if (!result.advanced && result.done) {
         stopPlayback();
         return;

@@ -180,7 +180,7 @@ GFW currently supports:
 - play/pause
 - playback speed
 
-Playback scheduling is timeline-driven. Playback speed is a timeline rate, not a frame-to-frame delay. `playIntervalMs` stays as the display cadence, while `playbackRate` maps each due display tick to a target date offset. Query and render work do not add another full interval after each frame. In progressive mode, playback starts without blocking for a full prebuffer; each tick displays the closest ready frame at or before the target date, or holds the current frame while background preheat catches up.
+Playback scheduling is timeline-driven. Playback speed is a timeline rate, not the old "wait after the previous frame completes" loop. The default step mode is sequential: every selected snapshot is consumed in order, and `playbackRate` changes the target cadence for the next snapshot. The optional fluid step mode maps due display ticks to timeline offsets and may jump to a newer ready frame. Query and render work do not add another full interval after each frame. In progressive mode, playback starts without blocking for a full prebuffer; sequential mode buffers instead of skipping the next snapshot, while fluid mode may hold the current frame or jump to the closest ready frame at or before the target date.
 
 AIS is live viewport mode and does not use the date player.
 
@@ -240,7 +240,7 @@ sequenceDiagram
 
   User->>UI: Press Play
   UI->>Playback: setPlayback(true)
-  Playback->>Playback: start timeline(display cadence + playback rate)
+  Playback->>Playback: start timeline(display cadence + playback rate + step mode)
   Playback->>Preload: progressive background preload
   Preload->>BrowserCache: prefetchRequests(date + bbox + columns=render)
 
@@ -252,7 +252,11 @@ sequenceDiagram
 
   loop Each playback tick
     Playback->>Playback: dueFrame = elapsed / displayCadence
-    Playback->>Playback: targetDateIndex = baseDateIndex + dueFrame * playbackRate
+    alt sequential step mode
+      Playback->>Playback: targetDateIndex = currentDateIndex + 1
+    else fluid step mode
+      Playback->>Playback: targetDateIndex = baseDateIndex + dueFrame * playbackRate
+    end
 
     alt Target or nearest prior frame is ready
       Playback->>UI: date = selected frame date
@@ -278,7 +282,10 @@ sequenceDiagram
       Renderer->>Renderer: aggregateGfwRowsForRender()
       Renderer->>Renderer: compute cell colors from fish_sum
       Renderer->>Map: draw via WebGL or Canvas
-    else Progressive target frame is not ready
+    else sequential target frame is not ready
+      Playback->>Preload: preheat window anchored at target date
+      Playback->>UI: buffer and preserve next snapshot
+    else fluid target frame is not ready
       Playback->>Preload: preheat window anchored at target date
       Playback->>UI: hold current displayed frame
     end

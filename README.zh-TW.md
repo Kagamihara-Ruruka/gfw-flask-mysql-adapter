@@ -142,7 +142,7 @@ GFW 支援：
 - 播放速度
 - 播放前預熱快取
 
-播放排程以時間線為主控：播放速度是時間軸倍率，不是 frame 與 frame 中間的等待值。`playIntervalMs` 保持為固定顯示節拍，`playbackRate` 只決定每個到點 tick 要落到哪一個日期 offset。查詢與渲染工作不會在每格後再額外疊一個完整 interval。progressive 模式不會為了完整 prebuffer 阻塞開播；每個 tick 會顯示 target date 或它之前最接近且 ready 的 frame，若完全沒有 ready frame，就先維持目前畫面並讓背景預熱追上。
+播放排程以時間線為主控：播放速度是時間軸倍率，不是舊的「上一格完成後再等待」迴圈。預設步進策略是逐張播放：每一張選取範圍內的 snapshot 都會依序消耗，`playbackRate` 只改變下一張 snapshot 的目標節拍。設定頁也提供流暢播放模式；流暢模式會把到點 tick 映射到時間軸 offset，因此允許跳到較新的 ready frame。查詢與渲染工作不會在每格後再額外疊一個完整 interval。progressive 模式不會為了完整 prebuffer 阻塞開播；逐張模式會 buffering 而不是跳過下一張，流暢模式則可維持目前畫面或顯示 target date 之前最接近且 ready 的 frame。
 
 AIS live 模式目前不走日期播放器。
 
@@ -187,7 +187,7 @@ sequenceDiagram
 
   User->>UI: 按下播放
   UI->>Playback: setPlayback(true)
-  Playback->>Playback: 啟動時間線(display cadence + playback rate)
+  Playback->>Playback: 啟動時間線(display cadence + playback rate + step mode)
   Playback->>Preload: progressive 背景預載
   Preload->>BrowserCache: prefetchRequests(date + bbox + columns=render)
 
@@ -199,7 +199,11 @@ sequenceDiagram
 
   loop 每一個播放 tick
     Playback->>Playback: dueFrame = elapsed / displayCadence
-    Playback->>Playback: targetDateIndex = baseDateIndex + dueFrame * playbackRate
+    alt 逐張播放模式
+      Playback->>Playback: targetDateIndex = currentDateIndex + 1
+    else 流暢播放模式
+      Playback->>Playback: targetDateIndex = baseDateIndex + dueFrame * playbackRate
+    end
 
     alt target 或前一個可用 frame 已 ready
       Playback->>UI: date = selected frame date
@@ -225,7 +229,10 @@ sequenceDiagram
       Renderer->>Renderer: aggregateGfwRowsForRender()
       Renderer->>Renderer: 依 fish_sum 計算 cell 顏色
       Renderer->>Map: WebGL 或 Canvas 畫到地圖
-    else progressive target frame 尚未 ready
+    else 逐張模式 target frame 尚未 ready
+      Playback->>Preload: 以 target date 為 anchor 預熱窗口
+      Playback->>UI: buffering，保留下一張 snapshot
+    else 流暢模式 target frame 尚未 ready
       Playback->>Preload: 以 target date 為 anchor 預熱窗口
       Playback->>UI: 維持目前顯示 frame
     end
