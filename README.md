@@ -191,6 +191,21 @@ The settings page exposes playback as separate responsibility boxes instead of o
 - Visual effects: crossfade decorates layer replacement; Gaussian blur is limited to zoom / LOD reload masking.
 - Render pressure and timing: renderer policy and the dashboard timing box observe performance without owning the playback clock.
 
+Playback invariants are covered by `tests/playback_contracts.test.mjs` and can be run with:
+
+```powershell
+python scripts/playback_contract_smoke.py
+```
+
+The guarded contracts are:
+
+- `analysis` delivery uses `sequential` stepping: even if the clock is late or the speed is 4x, the next render target is always `currentIndex + 1`.
+- Buffering can shift the scheduler clock, but it must not advance the selected date until the target frame is ready.
+- Progressive cold cache reports `fetching 0 / 1`; when the target packet is ready it resumes as `1 / 1` and then records `shown`.
+- `off` and `before_play` are not frame-buffer gated; they may still use existing cache, but they do not enter the analysis buffering contract.
+- `fluid` is the only step mode allowed to map elapsed time to future dates. It remains reserved behind the disabled smooth delivery port.
+- Prefetch, render, interpolation, blur, and timing observations supply or decorate frames; none of them owns the playback date clock.
+
 Current frontend module boundaries:
 
 | Module | Boundary |

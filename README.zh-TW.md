@@ -153,6 +153,21 @@ GFW 支援：
 - 視覺效果：淡入淡出只修飾 layer 替換；高斯模糊只限縮放 / LOD 重算時遮罩。
 - 渲染壓力與測速：renderer policy 與儀表板測速 box 只觀測或降級，不擁有播放 clock。
 
+播放器不變式由 `tests/playback_contracts.test.mjs` 保護，可用下列命令執行：
+
+```powershell
+python scripts/playback_contract_smoke.py
+```
+
+目前鎖住的契約：
+
+- `analysis` 交付策略使用 `sequential` 步進：即使 clock late 或速度是 4x，下一個 render target 仍必須是 `currentIndex + 1`。
+- buffering 可以平移 scheduler clock，但 frame ready 前不能推進選取日期。
+- progressive cold cache 會回報 `fetching 0 / 1`；target packet ready 後以 `1 / 1` resumed，然後才記錄 `顯示 snapshot`。
+- `off` 與 `before_play` 不受 frame buffer gate 控制；它們可以讀既有快取，但不進入 analysis buffering contract。
+- `fluid` 是唯一允許把 elapsed time 映射到未來日期的 step mode；目前仍保留在 disabled 的流暢交付端口後面。
+- prefetch、render、interpolation、blur 與測速觀測只供應或修飾 frame，不擁有播放日期 clock。
+
 目前前端 module 邊界：
 
 | Module | 邊界 |
