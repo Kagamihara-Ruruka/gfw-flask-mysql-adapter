@@ -49,7 +49,7 @@ The frontend is deliberately split by responsibility:
 - `static/js/services`: API client calls, GFW record cache/prewarm behavior, render intent, and shared service helpers.
 - `static/js/layers`: GFW, AIS, and EEZ rendering behavior, plus GFW layer visual effects such as zoom blur and crossfade handoff.
 - `static/js/rendering`: renderer capability checks, renderer selection, WebGL/canvas paint helpers, and GFW paint configuration.
-- `static/js/playback`: playback controls, pure timeline scheduler, frame readiness buffer, playback renderer handoff, playback telemetry, progressive prefetch controller, preheat service, worker policy, and snapshot splitting helpers.
+- `static/js/playback`: playback controls, pure timeline scheduler, frame readiness buffer, playback renderer handoff, playback interpolation policy, playback telemetry, progressive prefetch controller, preheat service, worker policy, and snapshot splitting helpers.
 - `static/js/ui`: table, playback, layer selector, map settings, and shared layer style controls.
 
 Runtime pipeline:
@@ -186,7 +186,7 @@ The settings page exposes playback as separate responsibility boxes instead of o
 
 - Playback timeline: `playbackRate` and step mode decide which real snapshot date the player is trying to show.
 - Data cache / preheat: range preheat, progressive prefetch, concurrency, and memory budget supply records packets.
-- Frame interpolation: reserved for a future `requestAnimationFrame` loop that computes visual alpha between two ready real frames.
+- Frame interpolation: playback can use the existing layer crossfade as a visual-only interpolation policy or switch directly between real snapshots; data blending remains reserved for a future `requestAnimationFrame` loop backed by render artifacts.
 - Visual effects: crossfade decorates layer replacement; Gaussian blur is limited to zoom / LOD reload masking.
 - Render pressure and timing: renderer policy and the dashboard timing box observe performance without owning the playback clock.
 
@@ -197,6 +197,7 @@ Current frontend module boundaries:
 | `static/js/playback/playback-scheduler.js` | Pure timeline math: cadence, due frame, speed/rate mapping, and target date index. |
 | `static/js/playback/playback-frame-buffer.js` | Frame readiness decisions: ready, missing, waiting, and nearest ready frame selection. |
 | `static/js/playback/playback-renderer.js` | Playback-to-render handoff: set selected date, sync controls, call the existing active-layer reload. |
+| `static/js/playback/playback-interpolation-controller.js` | Playback interpolation policy: choose layer crossfade or direct switching during playback; data blending is not enabled yet. |
 | `static/js/playback/playback-prefetch-controller.js` | Progressive prefetch policy: decide whether to queue a background preheat window and which date anchors it. |
 | `static/js/playback/playback-cache-service.js` | Actual preheat/cache execution, progress state, concurrency, and cache capacity accounting. |
 | `static/js/playback/playback-telemetry.js` | Playback control events sent to the timing panel, separate from SQL/API/render timings. |
@@ -209,7 +210,7 @@ flowchart LR
   Cache["Data cache / preheat timeline"] --> Packet["Ready records packet"]
   Target --> Packet
   Packet --> Renderer["GFW renderer: aggregate rows + WebGL/Canvas draw"]
-  Interp["Frame interpolation loop: future visual alpha, no SQL"] -.-> Renderer
+  Interp["Frame interpolation policy: layer crossfade now, future data blend"] -.-> Renderer
   Effects["Visual effects: decorate only, no scheduling"] -.-> Renderer
   Renderer --> Map["Visible Leaflet layer"]
   Metrics["Dashboard timing box: observes SQL/API/client/render"] -.-> Clock

@@ -27,6 +27,7 @@ REQUIRED_HTML_MARKERS = (
     "playback-frame-buffer.js",
     "playback-renderer.js",
     "playback-telemetry.js",
+    "playback-interpolation-controller.js",
     "playback-prefetch-controller.js",
     "gfw-layer-effects.js",
 )
@@ -40,6 +41,7 @@ REQUIRED_SCRIPT_ORDER = (
     "playback-frame-buffer.js",
     "playback-renderer.js",
     "playback-telemetry.js",
+    "playback-interpolation-controller.js",
     "playback-prefetch-controller.js",
     "playback-controls.js",
 )

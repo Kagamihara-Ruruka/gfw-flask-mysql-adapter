@@ -228,10 +228,16 @@ function queueProgressivePreheat({ startIndex = null } = {}) {
 
 function syncPlaybackSettingsInputs() {
   const options = PlaybackCacheService.options();
+  const interpolation = PlaybackInterpolationController.options(state);
   if ($("play-speed")) $("play-speed").value = String(normalizedPlaybackRate());
   if ($("playback-rate")) $("playback-rate").value = String(normalizedPlaybackRate());
   if ($("playback-cache-mode")) $("playback-cache-mode").value = options.mode;
   if ($("playback-step-mode")) $("playback-step-mode").value = playbackStepMode();
+  if ($("playback-interpolation-mode")) $("playback-interpolation-mode").value = interpolation.mode;
+  if ($("playback-interpolation-fps")) {
+    $("playback-interpolation-fps").value = String(interpolation.targetFps);
+    $("playback-interpolation-fps").disabled = !interpolation.dataBlendAvailable;
+  }
   if ($("playback-cache-concurrency")) $("playback-cache-concurrency").value = String(options.concurrency);
   if ($("playback-cache-max-dates")) $("playback-cache-max-dates").value = String(options.maxDates);
   if ($("playback-cache-window-behind")) $("playback-cache-window-behind").value = String(options.windowBehind);
@@ -261,6 +267,15 @@ function bindPlaybackSettingsControls() {
       reschedulePlaybackTimelineAfterSpeedChange(state.playbackCache.generation);
       schedulePlaybackTick(state.playbackCache.generation);
     }
+    syncPlaybackSettingsInputs();
+  });
+  $("playback-interpolation-mode")?.addEventListener("change", (event) => {
+    PlaybackInterpolationController.setMode(state, event.target.value);
+    syncGfwTransitionStyle();
+    syncPlaybackSettingsInputs();
+  });
+  $("playback-interpolation-fps")?.addEventListener("change", (event) => {
+    PlaybackInterpolationController.setTargetFps(state, event.target.value);
     syncPlaybackSettingsInputs();
   });
   $("playback-cache-concurrency")?.addEventListener("change", (event) => {
@@ -634,6 +649,9 @@ async function setPlayback(active) {
     rate: timeline.rate,
     stepMode: timeline.stepMode,
     intervalMs: timeline.intervalMs,
+    interpolationMode: PlaybackInterpolationController.modeLabel(
+      PlaybackInterpolationController.options(state).mode
+    ),
   });
   if (typeof syncFullscreenPlaybackControls === "function") {
     syncFullscreenPlaybackControls();

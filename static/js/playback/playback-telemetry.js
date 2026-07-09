@@ -8,10 +8,11 @@ const PlaybackTelemetry = (() => {
     return mode === "fluid" ? "流暢" : "逐張";
   }
 
-  function recordTimelineStart({ rate, stepMode, intervalMs }) {
+  function recordTimelineStart({ rate, stepMode, intervalMs, interpolationMode = "" }) {
+    const interpolation = interpolationMode ? ` / ${interpolationMode}` : "";
     record({
       label: "播放時間軸",
-      text: `${stepModeLabel(stepMode)} / ${rate}x / ${Math.round(intervalMs)} ms`,
+      text: `${stepModeLabel(stepMode)} / ${rate}x / ${Math.round(intervalMs)} ms${interpolation}`,
       status: "ok",
       source: "start",
       reset: true,

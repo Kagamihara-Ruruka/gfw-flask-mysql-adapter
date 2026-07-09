@@ -1,6 +1,10 @@
 const GfwLayerEffects = (() => {
   function transitionMs(targetState) {
-    return Math.max(0, Number(targetState.gfwTransitionMs || 0));
+    const baseMs = Math.max(0, Number(targetState.gfwTransitionMs || 0));
+    if (typeof PlaybackInterpolationController !== "undefined") {
+      return PlaybackInterpolationController.playbackTransitionMs(targetState, baseMs);
+    }
+    return baseMs;
   }
 
   function blurPx(targetState) {

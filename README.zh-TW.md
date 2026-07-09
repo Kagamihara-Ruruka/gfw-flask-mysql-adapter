@@ -68,7 +68,7 @@ Root 層的 `Interface.py`、`DatabaseConnect.py` 等舊檔名目前只保留相
 - `static/app.js`：啟動 app，綁定 UI 與事件。
 - `static/js/core`：共用 state、DOM、map、geo、render-state。
 - `static/js/services`：API client、GFW record cache、render intent 與共用 service helper。
-- `static/js/playback`：播放控制、純時間線 scheduler、frame readiness buffer、playback renderer handoff、playback telemetry、progressive prefetch controller、播放預熱、worker policy 與 snapshot splitter。
+- `static/js/playback`：播放控制、純時間線 scheduler、frame readiness buffer、playback renderer handoff、playback interpolation policy、playback telemetry、progressive prefetch controller、播放預熱、worker policy 與 snapshot splitter。
 - `static/js/layers`：GFW、AIS、EEZ、graticule 圖層行為，以及 GFW zoom blur / crossfade 視覺效果邊界。
 - `static/js/rendering`：WebGL/Canvas 能力檢查、renderer registry、GFW paint 設定。
 - `static/js/ui`：table、播放控制、圖層選單、地圖設定、圖層樣式設定。
@@ -148,7 +148,7 @@ GFW 支援：
 
 - 播放時間軸：`playbackRate` 與步進策略決定播放器正在追哪一張真實 snapshot。
 - 資料快取 / 預熱：range 預熱、progressive 背景預載、並行數與容量上限只負責供應 records packet。
-- Frame 補間：保留給未來的 `requestAnimationFrame` 視覺循環，只在兩張已 ready 的真實資料幀之間計算 alpha。
+- Frame 補間：播放可選用現有 layer crossfade 作為純視覺補間，也可在播放時直接切換真實 snapshot；真正資料 blend 仍保留給未來由 render artifact 支撐的 `requestAnimationFrame` 循環。
 - 視覺效果：淡入淡出只修飾 layer 替換；高斯模糊只限縮放 / LOD 重算時遮罩。
 - 渲染壓力與測速：renderer policy 與儀表板測速 box 只觀測或降級，不擁有播放 clock。
 
@@ -159,6 +159,7 @@ GFW 支援：
 | `static/js/playback/playback-scheduler.js` | 純時間線計算：cadence、due frame、speed/rate 映射與目標日期 index。 |
 | `static/js/playback/playback-frame-buffer.js` | frame readiness 決策：ready、missing、waiting，以及最近 ready frame 選擇。 |
 | `static/js/playback/playback-renderer.js` | 播放器到渲染的 handoff：設定選取日期、同步控制狀態、呼叫既有 active-layer reload。 |
+| `static/js/playback/playback-interpolation-controller.js` | 播放補間 policy：播放時選擇 layer crossfade 或直接切換；資料 blend 尚未啟用。 |
 | `static/js/playback/playback-prefetch-controller.js` | progressive prefetch policy：決定是否排背景預熱窗口，以及 anchor date。 |
 | `static/js/playback/playback-cache-service.js` | 實際預熱 / 快取執行、進度狀態、並行數與容量統計。 |
 | `static/js/playback/playback-telemetry.js` | 播放控制事件送進測速 box，和 SQL/API/render timing 分開。 |
@@ -171,7 +172,7 @@ flowchart LR
   Cache["資料快取 / 預熱時間軸"] --> Packet["Ready records packet"]
   Target --> Packet
   Packet --> Renderer["GFW renderer：aggregate rows + WebGL/Canvas draw"]
-  Interp["Frame 補間循環：未來能力，只算視覺 alpha，不查 SQL"] -.-> Renderer
+  Interp["Frame 補間 policy：目前 layer crossfade，未來 data blend"] -.-> Renderer
   Effects["視覺效果：只修飾，不排程"] -.-> Renderer
   Renderer --> Map["可見 Leaflet 圖層"]
   Metrics["儀表板測速 box：觀測 SQL/API/client/render"] -.-> Clock

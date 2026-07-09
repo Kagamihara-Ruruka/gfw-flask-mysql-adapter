@@ -99,6 +99,10 @@ const state = {
       failed: 0,
     },
   },
+  playbackInterpolation: {
+    mode: "layer_crossfade",
+    targetFps: 24,
+  },
   gfwRenderArtifactCache: {
     generation: 0,
     released: 0,
