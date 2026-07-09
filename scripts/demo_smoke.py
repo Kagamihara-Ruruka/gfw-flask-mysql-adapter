@@ -24,6 +24,7 @@ REQUIRED_HTML_MARKERS = (
     'id="playback-step-mode"',
     'id="playback-cache-mode"',
     "playback-scheduler.js",
+    "playback-frame-buffer.js",
 )
 
 

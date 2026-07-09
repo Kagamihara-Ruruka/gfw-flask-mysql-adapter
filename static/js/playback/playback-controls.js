@@ -483,26 +483,22 @@ async function preheatPlaybackCache({ blocking = true, anchorDate = $("date").va
 
 function readyPlaybackTargetIndex(dates, currentIndex, targetIndex) {
   const options = PlaybackCacheService.options();
-  if (options.mode !== "progressive" || !hasPlaybackCacheLayer()) {
-    return targetIndex;
-  }
-  const context = playbackRequestContext();
-  for (let index = targetIndex; index > currentIndex; index -= 1) {
-    if (PlaybackCacheService.hasDate(dates[index], context)) {
-      return index;
-    }
-  }
-  return -1;
+  return PlaybackFrameBuffer.readyTargetIndex({
+    dates,
+    currentIndex,
+    targetIndex,
+    mode: options.mode,
+    hasCacheLayer: hasPlaybackCacheLayer(),
+    requestContext: playbackRequestContext(),
+    cacheService: PlaybackCacheService,
+  });
 }
 
 function markPlaybackTargetWaiting(dates, targetIndex) {
-  PlaybackCacheService.setBufferState({
-    buffering: true,
-    status: "waiting",
-    ready: 0,
-    required: 1,
-    resume: 1,
-    currentDate: dates[targetIndex] || "",
+  PlaybackFrameBuffer.markWaiting({
+    dates,
+    targetIndex,
+    cacheService: PlaybackCacheService,
   });
   updatePlaybackControls();
   syncPlaybackSettingsInputs();
