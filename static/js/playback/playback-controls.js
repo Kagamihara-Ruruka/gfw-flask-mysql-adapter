@@ -136,15 +136,15 @@ function startPlaybackTimeline(generation, { firstDelayMs = 0 } = {}) {
   const intervalMs = normalizedPlaybackInterval(stepMode, rate);
   const dates = datesInSelectedRange();
   const currentIndex = currentPlaybackDateIndex(dates);
-  state.playbackCache.timeline = {
+  state.playbackCache.timeline = PlaybackScheduler.start({
     generation,
     intervalMs,
     rate,
     stepMode,
-    baseDateIndex: Math.max(0, currentIndex),
-    startedAt: nowMs() + Math.max(0, Number(firstDelayMs || 0)) - intervalMs,
-    nextFrameNumber: 1,
-  };
+    baseDateIndex: currentIndex,
+    nowMs: nowMs(),
+    firstDelayMs,
+  });
   return state.playbackCache.timeline;
 }
 
@@ -156,33 +156,32 @@ function playbackTimeline(generation) {
 
 function delayUntilNextPlaybackFrame(generation) {
   const timeline = playbackTimeline(generation);
-  const targetMs = Number(timeline.startedAt || 0)
-    + Number(timeline.nextFrameNumber || 1) * Number(timeline.intervalMs || normalizedPlaybackInterval());
-  return Math.max(0, targetMs - nowMs());
+  return PlaybackScheduler.delayUntilNextFrame(timeline, {
+    nowMs: nowMs(),
+    fallbackIntervalMs: normalizedPlaybackInterval(),
+  });
 }
 
 function duePlaybackFrameNumber(generation) {
   const timeline = playbackTimeline(generation);
-  const intervalMs = Math.max(1, Number(timeline.intervalMs || normalizedPlaybackInterval()));
-  const elapsedFrames = Math.floor((nowMs() - Number(timeline.startedAt || 0)) / intervalMs);
-  return Math.max(1, Number(timeline.nextFrameNumber || 1), elapsedFrames);
+  return PlaybackScheduler.dueFrameNumber(timeline, {
+    nowMs: nowMs(),
+    fallbackIntervalMs: normalizedPlaybackInterval(),
+  });
 }
 
 function markPlaybackFrameShown(generation, frameNumber = null) {
   const timeline = playbackTimeline(generation);
-  if (timelineStepMode(timeline) === "fluid") {
-    const shownFrameNumber = Number(frameNumber || duePlaybackFrameNumber(generation));
-    timeline.nextFrameNumber = Math.max(Number(timeline.nextFrameNumber || 1), shownFrameNumber + 1);
-    return;
-  }
-  timeline.nextFrameNumber = Number(timeline.nextFrameNumber || 1) + 1;
+  PlaybackScheduler.markFrameShown(timeline, {
+    frameNumber: frameNumber || duePlaybackFrameNumber(generation),
+  });
 }
 
 function shiftPlaybackTimeline(generation, deltaMs) {
   const amount = Math.max(0, Number(deltaMs || 0));
   if (amount <= 0) return;
   const timeline = playbackTimeline(generation);
-  timeline.startedAt = Number(timeline.startedAt || nowMs()) + amount;
+  PlaybackScheduler.shift(timeline, amount);
 }
 
 function reschedulePlaybackTimelineAfterSpeedChange(generation) {
@@ -194,19 +193,11 @@ function playbackTargetDateIndex(generation, frameNumber) {
   const dates = datesInSelectedRange();
   if (!dates.length) return -1;
   const timeline = playbackTimeline(generation);
-  if (timelineStepMode(timeline) === "sequential") {
-    const currentIndex = currentPlaybackDateIndex(dates);
-    if (currentIndex < 0) return -1;
-    return Math.min(dates.length - 1, currentIndex + 1);
-  }
-  const baseIndex = Math.min(
-    dates.length - 1,
-    Math.max(0, Number(timeline.baseDateIndex ?? currentPlaybackDateIndex(dates) ?? 0)),
-  );
-  const rate = Math.max(0.25, Number(timeline.rate || normalizedPlaybackRate()));
-  const scaledOffset = Math.max(1, Number(frameNumber || 1)) * rate;
-  const offset = Math.max(1, rate < 1 ? Math.ceil(scaledOffset) : Math.floor(scaledOffset));
-  return Math.min(dates.length - 1, baseIndex + offset);
+  return PlaybackScheduler.targetDateIndex(timeline, {
+    datesLength: dates.length,
+    currentIndex: currentPlaybackDateIndex(dates),
+    frameNumber,
+  });
 }
 
 function shouldQueueProgressivePreheat({ startIndex = null } = {}) {

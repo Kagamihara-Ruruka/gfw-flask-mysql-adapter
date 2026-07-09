@@ -23,6 +23,7 @@ REQUIRED_HTML_MARKERS = (
     'id="playback-rate"',
     'id="playback-step-mode"',
     'id="playback-cache-mode"',
+    "playback-scheduler.js",
 )
 
 
