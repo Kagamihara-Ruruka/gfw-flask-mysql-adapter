@@ -1242,6 +1242,19 @@ button {
   font-size: 12px;
 }
 
+.pipeline-event-track {
+  display: flex;
+  min-height: 52px;
+  align-items: stretch;
+  padding: 0.28rem;
+  border: 1px solid rgba(72, 84, 98, 0.68);
+  border-radius: 0.4rem;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px) 0 0 / 10% 100%,
+    rgba(11, 18, 27, 0.72);
+  overflow: hidden;
+}
+
 .pipeline-segment {
   position: relative;
   flex: 0 0 var(--segment-width);
@@ -1257,6 +1270,12 @@ button {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   cursor: help;
+}
+
+.pipeline-segment.pipeline-event {
+  flex: 0 1 min(22rem, 100%);
+  border-right: 0;
+  border-radius: 0.28rem;
 }
 
 .pipeline-boundary {
@@ -1302,6 +1321,10 @@ button {
 
 .pipeline-segment.kind-interaction {
   background: linear-gradient(180deg, rgba(86, 100, 218, 0.94), rgba(54, 68, 166, 0.94));
+}
+
+.pipeline-segment.kind-playback {
+  background: linear-gradient(180deg, rgba(78, 167, 134, 0.94), rgba(39, 112, 100, 0.94));
 }
 
 .pipeline-segment.kind-serialize {

@@ -68,7 +68,7 @@ Root 層的 `Interface.py`、`DatabaseConnect.py` 等舊檔名目前只保留相
 - `static/app.js`：啟動 app，綁定 UI 與事件。
 - `static/js/core`：共用 state、DOM、map、geo、render-state。
 - `static/js/services`：API client、GFW record cache、render intent 與共用 service helper。
-- `static/js/playback`：播放控制、純時間線 scheduler、frame readiness buffer、playback renderer handoff、播放預熱、worker policy 與 snapshot splitter。
+- `static/js/playback`：播放控制、純時間線 scheduler、frame readiness buffer、playback renderer handoff、playback telemetry、播放預熱、worker policy 與 snapshot splitter。
 - `static/js/layers`：GFW、AIS、EEZ、graticule 圖層行為，以及 GFW zoom blur / crossfade 視覺效果邊界。
 - `static/js/rendering`：WebGL/Canvas 能力檢查、renderer registry、GFW paint 設定。
 - `static/js/ui`：table、播放控制、圖層選單、地圖設定、圖層樣式設定。

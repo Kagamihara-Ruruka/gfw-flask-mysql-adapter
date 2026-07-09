@@ -412,6 +412,7 @@ function updatePlaybackControls() {
 }
 
 function stopPlayback({ cancelPending = true } = {}) {
+  const wasActive = Boolean(state.isPlaying || state.playTimer || state.playbackCache?.timeline);
   if (cancelPending) {
     nextPlaybackGeneration();
   }
@@ -420,6 +421,9 @@ function stopPlayback({ cancelPending = true } = {}) {
   clearPlaybackTimeline();
   clearTimeout(state.playTimer);
   state.playTimer = null;
+  if (wasActive) {
+    PlaybackTelemetry.recordStop?.({ date: $("date")?.value });
+  }
   updatePlaybackControls();
   syncPlaybackSettingsInputs();
 }
@@ -504,6 +508,7 @@ function readyPlaybackTargetIndex(dates, currentIndex, targetIndex) {
 }
 
 function markPlaybackTargetWaiting(dates, targetIndex) {
+  PlaybackTelemetry.recordBuffering?.({ date: dates[targetIndex] });
   PlaybackFrameBuffer.markWaiting({
     dates,
     targetIndex,
@@ -524,6 +529,7 @@ async function renderPlaybackDateIndex(dates, targetIndex) {
     reloadActiveLayer,
     afterRender: () => queueProgressivePreheat({ startIndex: targetIndex }),
   });
+  PlaybackTelemetry.recordFrameShown?.({ date: dates[targetIndex] });
 }
 
 async function advancePlaybackToTimelineTarget(generation, frameNumber) {
@@ -552,6 +558,10 @@ async function advancePlaybackToTimelineTarget(generation, frameNumber) {
   }
 
   if (renderIndex < targetIndex) {
+    PlaybackTelemetry.recordFrameFallback?.({
+      targetDate: dates[targetIndex],
+      renderDate: dates[renderIndex],
+    });
     queueProgressivePreheat({ startIndex: targetIndex });
   }
   PlaybackCacheService.clearBufferState();
@@ -619,7 +629,12 @@ async function setPlayback(active) {
     preheatPlaybackCache({ blocking: false }).catch((err) => setStatus(err.message, true));
   }
   state.isPlaying = true;
-  startPlaybackTimeline(generation);
+  const timeline = startPlaybackTimeline(generation);
+  PlaybackTelemetry.recordTimelineStart?.({
+    rate: timeline.rate,
+    stepMode: timeline.stepMode,
+    intervalMs: timeline.intervalMs,
+  });
   if (typeof syncFullscreenPlaybackControls === "function") {
     syncFullscreenPlaybackControls();
   }
