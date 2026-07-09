@@ -632,6 +632,12 @@ GET /api/render/capability
 
 ## Validation
 
+Demo-critical smoke:
+
+```powershell
+python scripts\demo_smoke.py --base-url http://127.0.0.1:5081
+```
+
 JavaScript syntax check:
 
 ```powershell
@@ -642,7 +648,7 @@ node --check static\app.js
 Git whitespace check:
 
 ```powershell
-git diff --check -- static templates *.py config requirements.txt docker-compose.yml README.md
+git diff --check -- static templates scripts *.py config requirements.txt docker-compose.yml README.md
 ```
 
 ## Notes

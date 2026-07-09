@@ -423,6 +423,12 @@ GET /api/render/capability
 
 ## 驗證
 
+Demo-critical smoke：
+
+```powershell
+python scripts\demo_smoke.py --base-url http://127.0.0.1:5081
+```
+
 JavaScript syntax check：
 
 ```powershell
@@ -439,7 +445,7 @@ Python syntax check：
 Git whitespace check：
 
 ```powershell
-git diff --check -- static templates *.py config requirements.txt docker-compose.yml README.md README.zh-TW.md
+git diff --check -- static templates scripts *.py config requirements.txt docker-compose.yml README.md README.zh-TW.md
 ```
 
 ## 文件漂移檢查結果
