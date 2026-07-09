@@ -164,7 +164,7 @@ python scripts/playback_contract_smoke.py
 - `analysis` 交付策略使用 `sequential` 步進：即使 clock late 或速度是 4x，下一個 render target 仍必須是 `currentIndex + 1`。
 - buffering 可以平移 scheduler clock，但 frame ready 前不能推進選取日期。
 - progressive cold cache 會回報 `fetching 0 / 1`；target packet ready 後以 `1 / 1` resumed，然後才記錄 `顯示 snapshot`。
-- progressive request 失敗會回報 `failed`、在測速 box 留下錯誤事件，並在重試上限後停止播放，而不是無限重試。
+- progressive request 失敗會回報 `failed`、在測速 box 留下錯誤事件；若 target frame 長時間等不到，會在等待逾時後停止播放，而不是無限等待。
 - 被取消或被取代的 progressive preheat，不得把 late progress、status 或 failure state 套到目前播放 generation。
 - `off` 與 `before_play` 不受 frame buffer gate 控制；它們可以讀既有快取，但不進入 analysis buffering contract。
 - `fluid` 是唯一允許把 elapsed time 映射到未來日期的 step mode；目前仍保留在 disabled 的流暢交付端口後面。

@@ -202,7 +202,7 @@ The guarded contracts are:
 - `analysis` delivery uses `sequential` stepping: even if the clock is late or the speed is 4x, the next render target is always `currentIndex + 1`.
 - Buffering can shift the scheduler clock, but it must not advance the selected date until the target frame is ready.
 - Progressive cold cache reports `fetching 0 / 1`; when the target packet is ready it resumes as `1 / 1` and then records `shown`.
-- Progressive request failures report `failed`, emit an error event in the timing box, and stop playback after the retry ceiling instead of retrying forever.
+- Progressive request failures report `failed`, emit an error event in the timing box, and stop playback after the wait timeout instead of retrying forever.
 - Cancelled or replaced progressive preheats cannot apply late progress, status, or failure state to the current playback generation.
 - `off` and `before_play` are not frame-buffer gated; they may still use existing cache, but they do not enter the analysis buffering contract.
 - `fluid` is the only step mode allowed to map elapsed time to future dates. It remains reserved behind the disabled smooth delivery port.

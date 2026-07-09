@@ -1,8 +1,8 @@
 const TIME_CONTROL_LAYER_IDS = new Set(["gfw"]);
 const PLAYBACK_CONTROL_IDS = ["latest-date", "replay", "prev-day", "play-toggle", "next-day"];
 const DEFAULT_PLAYBACK_INTERVAL_MS = 1400;
-const PLAYBACK_BUFFER_RETRY_MS = 180;
-const PLAYBACK_BUFFER_MAX_ATTEMPTS = 60;
+const PLAYBACK_BUFFER_POLL_MS = 180;
+const PLAYBACK_BUFFER_TIMEOUT_MS = 30_000;
 
 function syncPlayToggleIcon() {
   if (state.isPlaying) {
@@ -69,15 +69,16 @@ function playbackBufferText() {
   if (!cache.buffering && cache.bufferStatus !== "prebuffering" && cache.bufferStatus !== "failed") return "";
   const ready = Number(cache.bufferReady || 0);
   const required = Number(cache.bufferRequired || 0);
-  const attempts = Number(cache.bufferAttempts || 0);
   const stateName = cache.bufferStateName ? ` · ${cache.bufferStateName}` : "";
-  const attemptText = attempts > 1 ? ` · 重試 ${attempts}` : "";
   const date = cache.bufferCurrentDate ? ` ${cache.bufferCurrentDate}` : "";
   const error = cache.bufferErrorMessage ? ` · ${cache.bufferErrorMessage}` : "";
+  const waitStartedAt = Number(cache.bufferWaitStartedAt || 0);
+  const waitMs = waitStartedAt > 0 ? Math.max(0, nowMs() - waitStartedAt) : 0;
+  const waitText = waitMs >= 1000 ? ` · 等待 ${(waitMs / 1000).toFixed(1)}s` : "";
   if (cache.bufferStatus === "failed") {
-    return `播放失敗${date}${stateName}：${ready} / ${required}${attemptText}${error}`;
+    return `播放失敗${date}${stateName}：${ready} / ${required}${waitText}${error}`;
   }
-  return `緩衝中${date}${stateName}：${ready} / ${required}${attemptText}`;
+  return `緩衝中${date}${stateName}：${ready} / ${required}${waitText}`;
 }
 
 function updatePlaybackBufferStatus() {
@@ -567,6 +568,17 @@ function playbackBufferAttempt(packet) {
   };
 }
 
+function playbackBufferTimedOut(waitStartedAt) {
+  const startedAt = Number(waitStartedAt || 0);
+  return startedAt > 0 && nowMs() - startedAt > PLAYBACK_BUFFER_TIMEOUT_MS;
+}
+
+function shouldDemandRenderPlaybackTarget(timeline, frameNumber, currentIndex, targetIndex) {
+  return timelineStepMode(timeline) === "sequential"
+    && Number(frameNumber || 1) <= 1
+    && targetIndex === currentIndex + 1;
+}
+
 function markPlaybackTargetFailed(dates, targetIndex, decision, { waitStartedAt = 0, attempts = 0, reason = "" } = {}) {
   const packet = decision || playbackFrameDecision(dates, currentPlaybackDateIndex(dates), targetIndex);
   const errorMessage = reason || packet.errorMessage || "frame request failed";
@@ -655,15 +667,22 @@ async function advancePlaybackToTimelineTarget(generation, frameNumber) {
   }
   const renderIndex = decision.renderIndex;
   if (renderIndex < 0) {
+    if (shouldDemandRenderPlaybackTarget(timeline, frameNumber, currentIndex, targetIndex)) {
+      PlaybackCacheService.clearBufferState();
+      updatePlaybackControls();
+      syncPlaybackSettingsInputs();
+      await renderPlaybackDateIndex(dates, targetIndex);
+      return { advanced: true, rendered: true, done: targetIndex >= dates.length - 1 };
+    }
     if (timelineStepMode(timeline) === "fluid") {
       markPlaybackTargetWaiting(dates, targetIndex, decision, waitState);
       return { advanced: true, held: true, done: false };
     }
-    if (waitState.attempts > PLAYBACK_BUFFER_MAX_ATTEMPTS) {
+    if (playbackBufferTimedOut(waitState.waitStartedAt)) {
       return markPlaybackTargetFailed(dates, targetIndex, decision, {
         waitStartedAt: waitState.waitStartedAt,
         attempts: waitState.attempts,
-        reason: `buffer retry limit ${PLAYBACK_BUFFER_MAX_ATTEMPTS}`,
+        reason: `buffer wait timeout ${Math.round(PLAYBACK_BUFFER_TIMEOUT_MS / 1000)}s`,
       });
     }
     markPlaybackTargetWaiting(dates, targetIndex, decision, waitState);
@@ -702,7 +721,7 @@ function schedulePlaybackTick(generation = state.playbackCache.generation) {
       const frameNumber = duePlaybackFrameNumber(generation);
       const result = await advancePlaybackToTimelineTarget(generation, frameNumber);
       if (result.buffering) {
-        shiftPlaybackTimeline(generation, PLAYBACK_BUFFER_RETRY_MS);
+        shiftPlaybackTimeline(generation, PLAYBACK_BUFFER_POLL_MS);
         if (state.isPlaying && isPlaybackGenerationActive(generation)) {
           schedulePlaybackTick(generation);
         }
