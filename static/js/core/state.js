@@ -99,6 +99,10 @@ const state = {
       failed: 0,
     },
   },
+  playbackDelivery: {
+    mode: "analysis",
+    requestedMode: "analysis",
+  },
   playbackInterpolation: {
     mode: "layer_crossfade",
     targetFps: 24,

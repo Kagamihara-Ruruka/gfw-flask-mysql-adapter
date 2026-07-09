@@ -142,11 +142,11 @@ GFW 支援：
 - 播放速度
 - 播放前預熱快取
 
-播放排程以時間線為主控：播放速度是時間軸倍率，不是舊的「上一格完成後再等待」迴圈。預設步進策略是逐張播放：每一張選取範圍內的 snapshot 都會依序消耗，`playbackRate` 只改變下一張 snapshot 的目標節拍。設定頁也提供流暢播放模式；流暢模式會把到點 tick 映射到時間軸 offset，因此允許跳到較新的 ready frame。查詢與渲染工作不會在每格後再額外疊一個完整 interval。progressive 模式不會為了完整 prebuffer 阻塞開播；逐張模式會 buffering 而不是跳過下一張，流暢模式則可維持目前畫面或顯示 target date 之前最接近且 ready 的 frame。
+播放排程以時間線為主控：播放速度是時間軸倍率，不是舊的「上一格完成後再等待」迴圈。預設交付策略是分析模式：每一張選取範圍內的真實 snapshot 都會依序消耗，`playbackRate` 只改變下一張 snapshot 的目標節拍。設定頁已暴露流暢與嚴格模式端口，但兩者明確標示為尚未實作，因此現階段不會接管播放 clock。查詢與渲染工作不會在每格後再額外疊一個完整 interval。progressive 模式不會為了完整 prebuffer 阻塞開播；分析模式會 buffering 而不是跳過下一張。
 
 設定頁把播放器拆成多個責任 box，而不是把所有選項混在同一個控制面：
 
-- 播放時間軸：`playbackRate` 與步進策略決定播放器正在追哪一張真實 snapshot。
+- 播放時間軸：播放交付策略與 `playbackRate` 決定播放器正在追哪一張真實 snapshot。分析模式已實作；流暢與嚴格模式是已暴露但未啟用的保留端口。
 - 資料快取 / 預熱：range 預熱、progressive 背景預載、並行數與容量上限只負責供應 records packet。
 - Frame 補間：播放可選用現有 layer crossfade 作為純視覺補間，也可在播放時直接切換真實 snapshot；真正資料 blend 仍保留給未來由 render artifact 支撐的 `requestAnimationFrame` 循環。
 - 視覺效果：淡入淡出只修飾 layer 替換；高斯模糊只限縮放 / LOD 重算時遮罩。
@@ -156,6 +156,7 @@ GFW 支援：
 
 | Module | 邊界 |
 | --- | --- |
+| `static/js/playback/playback-delivery-policy.js` | 播放交付策略：analysis / smooth / strict 時間軸語意的唯一上層入口。目前只啟用分析模式；流暢與嚴格模式明確標示為保留端口。 |
 | `static/js/playback/playback-scheduler.js` | 純時間線計算：cadence、due frame、speed/rate 映射與目標日期 index。 |
 | `static/js/playback/playback-frame-buffer.js` | frame readiness 決策：ready、missing、waiting，以及最近 ready frame 選擇。 |
 | `static/js/playback/playback-renderer.js` | 播放器到渲染的 handoff：設定選取日期、同步控制狀態、呼叫既有 active-layer reload。 |
@@ -223,7 +224,7 @@ sequenceDiagram
 
   User->>UI: 按下播放
   UI->>Playback: setPlayback(true)
-  Playback->>Playback: 啟動時間線(display cadence + playback rate + step mode)
+  Playback->>Playback: 啟動時間線(交付策略 + display cadence + playback rate)
   Playback->>Preload: progressive 背景預載
   Preload->>BrowserCache: prefetchRequests(date + bbox + columns=render)
 

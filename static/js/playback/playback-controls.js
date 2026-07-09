@@ -91,6 +91,9 @@ function isPlaybackGenerationActive(generation) {
 }
 
 function playbackStepMode() {
+  if (typeof PlaybackDeliveryPolicy !== "undefined") {
+    return PlaybackDeliveryPolicy.stepMode(state);
+  }
   return state.playbackCache?.stepMode === "fluid" ? "fluid" : "sequential";
 }
 
@@ -228,11 +231,17 @@ function queueProgressivePreheat({ startIndex = null } = {}) {
 
 function syncPlaybackSettingsInputs() {
   const options = PlaybackCacheService.options();
+  const delivery = PlaybackDeliveryPolicy.apply(state);
   const interpolation = PlaybackInterpolationController.options(state);
   if ($("play-speed")) $("play-speed").value = String(normalizedPlaybackRate());
   if ($("playback-rate")) $("playback-rate").value = String(normalizedPlaybackRate());
+  if ($("playback-delivery-policy")) $("playback-delivery-policy").value = delivery.requestedMode;
+  if ($("playback-delivery-status")) $("playback-delivery-status").textContent = delivery.statusText;
   if ($("playback-cache-mode")) $("playback-cache-mode").value = options.mode;
-  if ($("playback-step-mode")) $("playback-step-mode").value = playbackStepMode();
+  if ($("playback-step-mode")) {
+    $("playback-step-mode").value = delivery.stepMode;
+    $("playback-step-mode").disabled = true;
+  }
   if ($("playback-interpolation-mode")) $("playback-interpolation-mode").value = interpolation.mode;
   if ($("playback-interpolation-fps")) {
     $("playback-interpolation-fps").value = String(interpolation.targetFps);
@@ -257,16 +266,23 @@ function releasePlaybackRenderArtifacts(reason) {
 
 function bindPlaybackSettingsControls() {
   $("playback-rate")?.addEventListener("change", () => updatePlaybackSpeed("playback-rate"));
+  $("playback-delivery-policy")?.addEventListener("change", (event) => {
+    const delivery = PlaybackDeliveryPolicy.setMode(state, event.target.value);
+    if (!delivery.implemented) {
+      setStatus(delivery.statusText);
+    }
+    if (state.isPlaying) {
+      reschedulePlaybackTimelineAfterSpeedChange(state.playbackCache.generation);
+      schedulePlaybackTick(state.playbackCache.generation);
+    }
+    syncPlaybackSettingsInputs();
+  });
   $("playback-cache-mode")?.addEventListener("change", (event) => {
     state.playbackCache.mode = event.target.value;
     syncPlaybackSettingsInputs();
   });
   $("playback-step-mode")?.addEventListener("change", (event) => {
-    state.playbackCache.stepMode = event.target.value === "fluid" ? "fluid" : "sequential";
-    if (state.isPlaying) {
-      reschedulePlaybackTimelineAfterSpeedChange(state.playbackCache.generation);
-      schedulePlaybackTick(state.playbackCache.generation);
-    }
+    event.target.value = playbackStepMode();
     syncPlaybackSettingsInputs();
   });
   $("playback-interpolation-mode")?.addEventListener("change", (event) => {
@@ -645,10 +661,12 @@ async function setPlayback(active) {
   }
   state.isPlaying = true;
   const timeline = startPlaybackTimeline(generation);
+  const delivery = PlaybackDeliveryPolicy.options(state);
   PlaybackTelemetry.recordTimelineStart?.({
     rate: timeline.rate,
     stepMode: timeline.stepMode,
     intervalMs: timeline.intervalMs,
+    deliveryPolicy: PlaybackDeliveryPolicy.telemetryLabel(delivery),
     interpolationMode: PlaybackInterpolationController.modeLabel(
       PlaybackInterpolationController.options(state).mode
     ),

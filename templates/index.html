@@ -238,6 +238,15 @@
             <section class="settings-section playback-settings-section">
               <h3>播放時間軸</h3>
               <label>
+                播放交付策略
+                <select id="playback-delivery-policy">
+                  <option value="analysis" selected>分析模式（已實作：每張 snapshot 都顯示）</option>
+                  <option value="smooth" disabled>流暢模式（未實作：時間軸主控 / 可跳幀）</option>
+                  <option value="strict" disabled>嚴格模式（未實作：frame 不 ready 就 buffering）</option>
+                </select>
+              </label>
+              <p id="playback-delivery-status" class="setting-note">已啟用：分析模式。每張真實 snapshot 都會顯示；frame 不 ready 時以緩衝等待，不跳過日期。</p>
+              <label>
                 播放倍率
                 <select id="playback-rate">
                   <option value="0.5">0.5x</option>
@@ -247,13 +256,13 @@
                 </select>
               </label>
               <label>
-                步進策略
-                <select id="playback-step-mode">
+                低階步進策略
+                <select id="playback-step-mode" disabled>
                   <option value="sequential" selected>逐張播放（不跳過）</option>
-                  <option value="fluid">流暢播放（允許跳格）</option>
+                  <option value="fluid">流暢步進（由未實作策略啟用）</option>
                 </select>
               </label>
-              <p class="setting-note">這一組只決定「時間線現在應該抵達哪一張 snapshot」。逐張播放會保證每張快照都被用上；流暢播放會追隨時間軸，必要時維持目前畫面或跳到最近 ready frame。查詢、渲染與模糊不應反過來控制這條時間軸。</p>
+              <p class="setting-note">播放交付策略是目前唯一控制時間軸語意的入口。分析模式會保證每張快照都被用上；流暢與嚴格模式端口已保留，但在實作完成前不接管時間線。查詢、渲染與模糊不應反過來控制這條時間軸。</p>
             </section>
             <section class="settings-section playback-settings-section">
               <h3>資料快取 / 預熱</h3>
@@ -677,6 +686,7 @@
   <script src="/static/js/services/render-intent-service.js?v=render-intent-v1"></script>
   <script src="/static/js/services/gfw-record-cache.js?v=zh-tw-v99"></script>
   <script src="/static/js/playback/playback-cache-service.js?v=playback-buffer-v1"></script>
+  <script src="/static/js/playback/playback-delivery-policy.js?v=playback-delivery-policy-v1"></script>
   <script src="/static/js/ui/settings/hardware-settings.js?v=zh-tw-v99"></script>
   <script src="/static/js/playback/playback-scheduler.js?v=playback-scheduler-v1"></script>
   <script src="/static/js/playback/playback-frame-buffer.js?v=playback-frame-buffer-v1"></script>

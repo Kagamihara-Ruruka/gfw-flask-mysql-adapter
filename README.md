@@ -49,7 +49,7 @@ The frontend is deliberately split by responsibility:
 - `static/js/services`: API client calls, GFW record cache/prewarm behavior, render intent, and shared service helpers.
 - `static/js/layers`: GFW, AIS, and EEZ rendering behavior, plus GFW layer visual effects such as zoom blur and crossfade handoff.
 - `static/js/rendering`: renderer capability checks, renderer selection, WebGL/canvas paint helpers, and GFW paint configuration.
-- `static/js/playback`: playback controls, pure timeline scheduler, frame readiness buffer, playback renderer handoff, playback interpolation policy, playback telemetry, progressive prefetch controller, preheat service, worker policy, and snapshot splitting helpers.
+- `static/js/playback`: playback controls, delivery policy, pure timeline scheduler, frame readiness buffer, playback renderer handoff, playback interpolation policy, playback telemetry, progressive prefetch controller, preheat service, worker policy, and snapshot splitting helpers.
 - `static/js/ui`: table, playback, layer selector, map settings, and shared layer style controls.
 
 Runtime pipeline:
@@ -180,11 +180,11 @@ GFW currently supports:
 - play/pause
 - playback speed
 
-Playback scheduling is timeline-driven. Playback speed is a timeline rate, not the old "wait after the previous frame completes" loop. The default step mode is sequential: every selected snapshot is consumed in order, and `playbackRate` changes the target cadence for the next snapshot. The optional fluid step mode maps due display ticks to timeline offsets and may jump to a newer ready frame. Query and render work do not add another full interval after each frame. In progressive mode, playback starts without blocking for a full prebuffer; sequential mode buffers instead of skipping the next snapshot, while fluid mode may hold the current frame or jump to the closest ready frame at or before the target date.
+Playback scheduling is timeline-driven. Playback speed is a timeline rate, not the old "wait after the previous frame completes" loop. The default delivery policy is analysis mode: every selected real snapshot is consumed in order, and `playbackRate` changes the target cadence for the next snapshot. Smooth and strict delivery policy ports are visible in Settings but explicitly marked as not implemented, so they do not control the playback clock yet. Query and render work do not add another full interval after each frame. In progressive mode, playback starts without blocking for a full prebuffer; analysis mode buffers instead of skipping the next snapshot.
 
 The settings page exposes playback as separate responsibility boxes instead of one mixed control group:
 
-- Playback timeline: `playbackRate` and step mode decide which real snapshot date the player is trying to show.
+- Playback timeline: delivery policy and `playbackRate` decide which real snapshot date the player is trying to show. Analysis mode is implemented; smooth and strict modes are reserved ports.
 - Data cache / preheat: range preheat, progressive prefetch, concurrency, and memory budget supply records packets.
 - Frame interpolation: playback can use the existing layer crossfade as a visual-only interpolation policy or switch directly between real snapshots; data blending remains reserved for a future `requestAnimationFrame` loop backed by render artifacts.
 - Visual effects: crossfade decorates layer replacement; Gaussian blur is limited to zoom / LOD reload masking.
@@ -194,6 +194,7 @@ Current frontend module boundaries:
 
 | Module | Boundary |
 | --- | --- |
+| `static/js/playback/playback-delivery-policy.js` | Playback delivery policy: the single high-level owner for analysis/smooth/strict timeline semantics. Only analysis mode is enabled today; smooth and strict are exposed as reserved ports. |
 | `static/js/playback/playback-scheduler.js` | Pure timeline math: cadence, due frame, speed/rate mapping, and target date index. |
 | `static/js/playback/playback-frame-buffer.js` | Frame readiness decisions: ready, missing, waiting, and nearest ready frame selection. |
 | `static/js/playback/playback-renderer.js` | Playback-to-render handoff: set selected date, sync controls, call the existing active-layer reload. |
@@ -277,7 +278,7 @@ sequenceDiagram
 
   User->>UI: Press Play
   UI->>Playback: setPlayback(true)
-  Playback->>Playback: start timeline(display cadence + playback rate + step mode)
+  Playback->>Playback: start timeline(delivery policy + display cadence + playback rate)
   Playback->>Preload: progressive background preload
   Preload->>BrowserCache: prefetchRequests(date + bbox + columns=render)
 
