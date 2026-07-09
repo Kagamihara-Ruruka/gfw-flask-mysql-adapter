@@ -142,7 +142,7 @@ GFW 支援：
 - 播放速度
 - 播放前預熱快取
 
-播放排程以時間線為主控：播放速度是時間軸倍率，不是舊的「上一格完成後再等待」迴圈。預設交付策略是分析模式：每一張選取範圍內的真實 snapshot 都會依序消耗，`playbackRate` 只改變下一張 snapshot 的目標節拍。設定頁已暴露流暢與嚴格模式端口，但兩者明確標示為尚未實作，因此現階段不會接管播放 clock。查詢與渲染工作不會在每格後再額外疊一個完整 interval。progressive 模式不會為了完整 prebuffer 阻塞開播；分析模式會進入 buffering 而不是跳過下一張，等待期間不推進播放進度，frame ready 後會先記錄 resumed，再顯示真實 snapshot。
+播放排程以時間線為主控：播放速度是時間軸倍率，不是舊的「上一格完成後再等待」迴圈。預設交付策略是分析模式：每一張選取範圍內的真實 snapshot 都會依序消耗，`playbackRate` 只改變下一張 snapshot 的目標節拍。設定頁已暴露流暢與嚴格模式端口，但兩者明確標示為尚未實作，因此現階段不會接管播放 clock。查詢與渲染工作不會在每格後再額外疊一個完整 interval。progressive 模式不會為了完整 prebuffer 阻塞開播；分析模式會進入 buffering 而不是跳過下一張，等待期間不推進播放進度，frame ready 後會先記錄 resumed，再顯示真實 snapshot。target request 失敗會成為明確的 frame-buffer failed 狀態，不會永遠停在 `fetching`；暫停、重播、切圖層與切資料集會讓舊背景預載進度失效。
 
 設定頁把播放器拆成多個責任 box，而不是把所有選項混在同一個控制面：
 
@@ -164,6 +164,8 @@ python scripts/playback_contract_smoke.py
 - `analysis` 交付策略使用 `sequential` 步進：即使 clock late 或速度是 4x，下一個 render target 仍必須是 `currentIndex + 1`。
 - buffering 可以平移 scheduler clock，但 frame ready 前不能推進選取日期。
 - progressive cold cache 會回報 `fetching 0 / 1`；target packet ready 後以 `1 / 1` resumed，然後才記錄 `顯示 snapshot`。
+- progressive request 失敗會回報 `failed`、在測速 box 留下錯誤事件，並在重試上限後停止播放，而不是無限重試。
+- 被取消或被取代的 progressive preheat，不得把 late progress、status 或 failure state 套到目前播放 generation。
 - `off` 與 `before_play` 不受 frame buffer gate 控制；它們可以讀既有快取，但不進入 analysis buffering contract。
 - `fluid` 是唯一允許把 elapsed time 映射到未來日期的 step mode；目前仍保留在 disabled 的流暢交付端口後面。
 - prefetch、render、interpolation、blur 與測速觀測只供應或修飾 frame，不擁有播放日期 clock。
@@ -178,7 +180,7 @@ python scripts/playback_contract_smoke.py
 | `static/js/playback/playback-renderer.js` | 播放器到渲染的 handoff：設定選取日期、同步控制狀態、呼叫既有 active-layer reload。 |
 | `static/js/playback/playback-interpolation-controller.js` | 播放補間 policy：播放時選擇 layer crossfade 或直接切換；資料 blend 尚未啟用。 |
 | `static/js/playback/playback-prefetch-controller.js` | progressive prefetch policy：決定是否排背景預熱窗口，以及 anchor date。 |
-| `static/js/playback/playback-cache-service.js` | 實際預熱 / 快取執行、進度狀態、並行數與容量統計。 |
+| `static/js/playback/playback-cache-service.js` | 實際預熱 / 快取執行、進度狀態、request 級失敗追蹤、舊背景預載取消、並行數與容量統計。 |
 | `static/js/playback/playback-telemetry.js` | 播放控制事件送進測速 box，和 SQL/API/render timing 分開。 |
 | `static/js/layers/gfw-layer-effects.js` | 純視覺 GFW layer effects：zoom/LOD blur、reveal、retired-layer cleanup 與 crossfade。 |
 | `static/TimingMetrics.js` | 測速 box 狀態、dynamic/persistent/event lanes 與 snapshot timing history。 |

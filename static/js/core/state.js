@@ -93,6 +93,7 @@ const state = {
     bufferWaitStartedAt: 0,
     bufferAttempts: 0,
     bufferStateName: "",
+    bufferErrorMessage: "",
     generation: 0,
     timeline: null,
     stats: {

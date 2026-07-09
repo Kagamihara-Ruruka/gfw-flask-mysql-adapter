@@ -5,6 +5,7 @@ const PlaybackCacheService = (() => {
   let backgroundPreloadSignature = "";
   let backgroundPreloadVersion = 0;
   let activeBackgroundPreloadVersion = 0;
+  const failedRequests = new Map();
 
   function isEnabledForCurrentLayer() {
     return CACHE_LAYER_IDS.has(state.dataLayer);
@@ -71,9 +72,43 @@ const PlaybackCacheService = (() => {
     return (Array.isArray(dates) ? dates : []).map((date) => requestForDate(date, context));
   }
 
+  function requestFailureKey({ datasetId, date, bbox, limit, columns } = {}) {
+    return [datasetId || "", date || "", bbox || "", limit == null ? "" : String(limit), columns || "render"].join("|");
+  }
+
+  function failureMessage(error) {
+    if (!error) return "request failed";
+    if (typeof error === "string") return error;
+    return error.message || "request failed";
+  }
+
+  function rememberFailure(request, error) {
+    if (!request?.date) return;
+    failedRequests.set(requestFailureKey(request), {
+      ...request,
+      message: failureMessage(error),
+      at: Date.now(),
+    });
+  }
+
+  function clearFailure(request) {
+    if (!request?.date) return;
+    failedRequests.delete(requestFailureKey(request));
+  }
+
+  function failureForDate(date, context) {
+    if (!date || !context) return null;
+    return failedRequests.get(requestFailureKey(requestForDate(date, context))) || null;
+  }
+
   function hasDate(date, context) {
     if (!date || !context) return false;
-    return Boolean(GfwRecordCache.hasPacket?.(requestForDate(date, context)));
+    const request = requestForDate(date, context);
+    const hasPacket = Boolean(GfwRecordCache.hasPacket?.(request));
+    if (hasPacket) {
+      clearFailure(request);
+    }
+    return hasPacket;
   }
 
   function countReadyPrefix(dates, startIndex, context) {
@@ -114,6 +149,7 @@ const PlaybackCacheService = (() => {
     waitStartedAt = 0,
     attempts = 0,
     stateName = "",
+    errorMessage = "",
   } = {}) {
     state.playbackCache.buffering = buffering;
     state.playbackCache.bufferStatus = status;
@@ -125,6 +161,7 @@ const PlaybackCacheService = (() => {
     state.playbackCache.bufferWaitStartedAt = waitStartedAt;
     state.playbackCache.bufferAttempts = attempts;
     state.playbackCache.bufferStateName = stateName;
+    state.playbackCache.bufferErrorMessage = errorMessage;
   }
 
   function clearBufferState() {
@@ -207,18 +244,30 @@ const PlaybackCacheService = (() => {
     };
   }
 
-  function clear() {
-    state.playbackCache.isPreheating = false;
-    state.playbackCache.isBackgroundPreloading = false;
+  function cancelBackground() {
     backgroundPreloadRun = null;
     backgroundPreloadSignature = "";
     backgroundPreloadVersion += 1;
     activeBackgroundPreloadVersion = 0;
+    state.playbackCache.isBackgroundPreloading = false;
+    failedRequests.clear();
+  }
+
+  function clear() {
+    state.playbackCache.isPreheating = false;
+    cancelBackground();
     clearBufferState();
     resetStats(0);
   }
 
   function updateStats(event) {
+    if (event?.request) {
+      if (event.ok) {
+        clearFailure(event.request);
+      } else {
+        rememberFailure(event.request, event.error);
+      }
+    }
     const stats = state.playbackCache.stats;
     stats.completed = Math.min(stats.queued, Number(stats.completed || 0) + 1);
     if (event.ok && event.cacheHit) stats.cacheHits = Number(stats.cacheHits || 0) + 1;
@@ -280,11 +329,10 @@ const PlaybackCacheService = (() => {
       return true;
     }
     if (!background && backgroundPreloadRun) {
-      backgroundPreloadRun = null;
-      backgroundPreloadSignature = "";
-      backgroundPreloadVersion += 1;
-      activeBackgroundPreloadVersion = 0;
-      state.playbackCache.isBackgroundPreloading = false;
+      cancelBackground();
+    }
+    for (const request of requests) {
+      clearFailure(request);
     }
 
     const runVersion = background ? backgroundPreloadVersion + 1 : 0;
@@ -340,7 +388,10 @@ const PlaybackCacheService = (() => {
     if (cacheOptions.mode === "progressive" || !blocking) {
       backgroundPreloadRun = run;
       backgroundPreloadSignature = signature;
-      run.catch((err) => setStatus(err.message, true));
+      run.catch((err) => {
+        if (background && activeBackgroundPreloadVersion !== runVersion) return;
+        setStatus(err.message, true);
+      });
       return true;
     }
     await run;
@@ -350,9 +401,11 @@ const PlaybackCacheService = (() => {
   return {
     BYTES_PER_GB,
     bufferPolicy,
+    cancelBackground,
     clear,
     clearBufferState,
     countReadyPrefix,
+    failureForDate,
     formatBytes,
     hasDate,
     isEnabledForCurrentLayer,

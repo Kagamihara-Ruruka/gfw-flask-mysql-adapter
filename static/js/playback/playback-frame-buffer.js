@@ -19,6 +19,7 @@ const PlaybackFrameBuffer = (() => {
       resumeCount: 0,
       canRender: false,
       isFallback: false,
+      errorMessage: "",
     };
   }
 
@@ -82,6 +83,19 @@ const PlaybackFrameBuffer = (() => {
       };
     }
 
+    const failure = cacheService.failureForDate?.(targetDate, requestContext);
+    if (failure) {
+      return {
+        ...emptyDecision(targetIndex),
+        state: FRAME_STATES.failed,
+        targetDate,
+        readyCount: cacheService.countReadyPrefix?.(allDates, targetIndex, requestContext) || 0,
+        requiredCount: 1,
+        resumeCount: 1,
+        errorMessage: failure.message || "request failed",
+      };
+    }
+
     return {
       ...emptyDecision(targetIndex),
       state: cacheService.options?.().mode === "progressive" ? FRAME_STATES.fetching : FRAME_STATES.missing,
@@ -132,6 +146,32 @@ const PlaybackFrameBuffer = (() => {
       waitStartedAt,
       attempts,
       stateName: packet.state,
+      errorMessage: packet.errorMessage || "",
+    });
+  }
+
+  function markFailed({
+    decision,
+    dates,
+    targetIndex,
+    cacheService,
+    waitStartedAt = 0,
+    attempts = 0,
+    errorMessage = "",
+  }) {
+    const packet = decision || emptyDecision(targetIndex);
+    cacheService.setBufferState({
+      buffering: false,
+      status: "failed",
+      ready: packet.readyCount || 0,
+      required: packet.requiredCount || 1,
+      resume: packet.resumeCount || packet.requiredCount || 1,
+      currentDate: packet.targetDate || dates[targetIndex] || "",
+      targetIndex,
+      waitStartedAt,
+      attempts,
+      stateName: packet.state || FRAME_STATES.failed,
+      errorMessage: errorMessage || packet.errorMessage || "",
     });
   }
 
@@ -139,6 +179,7 @@ const PlaybackFrameBuffer = (() => {
     FRAME_STATES,
     frameStateLabel,
     inspectTarget,
+    markFailed,
     markWaiting,
     readyTargetIndex,
   };

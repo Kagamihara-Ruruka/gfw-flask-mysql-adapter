@@ -2,6 +2,7 @@ const TIME_CONTROL_LAYER_IDS = new Set(["gfw"]);
 const PLAYBACK_CONTROL_IDS = ["latest-date", "replay", "prev-day", "play-toggle", "next-day"];
 const DEFAULT_PLAYBACK_INTERVAL_MS = 1400;
 const PLAYBACK_BUFFER_RETRY_MS = 180;
+const PLAYBACK_BUFFER_MAX_ATTEMPTS = 60;
 
 function syncPlayToggleIcon() {
   if (state.isPlaying) {
@@ -65,13 +66,17 @@ function playbackRequestContext() {
 
 function playbackBufferText() {
   const cache = state.playbackCache || {};
-  if (!cache.buffering && cache.bufferStatus !== "prebuffering") return "";
+  if (!cache.buffering && cache.bufferStatus !== "prebuffering" && cache.bufferStatus !== "failed") return "";
   const ready = Number(cache.bufferReady || 0);
   const required = Number(cache.bufferRequired || 0);
   const attempts = Number(cache.bufferAttempts || 0);
   const stateName = cache.bufferStateName ? ` · ${cache.bufferStateName}` : "";
   const attemptText = attempts > 1 ? ` · 重試 ${attempts}` : "";
   const date = cache.bufferCurrentDate ? ` ${cache.bufferCurrentDate}` : "";
+  const error = cache.bufferErrorMessage ? ` · ${cache.bufferErrorMessage}` : "";
+  if (cache.bufferStatus === "failed") {
+    return `播放失敗${date}${stateName}：${ready} / ${required}${attemptText}${error}`;
+  }
   return `緩衝中${date}${stateName}：${ready} / ${required}${attemptText}`;
 }
 
@@ -229,7 +234,11 @@ function shouldQueueProgressivePreheat({ startIndex = null } = {}) {
 function queueProgressivePreheat({ startIndex = null } = {}) {
   const decision = progressivePreheatDecision({ startIndex });
   if (!decision.shouldQueue) return;
-  preheatPlaybackCache({ blocking: false, anchorDate: decision.anchorDate }).catch((err) => setStatus(err.message, true));
+  const generation = state.playbackCache.generation;
+  preheatPlaybackCache({ blocking: false, anchorDate: decision.anchorDate }).catch((err) => {
+    if (!isPlaybackGenerationActive(generation)) return;
+    setStatus(err.message, true);
+  });
 }
 
 function syncPlaybackSettingsInputs() {
@@ -445,13 +454,16 @@ function updatePlaybackControls() {
   }
 }
 
-function stopPlayback({ cancelPending = true } = {}) {
+function stopPlayback({ cancelPending = true, clearBuffer = true } = {}) {
   const wasActive = Boolean(state.isPlaying || state.playTimer || state.playbackCache?.timeline);
   if (cancelPending) {
     nextPlaybackGeneration();
+    PlaybackCacheService.cancelBackground?.();
   }
   state.isPlaying = false;
-  PlaybackCacheService.clearBufferState();
+  if (clearBuffer) {
+    PlaybackCacheService.clearBufferState();
+  }
   clearPlaybackTimeline();
   clearTimeout(state.playTimer);
   state.playTimer = null;
@@ -543,14 +555,43 @@ function playbackFrameDecision(dates, currentIndex, targetIndex) {
   });
 }
 
-function markPlaybackTargetWaiting(dates, targetIndex, decision) {
-  const packet = decision || playbackFrameDecision(dates, currentPlaybackDateIndex(dates), targetIndex);
+function playbackBufferAttempt(packet) {
   const sameTarget = state.playbackCache?.buffering
     && state.playbackCache?.bufferCurrentDate === packet.targetDate;
-  const waitStartedAt = sameTarget
-    ? Number(state.playbackCache.bufferWaitStartedAt || nowMs())
-    : nowMs();
-  const attempts = sameTarget ? Number(state.playbackCache.bufferAttempts || 0) + 1 : 1;
+  return {
+    sameTarget,
+    waitStartedAt: sameTarget
+      ? Number(state.playbackCache.bufferWaitStartedAt || nowMs())
+      : nowMs(),
+    attempts: sameTarget ? Number(state.playbackCache.bufferAttempts || 0) + 1 : 1,
+  };
+}
+
+function markPlaybackTargetFailed(dates, targetIndex, decision, { waitStartedAt = 0, attempts = 0, reason = "" } = {}) {
+  const packet = decision || playbackFrameDecision(dates, currentPlaybackDateIndex(dates), targetIndex);
+  const errorMessage = reason || packet.errorMessage || "frame request failed";
+  PlaybackFrameBuffer.markFailed({
+    decision: packet,
+    dates,
+    targetIndex,
+    cacheService: PlaybackCacheService,
+    waitStartedAt,
+    attempts,
+    errorMessage,
+  });
+  PlaybackTelemetry.recordBufferFailed?.({
+    date: packet.targetDate || dates[targetIndex],
+    state: `${PlaybackFrameBuffer.frameStateLabel(packet.state)} · ${errorMessage}`,
+  });
+  updatePlaybackControls();
+  syncPlaybackSettingsInputs();
+  setStatus(playbackBufferText() || `播放失敗 ${packet.targetDate || dates[targetIndex] || ""}`, true);
+  return { advanced: false, buffering: false, failed: true, done: false };
+}
+
+function markPlaybackTargetWaiting(dates, targetIndex, decision, waitState = null) {
+  const packet = decision || playbackFrameDecision(dates, currentPlaybackDateIndex(dates), targetIndex);
+  const { sameTarget, waitStartedAt, attempts } = waitState || playbackBufferAttempt(packet);
   if (!sameTarget) {
     PlaybackTelemetry.recordBuffering?.({
       date: packet.targetDate || dates[targetIndex],
@@ -572,6 +613,7 @@ function markPlaybackTargetWaiting(dates, targetIndex, decision) {
   syncPlaybackSettingsInputs();
   setStatus(playbackBufferText() || "緩衝中");
   queueProgressivePreheat({ startIndex: targetIndex });
+  return { packet, waitStartedAt, attempts };
 }
 
 async function renderPlaybackDateIndex(dates, targetIndex) {
@@ -603,12 +645,28 @@ async function advancePlaybackToTimelineTarget(generation, frameNumber) {
   }
 
   const decision = playbackFrameDecision(dates, currentIndex, targetIndex);
+  const waitState = playbackBufferAttempt(decision);
+  if (decision.state === PlaybackFrameBuffer.FRAME_STATES.failed) {
+    return markPlaybackTargetFailed(dates, targetIndex, decision, {
+      waitStartedAt: waitState.waitStartedAt,
+      attempts: waitState.attempts,
+      reason: decision.errorMessage,
+    });
+  }
   const renderIndex = decision.renderIndex;
   if (renderIndex < 0) {
-    markPlaybackTargetWaiting(dates, targetIndex, decision);
     if (timelineStepMode(timeline) === "fluid") {
+      markPlaybackTargetWaiting(dates, targetIndex, decision, waitState);
       return { advanced: true, held: true, done: false };
     }
+    if (waitState.attempts > PLAYBACK_BUFFER_MAX_ATTEMPTS) {
+      return markPlaybackTargetFailed(dates, targetIndex, decision, {
+        waitStartedAt: waitState.waitStartedAt,
+        attempts: waitState.attempts,
+        reason: `buffer retry limit ${PLAYBACK_BUFFER_MAX_ATTEMPTS}`,
+      });
+    }
+    markPlaybackTargetWaiting(dates, targetIndex, decision, waitState);
     return { advanced: false, buffering: true, done: false };
   }
 
@@ -648,6 +706,10 @@ function schedulePlaybackTick(generation = state.playbackCache.generation) {
         if (state.isPlaying && isPlaybackGenerationActive(generation)) {
           schedulePlaybackTick(generation);
         }
+        return;
+      }
+      if (result.failed) {
+        stopPlayback({ clearBuffer: false });
         return;
       }
       if (!result.advanced && result.done) {
@@ -690,7 +752,10 @@ async function setPlayback(active) {
   } else if (options.mode === "progressive") {
     state.isPlaying = true;
     updatePlaybackControls();
-    preheatPlaybackCache({ blocking: false }).catch((err) => setStatus(err.message, true));
+    preheatPlaybackCache({ blocking: false }).catch((err) => {
+      if (!isPlaybackGenerationActive(generation)) return;
+      setStatus(err.message, true);
+    });
   }
   state.isPlaying = true;
   const timeline = startPlaybackTimeline(generation);

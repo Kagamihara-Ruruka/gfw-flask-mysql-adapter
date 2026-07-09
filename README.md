@@ -180,7 +180,7 @@ GFW currently supports:
 - play/pause
 - playback speed
 
-Playback scheduling is timeline-driven. Playback speed is a timeline rate, not the old "wait after the previous frame completes" loop. The default delivery policy is analysis mode: every selected real snapshot is consumed in order, and `playbackRate` changes the target cadence for the next snapshot. Smooth and strict delivery policy ports are visible in Settings but explicitly marked as not implemented, so they do not control the playback clock yet. Query and render work do not add another full interval after each frame. In progressive mode, playback starts without blocking for a full prebuffer; analysis mode enters buffering instead of skipping the next snapshot, pauses timeline progress while waiting, then emits a buffer resume event before the real snapshot is shown.
+Playback scheduling is timeline-driven. Playback speed is a timeline rate, not the old "wait after the previous frame completes" loop. The default delivery policy is analysis mode: every selected real snapshot is consumed in order, and `playbackRate` changes the target cadence for the next snapshot. Smooth and strict delivery policy ports are visible in Settings but explicitly marked as not implemented, so they do not control the playback clock yet. Query and render work do not add another full interval after each frame. In progressive mode, playback starts without blocking for a full prebuffer; analysis mode enters buffering instead of skipping the next snapshot, pauses timeline progress while waiting, then emits a buffer resume event before the real snapshot is shown. Failed target requests are explicit frame-buffer failures, not endless `fetching` states; pause, replay, layer, and dataset changes invalidate stale background preheat progress.
 
 The settings page exposes playback as separate responsibility boxes instead of one mixed control group:
 
@@ -202,6 +202,8 @@ The guarded contracts are:
 - `analysis` delivery uses `sequential` stepping: even if the clock is late or the speed is 4x, the next render target is always `currentIndex + 1`.
 - Buffering can shift the scheduler clock, but it must not advance the selected date until the target frame is ready.
 - Progressive cold cache reports `fetching 0 / 1`; when the target packet is ready it resumes as `1 / 1` and then records `shown`.
+- Progressive request failures report `failed`, emit an error event in the timing box, and stop playback after the retry ceiling instead of retrying forever.
+- Cancelled or replaced progressive preheats cannot apply late progress, status, or failure state to the current playback generation.
 - `off` and `before_play` are not frame-buffer gated; they may still use existing cache, but they do not enter the analysis buffering contract.
 - `fluid` is the only step mode allowed to map elapsed time to future dates. It remains reserved behind the disabled smooth delivery port.
 - Prefetch, render, interpolation, blur, and timing observations supply or decorate frames; none of them owns the playback date clock.
@@ -216,7 +218,7 @@ Current frontend module boundaries:
 | `static/js/playback/playback-renderer.js` | Playback-to-render handoff: set selected date, sync controls, call the existing active-layer reload. |
 | `static/js/playback/playback-interpolation-controller.js` | Playback interpolation policy: choose layer crossfade or direct switching during playback; data blending is not enabled yet. |
 | `static/js/playback/playback-prefetch-controller.js` | Progressive prefetch policy: decide whether to queue a background preheat window and which date anchors it. |
-| `static/js/playback/playback-cache-service.js` | Actual preheat/cache execution, progress state, concurrency, and cache capacity accounting. |
+| `static/js/playback/playback-cache-service.js` | Actual preheat/cache execution, progress state, request-level failure tracking, stale background cancellation, concurrency, and cache capacity accounting. |
 | `static/js/playback/playback-telemetry.js` | Playback control events sent to the timing panel, separate from SQL/API/render timings. |
 | `static/js/layers/gfw-layer-effects.js` | Visual-only GFW layer effects: zoom/LOD blur, reveal, retired-layer cleanup, and crossfade. |
 | `static/TimingMetrics.js` | Timing panel state, dynamic/persistent/event lanes, and snapshot timing history. |
