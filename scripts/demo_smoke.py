@@ -31,6 +31,24 @@ REQUIRED_HTML_MARKERS = (
     "gfw-layer-effects.js",
 )
 
+REQUIRED_SCRIPT_ORDER = (
+    "TimingMetrics.js",
+    "render-intent-service.js",
+    "gfw-record-cache.js",
+    "playback-cache-service.js",
+    "playback-scheduler.js",
+    "playback-frame-buffer.js",
+    "playback-renderer.js",
+    "playback-telemetry.js",
+    "playback-prefetch-controller.js",
+    "playback-controls.js",
+)
+
+REQUIRED_LAYER_SCRIPT_ORDER = (
+    "gfw-layer-effects.js",
+    "gfw-layer.js",
+)
+
 
 class SmokeFailure(AssertionError):
     pass
@@ -76,11 +94,27 @@ def require(condition: bool, message: str) -> None:
         raise SmokeFailure(message)
 
 
+def check_marker_order(html: str, markers: tuple[str, ...], label: str) -> None:
+    positions = []
+    for marker in markers:
+        position = html.find(marker)
+        require(position >= 0, f"root HTML missing {label} marker: {marker}")
+        positions.append((marker, position))
+    for (previous, previous_pos), (current, current_pos) in zip(positions, positions[1:]):
+        require(
+            previous_pos < current_pos,
+            f"root HTML has invalid {label} order: {previous} should load before {current}",
+        )
+
+
 def check_root_html(base_url: str, *, timeout: float) -> None:
     html = fetch_text(base_url, "/", timeout=timeout)
     missing = [marker for marker in REQUIRED_HTML_MARKERS if marker not in html]
     require(not missing, f"root HTML missing demo markers: {', '.join(missing)}")
     print(f"[ok] root HTML contains {len(REQUIRED_HTML_MARKERS)} demo markers")
+    check_marker_order(html, REQUIRED_SCRIPT_ORDER, "playback script")
+    check_marker_order(html, REQUIRED_LAYER_SCRIPT_ORDER, "layer script")
+    print("[ok] root HTML preserves playback/layer script order")
 
 
 def check_health(base_url: str, *, timeout: float) -> None:
