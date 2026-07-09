@@ -152,6 +152,19 @@ GFW 支援：
 - 視覺效果：淡入淡出只修飾 layer 替換；高斯模糊只限縮放 / LOD 重算時遮罩。
 - 渲染壓力與測速：renderer policy 與儀表板測速 box 只觀測或降級，不擁有播放 clock。
 
+目前前端 module 邊界：
+
+| Module | 邊界 |
+| --- | --- |
+| `static/js/playback/playback-scheduler.js` | 純時間線計算：cadence、due frame、speed/rate 映射與目標日期 index。 |
+| `static/js/playback/playback-frame-buffer.js` | frame readiness 決策：ready、missing、waiting，以及最近 ready frame 選擇。 |
+| `static/js/playback/playback-renderer.js` | 播放器到渲染的 handoff：設定選取日期、同步控制狀態、呼叫既有 active-layer reload。 |
+| `static/js/playback/playback-prefetch-controller.js` | progressive prefetch policy：決定是否排背景預熱窗口，以及 anchor date。 |
+| `static/js/playback/playback-cache-service.js` | 實際預熱 / 快取執行、進度狀態、並行數與容量統計。 |
+| `static/js/playback/playback-telemetry.js` | 播放控制事件送進測速 box，和 SQL/API/render timing 分開。 |
+| `static/js/layers/gfw-layer-effects.js` | 純視覺 GFW layer effects：zoom/LOD blur、reveal、retired-layer cleanup 與 crossfade。 |
+| `static/TimingMetrics.js` | 測速 box 狀態、dynamic/persistent/event lanes 與 snapshot timing history。 |
+
 ```mermaid
 flowchart LR
   Clock["播放時間軸：倍率 + 步進策略"] --> Target["目標真實 snapshot date"]

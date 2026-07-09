@@ -190,6 +190,19 @@ The settings page exposes playback as separate responsibility boxes instead of o
 - Visual effects: crossfade decorates layer replacement; Gaussian blur is limited to zoom / LOD reload masking.
 - Render pressure and timing: renderer policy and the dashboard timing box observe performance without owning the playback clock.
 
+Current frontend module boundaries:
+
+| Module | Boundary |
+| --- | --- |
+| `static/js/playback/playback-scheduler.js` | Pure timeline math: cadence, due frame, speed/rate mapping, and target date index. |
+| `static/js/playback/playback-frame-buffer.js` | Frame readiness decisions: ready, missing, waiting, and nearest ready frame selection. |
+| `static/js/playback/playback-renderer.js` | Playback-to-render handoff: set selected date, sync controls, call the existing active-layer reload. |
+| `static/js/playback/playback-prefetch-controller.js` | Progressive prefetch policy: decide whether to queue a background preheat window and which date anchors it. |
+| `static/js/playback/playback-cache-service.js` | Actual preheat/cache execution, progress state, concurrency, and cache capacity accounting. |
+| `static/js/playback/playback-telemetry.js` | Playback control events sent to the timing panel, separate from SQL/API/render timings. |
+| `static/js/layers/gfw-layer-effects.js` | Visual-only GFW layer effects: zoom/LOD blur, reveal, retired-layer cleanup, and crossfade. |
+| `static/TimingMetrics.js` | Timing panel state, dynamic/persistent/event lanes, and snapshot timing history. |
+
 ```mermaid
 flowchart LR
   Clock["Playback timeline: rate + step mode"] --> Target["Target real snapshot date"]
