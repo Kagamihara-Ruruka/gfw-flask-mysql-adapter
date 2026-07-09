@@ -200,30 +200,30 @@ function playbackTargetDateIndex(generation, frameNumber) {
   });
 }
 
-function shouldQueueProgressivePreheat({ startIndex = null } = {}) {
+function progressivePreheatDecision({ startIndex = null } = {}) {
   const options = PlaybackCacheService.options();
-  if (options.mode !== "progressive" || state.playbackCache?.isBackgroundPreloading) {
-    return false;
-  }
   const dates = datesInSelectedRange();
-  const index = startIndex ?? dates.indexOf($("date").value);
-  if (index < 0 || index >= dates.length) return false;
-  const context = playbackRequestContext();
-  const remainingDates = Math.max(1, dates.length - index);
-  const policy = PlaybackCacheService.bufferPolicy({
+  return PlaybackPrefetchController.shouldQueue({
+    options,
+    isBackgroundPreloading: state.playbackCache?.isBackgroundPreloading,
+    dates,
+    startIndex,
+    currentDate: $("date").value,
+    requestContext: playbackRequestContext(),
+    cacheService: PlaybackCacheService,
     intervalMs: state.playIntervalMs,
     rate: normalizedPlaybackRate(),
-    remainingDates,
   });
-  const ready = PlaybackCacheService.countReadyPrefix(dates, index, context);
-  return ready <= policy.resume;
+}
+
+function shouldQueueProgressivePreheat({ startIndex = null } = {}) {
+  return progressivePreheatDecision({ startIndex }).shouldQueue;
 }
 
 function queueProgressivePreheat({ startIndex = null } = {}) {
-  if (!shouldQueueProgressivePreheat({ startIndex })) return;
-  const dates = datesInSelectedRange();
-  const anchorDate = startIndex == null ? $("date").value : dates[startIndex];
-  preheatPlaybackCache({ blocking: false, anchorDate }).catch((err) => setStatus(err.message, true));
+  const decision = progressivePreheatDecision({ startIndex });
+  if (!decision.shouldQueue) return;
+  preheatPlaybackCache({ blocking: false, anchorDate: decision.anchorDate }).catch((err) => setStatus(err.message, true));
 }
 
 function syncPlaybackSettingsInputs() {

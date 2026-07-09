@@ -27,6 +27,7 @@ REQUIRED_HTML_MARKERS = (
     "playback-frame-buffer.js",
     "playback-renderer.js",
     "playback-telemetry.js",
+    "playback-prefetch-controller.js",
     "gfw-layer-effects.js",
 )
 

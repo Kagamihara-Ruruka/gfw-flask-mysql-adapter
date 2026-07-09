@@ -49,7 +49,7 @@ The frontend is deliberately split by responsibility:
 - `static/js/services`: API client calls, GFW record cache/prewarm behavior, render intent, and shared service helpers.
 - `static/js/layers`: GFW, AIS, and EEZ rendering behavior, plus GFW layer visual effects such as zoom blur and crossfade handoff.
 - `static/js/rendering`: renderer capability checks, renderer selection, WebGL/canvas paint helpers, and GFW paint configuration.
-- `static/js/playback`: playback controls, pure timeline scheduler, frame readiness buffer, playback renderer handoff, playback telemetry, preheat service, worker policy, and snapshot splitting helpers.
+- `static/js/playback`: playback controls, pure timeline scheduler, frame readiness buffer, playback renderer handoff, playback telemetry, progressive prefetch controller, preheat service, worker policy, and snapshot splitting helpers.
 - `static/js/ui`: table, playback, layer selector, map settings, and shared layer style controls.
 
 Runtime pipeline:
