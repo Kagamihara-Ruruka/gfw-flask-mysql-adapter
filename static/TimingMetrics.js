@@ -21,6 +21,7 @@
   const details = {
     rows: "-",
     persistentScaleMs: 0,
+    playbackEvents: [],
   };
   const snapshotHistory = [];
   const snapshotHistoryLimit = 48;
@@ -278,31 +279,38 @@
   function recordPlaybackEvent(event = {}) {
     const payload = typeof event === "string" ? { text: event } : event;
     const parsed = numberOrNull(payload.valueMs ?? payload.ms);
-    metrics.playback = {
-      ...metrics.playback,
+    const next = {
+      label: payload.label || metrics.playback.label,
       value: parsed,
       text: parsed === null ? String(payload.text || payload.detail || "-") : formatMs(parsed),
       status: payload.status || (parsed === null ? "text" : "ok"),
       source: payload.source || "",
-      label: payload.label || metrics.playback.label,
+      kind: "playback",
     };
+    metrics.playback = {
+      ...metrics.playback,
+      ...next,
+    };
+    if (payload.reset) {
+      details.playbackEvents = [];
+    }
+    if (next.text && next.text !== "-") {
+      details.playbackEvents.push(next);
+      while (details.playbackEvents.length > 5) {
+        details.playbackEvents.shift();
+      }
+    }
     renderTimeline();
   }
 
   function buildPlaybackStages() {
-    if (!metrics.playback || !metrics.playback.text || metrics.playback.text === "-") {
+    if (!details.playbackEvents.length) {
       return [];
     }
-    return [
-      {
-        label: metrics.playback.label || "播放時間軸",
-        value: metrics.playback.value === null ? 1 : metrics.playback.value,
-        text: metrics.playback.text,
-        status: metrics.playback.status,
-        source: metrics.playback.source,
-        kind: "playback",
-      },
-    ];
+    return details.playbackEvents.map((item) => ({
+      ...item,
+      value: item.value === null ? 1 : item.value,
+    }));
   }
 
   function buildPersistentStages() {

@@ -14,6 +14,7 @@ const PlaybackTelemetry = (() => {
       text: `${stepModeLabel(stepMode)} / ${rate}x / ${Math.round(intervalMs)} ms`,
       status: "ok",
       source: "start",
+      reset: true,
     });
   }
 
