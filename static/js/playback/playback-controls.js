@@ -433,19 +433,24 @@ async function stepDay(delta, interactionLabel = "") {
   if (index < 0) {
     const next = clampDateToSelectedRange($("date").value);
     if (!next) return false;
-    $("date").value = next;
-    updatePlaybackControls();
-    await reloadActiveLayer();
-    return true;
+    return PlaybackRenderer.showDate({
+      date: next,
+      dateInput: $("date"),
+      updateControls: updatePlaybackControls,
+      reloadActiveLayer,
+    });
   }
   const nextIndex = index + delta;
   if (nextIndex < 0 || nextIndex >= dates.length) {
     return false;
   }
-  $("date").value = dates[nextIndex];
-  updatePlaybackControls();
-  await reloadActiveLayer();
-  return true;
+  return PlaybackRenderer.showDateIndex({
+    dates,
+    targetIndex: nextIndex,
+    dateInput: $("date"),
+    updateControls: updatePlaybackControls,
+    reloadActiveLayer,
+  });
 }
 
 async function preparePlaybackStart() {
@@ -454,9 +459,13 @@ async function preparePlaybackStart() {
   const current = $("date").value;
   const index = dates.indexOf(current);
   if (index < 0 || index >= dates.length - 1) {
-    $("date").value = dates[0];
-    updatePlaybackControls();
-    await reloadActiveLayer();
+    await PlaybackRenderer.showDateIndex({
+      dates,
+      targetIndex: 0,
+      dateInput: $("date"),
+      updateControls: updatePlaybackControls,
+      reloadActiveLayer,
+    });
   }
   return true;
 }
@@ -507,10 +516,14 @@ function markPlaybackTargetWaiting(dates, targetIndex) {
 }
 
 async function renderPlaybackDateIndex(dates, targetIndex) {
-  $("date").value = dates[targetIndex];
-  updatePlaybackControls();
-  await reloadActiveLayer();
-  queueProgressivePreheat({ startIndex: targetIndex });
+  await PlaybackRenderer.showDateIndex({
+    dates,
+    targetIndex,
+    dateInput: $("date"),
+    updateControls: updatePlaybackControls,
+    reloadActiveLayer,
+    afterRender: () => queueProgressivePreheat({ startIndex: targetIndex }),
+  });
 }
 
 async function advancePlaybackToTimelineTarget(generation, frameNumber) {
@@ -626,7 +639,12 @@ async function normalizeDateInputs({ reload = true } = {}) {
   }
   updatePlaybackControls();
   if (reload) {
-    await reloadActiveLayer();
+    await PlaybackRenderer.showDate({
+      date: $("date").value,
+      dateInput: $("date"),
+      updateControls: updatePlaybackControls,
+      reloadActiveLayer,
+    });
   }
 }
 
@@ -652,16 +670,23 @@ async function replayFromStart() {
   TimingMetrics.resetSnapshotHistory?.("replay_from_start");
   TimingMetrics.markInteraction?.("回到開始日期");
   releasePlaybackRenderArtifacts("replay_from_start");
-  $("date").value = dates[0];
-  updatePlaybackControls();
-  await reloadActiveLayer();
+  await PlaybackRenderer.showDateIndex({
+    dates,
+    targetIndex: 0,
+    dateInput: $("date"),
+    updateControls: updatePlaybackControls,
+    reloadActiveLayer,
+  });
 }
 
 async function jumpToLatestDate() {
   if (!hasSelectedTimeControlLayer() || !state.availableDates.length) return;
   stopPlayback();
   TimingMetrics.markInteraction?.("最後一日");
-  $("date").value = state.availableDates[state.availableDates.length - 1];
-  updatePlaybackControls();
-  await reloadActiveLayer();
+  await PlaybackRenderer.showDate({
+    date: state.availableDates[state.availableDates.length - 1],
+    dateInput: $("date"),
+    updateControls: updatePlaybackControls,
+    reloadActiveLayer,
+  });
 }
