@@ -47,7 +47,7 @@ The frontend is deliberately split by responsibility:
 - `static/app.js`: bootstraps the app and wires UI events.
 - `static/js/core`: shared state, DOM, map, and geographic helpers.
 - `static/js/services`: API client calls, GFW record cache/prewarm behavior, render intent, and shared service helpers.
-- `static/js/layers`: GFW, AIS, and EEZ rendering behavior.
+- `static/js/layers`: GFW, AIS, and EEZ rendering behavior, plus GFW layer visual effects such as zoom blur and crossfade handoff.
 - `static/js/rendering`: renderer capability checks, renderer selection, WebGL/canvas paint helpers, and GFW paint configuration.
 - `static/js/playback`: playback controls, pure timeline scheduler, frame readiness buffer, playback renderer handoff, preheat service, worker policy, and snapshot splitting helpers.
 - `static/js/ui`: table, playback, layer selector, map settings, and shared layer style controls.

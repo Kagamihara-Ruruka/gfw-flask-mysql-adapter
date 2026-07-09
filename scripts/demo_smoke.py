@@ -26,6 +26,7 @@ REQUIRED_HTML_MARKERS = (
     "playback-scheduler.js",
     "playback-frame-buffer.js",
     "playback-renderer.js",
+    "gfw-layer-effects.js",
 )
 
 

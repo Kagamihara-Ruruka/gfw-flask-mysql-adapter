@@ -57,120 +57,59 @@ const GridCanvasLayer = L.Layer.extend({
 });
 
 function setGfwPaneOpacity(opacity) {
-  const pane = map.getPane("gfwPane");
-  if (!pane) return;
-  pane.style.opacity = String(opacity);
+  GfwLayerEffects.setPaneOpacity(map, opacity);
 }
 
 function syncGfwTransitionStyle() {
-  const pane = map.getPane("gfwPane");
-  if (!pane) return;
-  pane.style.opacity = "1";
-  pane.style.transition = `filter ${state.gfwTransitionMs}ms ease`;
+  GfwLayerEffects.syncTransitionStyle(map, state);
 }
 
 function gfwTransitionMs() {
-  return Math.max(0, Number(state.gfwTransitionMs || 0));
+  return GfwLayerEffects.transitionMs(state);
 }
 
 function gfwLayerElement(layer) {
-  return layer?._canvas || null;
+  return GfwLayerEffects.layerElement(layer);
 }
 
 function setGfwLayerTransition(layer) {
-  const element = gfwLayerElement(layer);
-  if (!element) return;
-  const ms = gfwTransitionMs();
-  element.style.transition = `opacity ${ms}ms ease, filter ${ms}ms ease`;
+  GfwLayerEffects.setLayerTransition(layer, state);
 }
 
 function setGfwLayerOpacity(layer, opacity) {
-  const element = gfwLayerElement(layer);
-  if (!element) return;
-  element.style.opacity = String(opacity);
+  GfwLayerEffects.setLayerOpacity(layer, opacity);
 }
 
 function setGfwLayerBlur(layer, active) {
-  const element = gfwLayerElement(layer);
-  if (!element) return;
-  const blurPx = Math.max(0, Number(state.gfwZoomBlurPx || 0));
-  element.style.filter = active && blurPx > 0 ? `blur(${blurPx}px)` : "";
+  GfwLayerEffects.setLayerBlur(layer, state, active);
 }
 
 function setGfwPaneBlur(active) {
-  const pane = map.getPane("gfwPane");
-  if (!pane) return;
-  const blurPx = Math.max(0, Number(state.gfwZoomBlurPx || 0));
-  pane.style.filter = active && blurPx > 0 ? `blur(${blurPx}px)` : "";
+  GfwLayerEffects.setPaneBlur(map, state, active);
 }
 
 function fadeOutGfwLayer() {
-  if (!state.gridLayer || !map.hasLayer(state.gridLayer)) return;
-  syncGfwTransitionStyle();
-  setGfwLayerTransition(state.gridLayer);
-  setGfwLayerBlur(state.gridLayer, true);
+  GfwLayerEffects.fadeOut({ targetMap: map, targetState: state });
 }
 
 function waitGfwTransition() {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, Math.max(0, Number(state.gfwTransitionMs || 0)));
-  });
+  return GfwLayerEffects.waitTransition(state);
 }
 
 function revealGfwLayer() {
-  setGfwPaneBlur(false);
-  setGfwPaneOpacity(1);
-  setGfwLayerBlur(state.gridLayer, false);
-  setGfwLayerOpacity(state.gridLayer, 1);
+  GfwLayerEffects.reveal({ targetMap: map, targetState: state });
 }
 
 function removeRetiredGfwLayer(layer) {
-  if (!layer) return;
-  if (map.hasLayer(layer)) {
-    map.removeLayer(layer);
-  }
-  if (Array.isArray(state.gfwRetiringLayers)) {
-    state.gfwRetiringLayers = state.gfwRetiringLayers.filter((item) => item !== layer);
-  }
+  GfwLayerEffects.removeRetiredLayer({ targetMap: map, targetState: state, layer });
 }
 
 function removeRetiredGfwLayers() {
-  const retiring = Array.isArray(state.gfwRetiringLayers) ? [...state.gfwRetiringLayers] : [];
-  for (const layer of retiring) {
-    removeRetiredGfwLayer(layer);
-  }
+  GfwLayerEffects.removeRetiredLayers({ targetMap: map, targetState: state });
 }
 
 function crossfadeGfwLayer(previousLayer, nextLayer) {
-  syncGfwTransitionStyle();
-  setGfwPaneBlur(false);
-  setGfwPaneOpacity(1);
-  setGfwLayerTransition(nextLayer);
-  setGfwLayerBlur(nextLayer, false);
-
-  if (!previousLayer || previousLayer === nextLayer || !map.hasLayer(previousLayer)) {
-    setGfwLayerOpacity(nextLayer, 1);
-    return;
-  }
-
-  setGfwLayerTransition(previousLayer);
-  setGfwLayerBlur(previousLayer, false);
-  setGfwLayerOpacity(nextLayer, 0);
-  state.gfwRetiringLayers = state.gfwRetiringLayers || [];
-  state.gfwRetiringLayers.push(previousLayer);
-
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      setGfwLayerOpacity(nextLayer, 1);
-      setGfwLayerOpacity(previousLayer, 0);
-    });
-  });
-
-  window.setTimeout(() => {
-    if (state.gridLayer !== previousLayer) {
-      removeRetiredGfwLayer(previousLayer);
-    }
-  }, gfwTransitionMs() + 80);
+  GfwLayerEffects.crossfade({ targetMap: map, targetState: state, previousLayer, nextLayer });
 }
 
 function removeGfwLayer() {
