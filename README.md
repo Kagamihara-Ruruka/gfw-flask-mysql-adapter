@@ -182,6 +182,28 @@ GFW currently supports:
 
 Playback scheduling is timeline-driven. Playback speed is a timeline rate, not the old "wait after the previous frame completes" loop. The default step mode is sequential: every selected snapshot is consumed in order, and `playbackRate` changes the target cadence for the next snapshot. The optional fluid step mode maps due display ticks to timeline offsets and may jump to a newer ready frame. Query and render work do not add another full interval after each frame. In progressive mode, playback starts without blocking for a full prebuffer; sequential mode buffers instead of skipping the next snapshot, while fluid mode may hold the current frame or jump to the closest ready frame at or before the target date.
 
+The settings page exposes playback as separate responsibility boxes instead of one mixed control group:
+
+- Playback timeline: `playbackRate` and step mode decide which real snapshot date the player is trying to show.
+- Data cache / preheat: range preheat, progressive prefetch, concurrency, and memory budget supply records packets.
+- Frame interpolation: reserved for a future `requestAnimationFrame` loop that computes visual alpha between two ready real frames.
+- Visual effects: crossfade decorates layer replacement; Gaussian blur is limited to zoom / LOD reload masking.
+- Render pressure and timing: renderer policy and the dashboard timing box observe performance without owning the playback clock.
+
+```mermaid
+flowchart LR
+  Clock["Playback timeline: rate + step mode"] --> Target["Target real snapshot date"]
+  Cache["Data cache / preheat timeline"] --> Packet["Ready records packet"]
+  Target --> Packet
+  Packet --> Renderer["GFW renderer: aggregate rows + WebGL/Canvas draw"]
+  Interp["Frame interpolation loop: future visual alpha, no SQL"] -.-> Renderer
+  Effects["Visual effects: decorate only, no scheduling"] -.-> Renderer
+  Renderer --> Map["Visible Leaflet layer"]
+  Metrics["Dashboard timing box: observes SQL/API/client/render"] -.-> Clock
+  Metrics -.-> Cache
+  Metrics -.-> Renderer
+```
+
 AIS is live viewport mode and does not use the date player.
 
 ### Timing panel
@@ -206,7 +228,8 @@ The app asks `/api/render/capability` for backend policy and inspects browser We
 GFW records use a viewport/zoom-aware cache:
 
 - Panning at the same zoom level keeps the current LOD packet when the cache key still matches.
-- Zoom changes mark GFW as loading, clear the stale drawing, and fetch the new LOD packet.
+- Zoom changes mark GFW as loading, apply the optional zoom blur mask, clear the stale LOD key, and fetch the new LOD packet.
+- Date-to-date playback frame changes do not use Gaussian blur; they rely on cache readiness, renderer work, and layer crossfade.
 - After a successful render, the client prewarms the other configured zoom/LOD packets in the background.
 - Prewarm is opportunistic. It must not change the visible map until the requested render state is ready.
 

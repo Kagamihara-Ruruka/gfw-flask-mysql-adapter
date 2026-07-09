@@ -391,10 +391,6 @@ async function reloadGfwRecords() {
     renderProfile: "dashboard.snapshot",
   });
   const requestContext = RenderIntentService.toGfwPacketRequest(renderIntent);
-  const dateChanged = state.renderedGfwDate && state.renderedGfwDate !== requestedDate;
-  if (dateChanged) {
-    fadeOutGfwLayer();
-  }
   renderTable([], state.datasets[state.datasetId].display_columns, { layer: "gfw", date: requestedDate, loading: true });
   const { packet, cacheHit } = await GfwRecordCache.fetchPacket(requestContext);
   if (state.dataLayer !== "gfw") return;

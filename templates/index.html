@@ -6,7 +6,7 @@
   <title>大可愛海事資料儀表板</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/static/vendor/leaflet-1.9.4.css?v=1.9.4">
-  <link rel="stylesheet" href="/static/styles.css?v=plotly-snapshot-active-v1">
+  <link rel="stylesheet" href="/static/styles.css?v=playback-architecture-v1">
 </head>
 <body>
   <header class="app-header">
@@ -231,18 +231,19 @@
             <span class="settings-toggle-caret" aria-hidden="true"></span>
             <span>
               <span class="settings-toggle-title">播放器</span>
-              <span class="settings-toggle-description">時間序列查詢策略、播放快取、淡入淡出與高斯模糊。</span>
+              <span class="settings-toggle-description">依時間軸責任拆分播放節拍、資料供應、補間與視覺效果。</span>
             </span>
           </summary>
           <div class="settings-toggle-content">
             <section class="settings-section playback-settings-section">
-              <h3>查詢策略</h3>
+              <h3>播放時間軸</h3>
               <label>
-                播放模式
-                <select id="playback-cache-mode">
-                  <option value="before_play">完整預熱後播放（Range）</option>
-                  <option value="progressive" selected>短緩衝播放（背景預載）</option>
-                  <option value="off">逐張查詢（不主動預載）</option>
+                播放倍率
+                <select id="playback-rate">
+                  <option value="0.5">0.5x</option>
+                  <option value="1" selected>1x</option>
+                  <option value="2">2x</option>
+                  <option value="4">4x</option>
                 </select>
               </label>
               <label>
@@ -250,6 +251,18 @@
                 <select id="playback-step-mode">
                   <option value="sequential" selected>逐張播放（不跳過）</option>
                   <option value="fluid">流暢播放（允許跳格）</option>
+                </select>
+              </label>
+              <p class="setting-note">這一組只決定「時間線現在應該抵達哪一張 snapshot」。逐張播放會保證每張快照都被用上；流暢播放會追隨時間軸，必要時維持目前畫面或跳到最近 ready frame。查詢、渲染與模糊不應反過來控制這條時間軸。</p>
+            </section>
+            <section class="settings-section playback-settings-section">
+              <h3>資料快取 / 預熱</h3>
+              <label>
+                預熱模式
+                <select id="playback-cache-mode">
+                  <option value="before_play">完整預熱後播放（Range）</option>
+                  <option value="progressive" selected>短緩衝播放（背景預載）</option>
+                  <option value="off">逐張查詢（不主動預載）</option>
                 </select>
               </label>
               <label>
@@ -277,7 +290,7 @@
                 <input id="playback-cache-window-ahead" type="number" min="1" max="60" step="1" value="8" hidden>
                 <input id="playback-cache-max-gb" type="number" min="0.25" max="16" step="0.25" value="2">
               </label>
-              <p class="setting-note">查詢策略決定播放器如何取得時間序列快照：完整預熱後播放會先把本次播放序列寫入快取再播放；短緩衝播放會用逐日期背景預載補前方窗口；逐張查詢不主動預載，但仍可讀取既有快取。步進策略決定播放器是否保證每張快照都顯示；逐張播放不跳日期，流暢播放允許追時間軸時跳到較新的 ready frame。日期上限為 0 時不限制；並行預熱數只控制逐日期背景預載；快取上限用來避免一次預熱過大範圍造成記憶體壓力。</p>
+              <p class="setting-note">這一組只管資料供應：完整預熱會先走 range packet；短緩衝會用逐日期背景預載補前方窗口；逐張查詢不主動預載，但仍會讀既有快取。日期上限為 0 時不限制；並行預熱數只控制背景預載；快取上限用來避免一次預熱過大範圍造成記憶體壓力。</p>
               <div class="playback-cache-meter" aria-label="播放快取容量">
                 <div class="playback-cache-meter-label">
                   <span id="playback-cache-capacity-text">快取容量：0 B / 2.00 GB</span>
@@ -296,19 +309,47 @@
               </div>
             </section>
             <section class="settings-section playback-settings-section">
-              <h3>轉場</h3>
+              <h3>Frame 補間</h3>
+              <label>
+                補間模式
+                <select id="playback-interpolation-mode" disabled>
+                  <option value="off" selected>尚未啟用</option>
+                </select>
+              </label>
+              <label>
+                目標補幀 FPS
+                <input id="playback-interpolation-fps" type="number" min="12" max="60" step="1" value="24" disabled>
+              </label>
+              <p class="setting-note">補間會是獨立的 requestAnimationFrame 視覺循環：只在兩張已 ready 的真實資料幀之間計算 alpha，不查 SQL、不推進真實日期，也不取代 BI 探針需要的 rows packet。此版先保留架構位置，避免把未完成能力誤接到播放核心。</p>
+            </section>
+            <section class="settings-section playback-settings-section">
+              <h3>視覺效果</h3>
               <label>
                 淡入淡出時間 (ms)
                 <input id="gfw-transition-ms" type="number" min="0" max="1200" step="20" value="180">
               </label>
               <label>
-                高斯模糊半徑 (px)
+                縮放模糊半徑 (px)
                 <span class="setting-control-with-value">
                   <input id="gfw-zoom-blur-px" type="range" min="0" max="8" step="0.5" value="2">
                   <span id="gfw-zoom-blur-value" class="setting-value-pill">2 px</span>
                 </span>
               </label>
-              <p class="setting-note">0 表示不套用模糊；2px 是輕微柔化；4px 以上會明顯霧化，適合遮住縮放或淡入淡出的切換感。</p>
+              <p class="setting-note">淡入淡出只修飾圖層替換；高斯模糊只作為縮放 / LOD 重算時的短暫遮罩，不參與播放時間線，也不等待補間。</p>
+            </section>
+            <section class="settings-section playback-settings-section">
+              <h3>渲染壓力</h3>
+              <label>
+                降級策略
+                <select id="playback-render-pressure-mode" disabled>
+                  <option value="auto" selected>跟隨硬體加速與 renderer policy</option>
+                </select>
+              </label>
+              <p class="setting-note">這條時間軸未來用來收斂 WebGL/Canvas、render artifact cache、補間 FPS 與跳幀壓力。現階段仍由硬體加速狀態機與 GFW renderer registry 自動選擇繪圖路徑。</p>
+            </section>
+            <section class="settings-section playback-settings-section">
+              <h3>測速觀測</h3>
+              <p class="setting-note">儀表板的「測速」box 是目前的觀測面：SQL、API、client fetch-to-render、renderer draw、row count 與 render-state 都在那裡更新。這裡只宣告責任邊界，避免把測速數值混成播放控制。</p>
             </section>
           </div>
         </details>
@@ -634,9 +675,9 @@
   <script src="/static/js/services/gfw-record-cache.js?v=zh-tw-v99"></script>
   <script src="/static/js/playback/playback-cache-service.js?v=playback-buffer-v1"></script>
   <script src="/static/js/ui/settings/hardware-settings.js?v=zh-tw-v99"></script>
-  <script src="/static/js/playback/playback-controls.js?v=playback-step-mode-v1"></script>
+  <script src="/static/js/playback/playback-controls.js?v=playback-architecture-v1"></script>
   <script src="/static/js/playback/fullscreen-playback-controls.js?v=fullscreen-svg-v1"></script>
-  <script src="/static/js/services/api-client.js?v=plotly-snapshot-active-v1"></script>
+  <script src="/static/js/services/api-client.js?v=playback-architecture-v1"></script>
   <script src="/static/app.js?v=layer-imports-v1"></script>
 </body>
 </html>

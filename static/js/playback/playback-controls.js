@@ -238,6 +238,7 @@ function queueProgressivePreheat({ startIndex = null } = {}) {
 function syncPlaybackSettingsInputs() {
   const options = PlaybackCacheService.options();
   if ($("play-speed")) $("play-speed").value = String(normalizedPlaybackRate());
+  if ($("playback-rate")) $("playback-rate").value = String(normalizedPlaybackRate());
   if ($("playback-cache-mode")) $("playback-cache-mode").value = options.mode;
   if ($("playback-step-mode")) $("playback-step-mode").value = playbackStepMode();
   if ($("playback-cache-concurrency")) $("playback-cache-concurrency").value = String(options.concurrency);
@@ -258,6 +259,7 @@ function releasePlaybackRenderArtifacts(reason) {
 }
 
 function bindPlaybackSettingsControls() {
+  $("playback-rate")?.addEventListener("change", () => updatePlaybackSpeed("playback-rate"));
   $("playback-cache-mode")?.addEventListener("change", (event) => {
     state.playbackCache.mode = event.target.value;
     syncPlaybackSettingsInputs();
@@ -642,9 +644,10 @@ async function normalizeDateInputs({ reload = true } = {}) {
 }
 
 function updatePlaybackSpeed(sourceId = "play-speed") {
-  const source = sourceId?.target || $(sourceId) || $("play-speed");
-  state.playbackRate = normalizedPlaybackRateValue(source.value || state.playbackRate);
-  $("play-speed").value = String(state.playbackRate);
+  const source = sourceId?.target || $(sourceId) || $("play-speed") || $("playback-rate");
+  state.playbackRate = normalizedPlaybackRateValue(source?.value || state.playbackRate);
+  if ($("play-speed")) $("play-speed").value = String(state.playbackRate);
+  if ($("playback-rate")) $("playback-rate").value = String(state.playbackRate);
   if (typeof syncFullscreenPlaybackControls === "function") {
     syncFullscreenPlaybackControls();
   }

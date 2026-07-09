@@ -206,6 +206,8 @@ body {
 }
 
 .settings-toggle-content {
+  display: grid;
+  gap: 12px;
   padding: 0 14px 14px 31px;
 }
 
@@ -942,6 +944,14 @@ body {
 
 .playback-settings-section label > input[type="range"] {
   padding-inline: 0;
+}
+
+.playback-settings-section select:disabled,
+.playback-settings-section input:disabled {
+  color: #7b8796;
+  border-color: #223042;
+  background: #0c1119;
+  cursor: not-allowed;
 }
 
 .setting-control-with-note,
