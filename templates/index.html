@@ -6,7 +6,7 @@
   <title>大可愛海事資料儀表板</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/static/vendor/leaflet-1.9.4.css?v=1.9.4">
-  <link rel="stylesheet" href="/static/styles.css?v=playback-telemetry-v2">
+  <link rel="stylesheet" href="/static/styles.css?v=widgets-delete-capability-v16">
 </head>
 <body>
   <header class="app-header">
@@ -139,6 +139,19 @@
         </div>
         <button id="map-settings-open" class="map-settings-button" type="button" title="地圖設定" aria-label="地圖設定">⚙</button>
       </div>
+      <section class="widgets-panel map-widgets-panel" aria-label="詳細資料 Widgets 工具區" data-widgets-panel data-widgets-scope="map" data-widgets-columns="6" data-widgets-rows="3">
+        <div class="widgets-panel-header">
+          <h2>詳細資料Widgets</h2>
+          <button class="widgets-panel-config-button" type="button" data-widgets-config aria-label="設定詳細資料Widgets" title="設定詳細資料Widgets">
+            <span class="control-icon-fallback" aria-hidden="true">⚙</span>
+            <i class="control-icon" data-lucide="settings" aria-hidden="true"></i>
+          </button>
+        </div>
+        <div class="widgets-board" data-widgets-board>
+          <div class="widgets-socket-grid" aria-hidden="true" data-widgets-socket-grid></div>
+          <div class="widgets-grid" aria-label="地圖下方 Widgets 工具列表" data-widgets-grid></div>
+        </div>
+      </section>
       <aside class="table-panel" aria-hidden="true">
         <div class="table-title">
           <h2>資料列</h2>
@@ -151,10 +164,17 @@
           </table>
         </div>
       </aside>
-      <aside class="bi-panel" aria-label="BI 分析區">
-        <div class="bi-panel-header">
-          <h2>BI</h2>
-          <span>待設計</span>
+      <aside class="widgets-panel widgets-panel-side" aria-label="概覽 Widgets 工具區" data-widgets-panel data-widgets-scope="side" data-widgets-columns="6" data-widgets-rows="ratio" data-widgets-aspect="16:9">
+        <div class="widgets-panel-header">
+          <h2>概覽Widgets</h2>
+          <button id="widgets-panel-config" class="widgets-panel-config-button" type="button" data-widgets-config aria-label="設定概覽Widgets" title="設定概覽Widgets">
+            <span class="control-icon-fallback" aria-hidden="true">⚙</span>
+            <i class="control-icon" data-lucide="settings" aria-hidden="true"></i>
+          </button>
+        </div>
+        <div class="widgets-board" data-widgets-board>
+          <div class="widgets-socket-grid" aria-hidden="true" data-widgets-socket-grid></div>
+          <div id="widgets-grid" class="widgets-grid" aria-label="Widgets 工具列表" data-widgets-grid></div>
         </div>
       </aside>
     </section>
@@ -331,7 +351,7 @@
                 目標補幀 FPS
                 <input id="playback-interpolation-fps" type="number" min="12" max="60" step="1" value="24" disabled>
               </label>
-              <p class="setting-note">目前支援播放時的視覺補間 policy：Layer crossfade 只修飾兩張真實 snapshot 的 layer 替換；關閉時播放換幀會直接切換。真正資料補間會是獨立的 requestAnimationFrame 循環，只在兩張已 ready 的 rows/render artifact 之間計算 alpha，不查 SQL、不推進真實日期，也不取代 BI 探針需要的 rows packet。</p>
+              <p class="setting-note">目前支援播放時的視覺補間 policy：Layer crossfade 只修飾兩張真實 snapshot 的 layer 替換；關閉時播放換幀會直接切換。真正資料補間會是獨立的 requestAnimationFrame 循環，只在兩張已 ready 的 rows/render artifact 之間計算 alpha，不查 SQL、不推進真實日期，也不取代 Widgets 探針需要的 rows packet。</p>
             </section>
             <section class="settings-section playback-settings-section">
               <h3>視覺效果</h3>
@@ -685,18 +705,19 @@
   <script src="/static/js/services/gfw-render-artifact-cache.js?v=gfw-render-artifact-cache-v1"></script>
   <script src="/static/js/services/render-intent-service.js?v=render-intent-v1"></script>
   <script src="/static/js/services/gfw-record-cache.js?v=zh-tw-v99"></script>
-  <script src="/static/js/playback/playback-cache-service.js?v=playback-buffer-v1"></script>
+  <script src="/static/js/playback/playback-cache-service.js?v=playback-lifecycle-v2"></script>
   <script src="/static/js/playback/playback-delivery-policy.js?v=playback-delivery-policy-v1"></script>
   <script src="/static/js/ui/settings/hardware-settings.js?v=zh-tw-v99"></script>
   <script src="/static/js/playback/playback-scheduler.js?v=playback-scheduler-v1"></script>
-  <script src="/static/js/playback/playback-frame-buffer.js?v=playback-frame-buffer-v1"></script>
+  <script src="/static/js/playback/playback-frame-buffer.js?v=playback-lifecycle-v2"></script>
   <script src="/static/js/playback/playback-renderer.js?v=playback-renderer-v1"></script>
   <script src="/static/js/playback/playback-telemetry.js?v=playback-telemetry-events-v1"></script>
   <script src="/static/js/playback/playback-interpolation-controller.js?v=playback-interpolation-v1"></script>
   <script src="/static/js/playback/playback-prefetch-controller.js?v=playback-prefetch-controller-v1"></script>
-  <script src="/static/js/playback/playback-controls.js?v=playback-interpolation-v1"></script>
+  <script src="/static/js/playback/playback-controls.js?v=playback-lifecycle-v2"></script>
   <script src="/static/js/playback/fullscreen-playback-controls.js?v=fullscreen-svg-v1"></script>
   <script src="/static/js/services/api-client.js?v=playback-architecture-v1"></script>
+  <script src="/static/js/ui/widgets/widgets-panel.js?v=widgets-delete-capability-v16"></script>
   <script src="/static/app.js?v=layer-imports-v1"></script>
 </body>
 </html>
