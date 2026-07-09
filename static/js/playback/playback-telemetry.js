@@ -20,11 +20,30 @@ const PlaybackTelemetry = (() => {
     });
   }
 
-  function recordBuffering({ date }) {
+  function recordBuffering({ date, state = "fetching", ready = 0, required = 1, attempts = 1 }) {
     record({
       label: "Frame buffer",
-      text: `等待 ${date || "snapshot"}`,
+      text: `buffering ${date || "snapshot"} · ${state} · ${ready} / ${required} · #${attempts}`,
       status: "pending",
+      source: "buffer",
+    });
+  }
+
+  function recordBufferResumed({ date, waitMs = null, ready = 1, required = 1 }) {
+    const waited = Number.isFinite(Number(waitMs)) ? ` · 等待 ${Math.round(Number(waitMs))} ms` : "";
+    record({
+      label: "Frame buffer",
+      text: `resumed ${date || "snapshot"} · ${ready} / ${required}${waited}`,
+      status: "ok",
+      source: "resume",
+    });
+  }
+
+  function recordBufferFailed({ date, state = "failed" }) {
+    record({
+      label: "Frame buffer",
+      text: `failed ${date || "snapshot"} · ${state}`,
+      status: "error",
       source: "buffer",
     });
   }
@@ -58,6 +77,8 @@ const PlaybackTelemetry = (() => {
 
   return {
     record,
+    recordBufferFailed,
+    recordBufferResumed,
     recordBuffering,
     recordFrameFallback,
     recordFrameShown,

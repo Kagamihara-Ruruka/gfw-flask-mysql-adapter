@@ -68,8 +68,11 @@ function playbackBufferText() {
   if (!cache.buffering && cache.bufferStatus !== "prebuffering") return "";
   const ready = Number(cache.bufferReady || 0);
   const required = Number(cache.bufferRequired || 0);
+  const attempts = Number(cache.bufferAttempts || 0);
+  const stateName = cache.bufferStateName ? ` · ${cache.bufferStateName}` : "";
+  const attemptText = attempts > 1 ? ` · 重試 ${attempts}` : "";
   const date = cache.bufferCurrentDate ? ` ${cache.bufferCurrentDate}` : "";
-  return `緩衝中${date}：${ready} / ${required}`;
+  return `緩衝中${date}${stateName}：${ready} / ${required}${attemptText}`;
 }
 
 function updatePlaybackBufferStatus() {
@@ -525,9 +528,9 @@ async function preheatPlaybackCache({ blocking = true, anchorDate = $("date").va
   });
 }
 
-function readyPlaybackTargetIndex(dates, currentIndex, targetIndex) {
+function playbackFrameDecision(dates, currentIndex, targetIndex) {
   const options = PlaybackCacheService.options();
-  return PlaybackFrameBuffer.readyTargetIndex({
+  return PlaybackFrameBuffer.inspectTarget({
     dates,
     currentIndex,
     targetIndex,
@@ -535,15 +538,35 @@ function readyPlaybackTargetIndex(dates, currentIndex, targetIndex) {
     hasCacheLayer: hasPlaybackCacheLayer(),
     requestContext: playbackRequestContext(),
     cacheService: PlaybackCacheService,
+    intervalMs: normalizedPlaybackInterval(),
+    rate: normalizedPlaybackRate(),
   });
 }
 
-function markPlaybackTargetWaiting(dates, targetIndex) {
-  PlaybackTelemetry.recordBuffering?.({ date: dates[targetIndex] });
+function markPlaybackTargetWaiting(dates, targetIndex, decision) {
+  const packet = decision || playbackFrameDecision(dates, currentPlaybackDateIndex(dates), targetIndex);
+  const sameTarget = state.playbackCache?.buffering
+    && state.playbackCache?.bufferCurrentDate === packet.targetDate;
+  const waitStartedAt = sameTarget
+    ? Number(state.playbackCache.bufferWaitStartedAt || nowMs())
+    : nowMs();
+  const attempts = sameTarget ? Number(state.playbackCache.bufferAttempts || 0) + 1 : 1;
+  if (!sameTarget) {
+    PlaybackTelemetry.recordBuffering?.({
+      date: packet.targetDate || dates[targetIndex],
+      state: PlaybackFrameBuffer.frameStateLabel(packet.state),
+      ready: packet.readyCount,
+      required: packet.requiredCount,
+      attempts,
+    });
+  }
   PlaybackFrameBuffer.markWaiting({
+    decision: packet,
     dates,
     targetIndex,
     cacheService: PlaybackCacheService,
+    waitStartedAt,
+    attempts,
   });
   updatePlaybackControls();
   syncPlaybackSettingsInputs();
@@ -579,9 +602,10 @@ async function advancePlaybackToTimelineTarget(generation, frameNumber) {
     return { advanced: true, held: true, done: false };
   }
 
-  const renderIndex = readyPlaybackTargetIndex(dates, currentIndex, targetIndex);
+  const decision = playbackFrameDecision(dates, currentIndex, targetIndex);
+  const renderIndex = decision.renderIndex;
   if (renderIndex < 0) {
-    markPlaybackTargetWaiting(dates, targetIndex);
+    markPlaybackTargetWaiting(dates, targetIndex, decision);
     if (timelineStepMode(timeline) === "fluid") {
       return { advanced: true, held: true, done: false };
     }
@@ -594,6 +618,15 @@ async function advancePlaybackToTimelineTarget(generation, frameNumber) {
       renderDate: dates[renderIndex],
     });
     queueProgressivePreheat({ startIndex: targetIndex });
+  }
+  if (state.playbackCache?.buffering) {
+    const previousBuffer = state.playbackCache;
+    PlaybackTelemetry.recordBufferResumed?.({
+      date: dates[renderIndex],
+      waitMs: nowMs() - Number(previousBuffer.bufferWaitStartedAt || nowMs()),
+      ready: Math.max(1, Number(decision.readyCount || previousBuffer.bufferReady || 1)),
+      required: Math.max(1, Number(previousBuffer.bufferRequired || decision.requiredCount || 1)),
+    });
   }
   PlaybackCacheService.clearBufferState();
   updatePlaybackControls();

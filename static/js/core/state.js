@@ -89,6 +89,10 @@ const state = {
     bufferRequired: 0,
     bufferResume: 0,
     bufferCurrentDate: "",
+    bufferTargetIndex: -1,
+    bufferWaitStartedAt: 0,
+    bufferAttempts: 0,
+    bufferStateName: "",
     generation: 0,
     timeline: null,
     stats: {

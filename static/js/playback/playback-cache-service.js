@@ -110,6 +110,10 @@ const PlaybackCacheService = (() => {
     required = 0,
     resume = 0,
     currentDate = "",
+    targetIndex = -1,
+    waitStartedAt = 0,
+    attempts = 0,
+    stateName = "",
   } = {}) {
     state.playbackCache.buffering = buffering;
     state.playbackCache.bufferStatus = status;
@@ -117,6 +121,10 @@ const PlaybackCacheService = (() => {
     state.playbackCache.bufferRequired = required;
     state.playbackCache.bufferResume = resume;
     state.playbackCache.bufferCurrentDate = currentDate;
+    state.playbackCache.bufferTargetIndex = targetIndex;
+    state.playbackCache.bufferWaitStartedAt = waitStartedAt;
+    state.playbackCache.bufferAttempts = attempts;
+    state.playbackCache.bufferStateName = stateName;
   }
 
   function clearBufferState() {
