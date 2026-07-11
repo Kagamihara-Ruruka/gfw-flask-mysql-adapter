@@ -199,3 +199,15 @@ function fitWorldView() {
     padding: [10, 10],
   });
 }
+
+const MapViewActions = Object.freeze({
+  reset: resetMapView,
+  world: fitWorldView,
+  taiwan: fitTaiwanView,
+});
+
+window.MapViewActions = MapViewActions;
+window.addEventListener("rrkal:map-view-action", (event) => {
+  const run = MapViewActions[event.detail?.id];
+  if (typeof run === "function") run();
+});

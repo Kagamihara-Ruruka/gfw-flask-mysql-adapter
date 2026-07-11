@@ -49,6 +49,11 @@ const state = {
     graticuleLineStyle: "dashed",
     graticuleLineWidth: 1,
   },
+  tileSelection: {
+    enabled: false,
+    hover: null,
+    selected: null,
+  },
   aisLiveSeq: 0,
   aisSettings: null,
   aisSocket: null,

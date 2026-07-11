@@ -7,6 +7,21 @@ async function fetchJson(url) {
   return payload;
 }
 
+function currentDatasetBackendDetail(packet = null) {
+  const dataset = state.datasets?.[state.datasetId] || {};
+  const packetBackend = typeof packet?.backend === "string"
+    ? packet.backend
+    : packet?.backend?.kind;
+  return String(
+    packetBackend ||
+    dataset.backend ||
+    dataset.connection_ref ||
+    dataset.source_config ||
+    state.datasetId ||
+    ""
+  ).trim().toLowerCase();
+}
+
 async function loadDatasets() {
   const packet = await fetchJson("/api/datasets");
   state.datasets = packet.datasets || {};
@@ -79,11 +94,17 @@ async function loadSchema() {
   if (!state.datasetId || !state.datasets[state.datasetId]) {
     state.schema = null;
     setAvailableDates([]);
+    window.dispatchEvent(new CustomEvent("rrkal:schema-loaded", {
+      detail: { datasetId: null, dates: [] },
+    }));
     return null;
   }
   const packet = await fetchJson(`/api/datasets/${state.datasetId}/schema`);
   state.schema = packet;
   setAvailableDates(packet.dates || []);
+  window.dispatchEvent(new CustomEvent("rrkal:schema-loaded", {
+    detail: { datasetId: state.datasetId, dates: packet.dates || [] },
+  }));
   if (packet.bounds) {
     map.fitBounds(
       L.latLngBounds(
@@ -399,21 +420,22 @@ async function reloadGfwRecords() {
     schedulePrimaryReload(80);
     return;
   }
-  TimingMetrics.markRenderStart?.("GFW");
+  const metricsSource = currentDatasetBackendDetail(packet);
+  TimingMetrics.markRenderStart?.(metricsSource ? `GFW ${metricsSource}` : "GFW");
   const renderResult = renderGfwMap(packet.rows);
   renderTable(packet.rows, state.datasets[state.datasetId].display_columns, { layer: "gfw", date: requestedDate });
   const serverCacheHit = Boolean(packet.timing?.cache_hit);
   if (cacheHit || serverCacheHit) {
-    TimingMetrics.setText("query-ms", "快取命中");
-    TimingMetrics.setText("serialize-ms", "快取命中");
-    TimingMetrics.setMs("api-ms", timing.elapsed());
+    TimingMetrics.setText("query-ms", "快取命中", { source: metricsSource });
+    TimingMetrics.setText("serialize-ms", "快取命中", { source: metricsSource });
+    TimingMetrics.setMs("api-ms", timing.elapsed(), { source: metricsSource });
   } else {
-    TimingMetrics.setMs("query-ms", packet.timing.query_ms);
-    TimingMetrics.setMs("serialize-ms", packet.timing.serialize_ms);
-    TimingMetrics.setMs("api-ms", packet.timing.api_total_ms);
+    TimingMetrics.setMs("query-ms", packet.timing.query_ms, { source: metricsSource });
+    TimingMetrics.setMs("serialize-ms", packet.timing.serialize_ms, { source: metricsSource });
+    TimingMetrics.setMs("api-ms", packet.timing.api_total_ms, { source: metricsSource });
   }
   TimingMetrics.setCount("row-count", packet.row_count);
-  TimingMetrics.setMs("client-ms", timing.elapsed());
+  TimingMetrics.setMs("client-ms", timing.elapsed(), { source: metricsSource });
   TimingMetrics.updateSummary();
   const sourceDetail = cacheHit ? "瀏覽器快取" : serverCacheHit ? "伺服器快取" : "SQL";
   RenderState.ready(

@@ -318,6 +318,37 @@ def _range_records_cache_key(
     )
 
 
+def _time_series_cache_key(
+    *,
+    connection: dict[str, Any],
+    database: str,
+    table: str,
+    metric: str,
+    aggregation: str,
+    start_date: str,
+    end_date: str,
+    bbox: tuple[float, float, float, float] | None,
+    identity_column: str | None,
+    identity_value: str | None,
+) -> str:
+    return "|".join(
+        [
+            "time-series",
+            str(connection.get("host", "")),
+            str(connection.get("port", "")),
+            database,
+            table,
+            metric,
+            aggregation,
+            str(start_date),
+            str(end_date),
+            "" if bbox is None else ",".join(f"{value:.6f}" for value in bbox),
+            identity_column or "",
+            "" if identity_value is None else str(identity_value),
+        ]
+    )
+
+
 def _remember_records_packet(key: str, packet: dict[str, Any]) -> None:
     _RECORDS_CACHE.pop(key, None)
     _RECORDS_CACHE[key] = {"created_at": time.time(), "packet": packet}
@@ -344,6 +375,59 @@ def _cached_records_packet(
             packet["timing"][timing_key] = 0
     packet["query_policy"] = dict(packet["query_policy"])
     return packet
+
+
+def resolve_time_series_metric(dataset: dict[str, Any], metric: str | None) -> str:
+    metric_columns = list(dataset.get("metric_columns") or [])
+    display_columns = list(dataset.get("display_columns") or [])
+    role_columns = {
+        dataset.get("time_column"),
+        dataset.get("id_column"),
+        dataset.get("lat_column"),
+        dataset.get("lon_column"),
+    }
+    fallback_columns = [
+        column
+        for column in display_columns
+        if column not in role_columns and column not in metric_columns
+    ]
+    allowed = [*metric_columns, *fallback_columns]
+    selected = metric or (allowed[0] if allowed else None)
+    if not selected:
+        raise ValueError("dataset has no metric column for time series")
+    validate_identifier(selected, "time series metric")
+    if selected not in allowed:
+        raise ValueError(f"time series metric is not declared by this dataset: {selected}")
+    return selected
+
+
+def normalize_time_series_aggregation(value: str | None) -> str:
+    normalized = str(value or "sum").strip().lower()
+    if normalized not in {"sum", "avg", "min", "max", "count"}:
+        raise ValueError(f"unsupported time series aggregation: {value}")
+    return normalized
+
+
+def resolve_time_series_identity_filter(
+    dataset: dict[str, Any],
+    identity_column: str | None,
+    identity_value: str | None,
+) -> tuple[str, str] | None:
+    if not identity_column and identity_value in {None, ""}:
+        return None
+    if not identity_column or identity_value in {None, ""}:
+        raise ValueError("time series identity filter requires both identity_column and identity_value")
+    validate_identifier(identity_column, "time series identity column")
+    allowed = set(dataset.get("display_columns") or [])
+    for role_key in ("time_column", "id_column", "lat_column", "lon_column"):
+        role_column = dataset.get(role_key)
+        if role_column:
+            allowed.add(role_column)
+    for metric_column in dataset.get("metric_columns") or []:
+        allowed.add(metric_column)
+    if identity_column not in allowed:
+        raise ValueError(f"time series identity column is not declared by this dataset: {identity_column}")
+    return identity_column, str(identity_value)
 
 
 @contextmanager
@@ -752,6 +836,123 @@ def _mysql_records_range_packet(
     return packet
 
 
+def _mysql_time_series_packet(
+    config: dict[str, Any],
+    dataset: dict[str, Any],
+    *,
+    connection: dict[str, Any],
+    start_date: str,
+    end_date: str,
+    bbox: tuple[float, float, float, float] | None,
+    metric: str | None = None,
+    aggregation: str | None = None,
+    identity_column: str | None = None,
+    identity_value: str | None = None,
+) -> dict[str, Any]:
+    table = mysql_dataset_table(dataset)
+    database = validate_identifier(dataset.get("database") or connection["database"], "database")
+    time_column = dataset["time_column"]
+    lat_column = dataset["lat_column"]
+    lon_column = dataset["lon_column"]
+    metric_column = resolve_time_series_metric(dataset, metric)
+    aggregate = normalize_time_series_aggregation(aggregation)
+    identity_filter = resolve_time_series_identity_filter(dataset, identity_column, identity_value)
+    if not start_date or not end_date:
+        raise ValueError("time series query requires start and end")
+    if start_date > end_date:
+        start_date, end_date = end_date, start_date
+
+    cache_key = _time_series_cache_key(
+        connection=connection,
+        database=database,
+        table=table,
+        metric=metric_column,
+        aggregation=aggregate,
+        start_date=start_date,
+        end_date=end_date,
+        bbox=bbox,
+        identity_column=identity_filter[0] if identity_filter else None,
+        identity_value=identity_filter[1] if identity_filter else None,
+    )
+    cached = _cached_records_packet(cache_key)
+    if cached:
+        return cached
+
+    where_parts = [f"{mysql_quote(time_column)} BETWEEN %s AND %s"]
+    params: list[Any] = [start_date, end_date]
+    if bbox:
+        west, south, east, north = bbox
+        where_parts.append(f"{mysql_quote(lon_column)} BETWEEN %s AND %s")
+        params.extend([west, east])
+        where_parts.append(f"{mysql_quote(lat_column)} BETWEEN %s AND %s")
+        params.extend([south, north])
+    if identity_filter:
+        where_parts.append(f"{mysql_quote(identity_filter[0])} = %s")
+        params.append(identity_filter[1])
+
+    metric_sql = mysql_quote(metric_column)
+    if aggregate == "count":
+        value_sql = "COUNT(*)"
+    elif aggregate == "avg":
+        value_sql = f"AVG({metric_sql})"
+    elif aggregate == "min":
+        value_sql = f"MIN({metric_sql})"
+    elif aggregate == "max":
+        value_sql = f"MAX({metric_sql})"
+    else:
+        value_sql = f"SUM({metric_sql})"
+    time_sql = mysql_quote(time_column)
+    where_sql = "WHERE " + " AND ".join(where_parts)
+    sql = (
+        f"SELECT {time_sql} AS bucket, {value_sql} AS value, COUNT(*) AS row_count "
+        f"FROM {mysql_quote(table)} {where_sql} "
+        f"GROUP BY {time_sql} ORDER BY {time_sql}"
+    )
+
+    total_start = time.perf_counter()
+    query_start = time.perf_counter()
+    with mysql_connection(config, database, dict_cursor=True, connection=connection) as conn, conn.cursor() as cur:
+        cur.execute(sql, params)
+        raw_rows = cur.fetchall()
+    query_ms = elapsed_ms(query_start)
+    points = [
+        {
+            "date": json_ready(row["bucket"]),
+            "value": json_ready(row["value"]),
+            "row_count": int(row["row_count"] or 0),
+        }
+        for row in raw_rows
+    ]
+    packet = {
+        "start": start_date,
+        "end": end_date,
+        "metric": metric_column,
+        "aggregation": aggregate,
+        "points": points,
+        "point_count": len(points),
+        "row_count": sum(point["row_count"] for point in points),
+        "bbox": None if bbox is None else {
+            "west": bbox[0],
+            "south": bbox[1],
+            "east": bbox[2],
+            "north": bbox[3],
+        },
+        "identity": None if identity_filter is None else {
+            "column": identity_filter[0],
+            "value": identity_filter[1],
+        },
+        "query_policy": query_policy(config),
+        "timing": {
+            "cache_hit": False,
+            "query_ms": query_ms,
+            "serialize_ms": 0,
+            "server_total_ms": elapsed_ms(total_start),
+        },
+    }
+    _remember_records_packet(cache_key, packet)
+    return packet
+
+
 def read_backend(config: dict[str, Any], dataset: dict[str, Any]):
     register_builtin_backends()
     kind = dataset_backend_kind(config, dataset)
@@ -804,6 +1005,36 @@ def records_range_packet(
         bbox=bbox,
         limit=limit,
         column_profile=column_profile,
+    )
+
+
+def time_series_packet(
+    config: dict[str, Any],
+    dataset: dict[str, Any],
+    *,
+    start_date: str,
+    end_date: str,
+    bbox: tuple[float, float, float, float] | None,
+    metric: str | None = None,
+    aggregation: str | None = None,
+    identity_column: str | None = None,
+    identity_value: str | None = None,
+) -> dict[str, Any]:
+    backend = read_backend(config, dataset)
+    if not hasattr(backend, "time_series_packet"):
+        raise UnsupportedBackendOperation(
+            dataset_backend_kind(config, dataset),
+            "time_series_packet",
+            "time-series aggregation is not supported by this backend",
+        )
+    return backend.time_series_packet(
+        start_date=start_date,
+        end_date=end_date,
+        bbox=bbox,
+        metric=metric,
+        aggregation=aggregation,
+        identity_column=identity_column,
+        identity_value=identity_value,
     )
 
 

@@ -1,6 +1,7 @@
 const GridCanvasLayer = L.Layer.extend({
   initialize() {
     this._rows = [];
+    this._hitCells = [];
   },
   onAdd(targetMap) {
     this._map = targetMap;
@@ -37,6 +38,7 @@ const GridCanvasLayer = L.Layer.extend({
     ctx.globalAlpha = state.layerAlpha.gfw;
     const renderRows = aggregateGfwRowsForRender(this._rows);
     const halfDegrees = gfwRenderCellHalfDegrees();
+    const hitCells = [];
     for (const row of renderRows) {
       const lat = Number(row.lat);
       const lon = Number(row.lon);
@@ -50,9 +52,33 @@ const GridCanvasLayer = L.Layer.extend({
       if (x > size.x || y > size.y || x + w < 0 || y + h < 0) continue;
       ctx.fillStyle = gfwCellColorCss(row);
       ctx.fillRect(x, y, w, h);
+      hitCells.push({
+        row,
+        rect: { x, y, w, h },
+        bounds: {
+          west: normalizeLongitude(lon - halfDegrees),
+          south: lat - halfDegrees,
+          east: normalizeLongitude(lon + halfDegrees),
+          north: lat + halfDegrees,
+          leaflet: L.latLngBounds([lat - halfDegrees, lon - halfDegrees], [lat + halfDegrees, lon + halfDegrees]),
+        },
+        center: { lat, lon: normalizeLongitude(lon) },
+      });
     }
+    this._hitCells = hitCells;
     ctx.globalAlpha = 1;
     return performance.now() - started;
+  },
+  hitTest(containerPoint) {
+    const point = L.point(containerPoint);
+    for (let index = this._hitCells.length - 1; index >= 0; index -= 1) {
+      const cell = this._hitCells[index];
+      const { x, y, w, h } = cell.rect;
+      if (point.x >= x && point.x <= x + w && point.y >= y && point.y <= y + h) {
+        return cell;
+      }
+    }
+    return null;
   },
 });
 

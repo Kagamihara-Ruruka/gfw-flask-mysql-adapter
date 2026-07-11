@@ -27,6 +27,8 @@
   const snapshotHistoryLimit = 48;
   let lastSnapshotSignature = "";
   let activeInteraction = null;
+  const subscribers = new Set();
+  let notifyScheduled = false;
 
   function formatMs(value) {
     if (value === undefined || value === null || !Number.isFinite(Number(value))) {
@@ -38,6 +40,45 @@
   function numberOrNull(value) {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  function cloneMetric(metric) {
+    return { ...metric };
+  }
+
+  function snapshot() {
+    return {
+      metrics: Object.fromEntries(
+        Object.entries(metrics).map(([key, value]) => [key, cloneMetric(value)])
+      ),
+      details: {
+        rows: details.rows,
+        persistentScaleMs: details.persistentScaleMs,
+        playbackEvents: details.playbackEvents.map((item) => ({ ...item })),
+      },
+      snapshotHistory: snapshotHistory.map((item) => ({ ...item })),
+    };
+  }
+
+  function flushTelemetryUpdate() {
+    notifyScheduled = false;
+    const packet = snapshot();
+    subscribers.forEach((subscriber) => subscriber(packet));
+    window.dispatchEvent?.(new CustomEvent("timingmetrics:update", { detail: packet }));
+  }
+
+  function scheduleTelemetryUpdate() {
+    if (notifyScheduled) return;
+    notifyScheduled = true;
+    const schedule = window.requestAnimationFrame || window.setTimeout;
+    schedule(flushTelemetryUpdate, 0);
+  }
+
+  function subscribe(subscriber) {
+    if (typeof subscriber !== "function") return () => {};
+    subscribers.add(subscriber);
+    subscriber(snapshot());
+    return () => subscribers.delete(subscriber);
   }
 
   function setDomText(id, value) {
@@ -121,16 +162,16 @@
     renderTimeline();
   }
 
-  function setText(id, value) {
+  function setText(id, value, options = {}) {
     setDomText(id, value);
     const key = metricById[id];
-    if (key) setMetricText(key, value, { render: false });
+    if (key) setMetricText(key, value, { ...options, render: false });
   }
 
-  function setMs(id, value) {
+  function setMs(id, value, options = {}) {
     setDomText(id, formatMs(value));
     const key = metricById[id];
-    if (key) setMetricMs(key, value, { render: false });
+    if (key) setMetricMs(key, value, { ...options, render: false });
   }
 
   function currentSnapshotLabel() {
@@ -153,6 +194,12 @@
       serialize: metrics.serialize.value,
       api: metrics.api.value,
       draw: metrics.draw.value,
+      sources: {
+        query: metrics.query.source,
+        serialize: metrics.serialize.source,
+        api: metrics.api.source,
+        draw: metrics.draw.source,
+      },
       recordedAt: performance.now(),
     };
     const signature = [
@@ -211,10 +258,10 @@
     };
   }
 
-  function textStage(label, value, kind = "generic") {
+  function textStage(label, value, kind = "generic", source = "") {
     const text = String(value || "").trim();
     if (!text || text === "-") return null;
-    return stage(`${label}: ${text}`, 1, "text", "", kind);
+    return stage(`${label}: ${text}`, 1, "text", source, kind);
   }
 
   function buildDynamicStages() {
@@ -225,24 +272,24 @@
     const draw = metrics.draw.value;
     const stages = [];
 
-    if (query !== null) stages.push(stage("SQL 查詢", query, metrics.query.status, "", "query"));
+    if (query !== null) stages.push(stage("SQL 查詢", query, metrics.query.status, metrics.query.source, "query"));
     else {
-      const fallback = textStage("SQL", metrics.query.text, "query");
+      const fallback = textStage("SQL", metrics.query.text, "query", metrics.query.source);
       if (fallback) stages.push(fallback);
     }
 
-    if (serialize !== null) stages.push(stage("序列化", serialize, metrics.serialize.status, "", "serialize"));
+    if (serialize !== null) stages.push(stage("序列化", serialize, metrics.serialize.status, metrics.serialize.source, "serialize"));
     else {
-      const fallback = textStage("序列化", metrics.serialize.text, "serialize");
+      const fallback = textStage("序列化", metrics.serialize.text, "serialize", metrics.serialize.source);
       if (fallback) stages.push(fallback);
     }
 
     if (api !== null) {
       const knownServer = Math.max(0, (query || 0) + (serialize || 0));
       const overhead = Math.max(0, api - knownServer);
-      stages.push(stage("API / 傳輸", overhead || api, metrics.api.status, "", "transport"));
+      stages.push(stage("API / 傳輸", overhead || api, metrics.api.status, metrics.api.source, "transport"));
     } else {
-      const fallback = textStage("API", metrics.api.text, "transport");
+      const fallback = textStage("API", metrics.api.text, "transport", metrics.api.source);
       if (fallback) stages.push(fallback);
     }
 
@@ -323,7 +370,7 @@
 
   function stageTooltip(item, rowTitle) {
     const rows = details.rows || document.getElementById("row-count")?.textContent || "-";
-    const source = item.source ? `\n渲染來源：${item.source}` : "";
+    const source = item.source ? `\n來源：${item.source}` : "";
     const row = rowTitle ? `\n管線：${rowTitle}` : "";
     const explain = {
       query: "資料庫執行查詢並回傳符合視窗、日期、LOD 條件的資料。",
@@ -350,8 +397,10 @@
   function boundaryTooltip(item, rowTitle, cumulative, total, scale) {
     const rows = details.rows || document.getElementById("row-count")?.textContent || "-";
     const ratio = scale > 0 ? ((cumulative / scale) * 100).toFixed(1) : "0.0";
+    const sourceDetail = item.source || item.label;
     return [
-      `Checkpoint：${item.label} 結束`,
+      `顯示細項：${sourceDetail}`,
+      `階段：${item.label} 結束`,
       `左側累計：${formatMs(cumulative)}`,
       `本段耗時：${item.text}`,
       `本列合計：${formatMs(total)}`,
@@ -428,12 +477,12 @@
       const compactClass = width < 10 ? " is-compact" : "";
       cumulative += Math.max(item.value || 0, 0);
       const tooltip = escapeHtml(stageTooltip(item, title));
-      const checkpoint = escapeHtml(boundaryTooltip(item, title, cumulative, total, scale));
+      const boundaryDetail = escapeHtml(boundaryTooltip(item, title, cumulative, total, scale));
       return `
         <span class="pipeline-segment is-${item.status || "ok"} kind-${item.kind || "generic"}${compactClass}" style="--segment-width: ${width}%" title="${tooltip}">
           <b>${label}</b>
           <em>${item.text}</em>
-          <i class="pipeline-boundary" title="${checkpoint}" aria-label="${checkpoint}"></i>
+          <i class="pipeline-boundary" title="${boundaryDetail}" aria-label="${boundaryDetail}"></i>
         </span>
       `;
     }).join("");
@@ -473,6 +522,7 @@
   }
 
   function renderTimeline() {
+    scheduleTelemetryUpdate();
     const root = document.getElementById("pipeline-timeline");
     if (!root) return;
     const playbackStages = buildPlaybackStages();
@@ -557,6 +607,8 @@
 
   return {
     formatMs,
+    snapshot,
+    subscribe,
     setText,
     setMs,
     setCount,
@@ -572,3 +624,5 @@
     waitForLayers,
   };
 })();
+
+window.TimingMetrics = TimingMetrics;

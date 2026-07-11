@@ -178,7 +178,4 @@ function bindMapSettingsControls() {
   $("map-setting-keyboard")?.addEventListener("change", (event) => {
     setMapInteraction("keyboard", event.target.checked);
   });
-  $("map-view-reset")?.addEventListener("click", resetMapView);
-  $("map-view-world")?.addEventListener("click", fitWorldView);
-  $("map-view-taiwan")?.addEventListener("click", fitTaiwanView);
 }

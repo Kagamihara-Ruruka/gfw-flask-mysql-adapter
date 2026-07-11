@@ -2,6 +2,7 @@ const GfwWebglLayer = L.Layer.extend({
   initialize() {
     this._rows = [];
     this._drawMs = 0;
+    this._hitCells = [];
   },
   onAdd(targetMap) {
     this._map = targetMap;
@@ -140,6 +141,7 @@ const GfwWebglLayer = L.Layer.extend({
     const alpha = Math.max(0, Math.min(1, Number(state.layerAlpha.gfw ?? 0.58)));
     const renderRows = aggregateGfwRowsForRender(this._rows);
     const halfDegrees = gfwRenderCellHalfDegrees();
+    const hitCells = [];
     for (const row of renderRows) {
       const lat = Number(row.lat);
       const lon = Number(row.lon);
@@ -152,7 +154,20 @@ const GfwWebglLayer = L.Layer.extend({
       const h = Math.max(1, Math.ceil(Math.abs(se.y - nw.y)));
       if (x > size.x || y > size.y || x + w < 0 || y + h < 0) continue;
       this._pushRect(vertices, x, y, w, h, size.x, size.y, gfwCellColorParts(row), alpha);
+      hitCells.push({
+        row,
+        rect: { x, y, w, h },
+        bounds: {
+          west: normalizeLongitude(lon - halfDegrees),
+          south: lat - halfDegrees,
+          east: normalizeLongitude(lon + halfDegrees),
+          north: lat + halfDegrees,
+          leaflet: L.latLngBounds([lat - halfDegrees, lon - halfDegrees], [lat + halfDegrees, lon + halfDegrees]),
+        },
+        center: { lat, lon: normalizeLongitude(lon) },
+      });
     }
+    this._hitCells = hitCells;
     if (!vertices.length) {
       this._drawMs = performance.now() - started;
       return this._drawMs;
@@ -180,6 +195,17 @@ const GfwWebglLayer = L.Layer.extend({
       this._drawMs = performance.now() - started;
       return this._drawMs;
     }
+  },
+  hitTest(containerPoint) {
+    const point = L.point(containerPoint);
+    for (let index = this._hitCells.length - 1; index >= 0; index -= 1) {
+      const cell = this._hitCells[index];
+      const { x, y, w, h } = cell.rect;
+      if (point.x >= x && point.x <= x + w && point.y >= y && point.y <= y + h) {
+        return cell;
+      }
+    }
+    return null;
   },
 });
 

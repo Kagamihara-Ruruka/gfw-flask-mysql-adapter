@@ -6,6 +6,7 @@ from common_adapter.db.connect import (
     _mysql_records_packet,
     _mysql_records_range_packet,
     _mysql_schema_packet,
+    _mysql_time_series_packet,
     dataset_backend_info,
 )
 from common_adapter.db.registry import database_backend
@@ -70,6 +71,32 @@ class MySqlReadBackend:
             bbox=bbox,
             limit=limit,
             column_profile=column_profile,
+        )
+        packet["backend"] = {"kind": self.kind, "connection_ref": self.connection_ref}
+        return packet
+
+    def time_series_packet(
+        self,
+        *,
+        start_date: str,
+        end_date: str,
+        bbox: tuple[float, float, float, float] | None,
+        metric: str | None = None,
+        aggregation: str | None = None,
+        identity_column: str | None = None,
+        identity_value: str | None = None,
+    ) -> dict[str, Any]:
+        packet = _mysql_time_series_packet(
+            self.config,
+            self.dataset,
+            connection=self.connection,
+            start_date=start_date,
+            end_date=end_date,
+            bbox=bbox,
+            metric=metric,
+            aggregation=aggregation,
+            identity_column=identity_column,
+            identity_value=identity_value,
         )
         packet["backend"] = {"kind": self.kind, "connection_ref": self.connection_ref}
         return packet

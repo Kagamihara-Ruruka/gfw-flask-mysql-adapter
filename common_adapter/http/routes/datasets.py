@@ -13,6 +13,7 @@ from common_adapter.db.connect import (
     records_range_packet,
     records_packet,
     schema_packet,
+    time_series_packet,
 )
 from common_adapter.developer.config_service import normalize_config_ref, read_config_json
 from common_adapter.layers.runtime import dataset_layer_id, imported_layer_ids, is_layer_imported, resolve_runtime_dataset
@@ -88,6 +89,7 @@ class DatasetRoutes:
                     "runtime_config": runtime["config_path"],
                     "source_config_path": runtime["source_config_path"],
                     "time_column": runtime_dataset["time_column"],
+                    "id_column": runtime_dataset.get("id_column"),
                     "lat_column": runtime_dataset["lat_column"],
                     "lon_column": runtime_dataset["lon_column"],
                     "display_columns": runtime_dataset["display_columns"],
@@ -156,6 +158,33 @@ class DatasetRoutes:
                     bbox=parse_bbox(request.args.get("bbox")),
                     limit=request.args.get("limit", query_policy(config)["default_limit"]),
                     column_profile=request.args.get("columns") or "render",
+                )
+                packet["dataset_id"] = dataset_id
+                packet["runtime"] = self.runtime_packet(dataset_id, dataset)
+                packet["timing"]["api_total_ms"] = elapsed_ms(request_start)
+                return jsonify(packet)
+            except Exception as exc:
+                return jsonify({"error": str(exc)}), 400
+
+        @app.get("/api/datasets/<dataset_id>/time-series")
+        def time_series(dataset_id: str):
+            request_start = time.perf_counter()
+            try:
+                dataset = self.get_dataset(dataset_id)
+                start_date = request.args.get("start") or request.args.get("start_date")
+                end_date = request.args.get("end") or request.args.get("end_date")
+                if not start_date or not end_date:
+                    return jsonify({"error": "time series requires start and end"}), 400
+                packet = time_series_packet(
+                    config,
+                    dataset,
+                    start_date=start_date,
+                    end_date=end_date,
+                    bbox=parse_bbox(request.args.get("bbox")),
+                    metric=request.args.get("metric"),
+                    aggregation=request.args.get("aggregation"),
+                    identity_column=request.args.get("identity_column"),
+                    identity_value=request.args.get("identity_value"),
                 )
                 packet["dataset_id"] = dataset_id
                 packet["runtime"] = self.runtime_packet(dataset_id, dataset)

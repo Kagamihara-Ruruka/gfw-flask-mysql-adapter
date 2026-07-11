@@ -40,9 +40,17 @@ function tableContextLabel(context) {
 function renderTable(rows, columns = state.datasets[state.datasetId].display_columns, context = {}) {
   state.rows = rows;
   state.columns = columns;
+  state.recordsContext = {
+    ...context,
+    datasetId: state.datasetId,
+    rowCount: rows.length,
+  };
   $("records").querySelector("thead").innerHTML = state.columns.length
     ? `<tr>${state.columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}</tr>`
     : "";
   $("table-note").textContent = `${tableContextLabel(context)} - 已載入 ${rows.length.toLocaleString()} 筆`;
   renderTableWindow();
+  window.dispatchEvent(new CustomEvent("rrkal:records-updated", {
+    detail: { ...state.recordsContext },
+  }));
 }

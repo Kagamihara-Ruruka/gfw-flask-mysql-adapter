@@ -49,3 +49,20 @@ class SparkReadBackend:
             "records_range_packet",
             "define the Spark/Iceberg range query contract before enabling this dataset",
         )
+
+    def time_series_packet(
+        self,
+        *,
+        start_date: str,
+        end_date: str,
+        bbox: tuple[float, float, float, float] | None,
+        metric: str | None = None,
+        aggregation: str | None = None,
+        identity_column: str | None = None,
+        identity_value: str | None = None,
+    ) -> dict[str, Any]:
+        raise UnsupportedBackendOperation(
+            "spark",
+            "time_series_packet",
+            "define the Spark/Iceberg time-series aggregation contract before enabling this dataset",
+        )

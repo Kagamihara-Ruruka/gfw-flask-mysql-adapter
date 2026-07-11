@@ -23,6 +23,10 @@ class SnapshotPerformanceChart {
     return parsed === null ? "-" : `${parsed.toFixed(1)} ms`;
   }
 
+  displayDetail(sample, item) {
+    return String(sample?.sources?.[item.key] || item.name || "").trim();
+  }
+
   getElement() {
     return document.getElementById(this.elementId);
   }
@@ -109,12 +113,13 @@ class SnapshotPerformanceChart {
       name: item.name,
       x: samples.map((sample) => sample.index),
       y: samples.map((sample) => this.numberOrNull(sample[item.key])),
-      customdata: samples.map((sample) => [sample.label, sample.rows]),
+      customdata: samples.map((sample) => [sample.label, sample.rows, this.displayDetail(sample, item)]),
       connectgaps: false,
       line: { color: item.color, width: 2.5, shape: "spline", smoothing: 0.55 },
       marker: { color: item.color, size: samples.length > 1 ? 6 : 8 },
       hovertemplate:
         "%{fullData.name}<br>" +
+        "顯示細項：%{customdata[2]}<br>" +
         "快照：%{customdata[0]}<br>" +
         "資料列：%{customdata[1]}<br>" +
         "耗時：%{y:.1f} ms<extra></extra>",
@@ -215,4 +220,5 @@ class SnapshotPerformanceChart {
   }
 }
 
+window.createSnapshotPerformanceChart = (options = {}) => new SnapshotPerformanceChart(options);
 window.SnapshotPerformanceChart = new SnapshotPerformanceChart();
