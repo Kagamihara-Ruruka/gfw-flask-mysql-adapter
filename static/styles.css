@@ -2827,6 +2827,15 @@ body.is-widget-pointer-dragging * {
   background: transparent;
   cursor: pointer;
   text-align: left;
+  list-style: none;
+}
+
+.widgets-marketplace-drawer-button::-webkit-details-marker {
+  display: none;
+}
+
+.widgets-marketplace-drawer-button::marker {
+  content: "";
 }
 
 .widgets-marketplace-drawer-button strong {
@@ -2848,8 +2857,12 @@ body.is-widget-pointer-dragging * {
   transition: transform 160ms ease;
 }
 
-.widgets-marketplace-drawer[data-widgets-drawer-expanded="1"] .widgets-marketplace-drawer-chevron {
+.widgets-marketplace-drawer[open] .widgets-marketplace-drawer-chevron {
   transform: rotate(225deg);
+}
+
+.widgets-marketplace-drawer:not([open]) .widgets-marketplace-grid {
+  display: none;
 }
 
 .widgets-marketplace-grid {

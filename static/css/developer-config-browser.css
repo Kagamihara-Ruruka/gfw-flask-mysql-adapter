@@ -63,13 +63,6 @@
   cursor: default;
 }
 
-.developer-config-file-type-badge {
-  position: absolute;
-  top: var(--developer-config-card-padding);
-  right: var(--developer-config-card-padding);
-  min-width: 3.2rem;
-}
-
 .developer-config-item:hover,
 .developer-config-item[aria-selected="true"] {
   border-color: #2ea043;
@@ -217,9 +210,6 @@
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 6rem), 1fr));
   }
 
-  .developer-config-main {
-    padding-right: 3.8rem;
-  }
 }
 
 .developer-config-action:hover:not(:disabled),

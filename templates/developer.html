@@ -19,8 +19,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>開發者路由器控制面</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="/static/styles.css?v=config-drawer-centered-v34">
-  <link rel="stylesheet" href="/static/css/developer.css?v=config-drawer-centered-v34">
+  <link rel="stylesheet" href="/static/styles.css?v=endpoint-source-v79">
+  <link rel="stylesheet" href="/static/css/developer.css?v=endpoint-source-v79">
 </head>
 <body class="developer-control-body{% if embedded %} is-embedded{% endif %}">
   {% if not embedded %}
@@ -331,6 +331,30 @@
                       </table>
                     </div>
                   </section>
+                  <section class="developer-status-machine" aria-label="Endpoint 狀態機">
+                    <h4>ENDPOINT</h4>
+                    <div class="developer-status-table-wrap">
+                      <table class="developer-status-table is-endpoint">
+                        <thead>
+                          <tr>
+                            <th>Config</th>
+                            <th>Endpoint</th>
+                            <th>Base URL</th>
+                            <th>啟用</th>
+                            <th>設定</th>
+                            <th>連線</th>
+                            <th>Contract</th>
+                            <th>細節</th>
+                          </tr>
+                        </thead>
+                        <tbody id="developer-endpoint-status-body">
+                          <tr>
+                            <td colspan="8">等待 Endpoint 狀態資料。</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
                   <section class="developer-status-machine is-spatial-machine" aria-label="空間路由狀態機">
                     <h4>SPATIAL</h4>
                     <div class="developer-status-table-wrap">
@@ -411,10 +435,10 @@
 
   <script src="/static/js/ui/developer/developer-utils.js?v=config-drawer-centered-v34"></script>
   <script src="/static/js/ui/developer/developer-api.js?v=config-drawer-centered-v34"></script>
-  <script src="/static/js/ui/developer/developer-config-list.js?v=config-drawer-centered-v34"></script>
+  <script src="/static/js/ui/developer/developer-config-list.js?v=endpoint-source-v79"></script>
   <script src="/static/js/ui/developer/developer-status-table.js?v=config-drawer-centered-v34"></script>
   <script src="/static/js/ui/developer/developer-mapping-controller.js?v=config-drawer-centered-v34"></script>
-  <script src="/static/js/ui/developer/developer-status-machines.js?v=config-drawer-centered-v34"></script>
+  <script src="/static/js/ui/developer/developer-status-machines.js?v=endpoint-source-v79"></script>
   <script src="/static/js/ui/developer/developer-import.js?v=config-drawer-centered-v34"></script>
   <script src="/static/js/ui/developer/developer-wizard.js?v=config-drawer-centered-v34"></script>
   <script src="/static/js/ui/developer/developer-source-group-selector.js?v=config-source-selector-v35"></script>

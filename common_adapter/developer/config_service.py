@@ -18,6 +18,12 @@ from common_adapter.developer.probes.status import (
     connection_status_from_config,
     spatial_status_from_config,
 )
+from common_adapter.developer.probes.endpoint import (
+    DEFAULT_ENDPOINT_PROBE,
+    EndpointProbe,
+    endpoint_probe_target,
+    endpoint_status_from_config,
+)
 from common_adapter.developer.sources.configs import (
     BUILTIN_PROBE_GROUPS,
     CONFIG_GROUPS,

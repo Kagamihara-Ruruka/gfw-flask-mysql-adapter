@@ -1,0 +1,25 @@
+{
+  "schema": "endpoint_source.v1",
+  "role": "endpoint_source",
+  "name": "external_serving_api",
+  "endpoint": {
+    "scheme": "http",
+    "host": "<host-ip>",
+    "port": 30801,
+    "base_path": "/api/v1",
+    "catalog_paths": [
+      "/catalog"
+    ],
+    "health_paths": [
+      "/health"
+    ],
+    "discovery_paths": [
+      "/openapi.json",
+      "/docs"
+    ],
+    "timeout_seconds": 3
+  },
+  "auth": {
+    "type": "none"
+  }
+}

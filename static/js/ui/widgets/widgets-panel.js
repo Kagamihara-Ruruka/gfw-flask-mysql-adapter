@@ -516,15 +516,15 @@ class WidgetMarketplaceDrawer {
   }
 
   render(panel) {
-    const section = document.createElement("section");
+    const section = document.createElement("details");
     section.className = "widgets-marketplace-drawer";
+    section.open = this.expanded;
     section.dataset.widgetsDrawerId = this.id;
     section.dataset.widgetsDrawerExpanded = this.expanded ? "1" : "0";
 
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "widgets-marketplace-drawer-button";
-    button.setAttribute("aria-expanded", this.expanded ? "true" : "false");
+    const summary = document.createElement("summary");
+    summary.className = "widgets-marketplace-drawer-button";
+    summary.setAttribute("aria-expanded", this.expanded ? "true" : "false");
 
     const title = document.createElement("span");
     title.textContent = this.title;
@@ -541,15 +541,18 @@ class WidgetMarketplaceDrawer {
     body.hidden = !this.expanded;
     body.append(...this.items.map((item) => item.renderMarketplaceCard(panel)));
 
-    button.append(title, count, chevron);
-    bindWidgetActionButton(button, () => {
-      const nextExpanded = section.dataset.widgetsDrawerExpanded !== "1";
-      section.dataset.widgetsDrawerExpanded = nextExpanded ? "1" : "0";
-      button.setAttribute("aria-expanded", nextExpanded ? "true" : "false");
-      body.hidden = !nextExpanded;
+    summary.append(title, count, chevron);
+    summary.addEventListener("click", (event) => {
+      event.stopPropagation();
+    });
+    section.addEventListener("toggle", () => {
+      const isExpanded = section.open;
+      section.dataset.widgetsDrawerExpanded = isExpanded ? "1" : "0";
+      summary.setAttribute("aria-expanded", isExpanded ? "true" : "false");
+      body.hidden = !isExpanded;
     });
 
-    section.append(button, body);
+    section.append(summary, body);
     return section;
   }
 }
@@ -1976,8 +1979,8 @@ function createWidgetCatalog() {
     new WidgetCatalogItem({ id: "line-chart", title: "折線圖工具", size: "2x2", supportedSizes: WidgetSizeAbleDict["line-chart"], description: "時間序列指標。", group: "registered" }),
     new WidgetCatalogItem({ id: "pie-chart", title: "圓餅圖工具", size: "1x1", supportedSizes: WidgetSizeAbleDict["pie-chart"], description: "圖層 Y 值比例。", group: "registered" }),
     new WidgetCatalogItem({ id: "table", title: "表格工具", size: "2x2", supportedSizes: WidgetSizeAbleDict.table, description: "資料列與欄位檢視。", group: "registered" }),
-    new WidgetCatalogItem({ id: "map-jump", title: "地圖窗格快速跳轉工具", size: "1x2", supportedSizes: WidgetSizeAbleDict["map-jump"], description: "常用視角與區域入口。", group: "registered" }),
-    new WidgetCatalogItem({ id: "metrics", title: "測速", size: "1x2", supportedSizes: WidgetSizeAbleDict.metrics, description: "已註冊的效能觀測圖表。", group: "registered", deletable: false }),
+    new WidgetCatalogItem({ id: "map-jump", title: "窗格跳轉工具", size: "1x2", supportedSizes: WidgetSizeAbleDict["map-jump"], description: "常用視角與區域入口。", group: "registered" }),
+    new WidgetCatalogItem({ id: "metrics", title: "測速工具", size: "1x2", supportedSizes: WidgetSizeAbleDict.metrics, description: "已註冊的效能觀測圖表。", group: "registered", deletable: false }),
   ];
 }
 
@@ -2609,7 +2612,7 @@ class WidgetsPanel {
     drawers.append(
       new WidgetMarketplaceDrawer({
         id: "registered",
-        title: "已註冊",
+        title: "已註冊能力",
         items: catalog.filter((item) => item.group === "registered"),
         expanded: true,
       }).render(this),
@@ -2634,28 +2637,32 @@ class WidgetsPanel {
   }
 }
 
+const DefaultDashboardWidgetLayout = Object.freeze([
+  Object.freeze({ type: "line-chart", id: "line-chart-2x2", title: "折線圖工具", size: "2x2", status: "時間序列指標。", slotIndex: 0 }),
+  Object.freeze({ type: "pie-chart", id: "pie-chart-2x3", title: "圓餅圖工具", size: "2x3", status: "單日切片比例。", slotIndex: 2 }),
+  Object.freeze({ type: "map-jump", id: "map-jump-1x1", title: "窗格跳轉工具", size: "1x1", status: "", slotIndex: 5 }),
+  Object.freeze({ type: "metrics", id: "metrics-1x2", title: "測速工具", size: "1x2", status: "", slotIndex: 12, deletable: false }),
+]);
+
+function createDashboardWidgetFromDefault(item, scope) {
+  const params = {
+    id: `${scope}-${item.id}`,
+    title: item.title,
+    size: item.size,
+    status: item.status,
+    slotIndex: item.slotIndex,
+    deletable: item.deletable,
+    widgetType: item.type,
+  };
+  if (item.type === "line-chart") return new LineChartWidget(params);
+  if (item.type === "pie-chart") return new PieChartWidget(params);
+  if (item.type === "map-jump") return new MapJumpWidget(params);
+  if (item.type === "metrics") return new MetricsWidget(params);
+  return new BlankWidget({ ...params, widgetType: "blank" });
+}
+
 function createDashboardWidgets(scope = "widgets") {
-  return [
-    new BlankWidget({ id: `${scope}-blank-1x1`, title: "空白版型", size: "1x1", status: "", slotIndex: 0 }),
-    new BlankWidget({ id: `${scope}-blank-1x2`, title: "空白版型", size: "1x2", status: "", slotIndex: 1 }),
-    new BlankWidget({ id: `${scope}-blank-1x3`, title: "空白版型", size: "1x3", status: "", slotIndex: 3 }),
-    new LineChartWidget({
-      id: `${scope}-line-chart-2x2`,
-      title: "折線圖工具",
-      size: "2x2",
-      status: "時間序列指標。",
-      slotIndex: 6,
-      widgetType: "line-chart",
-    }),
-    new PieChartWidget({
-      id: `${scope}-pie-chart-2x3`,
-      title: "圓餅圖工具",
-      size: "2x3",
-      status: "單日切片比例。",
-      slotIndex: 8,
-      widgetType: "pie-chart",
-    }),
-  ];
+  return DefaultDashboardWidgetLayout.map((item) => createDashboardWidgetFromDefault(item, scope));
 }
 
 function initWidgetsPanels() {

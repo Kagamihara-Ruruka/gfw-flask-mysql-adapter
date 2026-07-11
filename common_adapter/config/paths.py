@@ -118,6 +118,7 @@ def ensure_config_dirs() -> None:
         STATE_DIR,
         ARTIFACTS_DIR,
         SOURCE_CONFIG_DIR / "database",
+        SOURCE_CONFIG_DIR / "endpoint",
         SOURCE_CONFIG_DIR / "spatial",
         SOURCE_CONFIG_DIR / "websocket",
     ):

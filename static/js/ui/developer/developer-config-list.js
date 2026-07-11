@@ -61,47 +61,6 @@
     return "";
   }
 
-  function configFileType(config) {
-    const name = String(config.path || config.name || "").split(/[\\/]/).pop() || "";
-    const match = name.match(/\.([a-z0-9]+)$/i);
-    if (match) {
-      return match[1].toUpperCase();
-    }
-    return config.parse_ok ? "JSON" : "FILE";
-  }
-
-  class DeveloperConfigFileTypeBadge {
-    constructor(config) {
-      this.config = config;
-    }
-
-    state() {
-      return this.config.parse_ok ? "ok" : "error";
-    }
-
-    label() {
-      if (this.state() === "ok") {
-        return configFileType(this.config);
-      }
-      return "錯誤";
-    }
-
-    statusClass() {
-      return this.state() === "ok" ? "is-ok" : "is-error";
-    }
-
-    title() {
-      if (this.state() === "ok") {
-        return `${configFileType(this.config)} file`;
-      }
-      return this.config.error || "file parse error";
-    }
-
-    render() {
-      return `<span class="developer-status-badge developer-config-file-type-badge ${this.statusClass()}" title="${escapeHtml(this.title())}">${escapeHtml(this.label())}</span>`;
-    }
-  }
-
   class DeveloperConfigItemCard {
     constructor(config, options) {
       this.config = config;
@@ -132,7 +91,6 @@
 
       return `
         ${this.activeControlMarkup()}
-        ${new DeveloperConfigFileTypeBadge(this.config).render()}
         <span class="developer-config-main">
           <strong>${escapeHtml(this.config.name)}</strong>
           <small>${escapeHtml(this.config.path)}</small>
@@ -254,7 +212,6 @@
         : this.item.error;
       return `
         <span class="developer-config-active is-disabled" aria-hidden="true"></span>
-        ${new DeveloperConfigFileTypeBadge(this.item).render()}
         <span class="developer-config-main">
           <strong>${escapeHtml(this.item.name)}</strong>
           <small>${escapeHtml(this.item.path)}</small>
@@ -431,12 +388,10 @@
 
   window.DeveloperConfigList = {
     DeveloperConfigDrawer,
-    DeveloperConfigFileTypeBadge,
     DeveloperConfigItemCard,
     DeveloperConfigListView,
     DeveloperStagingConfigCard,
     DeveloperStagingDrawer,
-    configFileType,
     groupLabel,
     render,
   };

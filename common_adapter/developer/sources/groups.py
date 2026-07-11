@@ -8,8 +8,8 @@ from common_adapter.config.paths import SOURCE_CONFIG_DIR
 
 CONFIG_NAME_PATTERN = re.compile(r"[^A-Za-z0-9_.-]+")
 ROUTE_GROUP_PATTERN = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
-CONFIG_GROUPS = {"database", "websocket", "spatial", "demo"}
-BUILTIN_PROBE_GROUPS = {"database", "websocket", "spatial"}
+CONFIG_GROUPS = {"database", "websocket", "spatial", "endpoint", "demo"}
+BUILTIN_PROBE_GROUPS = {"database", "websocket", "spatial", "endpoint"}
 NON_ROUTABLE_CONFIG_GROUPS = {"demo"}
 RESERVED_SOURCE_GROUPS = {"adapter", "app", "artifacts", "config", "examples", "json", "managed", "profile", "runtime", "staging", "state"}
 
@@ -27,6 +27,8 @@ class ConfigGroupClassifier:
             return "websocket"
         if group in {"spatial", "postgis", "gis", "overlay", "mvt"}:
             return "spatial"
+        if group in {"endpoint", "http", "http_api", "serving", "serving_api", "rest", "api"}:
+            return "endpoint"
         if group in {"route", "source", "custom"}:
             return "route"
         if group in {"demo", "example", "sample"}:
@@ -80,6 +82,8 @@ class ConfigGroupClassifier:
                 return "database"
             if "profile" in schema or role.endswith("profile"):
                 return ""
+            if "endpoint" in schema or "http_api" in schema or "serving_api" in schema or role.startswith(("endpoint", "http_api", "serving_api")):
+                return "endpoint"
             if "route" in schema or role.startswith(("route", "source")):
                 return "route"
             if isinstance(data.get("datasets"), dict) or isinstance(data.get("connections"), dict) or isinstance(data.get("mysql"), dict):
@@ -93,7 +97,9 @@ class ConfigGroupClassifier:
                 eez = overlays["eez"]
                 if eez.get("provider") == "postgis" or eez.get("postgis"):
                     return "spatial"
-            if any(key in data for key in ("route", "routes", "source", "sources", "adapter", "driver", "backend", "endpoint", "uri", "url", "host", "port")):
+            if any(key in data for key in ("endpoint", "base_url", "uri", "url", "host", "port")):
+                return "endpoint"
+            if any(key in data for key in ("route", "routes", "source", "sources", "adapter", "driver", "backend")):
                 return "route"
         return ""
 

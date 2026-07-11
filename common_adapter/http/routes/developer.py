@@ -12,6 +12,7 @@ from common_adapter.developer.config_service import (
     delete_managed_config,
     delete_staging_config,
     discover_config_files,
+    endpoint_status_from_config,
     has_builtin_probe,
     is_routable_config_group,
     load_layer_mappings,
@@ -162,6 +163,39 @@ def database_router_status_rows(runtime_config: dict[str, Any] | None = None) ->
             backend = str(row.get("backend") or "").lower()
             row["schema_inspectable"] = bool(row.get("enabled") and row.get("connected") and backend == "mysql")
             rows.append(row)
+    return rows
+
+
+def endpoint_router_status_rows(runtime_config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    active_refs = active_refs_with_runtime(runtime_config)
+    locked_refs = locked_refs_with_runtime(runtime_config)
+    runtime_refs = runtime_config_refs(runtime_config)
+    rows: list[dict[str, Any]] = []
+    for path in config_paths_with_runtime(runtime_config):
+        if path.name.endswith(".example.json"):
+            continue
+        ref = normalize_config_ref(path)
+        if ref not in active_refs:
+            continue
+        summary = summarize_config_file(path, active_refs, locked_refs, runtime_refs)
+        data, error = read_config_json(path)
+        if error or data is None:
+            rows.append(
+                {
+                    "config_path": ref,
+                    "endpoint_ref": "-",
+                    "base_url": "-",
+                    "enabled": ref in active_refs,
+                    "configured": False,
+                    "reachable": False,
+                    "contract_detected": False,
+                    "detail": error,
+                }
+            )
+            continue
+        if not config_supports_group(data, summary, "endpoint"):
+            continue
+        rows.extend(endpoint_status_from_config(ref, data, ref in active_refs))
     return rows
 
 
@@ -456,6 +490,14 @@ def register_developer_routes(app: Flask, runtime_config: dict[str, Any] | None 
                     }
                 )
             return jsonify({"manifest": manifest, "rows": rows})
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.get("/api/developer/endpoint-status")
+    def developer_endpoint_status():
+        try:
+            manifest = response_manifest(runtime_config)
+            return jsonify({"manifest": manifest, "rows": endpoint_router_status_rows(runtime_config)})
         except Exception as exc:
             return jsonify({"error": str(exc)}), 400
 

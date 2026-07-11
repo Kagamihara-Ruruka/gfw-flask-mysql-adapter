@@ -52,6 +52,23 @@
     }).render(rows);
   }
 
+  function renderDeveloperEndpointStatus(rows) {
+    new DeveloperStatusTable({
+      bodyId: "developer-endpoint-status-body",
+      emptyText: "沒有啟用中的 Endpoint config。",
+      columns: [
+        { key: "config_path", width: "22%", render: (row) => escapeHtml(row.config_path) },
+        { key: "endpoint_ref", width: "10rem", render: (row) => escapeHtml(row.endpoint_ref || "-") },
+        { key: "base_url", width: "28%", className: "developer-long-value", render: (row) => escapeHtml(row.base_url || "-") },
+        { key: "enabled", width: "5rem", className: "developer-status-bit-cell", render: (row) => bitCell(row.enabled) },
+        { key: "configured", width: "5rem", className: "developer-status-bit-cell", render: (row) => bitCell(row.configured) },
+        { key: "reachable", width: "5rem", className: "developer-status-bit-cell", render: (row) => bitCell(row.reachable) },
+        { key: "contract_detected", width: "5rem", className: "developer-status-bit-cell", render: (row) => bitCell(row.contract_detected) },
+        { key: "detail", className: "developer-long-value", render: (row) => escapeHtml(row.detail || "") },
+      ],
+    }).render(rows);
+  }
+
   function spatialTableStatusLabel(state) {
     if (state?.label) {
       return state.label;
@@ -165,6 +182,15 @@
     renderDeveloperWebsocketStatus(packet.rows || []);
   }
 
+  async function loadDeveloperEndpointStatus() {
+    const response = await fetch("/api/developer/endpoint-status");
+    const packet = await response.json();
+    if (!response.ok) {
+      throw new Error(packet.error || "Endpoint 狀態讀取失敗。");
+    }
+    renderDeveloperEndpointStatus(packet.rows || []);
+  }
+
   async function loadDeveloperSpatialStatus() {
     const response = await fetch("/api/developer/spatial-status");
     const packet = await response.json();
@@ -203,6 +229,7 @@
       await Promise.all([
         loadDeveloperRouterStatus(),
         loadDeveloperWebsocketStatus(),
+        loadDeveloperEndpointStatus(),
         loadDeveloperSpatialStatus(),
         loadDeveloperSchemaProfiles(),
         loadDeveloperLayerImports(),
