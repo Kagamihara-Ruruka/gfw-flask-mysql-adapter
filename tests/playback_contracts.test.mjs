@@ -60,12 +60,12 @@ function cacheService({ readyDates = [], failedDates = [], mode = "progressive" 
   return service;
 }
 
-function loadPlaybackCacheService({ prefetchRequests, hasPacket = () => false } = {}) {
+function loadPlaybackCacheService({ prefetchRequests, hasPacket = () => false, cancelPrefetch = () => {} } = {}) {
   const state = {
-    dataLayer: "gfw",
+    dataLayer: "sampled-grid-test",
     playbackRate: 1,
     playIntervalMs: 1400,
-    gfwRecordCache: {
+    sampledGridRecordCache: {
       maxBytes: 2 * 1024 * 1024 * 1024,
       stats: {},
     },
@@ -102,9 +102,13 @@ function loadPlaybackCacheService({ prefetchRequests, hasPacket = () => false } 
         return "1 worker";
       },
     },
-    GfwRecordCache: {
+    SampledGridRecordCache: {
       hasPacket,
       prefetchRequests,
+      cancelPrefetch,
+    },
+    isSampledGridLayer(layerId) {
+      return layerId === state.dataLayer;
     },
     setStatus(message, error = false) {
       statuses.push({ message, error });
@@ -114,6 +118,47 @@ function loadPlaybackCacheService({ prefetchRequests, hasPacket = () => false } 
     "static/js/playback/playback-cache-service.js",
   ], globals);
   return { PlaybackCacheService: vm.runInContext("PlaybackCacheService", context), state, statuses };
+}
+
+function loadSampledGridRecordCache({ fetchJson, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout } = {}) {
+  const state = {
+    dataLayer: "sampled-grid-test",
+    isPlaying: false,
+    playbackCache: {
+      isPreheating: false,
+      isBackgroundPreloading: false,
+    },
+    sampledGridRecordCache: {
+      maxBytes: 2 * 1024 * 1024 * 1024,
+      maxEntries: 0,
+      prewarmConcurrency: 1,
+      prewarmDateAhead: 0,
+      prewarmDateBehind: 0,
+      stats: {},
+    },
+  };
+  const globals = {
+    state,
+    fetchJson,
+    URLSearchParams,
+    setTimeout: setTimeoutImpl,
+    clearTimeout: clearTimeoutImpl,
+    PlaybackWorkerPolicy: {
+      resolve() {
+        return 1;
+      },
+    },
+    isSampledGridLayer(layerId) {
+      return layerId === state.dataLayer;
+    },
+  };
+  const { context } = loadBrowserScripts([
+    "static/js/services/gfw-record-cache.js",
+  ], globals);
+  return {
+    SampledGridRecordCache: vm.runInContext("SampledGridRecordCache", context),
+    state,
+  };
 }
 
 const dates = [
@@ -342,24 +387,23 @@ test("progressive target failure becomes an explicit failed frame-buffer state",
   });
 });
 
-test("non-progressive modes are not frame-buffer gated", () => {
+test("complete-range preheat is not frame-buffer gated", () => {
   const { PlaybackFrameBuffer } = loadPlaybackCore();
-  for (const mode of ["off", "before_play"]) {
-    const decision = PlaybackFrameBuffer.inspectTarget({
-      dates,
-      currentIndex: 0,
-      targetIndex: 1,
-      mode,
-      hasCacheLayer: true,
-      requestContext: { dataset: "gfw_full" },
-      cacheService: cacheService({ mode }),
-    });
+  const mode = "before_play";
+  const decision = PlaybackFrameBuffer.inspectTarget({
+    dates,
+    currentIndex: 0,
+    targetIndex: 1,
+    mode,
+    hasCacheLayer: true,
+    requestContext: { dataset: "gfw_full" },
+    cacheService: cacheService({ mode }),
+  });
 
-    assert.equal(decision.state, PlaybackFrameBuffer.FRAME_STATES.ready);
-    assert.equal(decision.renderIndex, 1);
-    assert.equal(decision.readyCount, 1);
-    assert.equal(decision.requiredCount, 1);
-  }
+  assert.equal(decision.state, PlaybackFrameBuffer.FRAME_STATES.ready);
+  assert.equal(decision.renderIndex, 1);
+  assert.equal(decision.readyCount, 1);
+  assert.equal(decision.requiredCount, 1);
 });
 
 test("analysis playback event contract is buffering, resumed, then shown", () => {
@@ -465,6 +509,230 @@ test("frame-buffer failure emits an error telemetry event", () => {
     status: "error",
     source: "buffer",
   }]);
+});
+
+test("progressive startup waits only for the first renderable frame while preserving watermarks", async () => {
+  let resolvePrefetch = null;
+  let requestedDates = [];
+  let settled = false;
+  const run = new Promise((resolve) => {
+    resolvePrefetch = resolve;
+  });
+  const { PlaybackCacheService, state } = loadPlaybackCacheService({
+    prefetchRequests(requests) {
+      requestedDates = requests.map((request) => request.date);
+      return run;
+    },
+  });
+  state.playbackRate = 2;
+  const range = Array.from({ length: 12 }, (_, index) => `2024-01-${String(index + 1).padStart(2, "0")}`);
+
+  const preheat = PlaybackCacheService.preheat({
+    dates: range,
+    anchorDate: range[0],
+    bbox: "0,0,1,1",
+    datasetId: "sampled-grid-test",
+    limit: "max",
+    blocking: true,
+  }).then(() => {
+    settled = true;
+  });
+
+  await Promise.resolve();
+  const plan = PlaybackCacheService.startupBufferPlan(range, { anchorDate: range[0] });
+  assert.equal(plan.resume, 8);
+  assert.equal(plan.lowWatermark, 3);
+  assert.equal(plan.startupRequired, 1);
+  assert.deepEqual(requestedDates, range.slice(0, 2));
+  assert.equal(state.playbackCache.isPreheating, true);
+  assert.equal(state.playbackCache.isBackgroundPreloading, false);
+  assert.equal(settled, false);
+
+  resolvePrefetch({ total: requestedDates.length, fetched: requestedDates.length, cacheHits: 0, failed: 0 });
+  await preheat;
+  assert.equal(settled, true);
+  assert.equal(state.playbackCache.isPreheating, false);
+});
+
+test("progressive refill starts at low-water and targets the high-water window", () => {
+  const cacheService = {
+    bufferPolicy() {
+      return { lowWatermark: 3, resume: 8 };
+    },
+    countReadyPrefix() {
+      return 4;
+    },
+  };
+  const { context } = loadBrowserScripts([
+    "static/js/playback/playback-prefetch-controller.js",
+  ]);
+  const PlaybackPrefetchController = vm.runInContext("PlaybackPrefetchController", context);
+  const decisionAboveLowWater = PlaybackPrefetchController.shouldQueue({
+    options: { mode: "progressive" },
+    dates,
+    currentDate: dates[0],
+    requestContext: {},
+    cacheService,
+  });
+  assert.equal(decisionAboveLowWater.shouldQueue, false);
+
+  cacheService.countReadyPrefix = () => 3;
+  const decisionAtLowWater = PlaybackPrefetchController.shouldQueue({
+    options: { mode: "progressive" },
+    dates,
+    currentDate: dates[0],
+    requestContext: {},
+    cacheService,
+  });
+  assert.equal(decisionAtLowWater.shouldQueue, true);
+  assert.equal(decisionAtLowWater.policy.resume, 8);
+});
+
+test("progressive playback does not block startup on cache preheat", () => {
+  const source = readFileSync(
+    path.join(repoRoot, "static/js/playback/playback-controls.js"),
+    "utf8",
+  );
+  const start = source.indexOf("async function setPlayback(active)");
+  const end = source.indexOf("async function normalizeDateInputs", start);
+  const body = source.slice(start, end);
+
+  assert.ok(start >= 0 && end > start);
+  assert.doesNotMatch(body, /await\s+awaitProgressiveStartupBuffer/);
+  assert.match(body, /if \(options\.mode === "before_play"\)[\s\S]*await preheatPlaybackCache\(\{ blocking: true \}\)/);
+  assert.match(body, /state\.isPlaying = true;[\s\S]*schedulePlaybackTick\(generation\);[\s\S]*if \(options\.mode === "progressive"\)[\s\S]*preheatPlaybackCache\(\{ blocking: false/);
+});
+
+test("idle prewarm delay is state-owned instead of a scheduler magic number", () => {
+  const source = readFileSync(
+    path.join(repoRoot, "static/js/services/gfw-record-cache.js"),
+    "utf8",
+  );
+  const start = source.indexOf("function schedulePrewarm(context)");
+  const end = source.indexOf("function cancelPrewarm()", start);
+  const body = source.slice(start, end);
+
+  assert.ok(start >= 0 && end > start);
+  assert.match(body, /options\(\)\.prewarmIdleDelayMs/);
+  assert.doesNotMatch(body, /},\s*700\s*\)/);
+});
+
+test("legacy per-frame query mode normalizes to adaptive progressive preheat", () => {
+  const { PlaybackCacheService, state } = loadPlaybackCacheService({
+    prefetchRequests: async () => ({ total: 0, fetched: 0, cacheHits: 0, failed: 0 }),
+  });
+  state.playbackCache.mode = "off";
+
+  assert.equal(PlaybackCacheService.options().mode, "progressive");
+  assert.equal(state.playbackCache.mode, "progressive");
+});
+
+test("progressive rolling windows serialize and coalesce to the latest pending anchor", async () => {
+  const calls = [];
+  let active = 0;
+  let maxActive = 0;
+  const { PlaybackCacheService } = loadPlaybackCacheService({
+    prefetchRequests(requests) {
+      let resolveRun = null;
+      const deferred = new Promise((resolve) => {
+        resolveRun = resolve;
+      });
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      calls.push({
+        dates: requests.map((request) => request.date),
+        resolve() {
+          active -= 1;
+          resolveRun({ total: requests.length, fetched: requests.length, cacheHits: 0, failed: 0 });
+        },
+      });
+      return deferred;
+    },
+  });
+  const range = Array.from({ length: 16 }, (_, index) => `2024-01-${String(index + 1).padStart(2, "0")}`);
+  const request = {
+    dates: range,
+    bbox: "0,0,1,1",
+    datasetId: "sampled-grid-test",
+    limit: "max",
+    blocking: false,
+  };
+
+  await PlaybackCacheService.preheat({ ...request, anchorDate: range[0] });
+  await PlaybackCacheService.preheat({ ...request, anchorDate: range[2] });
+  await PlaybackCacheService.preheat({ ...request, anchorDate: range[4] });
+  assert.equal(calls.length, 1);
+
+  calls[0].resolve();
+  for (let index = 0; index < 5; index += 1) await Promise.resolve();
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].dates[0], range[3]);
+  assert.equal(maxActive, 1);
+
+  calls[1].resolve();
+  for (let index = 0; index < 3; index += 1) await Promise.resolve();
+  PlaybackCacheService.cancelBackground();
+});
+
+test("interactive prewarm cancellation does not cancel playback prefetch", async () => {
+  let resolveFirst = null;
+  const urls = [];
+  const first = new Promise((resolve) => {
+    resolveFirst = resolve;
+  });
+  const { SampledGridRecordCache } = loadSampledGridRecordCache({
+    fetchJson(url) {
+      urls.push(url);
+      if (urls.length === 1) return first;
+      return Promise.resolve({ rows: [], timing: {} });
+    },
+  });
+  const requests = ["2024-01-01", "2024-01-02"].map((date) => ({
+    datasetId: "sampled-grid-test",
+    date,
+    bbox: "0,0,1,1",
+    limit: "max",
+    columns: "render",
+  }));
+
+  const prefetch = SampledGridRecordCache.prefetchRequests(requests, { concurrency: 1 });
+  await Promise.resolve();
+  assert.equal(urls.length, 1);
+  SampledGridRecordCache.cancelPrewarm();
+  resolveFirst({ rows: [], timing: {} });
+  await prefetch;
+
+  assert.equal(urls.length, 2);
+});
+
+test("explicit playback-prefetch cancellation stops queued requests", async () => {
+  let resolveFirst = null;
+  const urls = [];
+  const first = new Promise((resolve) => {
+    resolveFirst = resolve;
+  });
+  const { SampledGridRecordCache } = loadSampledGridRecordCache({
+    fetchJson(url) {
+      urls.push(url);
+      if (urls.length === 1) return first;
+      return Promise.resolve({ rows: [], timing: {} });
+    },
+  });
+  const requests = ["2024-01-01", "2024-01-02"].map((date) => ({
+    datasetId: "sampled-grid-test",
+    date,
+    bbox: "0,0,1,1",
+    limit: "max",
+    columns: "render",
+  }));
+
+  const prefetch = SampledGridRecordCache.prefetchRequests(requests, { concurrency: 1 });
+  await Promise.resolve();
+  SampledGridRecordCache.cancelPrefetch();
+  resolveFirst({ rows: [], timing: {} });
+  await prefetch;
+
+  assert.equal(urls.length, 1);
 });
 
 test("progressive preheat failure is lifecycle-scoped request state", async () => {

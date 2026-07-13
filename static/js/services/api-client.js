@@ -25,13 +25,32 @@ function currentDatasetBackendDetail(packet = null) {
 async function loadDatasets() {
   const packet = await fetchJson("/api/datasets");
   state.datasets = packet.datasets || {};
-  const imported = new Set(packet.imported_layers || ["gfw", "ais", "eez"]);
+  state.layerContracts = Array.isArray(packet.layers) ? packet.layers : [];
+  const imported = new Set(
+    Array.isArray(packet.imported_layers)
+      ? packet.imported_layers.map((item) => String(item).trim().toLowerCase()).filter(Boolean)
+      : state.layerContracts
+        .filter((contract) => contract?.imported)
+        .map((contract) => String(contract.layer_id || "").trim().toLowerCase())
+        .filter(Boolean)
+  );
   state.importedLayerIds = Array.from(imported);
-  state.importedLayers = {
-    gfw: imported.has("gfw"),
-    ais: imported.has("ais"),
-    eez: imported.has("eez"),
-  };
+  state.importedLayers = {};
+  for (const contract of state.layerContracts) {
+    const layerId = String(contract?.layer_id || "").trim().toLowerCase();
+    if (!layerId) continue;
+    state.importedLayers[layerId] = imported.has(layerId);
+    if (contract?.capabilities?.sampled_grid && state.layerAlpha[layerId] === undefined) {
+      state.layerAlpha[layerId] = Number(state.sampledGridPaint?.alpha ?? 1);
+    }
+  }
+  for (const layerId of imported) {
+    state.importedLayers[layerId] = true;
+  }
+  state.layerOrder = state.layerContracts
+    .map((contract) => String(contract?.layer_id || "").trim().toLowerCase())
+    .filter((layerId) => layerId && state.importedLayers[layerId]);
+  state.overlayLayers = state.overlayLayers || {};
   // Keep frontend limits aligned with the Flask adapter config.
   state.queryPolicy = packet.query_policy || state.queryPolicy;
   const datasetIds = Object.keys(state.datasets);
@@ -39,6 +58,9 @@ async function loadDatasets() {
     ? packet.default_dataset
     : (datasetIds[0] || null);
   renderDatasetSelect();
+  if (typeof renderDataLayerMenu === "function") {
+    renderDataLayerMenu();
+  }
   updateDataLayerMenu();
 }
 
@@ -68,22 +90,23 @@ function renderDatasetSelect() {
   select.value = state.datasetId || "";
 }
 
-async function selectDataset(datasetId) {
+async function selectDataset(datasetId, { reload = true } = {}) {
   if (!datasetId || !state.datasets[datasetId] || datasetId === state.datasetId) return;
   stopPlayback();
   state.datasetId = datasetId;
   state.rows = [];
   state.columns = [];
+  state.renderedSampledGridDate = null;
   state.renderedGfwDate = null;
-  if (typeof GfwRecordCache !== "undefined") {
-    GfwRecordCache.clear();
+  if (typeof SampledGridRecordCache !== "undefined") {
+    SampledGridRecordCache.clear();
   }
   if (typeof PlaybackCacheService !== "undefined") {
     PlaybackCacheService.clear();
   }
   await loadSchema();
-  if (state.dataLayer === "gfw") {
-    await reloadGfwRecords();
+  if (reload && typeof isSampledGridLayer === "function" && isSampledGridLayer(state.dataLayer)) {
+    await reloadSampledGridRecords();
   } else {
     renderTable([], state.datasets[state.datasetId].display_columns, { layer: "none" });
     updatePlaybackControls();
@@ -392,38 +415,45 @@ async function reloadAisRecordsRest() {
   setStatus(`AIS REST 完成，可見船舶 ${rows.length.toLocaleString()} 艘，${bboxes.length} 個循環邊界框`);
 }
 
-async function reloadGfwRecords() {
+async function reloadSampledGridRecords() {
+  const requestedLayer = state.dataLayer;
+  const requestedDataset = state.datasetId;
+  const requestedLayerLabel = typeof layerLabel === "function"
+    ? layerLabel(requestedLayer)
+    : String(requestedLayer || "取樣網格").toUpperCase();
   if (!state.datasetId || !state.datasets[state.datasetId]) {
     clearPrimaryLayerRecords();
-    RenderState.off("gfw", "未導入");
-    setStatus("尚未導入可查詢的 GFW 資料圖層");
+    RenderState.off(requestedLayer || "sampled-grid", "未導入");
+    setStatus("尚未導入可查詢的取樣網格圖層");
     return;
   }
   // Drop stale responses after pan/zoom/date changes.
   const seq = ++state.fetchSeq;
   const timing = TimingMetrics.stopwatch();
   TimingMetrics.resetSnapshotPersistent?.({ render: false });
-  RenderState.loading("gfw", "查詢中");
-  setStatus("正在載入 GFW");
+  RenderState.loading(requestedLayer, "查詢中");
+  setStatus(`正在載入 ${requestedLayerLabel}`);
   const requestedDate = $("date").value;
   const renderIntent = RenderIntentService.snapshot({
     date: requestedDate,
-    layerId: "gfw",
+    layerId: requestedLayer,
     renderProfile: "dashboard.snapshot",
   });
-  const requestContext = RenderIntentService.toGfwPacketRequest(renderIntent);
-  renderTable([], state.datasets[state.datasetId].display_columns, { layer: "gfw", date: requestedDate, loading: true });
-  const { packet, cacheHit } = await GfwRecordCache.fetchPacket(requestContext);
-  if (state.dataLayer !== "gfw") return;
+  const requestContext = RenderIntentService.toSampledGridPacketRequest(renderIntent);
+  renderTable([], state.datasets[state.datasetId].display_columns, { layer: requestedLayer, date: requestedDate, loading: true });
+  const { packet, cacheHit } = await SampledGridRecordCache.fetchPacket(requestContext);
+  if (state.dataLayer !== requestedLayer || state.datasetId !== requestedDataset) return;
+  if (typeof isSampledGridLayer !== "function" || !isSampledGridLayer(state.dataLayer)) return;
   if (seq !== state.fetchSeq) {
-    RenderState.loading("gfw", "重新整理");
+    RenderState.loading(requestedLayer, "重新整理");
     schedulePrimaryReload(80);
     return;
   }
   const metricsSource = currentDatasetBackendDetail(packet);
-  TimingMetrics.markRenderStart?.(metricsSource ? `GFW ${metricsSource}` : "GFW");
-  const renderResult = renderGfwMap(packet.rows);
-  renderTable(packet.rows, state.datasets[state.datasetId].display_columns, { layer: "gfw", date: requestedDate });
+  TimingMetrics.markRenderStart?.(metricsSource ? `${requestedLayerLabel} ${metricsSource}` : requestedLayerLabel);
+  state.sampledGridMeta = packet.grid || null;
+  const renderResult = renderSampledGridMap(packet.rows);
+  renderTable(packet.rows, state.datasets[state.datasetId].display_columns, { layer: requestedLayer, date: requestedDate });
   const serverCacheHit = Boolean(packet.timing?.cache_hit);
   if (cacheHit || serverCacheHit) {
     TimingMetrics.setText("query-ms", "快取命中", { source: metricsSource });
@@ -437,27 +467,42 @@ async function reloadGfwRecords() {
   TimingMetrics.setCount("row-count", packet.row_count);
   TimingMetrics.setMs("client-ms", timing.elapsed(), { source: metricsSource });
   TimingMetrics.updateSummary();
-  const sourceDetail = cacheHit ? "瀏覽器快取" : serverCacheHit ? "伺服器快取" : "SQL";
+  const sourceDetail = cacheHit
+    ? "瀏覽器快取"
+    : serverCacheHit
+      ? "伺服器快取"
+      : (metricsSource || "來源查詢");
+  const requestedResolution = Number(packet.grid?.requested_resolution_km);
+  const actualResolution = Number(packet.grid?.actual_resolution_km);
+  const resolutionDetail = Number.isFinite(actualResolution)
+    ? (packet.grid?.lod_degraded && Number.isFinite(requestedResolution)
+      ? `${requestedResolution} -> ${actualResolution} km`
+      : `${actualResolution} km`)
+    : "無有效資料粒度";
   RenderState.ready(
-    "gfw",
-    `${Number(packet.row_count || 0).toLocaleString()} 筆，z${currentLodZoom()}，${sourceDetail}，${renderResult.detail}`
+    requestedLayer,
+    `${Number(packet.row_count || 0).toLocaleString()} 筆，z${currentLodZoom()}，${resolutionDetail}，${sourceDetail}，${renderResult.detail}`
   );
-  setStatus(`GFW 就緒，${requestedDate}，視窗最大量，z${currentLodZoom()}，${sourceDetail}，${renderResult.detail}`);
-  GfwRecordCache.schedulePrewarm(requestContext);
+  setStatus(`${requestedLayerLabel} 就緒，${requestedDate}，z${currentLodZoom()}，${resolutionDetail}，${sourceDetail}，${renderResult.detail}`);
+  SampledGridRecordCache.schedulePrewarm(requestContext);
+}
+
+function reloadGfwRecords() {
+  return reloadSampledGridRecords();
 }
 
 function clearPrimaryLayerRecords() {
   clearTimeout(state.primaryReloadTimer);
   state.primaryReloadTimer = null;
-  if (typeof GfwRecordCache !== "undefined") {
-    GfwRecordCache.cancelPrewarm();
+  if (typeof SampledGridRecordCache !== "undefined") {
+    SampledGridRecordCache.cancelPrewarm();
   }
   state.fetchSeq += 1;
   state.aisLiveSeq += 1;
   closeAisSocket();
-  removeGfwLayer();
+  removeSampledGridLayer();
   removeAisLayer();
-  RenderState.off("gfw", "關閉");
+  RenderState.off(state.dataLayer || "sampled-grid", "關閉");
   RenderState.off("ais", "關閉");
   renderTable([], [], { layer: "none" });
   TimingMetrics.setText("query-ms", "-");
@@ -466,15 +511,15 @@ function clearPrimaryLayerRecords() {
   TimingMetrics.setText("client-ms", "-");
   TimingMetrics.setCount("row-count", 0);
   TimingMetrics.updateSummary();
-  setStatus($("eez-toggle").checked ? "主要資料圖層已關閉，僅顯示 EEZ" : "沒有啟用中的地圖圖層");
+  setStatus($("eez-toggle")?.checked ? "主要資料圖層已關閉，僅顯示 EEZ" : "沒有啟用中的地圖圖層");
 }
 
 function reloadActiveLayer() {
   if (state.dataLayer === "ais") {
     return reloadAisRecords();
   }
-  if (state.dataLayer === "gfw") {
-    return reloadGfwRecords();
+  if (typeof isSampledGridLayer === "function" && isSampledGridLayer(state.dataLayer)) {
+    return reloadSampledGridRecords();
   }
   clearPrimaryLayerRecords();
   return Promise.resolve();

@@ -13,7 +13,7 @@ const HARDWARE_MODE_BASE_LABELS = {
 function webglIsUsable() {
   return Boolean(
     state.renderCapability?.browser?.webgl?.available &&
-    window.GfwWebglLayer?.isSupported?.()
+    window.SampledGridWebglLayer?.isSupported?.()
   );
 }
 
@@ -108,7 +108,7 @@ function syncHardwareSettingsControls() {
       const renderer = webgl.renderer || webgl.vendor || "瀏覽器 WebGL";
       detail.textContent = `可使用 ${webgl.context || "WebGL"}；目前建議使用 ${HARDWARE_MODE_BASE_LABELS[recommended]}。偵測到：${renderer}`;
     } else if (hasWebgpu) {
-      detail.textContent = "瀏覽器回報 WebGPU 可用，但目前 GFW 渲染器尚未接 WebGPU；建議維持 CPU / Canvas。";
+      detail.textContent = "瀏覽器回報 WebGPU 可用，但目前取樣網格渲染器尚未接 WebGPU；建議維持 CPU / Canvas。";
     } else {
       detail.textContent = "未偵測到可用的 WebGL/GPU 渲染能力；硬體加速選項已停用。";
     }
@@ -122,7 +122,7 @@ function bindHardwareSettingsControls() {
       if (!input.checked || input.disabled) return;
       setHardwarePolicy(mode);
       syncHardwareSettingsControls();
-      if (state.dataLayer === "gfw") {
+      if (typeof isSampledGridLayer === "function" && isSampledGridLayer(state.dataLayer)) {
         reloadActiveLayer().catch((err) => setStatus(err.message, true));
       }
     });

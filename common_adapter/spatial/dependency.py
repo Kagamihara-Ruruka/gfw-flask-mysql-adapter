@@ -31,11 +31,12 @@ def check_eez_postgis_dependency(config: dict[str, Any]) -> dict[str, Any]:
 
     base_table = validate_identifier(pg.get("table", "eez_v12"), "PostGIS EEZ table")
     tile_table = validate_identifier(pg.get("tile_table", f"{base_table}_tile"), "PostGIS EEZ tile table")
+    fill_table = validate_identifier(pg.get("fill_table", f"{base_table}_fill"), "PostGIS EEZ fill table")
     boundary_table = validate_identifier(
         pg.get("boundary_table", f"{base_table}_boundary"),
         "PostGIS EEZ boundary table",
     )
-    expected_tables = [base_table, tile_table, boundary_table]
+    expected_tables = [base_table, tile_table, fill_table, boundary_table]
 
     try:
         with psycopg.connect(postgis_dsn(pg), connect_timeout=5) as conn:

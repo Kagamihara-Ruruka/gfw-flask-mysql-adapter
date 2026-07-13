@@ -5,6 +5,7 @@ from typing import Any
 from flask import Flask, Response, jsonify, request
 
 from common_adapter.db.connect import parse_bbox
+from common_adapter.spatial.attribution import eez_attribution_packet
 from common_adapter.spatial.lod import eez_boundary_mvt_tile_packet, eez_geojson_packet, eez_mvt_tile_packet
 from common_adapter.spatial.overlay import eez_overlay_packet, overlay_settings
 
@@ -37,6 +38,24 @@ class OverlayRoutes:
                     packet = eez_geojson_packet(config, bbox=bbox, zoom=zoom)
                 else:
                     packet = eez_overlay_packet(config, bbox=bbox, zoom=zoom)
+                return jsonify(packet)
+            except Exception as exc:
+                return jsonify({"error": str(exc)}), 400
+
+        @app.get("/api/overlays/eez/attribution")
+        def eez_attribution():
+            try:
+                bbox = parse_bbox(request.args.get("bbox"))
+                lat_arg = request.args.get("lat")
+                lon_arg = request.args.get("lon") or request.args.get("lng")
+                limit = int(request.args.get("limit", "8"))
+                packet = eez_attribution_packet(
+                    config,
+                    bbox=bbox,
+                    lat=float(lat_arg) if lat_arg is not None else None,
+                    lon=float(lon_arg) if lon_arg is not None else None,
+                    limit=limit,
+                )
                 return jsonify(packet)
             except Exception as exc:
                 return jsonify({"error": str(exc)}), 400

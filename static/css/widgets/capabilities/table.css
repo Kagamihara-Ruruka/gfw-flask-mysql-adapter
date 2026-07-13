@@ -1,0 +1,122 @@
+.widget-template-table {
+  align-items: stretch;
+}
+
+.widget-table-shell {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  gap: 6px;
+}
+
+.widget-table-tabs {
+  display: flex;
+  min-width: 0;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.widget-table-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.widget-table-tab {
+  flex: 0 0 auto;
+  max-width: 44%;
+  overflow: hidden;
+  padding: 4px 8px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.28);
+  color: rgba(148, 163, 184, 0.9);
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.widget-table-tab[aria-selected="true"] {
+  border-color: rgba(94, 234, 212, 0.56);
+  background: rgba(13, 148, 136, 0.18);
+  color: rgba(204, 251, 241, 0.96);
+}
+
+.widget-table-summary {
+  overflow: hidden;
+  color: rgba(148, 163, 184, 0.78);
+  font-size: 9px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.widget-table-scroll {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
+  scrollbar-color: rgba(148, 163, 184, 0.3) transparent;
+  scrollbar-width: thin;
+}
+
+.widget-table-template {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.widget-table-template th,
+.widget-table-template td {
+  overflow: hidden;
+  padding: 5px 6px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.13);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.widget-table-template th {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  background: rgba(15, 23, 42, 0.94);
+  color: rgba(226, 232, 240, 0.82);
+  font-weight: 700;
+  text-align: left;
+}
+
+.widget-table-message {
+  padding-block: 18px !important;
+  color: rgba(148, 163, 184, 0.82);
+  text-align: center;
+}
+
+.widget-table-message.is-error {
+  color: rgba(252, 165, 165, 0.92);
+}
+
+.widget-table-empty-state {
+  display: grid;
+  place-content: center;
+  width: 100%;
+  min-height: 0;
+  gap: 5px;
+  padding: 12px;
+  text-align: center;
+}
+
+.widget-table-empty-state strong {
+  color: rgba(226, 232, 240, 0.88);
+  font-size: 12px;
+}
+
+.widget-table-empty-state span {
+  color: rgba(148, 163, 184, 0.76);
+  font-size: 10px;
+}

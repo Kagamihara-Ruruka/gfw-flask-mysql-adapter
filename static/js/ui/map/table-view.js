@@ -29,10 +29,11 @@ function tableContextLabel(context) {
     const bboxCount = context.wrappedBboxCount || 1;
     return `AIS 即時視窗，${bboxCount} 個循環邊界框`;
   }
-  if (context?.layer === "gfw" && context.date) {
+  if (context?.date && typeof isSampledGridLayer === "function" && isSampledGridLayer(context.layer)) {
+    const label = typeof layerLabel === "function" ? layerLabel(context.layer) : "取樣網格";
     return context.loading
-      ? `GFW 日期 ${context.date}，載入中`
-      : `GFW 日期 ${context.date}，視窗最大量`;
+      ? `${label} 日期 ${context.date}，載入中`
+      : `${label} 日期 ${context.date}，視窗資料`;
   }
   return "視窗資料";
 }

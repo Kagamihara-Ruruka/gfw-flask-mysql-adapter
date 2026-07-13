@@ -10,7 +10,21 @@
     lat: "緯度",
     lon: "經度",
     id: "識別",
+    value: "取樣值",
+    resolution: "解析度",
+    coverage: "覆蓋率",
+    status: "資料狀態",
+    row: "網格列",
+    column: "網格欄",
+    west: "西界",
+    south: "南界",
+    east: "東界",
+    north: "北界",
   };
+  const CANONICAL_ROLE_KEYS = Object.freeze([
+    "time", "lat", "lon", "id", "value", "resolution", "coverage", "status",
+    "row", "column", "west", "south", "east", "north",
+  ]);
 
   class DeveloperMappingController {
     constructor({
@@ -139,6 +153,7 @@
       tableDetails.dataset.backend = profile.backend || "mysql";
       tableDetails.dataset.database = profile.database || "";
       tableDetails.dataset.table = table.name || "";
+      tableDetails.dataset.datasetId = mapping?.dataset_id || "";
       const columns = table.columns || [];
       tableDetails.innerHTML = `
         <summary>
@@ -209,6 +224,8 @@
     }
 
     payloadFromTable(tableElement) {
+      const mappingId = tableElement.dataset.mappingId || "";
+      const existingMapping = this.mappings.find((mapping) => mapping.mapping_id === mappingId) || null;
       const roleSelects = Array.from(tableElement.querySelectorAll("[data-column-role]"));
       const roles = {};
       const selectedColumns = [];
@@ -222,8 +239,10 @@
           continue;
         }
         selectedColumns.push(column);
-        if (role === "time" || role === "lat" || role === "lon" || role === "id") {
+        if (CANONICAL_ROLE_KEYS.includes(role)) {
           roles[role] = column;
+          if (role === "value") metricColumns.push(column);
+          if (role === "status") categoryColumns.push(column);
         } else if (role === "metric") {
           metricColumns.push(column);
         } else if (role === "category") {
@@ -232,14 +251,15 @@
           displayColumns.push(column);
         }
       }
-      return {
-        mapping_id: tableElement.dataset.mappingId || "",
+      const payload = {
+        mapping_id: mappingId,
         enabled: tableElement.querySelector("[data-mapping-enabled]")?.checked ?? true,
         config_path: tableElement.dataset.configPath,
         connection_ref: tableElement.dataset.connectionRef,
         backend: tableElement.dataset.backend || "mysql",
         database: tableElement.dataset.database || "",
         table: tableElement.dataset.table,
+        dataset_id: tableElement.dataset.datasetId || "",
         layer_id: this.safeLayerId(tableElement.querySelector("[data-mapping-layer-id]")?.value),
         label: tableElement.querySelector("[data-mapping-label]")?.value || tableElement.dataset.table,
         roles,
@@ -248,6 +268,12 @@
         metric_columns: metricColumns,
         category_columns: categoryColumns,
       };
+      for (const key of ["target_contract", "sampled_grid", "source_ref"]) {
+        if (existingMapping?.[key] !== undefined) {
+          payload[key] = existingMapping[key];
+        }
+      }
+      return payload;
     }
 
     mappingForTable(profile, table) {
@@ -285,27 +311,16 @@
     roleForColumn(mapping, column) {
       if (mapping) {
         const roles = mapping.roles || {};
-        if (roles.time === column.name) return "time";
-        if (roles.lat === column.name) return "lat";
-        if (roles.lon === column.name) return "lon";
-        if (roles.id === column.name) return "id";
+        for (const role of CANONICAL_ROLE_KEYS) {
+          if (roles[role] === column.name) return role;
+        }
         if ((mapping.metric_columns || []).includes(column.name)) return "metric";
         if ((mapping.category_columns || []).includes(column.name)) return "category";
         if ((mapping.display_columns || []).includes(column.name)) return "display";
         if ((mapping.selected_columns || []).includes(column.name)) return "display";
         return "ignore";
       }
-      return this.guessedRole(column);
-    }
-
-    guessedRole(column) {
-      const hints = column.semantic_hints || [];
-      if (hints.includes("time_candidate")) return "time";
-      if (hints.includes("latitude_candidate")) return "lat";
-      if (hints.includes("longitude_candidate")) return "lon";
-      if (hints.includes("identity_candidate")) return "id";
-      if (hints.includes("numeric_candidate")) return "metric";
-      return "display";
+      return "ignore";
     }
 
     roleSelectMarkup(column, role) {

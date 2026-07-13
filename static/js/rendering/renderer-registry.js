@@ -10,8 +10,7 @@ const RendererRegistry = (() => {
   function webglAllowed(rowCount) {
     const currentPolicy = policy();
     if (currentPolicy.force_cpu || currentPolicy.hardware_acceleration === "off") return false;
-    if (currentPolicy.allow_webgl === false) return false;
-    if (!browserWebgl().available) return false;
+    if (currentPolicy.allow_webgl === false || !browserWebgl().available) return false;
     const minRows = Number(currentPolicy.min_webgl_rows || 1);
     return Number(rowCount || 0) >= minRows;
   }
@@ -20,31 +19,36 @@ const RendererRegistry = (() => {
     const currentPolicy = policy();
     if (currentPolicy.force_cpu || currentPolicy.hardware_acceleration === "off") return false;
     if (currentPolicy.allow_webgl === false) return false;
-    return Boolean(browserWebgl().available && window.GfwWebglLayer?.isSupported?.());
+    return Boolean(browserWebgl().available && window.SampledGridWebglLayer?.isSupported?.());
   }
 
-  function chooseGfwLayer(rows, canvasLayerClass) {
+  function chooseSampledGridLayer(rows, canvasLayerClass) {
     const rowCount = Array.isArray(rows) ? rows.length : 0;
-    if (webglAllowed(rowCount) && window.GfwWebglLayer?.isSupported?.()) {
-      return { backend: "webgl", LayerClass: window.GfwWebglLayer };
+    if (webglAllowed(rowCount) && window.SampledGridWebglLayer?.isSupported?.()) {
+      return { backend: "webgl", LayerClass: window.SampledGridWebglLayer };
     }
     return { backend: "canvas", LayerClass: canvasLayerClass };
   }
 
-  function recordGfwRender(backend, drawMs) {
+  function recordSampledGridRender(backend, drawMs) {
     const formatted = TimingMetrics.formatMs(drawMs);
+    const detail = `${backend} / ${formatted}`;
+    state.rendering.sampledGridMode = backend;
+    state.rendering.sampledGridBackend = detail;
     state.rendering.gfwMode = backend;
-    state.rendering.gfwBackend = `${backend} 渲染 ${formatted}`;
+    state.rendering.gfwBackend = detail;
     TimingMetrics.setMetricMs?.("draw", drawMs, {
-      label: backend === "webgl" ? "WebGL 繪製" : "Canvas 繪製",
+      label: backend === "webgl" ? "WebGL 渲染" : "Canvas 渲染",
       source: backend,
     });
-    return state.rendering.gfwBackend;
+    return detail;
   }
 
   return {
-    chooseGfwLayer,
+    chooseSampledGridLayer,
+    chooseGfwLayer: chooseSampledGridLayer,
     gpuAvailable,
-    recordGfwRender,
+    recordSampledGridRender,
+    recordGfwRender: recordSampledGridRender,
   };
 })();

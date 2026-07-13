@@ -68,8 +68,9 @@ class RouteProbe:
         pg = settings.get("postgis") or {}
         base_table = str(pg.get("table") or "eez_v12")
         tile_table = str(pg.get("tile_table") or f"{base_table}_tile")
+        fill_table = str(pg.get("fill_table") or f"{base_table}_fill")
         boundary_table = str(pg.get("boundary_table") or f"{base_table}_boundary")
-        expected_tables = [base_table, tile_table, boundary_table]
+        expected_tables = [base_table, tile_table, fill_table, boundary_table]
         enabled = bool(settings.get("enabled", True))
         connected = False
         ready = False

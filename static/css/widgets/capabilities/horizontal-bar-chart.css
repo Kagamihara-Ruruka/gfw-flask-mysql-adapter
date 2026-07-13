@@ -1,0 +1,160 @@
+.widget-template-horizontal-bar {
+  display: grid;
+  grid-template-columns: minmax(78px, 0.28fr) minmax(0, 1fr);
+  align-items: stretch;
+  gap: 10px;
+}
+
+.widget-template-horizontal-bar.is-expanded {
+  display: block;
+}
+
+.widget-horizontal-bar-summary {
+  display: grid;
+  align-content: center;
+  gap: 3px;
+  min-width: 0;
+  padding-right: 10px;
+  border-right: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.widget-horizontal-bar-summary span,
+.widget-horizontal-bar-summary em,
+.widget-horizontal-bar-heading span,
+.widget-horizontal-bar-binding-row em {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  font-style: normal;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.widget-horizontal-bar-summary strong {
+  color: rgba(226, 232, 240, 0.96);
+  font-family: var(--mono);
+  font-size: 24px;
+  line-height: 1;
+}
+
+.widget-horizontal-bar-summary em {
+  color: rgba(134, 239, 172, 0.88);
+}
+
+.widget-horizontal-bar-chart-shell {
+  position: relative;
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) 11px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.widget-horizontal-bar-chart {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: visible;
+}
+
+.widget-horizontal-bar-chart rect {
+  fill: var(--widget-horizontal-bar-color, rgba(63, 191, 131, 0.9));
+  stroke: rgba(226, 232, 240, 0.14);
+  stroke-width: 1;
+}
+
+.widget-horizontal-bar-chart text {
+  fill: rgba(148, 163, 184, 0.8);
+  font-family: var(--mono);
+  font-size: 8px;
+  text-anchor: end;
+}
+
+.widget-horizontal-bar-axis {
+  color: rgba(148, 163, 184, 0.82);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.widget-horizontal-bar-axis-y {
+  align-self: start;
+  justify-self: center;
+}
+
+.widget-horizontal-bar-axis-x {
+  grid-column: 2;
+  align-self: end;
+  justify-self: end;
+}
+
+.widget-horizontal-bar-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.widget-horizontal-bar-panel.is-cinema {
+  grid-template-columns: minmax(180px, 0.25fr) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  height: 100%;
+}
+
+.widget-horizontal-bar-heading {
+  display: grid;
+  align-content: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.widget-horizontal-bar-heading strong {
+  overflow: hidden;
+  color: rgba(226, 232, 240, 0.94);
+  font-size: 17px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.widget-horizontal-bar-binding-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.widget-horizontal-bar-binding-row span {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.widget-horizontal-bar-binding-row b {
+  color: rgba(226, 232, 240, 0.84);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.widget-horizontal-bar-plotly-stage {
+  min-width: 0;
+  min-height: 0;
+}
+
+.widget-horizontal-bar-plotly-chart {
+  height: 100%;
+  min-height: 220px;
+  border-color: rgba(148, 163, 184, 0.16);
+  border-radius: 12px;
+}
+
+.widget-horizontal-bar-panel.is-cinema .widget-horizontal-bar-plotly-chart {
+  min-height: 0;
+}

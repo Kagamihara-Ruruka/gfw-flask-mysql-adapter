@@ -1,0 +1,99 @@
+.dashboard-widget[data-widget-size="1x1"] .widget-template {
+  justify-content: center;
+}
+
+.dashboard-widget[data-widget-size="1x1"] .widget-legend-list,
+.dashboard-widget[data-widget-size="1x1"] .widget-chart-footer,
+.dashboard-widget[data-widget-size="1x1"] .widget-axis-label,
+.dashboard-widget[data-widget-size="1x1"] .widget-line-chart text,
+.dashboard-widget[data-widget-size="1x1"] .widget-grid-line,
+.dashboard-widget[data-widget-size="1x1"] .widget-metric-caption span {
+  display: none;
+}
+
+.dashboard-widget[data-widget-size="1x1"] .widget-template-line {
+  gap: 5px;
+}
+
+.dashboard-widget[data-widget-size="1x1"] .widget-chart-header strong {
+  font-size: 14px;
+}
+
+.dashboard-widget[data-widget-size="1x1"] .widget-line-empty-state,
+.dashboard-widget[data-widget-size="1x1"] .widget-chart-empty-state {
+  justify-items: center;
+  gap: 4px;
+  padding: 8px;
+  text-align: center;
+}
+
+.dashboard-widget[data-widget-size="1x1"] .widget-line-empty-state span,
+.dashboard-widget[data-widget-size="1x1"] .widget-chart-empty-state span {
+  display: none;
+}
+
+.dashboard-widget[data-widget-size="1x1"] .widget-line-empty-state strong,
+.dashboard-widget[data-widget-size="1x1"] .widget-chart-empty-state strong {
+  font-size: 12px;
+}
+
+.dashboard-widget[data-widget-size="1x1"] .widget-pie-shape {
+  width: min(76px, 90%);
+}
+
+.dashboard-widget[data-widget-size="1x1"] .widget-template-map-jump {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.dashboard-widget[data-widget-size="1x1"] .widget-template-map-jump .widget-map-mini {
+  display: none;
+}
+
+.dashboard-widget[data-widget-size="1x1"] .widget-template-map-jump .widget-map-jump-actions {
+  min-width: 0;
+  gap: 5px;
+}
+
+.dashboard-widget[data-widget-size="1x1"] .widget-template-map-jump .widget-map-jump-button {
+  height: 24px;
+  padding-inline: 6px;
+  font-size: 10px;
+}
+
+.dashboard-widget[data-widget-size="1x2"] .widget-template-map-jump {
+  grid-template-columns: minmax(0, 1fr) 62px;
+}
+
+.dashboard-widget[data-widget-size="2x2"] .widget-table-template {
+  font-size: 11px;
+}
+
+.widget-template.is-expanded .widget-chart-shell,
+.widget-template.is-expanded .widget-table-shell,
+.widget-template.is-expanded .widget-map-mini {
+  min-height: 260px;
+}
+
+.widget-template.is-expanded .widget-table-tab {
+  max-width: 240px;
+  padding: 6px 10px;
+  font-size: 11px;
+}
+
+.widget-template.is-expanded .widget-table-summary {
+  font-size: 10px;
+}
+
+.widget-template.is-expanded .widget-table-template {
+  font-size: 11px;
+}
+
+.widget-template.is-expanded .widget-pie-shape {
+  width: min(220px, 44%);
+}
+
+.widget-template.is-expanded .widget-template-metrics,
+.widget-template.is-expanded.widget-template-metrics {
+  display: grid;
+  min-height: 280px;
+}

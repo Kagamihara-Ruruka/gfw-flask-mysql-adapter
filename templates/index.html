@@ -6,9 +6,27 @@
   <title>大可愛海事資料儀表板</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/static/vendor/leaflet-1.9.4.css?v=1.9.4">
-  <link rel="stylesheet" href="/static/styles.css?v=widgets-native-drawer-v83">
+  <link rel="stylesheet" href="/static/css/widgets/core/panel.css?v=widgets-modules-v1">
+  <link rel="stylesheet" href="/static/css/widgets/core/launchpad.css?v=widgets-launchpad-svg-v2">
+  <link rel="stylesheet" href="/static/css/widgets/core/widget-core.css?v=widgets-modules-v1">
+  <link rel="stylesheet" href="/static/css/widgets/capabilities/line-chart.css?v=widgets-modules-v1">
+  <link rel="stylesheet" href="/static/css/widgets/capabilities/horizontal-bar-chart.css?v=widgets-modules-v1">
+  <link rel="stylesheet" href="/static/css/widgets/capabilities/pie-chart.css?v=widgets-modules-v1">
+  <link rel="stylesheet" href="/static/css/widgets/capabilities/table.css?v=widgets-modules-v1">
+  <link rel="stylesheet" href="/static/css/widgets/capabilities/map-jump.css?v=widgets-modules-v1">
+  <link rel="stylesheet" href="/static/css/widgets/capabilities/eez-attribution.css?v=widgets-modules-v1">
+  <link rel="stylesheet" href="/static/css/widgets/capabilities/metrics.css?v=widgets-modules-v1">
+  <link rel="stylesheet" href="/static/css/widgets/core/size-adaptations.css?v=widgets-modules-v1">
+  <link rel="stylesheet" href="/static/css/widgets/runtime/popover.css?v=widgets-modules-v1">
+  <link rel="stylesheet" href="/static/styles.css?v=sampled-grid-nonzero-v2">
 </head>
 <body>
+  <div id="aerial-backdrop" class="aerial-backdrop" data-state="idle" aria-hidden="true">
+    <img class="aerial-backdrop-image" data-aerial-backdrop-layer="0" alt="">
+    <img class="aerial-backdrop-image" data-aerial-backdrop-layer="1" alt="">
+    <div class="aerial-backdrop-scrim"></div>
+    <span class="aerial-backdrop-credit" data-aerial-backdrop-credit></span>
+  </div>
   <header class="app-header">
     <div class="app-title-block">
       <nav class="app-tabs" aria-label="主要頁面">
@@ -32,38 +50,7 @@
                 <strong id="data-layer-summary">EEZ</strong>
             <span class="dropdown-caret" aria-hidden="true"></span>
           </summary>
-          <div class="data-layer-options" role="group" aria-label="資料圖層選擇">
-            <div class="layer-item" data-layer-id="gfw">
-              <div class="layer-option">
-                <span class="drag-handle" title="拖曳調整圖層順序">::</span>
-                <label class="checkbox-row">
-                  <input id="layer-gfw" name="data-layer" type="checkbox" value="gfw">
-                  <span>GFW 漁業網格</span>
-                </label>
-                <button class="icon-button layer-settings-toggle layer-gear-button" type="button" data-settings-layer="gfw" aria-label="GFW 顯示設定">⚙</button>
-              </div>
-            </div>
-            <div class="layer-item" data-layer-id="ais">
-              <div class="layer-option">
-                <span class="drag-handle" title="拖曳調整圖層順序">::</span>
-                <label class="checkbox-row">
-                  <input id="layer-ais" name="data-layer" type="checkbox" value="ais">
-                  <span>AIS 船舶位置</span>
-                </label>
-                <button class="icon-button layer-settings-toggle layer-gear-button" type="button" data-settings-layer="ais" aria-label="AIS 顯示設定">⚙</button>
-              </div>
-            </div>
-            <div class="layer-item" data-layer-id="eez">
-              <div class="layer-option">
-                <span class="drag-handle" title="拖曳調整圖層順序">::</span>
-                <label class="checkbox-row">
-                  <input id="eez-toggle" type="checkbox" checked>
-                  <span>EEZ 經濟海域邊界</span>
-                </label>
-                <button class="icon-button layer-settings-toggle layer-gear-button" type="button" data-settings-layer="eez" aria-label="EEZ 顯示設定">⚙</button>
-              </div>
-            </div>
-          </div>
+          <div class="data-layer-options" role="group" aria-label="資料圖層選擇" data-layer-options></div>
         </details>
         <label id="single-date-control" class="date-control">
           <span id="single-date-label">資料日期</span>
@@ -104,9 +91,13 @@
         <div id="map" aria-label="地圖"></div>
         <div id="fullscreen-playback-hud" class="fullscreen-playback-hud" aria-live="polite">快照：--</div>
         <div class="map-tool-stack" aria-label="地圖工具">
-          <button id="grid-select-toggle" class="map-tool-button" type="button" title="網格選取模式" aria-label="網格選取模式" aria-pressed="false">
+          <button id="grid-select-toggle" class="map-tool-button" type="button" title="單點網格選取" aria-label="單點網格選取" aria-pressed="false">
             <span class="control-icon-fallback" aria-hidden="true">□</span>
             <i class="control-icon" data-lucide="scan-line" aria-hidden="true"></i>
+          </button>
+          <button id="grid-multi-select-toggle" class="map-tool-button" type="button" title="連續網格選取設定" aria-label="連續網格選取設定" aria-pressed="false">
+            <span class="control-icon-fallback" aria-hidden="true">＋</span>
+            <i class="control-icon" data-lucide="list-plus" aria-hidden="true"></i>
           </button>
           <button id="map-fullscreen" class="map-tool-button" type="button" title="地圖全螢幕" aria-label="地圖全螢幕">
             <span class="control-icon-fallback" aria-hidden="true">⛶</span>
@@ -143,6 +134,22 @@
         </div>
         <button id="map-settings-open" class="map-settings-button" type="button" title="地圖設定" aria-label="地圖設定">⚙</button>
       </div>
+      <section class="widget-launchpad" aria-label="Widgets 啟動台" data-widget-launchpad>
+        <div class="widget-launchpad-viewport" data-widget-launchpad-viewport>
+          <div class="widget-launchpad-track" data-widget-launchpad-track></div>
+        </div>
+        <nav class="widget-launchpad-pagination" aria-label="Widgets 啟動台分頁">
+          <button class="widget-launchpad-page-button" type="button" data-widget-launchpad-previous aria-label="上一頁">
+            <span class="control-icon-fallback" aria-hidden="true">‹</span>
+            <i class="control-icon" data-lucide="chevron-left" aria-hidden="true"></i>
+          </button>
+          <div class="widget-launchpad-page-dots" data-widget-launchpad-dots></div>
+          <button class="widget-launchpad-page-button" type="button" data-widget-launchpad-next aria-label="下一頁">
+            <span class="control-icon-fallback" aria-hidden="true">›</span>
+            <i class="control-icon" data-lucide="chevron-right" aria-hidden="true"></i>
+          </button>
+        </nav>
+      </section>
       <aside class="table-panel" aria-hidden="true">
         <div class="table-title">
           <h2>資料列</h2>
@@ -158,13 +165,6 @@
       <aside class="widgets-panel widgets-panel-side" aria-label="概覽 Widgets 工具區" data-widgets-panel data-widgets-scope="side" data-widgets-columns="6" data-widgets-rows="ratio" data-widgets-aspect="16:9">
         <div class="widgets-panel-header">
           <h2>概覽Widgets</h2>
-          <button id="widgets-panel-config" class="widgets-panel-config-button" type="button" data-widgets-config aria-label="開啟概覽Widgets市集" title="開啟概覽Widgets市集">
-            <svg class="widget-action-icon widget-marketplace-icon" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"></path>
-              <path d="M3 6h18"></path>
-              <path d="M16 10a4 4 0 0 1-8 0"></path>
-            </svg>
-          </button>
         </div>
         <div class="widgets-board" data-widgets-board>
           <div class="widgets-socket-grid" aria-hidden="true" data-widgets-socket-grid></div>
@@ -245,15 +245,6 @@
             <section class="settings-section playback-settings-section">
               <h3>播放時間軸</h3>
               <label>
-                播放交付策略
-                <select id="playback-delivery-policy">
-                  <option value="analysis" selected>分析模式（已實作：每張 snapshot 都顯示）</option>
-                  <option value="smooth" disabled>流暢模式（未實作：時間軸主控 / 可跳幀）</option>
-                  <option value="strict" disabled>嚴格模式（未實作：frame 不 ready 就 buffering）</option>
-                </select>
-              </label>
-              <p id="playback-delivery-status" class="setting-note">已啟用：分析模式。每張真實 snapshot 都會顯示；frame 不 ready 時以緩衝等待，不跳過日期。</p>
-              <label>
                 播放倍率
                 <select id="playback-rate">
                   <option value="0.5">0.5x</option>
@@ -262,23 +253,15 @@
                   <option value="4">4x</option>
                 </select>
               </label>
-              <label>
-                低階步進策略
-                <select id="playback-step-mode" disabled>
-                  <option value="sequential" selected>逐張播放（不跳過）</option>
-                  <option value="fluid">流暢步進（由未實作策略啟用）</option>
-                </select>
-              </label>
-              <p class="setting-note">播放交付策略是目前唯一控制時間軸語意的入口。分析模式會保證每張快照都被用上；流暢與嚴格模式端口已保留，但在實作完成前不接管時間線。查詢、渲染與模糊不應反過來控制這條時間軸。</p>
+              <p class="setting-note">時間軸逐張呈現每個 snapshot；frame 未準備完成時會先緩衝，不跳過日期。</p>
             </section>
             <section class="settings-section playback-settings-section">
               <h3>資料快取 / 預熱</h3>
               <label>
                 預熱模式
                 <select id="playback-cache-mode">
-                  <option value="before_play">完整預熱後播放（Range）</option>
-                  <option value="progressive" selected>短緩衝播放（背景預載）</option>
-                  <option value="off">逐張查詢（不主動預載）</option>
+                  <option value="progressive" selected>自適應短緩衝（建議）</option>
+                  <option value="before_play">完整 Range 預熱（短區間）</option>
                 </select>
               </label>
               <label>
@@ -306,7 +289,7 @@
                 <input id="playback-cache-window-ahead" type="number" min="1" max="60" step="1" value="8" hidden>
                 <input id="playback-cache-max-gb" type="number" min="0.25" max="16" step="0.25" value="2">
               </label>
-              <p class="setting-note">這一組只管資料供應：完整預熱會先走 range packet；短緩衝會用逐日期背景預載補前方窗口；逐張查詢不主動預載，但仍會讀既有快取。日期上限為 0 時不限制；並行預熱數只控制背景預載；快取上限用來避免一次預熱過大範圍造成記憶體壓力。</p>
+              <p class="setting-note">自適應短緩衝會立即回應播放；下一幀尚未就緒時維持目前畫面並在背景補貨，低水位負責觸發、單一預取佇列再補到高水位。完整 Range 預熱適合短日期區間，且會在播放前等待。日期上限為 0 時不限制；並行數套用滾動預熱；快取上限控制記憶體壓力。</p>
               <div class="playback-cache-meter" aria-label="播放快取容量">
                 <div class="playback-cache-meter-label">
                   <span id="playback-cache-capacity-text">快取容量：0 B / 2.00 GB</span>
@@ -331,14 +314,9 @@
                 <select id="playback-interpolation-mode">
                   <option value="layer_crossfade" selected>Layer crossfade（視覺補間）</option>
                   <option value="off">關閉（播放時直接切換）</option>
-                  <option value="data_blend" disabled>資料補間（待 render artifact cache）</option>
                 </select>
               </label>
-              <label>
-                目標補幀 FPS
-                <input id="playback-interpolation-fps" type="number" min="12" max="60" step="1" value="24" disabled>
-              </label>
-              <p class="setting-note">目前支援播放時的視覺補間 policy：Layer crossfade 只修飾兩張真實 snapshot 的 layer 替換；關閉時播放換幀會直接切換。真正資料補間會是獨立的 requestAnimationFrame 循環，只在兩張已 ready 的 rows/render artifact 之間計算 alpha，不查 SQL、不推進真實日期，也不取代 Widgets 探針需要的 rows packet。</p>
+              <p class="setting-note">Layer crossfade 只修飾兩張真實 snapshot 的圖層替換；關閉時直接切換，不改變資料時間軸。</p>
             </section>
             <section class="settings-section playback-settings-section">
               <h3>視覺效果</h3>
@@ -354,16 +332,6 @@
                 </span>
               </label>
               <p class="setting-note">淡入淡出只修飾圖層替換；高斯模糊只作為縮放 / LOD 重算時的短暫遮罩，不參與播放時間線，也不等待補間。</p>
-            </section>
-            <section class="settings-section playback-settings-section">
-              <h3>渲染壓力</h3>
-              <label>
-                降級策略
-                <select id="playback-render-pressure-mode" disabled>
-                  <option value="auto" selected>跟隨硬體加速與 renderer policy</option>
-                </select>
-              </label>
-              <p class="setting-note">這條時間軸未來用來收斂 WebGL/Canvas、render artifact cache、補間 FPS 與跳幀壓力。現階段仍由硬體加速狀態機與 GFW renderer registry 自動選擇繪圖路徑。</p>
             </section>
             <section class="settings-section playback-settings-section">
               <h3>測速觀測</h3>
@@ -403,29 +371,27 @@
         <button id="layer-settings-close" class="icon-button" type="button" aria-label="關閉圖層設定">關閉</button>
       </header>
       <div class="modal-body">
-        <section class="layer-settings-panel" data-layer-settings-panel="gfw" hidden>
-          <span class="setting-note">以日期與視窗範圍驅動的 Canvas 地理網格。</span>
-          <div class="color-grid" aria-label="GFW 漸層控制">
-            <label>
-              低值顏色
-              <input id="gfw-low-color" class="color-input" type="color" value="#2d8296">
+        <section class="layer-settings-panel" data-layer-settings-panel="sampled-grid" hidden>
+          <span class="setting-note">以 Mapping 合約、日期與視窗範圍驅動的取樣網格。</span>
+          <label>
+            色域策略
+            <select id="sampled-grid-scale-mode">
+              <option value="contract">合約值域</option>
+              <option value="nonzero_extent">非零值域</option>
+            </select>
+          </label>
+          <div id="sampled-grid-scale-preview" class="sampled-grid-scale-preview" aria-hidden="true"></div>
+          <div id="sampled-grid-color-stops" class="color-grid sampled-grid-color-stops" aria-label="取樣網格多節點色階"></div>
+          <div class="sampled-grid-domain-row">
+            <label id="sampled-grid-max-value-field">
+              顯示上限
+              <input id="sampled-grid-max-value" type="number" step="any" inputmode="decimal">
             </label>
-            <label>
-              高值顏色
-              <input id="gfw-high-color" class="color-input" type="color" value="#d85a30">
-            </label>
-            <label>
-              最大強度
-              <input id="gfw-max-fish" type="number" min="1" max="10000" step="1" value="40">
-            </label>
-            <label>
-              粒度控制 (km)
-              <input id="gfw-render-cell-km" type="number" min="9" max="500" step="1" value="9">
-            </label>
+            <p id="sampled-grid-domain-status" class="setting-note sampled-grid-domain-status"></p>
           </div>
           <label>
             透明度
-            <input class="alpha-slider" data-alpha-layer="gfw" type="range" min="0" max="1" step="0.05" value="0.58">
+            <input class="alpha-slider" data-alpha-layer="" type="range" min="0" max="1" step="0.05" value="0.58">
           </label>
         </section>
         <section class="layer-settings-panel" data-layer-settings-panel="ais" hidden>
@@ -471,20 +437,24 @@
           <span class="setting-note">向量瓦片邊界與半透明填色圖層。</span>
           <div class="color-grid" aria-label="EEZ 顏色控制">
             <label>
-              填色
+              基準填色
               <input id="eez-fill-color" class="color-input" type="color" value="#176f86">
+            </label>
+            <label>
+              爭議海域
+              <input id="eez-disputed-color" class="color-input" type="color" value="#ef5b5b">
+            </label>
+            <label>
+              共管海域
+              <input id="eez-joint-color" class="color-input" type="color" value="#f5a524">
+            </label>
+            <label>
+              未分類類型
+              <input id="eez-other-color" class="color-input" type="color" value="#94a3b8">
             </label>
             <label>
               邊界顏色
               <input id="eez-boundary-color" class="color-input" type="color" value="#1f7f96">
-            </label>
-            <label>
-              填色不透明度
-              <input id="eez-fill-opacity" type="range" min="0" max="0.35" step="0.01" value="0.08">
-            </label>
-            <label>
-              邊界不透明度
-              <input id="eez-boundary-opacity" type="range" min="0" max="1" step="0.05" value="0.88">
             </label>
           </div>
           <label>
@@ -655,49 +625,64 @@
   <script src="/static/vendor/plotly-basic-3.6.0.min.js?v=3.6.0"></script>
   <script src="/static/js/ui/telemetry/snapshot-performance-chart.js?v=plotly-detail-source-v8"></script>
   <script src="/static/TimingMetrics.js?v=timingmetrics-detail-source-v3"></script>
-  <script src="/static/js/core/state.js?v=tile-selection-v1"></script>
+  <script src="/static/js/core/state.js?v=playback-settings-v2"></script>
   <script src="/static/js/core/dom.js?v=zh-tw-v99"></script>
   <script src="/static/js/core/render-state.js?v=zh-tw-v99"></script>
-  <script src="/static/js/core/map.js?v=map-view-actions-v2"></script>
+  <script src="/static/js/core/map.js?v=coverage-mask-pane-v1"></script>
   <script src="/static/js/core/geo.js?v=zh-tw-v99"></script>
   <script src="/static/js/rendering/render-capability.js?v=zh-tw-v99"></script>
-  <script src="/static/js/rendering/gfw-paint.js?v=zh-tw-v99"></script>
-  <script src="/static/js/rendering/gfw-webgl-renderer.js?v=gfw-hit-test-v1"></script>
+  <script src="/static/js/rendering/sampled-grid-contract.js?v=sampled-grid-contract-v2"></script>
+  <script src="/static/js/rendering/gfw-paint.js?v=zero-paint-opacity-v2"></script>
+  <script src="/static/js/rendering/gfw-webgl-renderer.js?v=zero-paint-opacity-v1"></script>
   <script src="/static/js/rendering/renderer-registry.js?v=zh-tw-v99"></script>
-  <script src="/static/js/core/render-refresh.js?v=zh-tw-v99"></script>
-  <script src="/static/js/layers/eez-layer.js?v=zh-tw-v99"></script>
+  <script src="/static/js/core/render-refresh.js?v=dynamic-layer-menu-v1"></script>
+  <script src="/static/js/layers/eez-layer.js?v=dynamic-layer-menu-v1"></script>
   <script src="/static/js/layers/graticule-layer.js?v=zh-tw-v99"></script>
   <script src="/static/js/layers/ais-layer.js?v=zh-tw-v99"></script>
   <script src="/static/js/layers/gfw-layer-effects.js?v=gfw-layer-effects-v1"></script>
-  <script src="/static/js/layers/gfw-layer.js?v=gfw-hit-test-v1"></script>
+  <script src="/static/js/layers/sampled-grid-coverage-mask.js?v=sampled-grid-coverage-mask-v1"></script>
+  <script src="/static/js/layers/gfw-layer.js?v=zero-paint-opacity-v1"></script>
   <script src="/static/js/ui/map/table-view.js?v=records-updated-v1"></script>
   <script src="/static/js/ui/map/control-buttons.js?v=map-fullscreen-icon-v1"></script>
   <script src="/static/js/ui/map/map-settings.js?v=widgets-map-jump-v70"></script>
   <script src="/static/js/ui/map/map-export.js?v=zh-tw-v99"></script>
   <script src="/static/js/ui/layers/layer-style-controls.js?v=zh-tw-v99"></script>
-  <script src="/static/js/ui/layers/eez-settings.js?v=zh-tw-v99"></script>
-  <script src="/static/js/ui/layers/gfw-settings.js?v=zh-tw-v99"></script>
+  <script src="/static/js/ui/layers/eez-settings.js?v=eez-color-controls-v1"></script>
+  <script src="/static/js/ui/layers/gfw-settings.js?v=sampled-grid-nonzero-v2"></script>
   <script src="/static/js/ui/layers/ais-settings.js?v=zh-tw-v99"></script>
-  <script src="/static/js/ui/layers/layer-menu.js?v=layer-imports-v1"></script>
-  <script src="/static/js/ui/map/tile-selection-layer.js?v=gfw-cell-selection-virtual-v5"></script>
+  <script src="/static/js/ui/layers/layer-menu.js?v=sampled-grid-nonzero-v2"></script>
+  <script src="/static/js/ui/map/tile-selection-layer.js?v=tile-selection-entrypoints-v3"></script>
+  <script src="/static/js/ui/background/aerial-backdrop.js?v=aerial-backdrop-v6"></script>
   <script src="/static/js/playback/playback-worker-policy.js?v=playback-worker-policy-v1"></script>
   <script src="/static/js/playback/playback-snapshot-splitter.js?v=playback-snapshot-splitter-v1"></script>
   <script src="/static/js/services/gfw-render-artifact-cache.js?v=gfw-render-artifact-cache-v1"></script>
   <script src="/static/js/services/render-intent-service.js?v=render-intent-v1"></script>
-  <script src="/static/js/services/gfw-record-cache.js?v=zh-tw-v99"></script>
-  <script src="/static/js/playback/playback-cache-service.js?v=playback-lifecycle-v2"></script>
-  <script src="/static/js/playback/playback-delivery-policy.js?v=playback-delivery-policy-v1"></script>
-  <script src="/static/js/ui/settings/hardware-settings.js?v=zh-tw-v99"></script>
+  <script src="/static/js/services/gfw-record-cache.js?v=playback-idle-prewarm-v2"></script>
+  <script src="/static/js/playback/playback-cache-service.js?v=playback-bootstrap-gate-v2"></script>
+  <script src="/static/js/playback/playback-delivery-policy.js?v=playback-delivery-policy-v2"></script>
+  <script src="/static/js/ui/settings/hardware-settings.js?v=dynamic-layer-menu-v1"></script>
   <script src="/static/js/playback/playback-scheduler.js?v=playback-scheduler-v1"></script>
   <script src="/static/js/playback/playback-frame-buffer.js?v=playback-lifecycle-v2"></script>
   <script src="/static/js/playback/playback-renderer.js?v=playback-renderer-v1"></script>
   <script src="/static/js/playback/playback-telemetry.js?v=playback-telemetry-events-v1"></script>
-  <script src="/static/js/playback/playback-interpolation-controller.js?v=playback-interpolation-v1"></script>
-  <script src="/static/js/playback/playback-prefetch-controller.js?v=playback-prefetch-controller-v1"></script>
-  <script src="/static/js/playback/playback-controls.js?v=playback-lifecycle-v4"></script>
+  <script src="/static/js/playback/playback-interpolation-controller.js?v=playback-interpolation-v2"></script>
+  <script src="/static/js/playback/playback-prefetch-controller.js?v=playback-watermarks-v2"></script>
+  <script src="/static/js/playback/playback-controls.js?v=playback-nonblocking-bootstrap-v3"></script>
   <script src="/static/js/playback/fullscreen-playback-controls.js?v=fullscreen-svg-v1"></script>
-  <script src="/static/js/services/api-client.js?v=schema-loaded-event-v2"></script>
-  <script src="/static/js/ui/widgets/widgets-panel.js?v=widgets-default-layout-v86"></script>
-  <script src="/static/app.js?v=layer-imports-v1"></script>
+  <script src="/static/js/services/api-client.js?v=dynamic-layer-menu-v1"></script>
+  <script src="/static/js/ui/widgets/core/widget-core.js?v=widgets-modules-v1"></script>
+  <script src="/static/js/ui/widgets/capabilities/shared.js?v=widgets-modules-v1"></script>
+  <script src="/static/js/ui/widgets/capabilities/line-chart.js?v=widgets-modules-v1"></script>
+  <script src="/static/js/ui/widgets/capabilities/horizontal-bar-chart.js?v=widgets-modules-v1"></script>
+  <script src="/static/js/ui/widgets/capabilities/pie-chart.js?v=widgets-modules-v1"></script>
+  <script src="/static/js/ui/widgets/capabilities/eez-attribution.js?v=widgets-modules-v1"></script>
+  <script src="/static/js/ui/widgets/capabilities/table.js?v=widgets-modules-v1"></script>
+  <script src="/static/js/ui/widgets/capabilities/map-jump.js?v=widgets-modules-v1"></script>
+  <script src="/static/js/ui/widgets/capabilities/metrics.js?v=widgets-modules-v1"></script>
+  <script src="/static/js/ui/widgets/registry/widget-registry.js?v=widgets-launchpad-registered-v3"></script>
+  <script src="/static/js/ui/widgets/runtime/widgets-runtime.js?v=widgets-launchpad-registered-v3"></script>
+  <script src="/static/js/ui/widgets/widgets-panel.js?v=widgets-modules-v1"></script>
+  <script src="/static/js/ui/widgets/widget-launchpad.js?v=widgets-launchpad-registered-v3"></script>
+  <script src="/static/app.js?v=sampled-grid-nonzero-v2"></script>
 </body>
 </html>

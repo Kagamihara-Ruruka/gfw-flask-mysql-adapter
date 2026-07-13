@@ -1,0 +1,18 @@
+.widgets-panel {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.widgets-panel-side {
+  grid-column: 2;
+  grid-row: 1;
+  min-height: 0;
+  aspect-ratio: 16 / 9;
+}
+
+.widgets-panel-side .widgets-board {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}

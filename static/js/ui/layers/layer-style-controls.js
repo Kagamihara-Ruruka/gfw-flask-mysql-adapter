@@ -33,11 +33,14 @@ function bindStateStyleControls({ source, controls, repaint, repaintDelayMs = 0 
 
 function bindLayerAlphaControls() {
   for (const input of document.querySelectorAll(".alpha-slider")) {
-    const layerId = input.dataset.alphaLayer;
-    if (!layerId) continue;
-    input.value = String(state.layerAlpha[layerId] ?? Number(input.value));
+    let layerId = input.dataset.alphaLayer;
+    if (layerId) {
+      input.value = String(state.layerAlpha[layerId] ?? Number(input.value));
+    }
     stopStyleControlPropagation(input);
     input.addEventListener("input", () => {
+      layerId = input.dataset.alphaLayer;
+      if (!layerId) return;
       state.layerAlpha[layerId] = Number(input.value);
       applyLayerAlpha(layerId);
     });

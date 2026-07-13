@@ -432,9 +432,16 @@ def ensure_eez_postgis(config: dict[str, Any], *, config_path: str | None = None
     try:
         ready = check_eez_postgis_dependency(config)
         return {**ready, "imported": False}
-    except DependencyCheckError:
-        if not auto_import:
-            raise
+    except DependencyCheckError as dependency_error:
+        try:
+            from common_adapter.spatial.lod import ensure_eez_fill_table
+
+            ensure_eez_fill_table(config)
+            ready = check_eez_postgis_dependency(config)
+            return {**ready, "imported": False, "derived": True}
+        except Exception:
+            if not auto_import:
+                raise dependency_error
 
     import_eez(config_path, replace=bool(eez.get("auto_replace", True)))
     ready = check_eez_postgis_dependency(config)

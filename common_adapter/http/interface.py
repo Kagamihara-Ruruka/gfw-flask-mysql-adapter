@@ -7,6 +7,7 @@ from typing import Any
 from flask import Flask, jsonify, render_template, request
 from flask_sock import Sock
 
+from common_adapter.http.routes.backdrop import register_backdrop_routes
 from common_adapter.http.routes.datasets import register_dataset_routes
 from common_adapter.http.routes.developer import register_developer_routes
 from common_adapter.http.routes.live import register_live_routes
@@ -50,6 +51,8 @@ def create_app(config: dict[str, Any], *, developer_url: str | None = None) -> F
         return response
 
     register_system_routes(app, config, developer_url=developer_url)
+
+    register_backdrop_routes(app, config)
 
     register_dataset_routes(app, config)
 

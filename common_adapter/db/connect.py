@@ -15,8 +15,16 @@ from pymysql.cursors import DictCursor
 
 from common_adapter.config.contracts import load_assembled_config
 from common_adapter.config.paths import runtime_config_path
-from common_adapter.db.backends import register_builtin_backends
 from common_adapter.db.registry import UnsupportedBackendOperation, instantiate_backend
+from common_adapter.query.builtins import register_builtin_query_adapters
+from common_adapter.query.sampled_grid import (
+    canonicalize_sampled_grid_packet,
+    canonicalize_sampled_grid_range_packet,
+    canonicalize_sampled_grid_schema_packet,
+    canonicalize_sampled_grid_time_series_packet,
+    sampled_grid_render_columns,
+    sampled_grid_source_fields,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -42,14 +50,17 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
 
 
 def validate_config(config: dict[str, Any]) -> None:
-    if "datasets" not in config:
-        raise ValueError("config must contain datasets")
-    if "mysql" not in config and "connections" not in config:
-        raise ValueError("config must contain mysql or connections")
+    datasets = config.setdefault("datasets", {})
+    if not isinstance(datasets, dict):
+        raise ValueError("config datasets must be an object")
+    has_connections = "mysql" in config or bool(config.get("connections"))
+    if datasets and not has_connections:
+        raise ValueError("database datasets require mysql or connections")
     backend = config.get("sql_backend", {})
-    if backend.get("kind", "mysql") not in SUPPORTED_SQL_BACKENDS:
+    if datasets and backend.get("kind", "mysql") not in SUPPORTED_SQL_BACKENDS:
         raise ValueError(f"sql_backend.kind must be one of: {', '.join(sorted(SUPPORTED_SQL_BACKENDS))}")
-    validate_connections(config)
+    if has_connections:
+        validate_connections(config)
     policy = query_policy(config)
     if (
         policy["default_limit"] is not None
@@ -60,7 +71,7 @@ def validate_config(config: dict[str, Any]) -> None:
     server = server_settings(config)
     if server["default_command"] != "serve":
         raise ValueError("server.default_command currently supports only serve")
-    for dataset_id, dataset in config["datasets"].items():
+    for dataset_id, dataset in datasets.items():
         validate_identifier(dataset_id, "dataset id")
         dataset_backend_info(config, dataset)
         for key in ["time_column", "lat_column", "lon_column"]:
@@ -187,7 +198,9 @@ def dataset_render_columns(dataset: dict[str, Any]) -> list[str]:
         value = dataset.get(key)
         if value and value not in columns:
             columns.append(value)
-    for column in ["fish_sum", "fish_ratio", "vessels"]:
+    contract_columns = sampled_grid_render_columns(dataset)
+    metric_columns = list(dataset.get("metric_columns") or [])
+    for column in [*contract_columns, *metric_columns]:
         if column in dataset.get("display_columns", []) and column not in columns:
             columns.append(column)
     return columns or list(dataset.get("display_columns", []))
@@ -392,7 +405,9 @@ def resolve_time_series_metric(dataset: dict[str, Any], metric: str | None) -> s
         if column not in role_columns and column not in metric_columns
     ]
     allowed = [*metric_columns, *fallback_columns]
-    selected = metric or (allowed[0] if allowed else None)
+    source_fields = sampled_grid_source_fields(dataset)
+    selected = source_fields.get("value") if metric == "value" else metric
+    selected = selected or (allowed[0] if allowed else None)
     if not selected:
         raise ValueError("dataset has no metric column for time series")
     validate_identifier(selected, "time series metric")
@@ -417,7 +432,9 @@ def resolve_time_series_identity_filter(
         return None
     if not identity_column or identity_value in {None, ""}:
         raise ValueError("time series identity filter requires both identity_column and identity_value")
-    validate_identifier(identity_column, "time series identity column")
+    source_fields = sampled_grid_source_fields(dataset)
+    source_identity_column = source_fields.get("id") if identity_column == "cell_id" else identity_column
+    validate_identifier(source_identity_column, "time series identity column")
     allowed = set(dataset.get("display_columns") or [])
     for role_key in ("time_column", "id_column", "lat_column", "lon_column"):
         role_column = dataset.get(role_key)
@@ -425,9 +442,9 @@ def resolve_time_series_identity_filter(
             allowed.add(role_column)
     for metric_column in dataset.get("metric_columns") or []:
         allowed.add(metric_column)
-    if identity_column not in allowed:
+    if source_identity_column not in allowed:
         raise ValueError(f"time series identity column is not declared by this dataset: {identity_column}")
-    return identity_column, str(identity_value)
+    return source_identity_column, str(identity_value)
 
 
 @contextmanager
@@ -513,14 +530,19 @@ def create_mysql_table(conn, table: str, schema: list[tuple[str, str]], *, repla
         )
 
 
-def create_indexes(conn, table: str, columns: set[str]) -> None:
+def create_indexes(conn, table: str, columns: set[str], dataset: dict[str, Any]) -> None:
+    fields = sampled_grid_source_fields(dataset)
     specs = []
-    if "obs_date" in columns:
-        specs.append(("idx_obs_date", ["obs_date"]))
-    if {"lat", "lon"}.issubset(columns):
-        specs.append(("idx_lat_lon", ["lat", "lon"]))
-    if "grid_id" in columns:
-        specs.append(("idx_grid_id", ["grid_id"]))
+    time_column = fields.get("time")
+    lat_column = fields.get("lat")
+    lon_column = fields.get("lon")
+    id_column = fields.get("id")
+    if time_column in columns:
+        specs.append(("idx_time", [time_column]))
+    if lat_column in columns and lon_column in columns:
+        specs.append(("idx_location", [lat_column, lon_column]))
+    if id_column in columns:
+        specs.append(("idx_identity", [id_column]))
     with conn.cursor() as cur:
         for index_name, index_columns in specs:
             column_sql = ", ".join(mysql_quote(column) for column in index_columns)
@@ -579,7 +601,7 @@ def import_duckdb_to_mysql(
                     cur.executemany(insert_sql, rows)
                     total += len(rows)
                     print(f"imported_rows={total}", flush=True)
-            create_indexes(mysql_conn, target_table, set(columns))
+            create_indexes(mysql_conn, target_table, set(columns), dataset)
     finally:
         duck_con.close()
     return {
@@ -855,6 +877,12 @@ def _mysql_time_series_packet(
     lat_column = dataset["lat_column"]
     lon_column = dataset["lon_column"]
     metric_column = resolve_time_series_metric(dataset, metric)
+    sampled_fields = sampled_grid_source_fields(dataset)
+    metric_role = (
+        "value"
+        if dataset.get("sampled_grid") and metric_column == sampled_fields.get("value")
+        else metric_column
+    )
     aggregate = normalize_time_series_aggregation(aggregation)
     identity_filter = resolve_time_series_identity_filter(dataset, identity_column, identity_value)
     if not start_date or not end_date:
@@ -926,7 +954,8 @@ def _mysql_time_series_packet(
     packet = {
         "start": start_date,
         "end": end_date,
-        "metric": metric_column,
+        "metric": metric_role,
+        "source_metric": metric_column,
         "aggregation": aggregate,
         "points": points,
         "point_count": len(points),
@@ -938,7 +967,11 @@ def _mysql_time_series_packet(
             "north": bbox[3],
         },
         "identity": None if identity_filter is None else {
-            "column": identity_filter[0],
+            "column": (
+                "cell_id"
+                if dataset.get("sampled_grid") and identity_filter[0] == sampled_fields.get("id")
+                else identity_filter[0]
+            ),
             "value": identity_filter[1],
         },
         "query_policy": query_policy(config),
@@ -954,13 +987,14 @@ def _mysql_time_series_packet(
 
 
 def read_backend(config: dict[str, Any], dataset: dict[str, Any]):
-    register_builtin_backends()
+    register_builtin_query_adapters()
     kind = dataset_backend_kind(config, dataset)
     return instantiate_backend(kind, config, dataset)
 
 
 def schema_packet(config: dict[str, Any], dataset: dict[str, Any]) -> dict[str, Any]:
-    return read_backend(config, dataset).schema_packet()
+    packet = read_backend(config, dataset).schema_packet()
+    return canonicalize_sampled_grid_schema_packet(packet, dataset)
 
 
 def records_packet(
@@ -972,14 +1006,17 @@ def records_packet(
     limit: int,
     offset: int,
     column_profile: str | None = None,
+    query_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return read_backend(config, dataset).records_packet(
+    packet = read_backend(config, dataset).records_packet(
         date_value=date_value,
         bbox=bbox,
         limit=limit,
         offset=offset,
         column_profile=column_profile,
+        query_context=query_context,
     )
+    return canonicalize_sampled_grid_packet(packet, dataset)
 
 
 def records_range_packet(
@@ -991,6 +1028,7 @@ def records_range_packet(
     bbox: tuple[float, float, float, float] | None,
     limit: int,
     column_profile: str | None = None,
+    query_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     backend = read_backend(config, dataset)
     if not hasattr(backend, "records_range_packet"):
@@ -999,13 +1037,15 @@ def records_range_packet(
             "records_range_packet",
             "range preheat is not supported by this backend",
         )
-    return backend.records_range_packet(
+    packet = backend.records_range_packet(
         start_date=start_date,
         end_date=end_date,
         bbox=bbox,
         limit=limit,
         column_profile=column_profile,
+        query_context=query_context,
     )
+    return canonicalize_sampled_grid_range_packet(packet, dataset)
 
 
 def time_series_packet(
@@ -1027,7 +1067,7 @@ def time_series_packet(
             "time_series_packet",
             "time-series aggregation is not supported by this backend",
         )
-    return backend.time_series_packet(
+    packet = backend.time_series_packet(
         start_date=start_date,
         end_date=end_date,
         bbox=bbox,
@@ -1036,6 +1076,7 @@ def time_series_packet(
         identity_column=identity_column,
         identity_value=identity_value,
     )
+    return canonicalize_sampled_grid_time_series_packet(packet, dataset)
 
 
 def parse_bbox(value: str | None) -> tuple[float, float, float, float] | None:

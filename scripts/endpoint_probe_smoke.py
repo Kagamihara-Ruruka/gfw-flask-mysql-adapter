@@ -12,7 +12,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from common_adapter.developer.probes.endpoint import endpoint_status_from_config
+from common_adapter.developer.probes.endpoint import endpoint_probe_target, endpoint_status_from_config
 
 
 class MockServingHandler(BaseHTTPRequestHandler):
@@ -21,8 +21,10 @@ class MockServingHandler(BaseHTTPRequestHandler):
         "metrics": ["fishing_hours"],
     }
     mode = "catalog"
+    request_paths: list[str] = []
 
     def do_GET(self) -> None:
+        self.request_paths.append(self.path)
         if self.path == "/api/v1/catalog" and self.mode == "catalog":
             self.write_json(200, self.catalog_payload)
             return
@@ -30,6 +32,9 @@ class MockServingHandler(BaseHTTPRequestHandler):
             self.write_text(200, "not json", content_type="text/plain")
             return
         if self.path == "/api/v1/health":
+            if self.mode == "unhealthy":
+                self.write_json(503, {"ok": False})
+                return
             self.write_json(200, {"ok": True})
             return
         self.write_text(404, "not found")
@@ -96,6 +101,7 @@ def smoke_invalid_port() -> dict[str, Any]:
 
 def run_mock_server(mode: str) -> tuple[HTTPServer, Thread]:
     MockServingHandler.mode = mode
+    MockServingHandler.request_paths = []
     server = HTTPServer(("127.0.0.1", 0), MockServingHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -121,6 +127,8 @@ def smoke_mock_catalog() -> dict[str, Any]:
         assert_equal(row["configured"], True, "mock_catalog.configured")
         assert_equal(row["reachable"], True, "mock_catalog.reachable")
         assert_equal(row["contract_detected"], True, "mock_catalog.contract_detected")
+        assert_equal(row["healthy"], True, "mock_catalog.healthy")
+        assert_equal("/api/v1/health" in MockServingHandler.request_paths, True, "mock_catalog.health_requested")
         return row
     finally:
         server.shutdown()
@@ -161,6 +169,31 @@ def smoke_example_config() -> dict[str, Any]:
     return row
 
 
+def smoke_explicit_empty_discovery_paths() -> dict[str, Any]:
+    target = endpoint_probe_target(
+        {
+            "name": "no_discovery_endpoint",
+            "endpoint": {
+                "host": "127.0.0.1",
+                "port": 8080,
+                "base_path": "/api/v1",
+                "catalog_paths": ["/catalog"],
+                "health_paths": ["/health"],
+                "discovery_paths": [],
+            },
+        }
+    )
+    if target is None:
+        raise AssertionError("expected endpoint target")
+    assert_equal(target.discovery_paths, (), "empty_discovery_paths")
+    return {
+        "configured": True,
+        "reachable": False,
+        "contract_detected": False,
+        "discovery_paths": list(target.discovery_paths),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Smoke test endpoint source probes with local-only fixtures.")
     parser.add_argument("--json", action="store_true", help="Print full smoke result JSON.")
@@ -172,6 +205,7 @@ def main() -> int:
         "mock_catalog": smoke_mock_catalog(),
         "mock_non_json_catalog": smoke_mock_non_json_catalog(),
         "example_config": smoke_example_config(),
+        "explicit_empty_discovery_paths": smoke_explicit_empty_discovery_paths(),
     }
     if args.json:
         print(json.dumps({"status": "ok", "results": results}, ensure_ascii=False, indent=2))

@@ -1,39 +1,44 @@
-const GfwRecordCache = (() => {
+const SampledGridRecordCache = (() => {
   const cache = new Map();
   const metadata = new Map();
   const packetSizes = new Map();
   const inflight = new Map();
   let prewarmGeneration = 0;
+  let playbackPrefetchGeneration = 0;
   let prewarmTimer = null;
   let cacheBytes = 0;
 
   const DEFAULT_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 
+  function currentLayerUsesRecordCache() {
+    return typeof isSampledGridLayer === "function" && isSampledGridLayer(state.dataLayer);
+  }
+
   function options() {
-    const rawConcurrency = state.gfwRecordCache?.prewarmConcurrency ?? "all";
-    const rawMaxEntries = Number(state.gfwRecordCache?.maxEntries ?? 0);
-    const rawMaxBytes = Number(state.gfwRecordCache?.maxBytes ?? DEFAULT_MAX_BYTES);
+    const rawConcurrency = state.sampledGridRecordCache?.prewarmConcurrency ?? "all";
+    const rawMaxEntries = Number(state.sampledGridRecordCache?.maxEntries ?? 0);
+    const rawMaxBytes = Number(state.sampledGridRecordCache?.maxBytes ?? DEFAULT_MAX_BYTES);
     return {
       maxEntries: rawMaxEntries <= 0 ? 0 : Math.max(12, rawMaxEntries),
       maxBytes: rawMaxBytes <= 0 ? 0 : Math.max(64 * 1024 * 1024, rawMaxBytes),
-      prewarmMaxZoom: Math.max(1, Number(state.gfwRecordCache?.prewarmMaxZoom || 12)),
+      prewarmMaxZoom: Math.max(1, Number(state.sampledGridRecordCache?.prewarmMaxZoom || 12)),
       prewarmConcurrency: rawConcurrency === "all" ? "all" : Math.max(1, Number(rawConcurrency || 1)),
-      prewarmIdleDelayMs: Math.max(0, Number(state.gfwRecordCache?.prewarmIdleDelayMs || 120)),
-      prewarmDateAhead: Math.max(0, Number(state.gfwRecordCache?.prewarmDateAhead || 0)),
-      prewarmDateBehind: Math.max(0, Number(state.gfwRecordCache?.prewarmDateBehind || 0)),
+      prewarmIdleDelayMs: Math.max(0, Number(state.sampledGridRecordCache?.prewarmIdleDelayMs || 120)),
+      prewarmDateAhead: Math.max(0, Number(state.sampledGridRecordCache?.prewarmDateAhead || 0)),
+      prewarmDateBehind: Math.max(0, Number(state.sampledGridRecordCache?.prewarmDateBehind || 0)),
     };
   }
 
   function updateStats(patch) {
-    if (!state.gfwRecordCache) return;
-    state.gfwRecordCache.stats = {
-      ...(state.gfwRecordCache.stats || {}),
+    if (!state.sampledGridRecordCache) return;
+    state.sampledGridRecordCache.stats = {
+      ...(state.sampledGridRecordCache.stats || {}),
       ...patch,
     };
   }
 
   function incrementStat(name, amount = 1) {
-    const stats = state.gfwRecordCache?.stats || {};
+    const stats = state.sampledGridRecordCache?.stats || {};
     updateStats({ [name]: Number(stats[name] || 0) + amount });
   }
 
@@ -100,8 +105,8 @@ const GfwRecordCache = (() => {
     syncCacheStats();
   }
 
-  function requestKey({ datasetId, date, bbox, limit, columns }) {
-    return [datasetId, date, bbox, limit, columns || "display"].join("|");
+  function requestKey({ datasetId, date, bbox, limit, columns, resolution }) {
+    return [datasetId, date, bbox, limit, columns || "display", resolution || "auto"].join("|");
   }
 
   function parseBbox(bbox) {
@@ -156,6 +161,13 @@ const GfwRecordCache = (() => {
   }
 
   function rowInBbox(row, box) {
+    const bounds = row?.bounds;
+    if (bounds && [bounds.west, bounds.south, bounds.east, bounds.north].every((value) => Number.isFinite(Number(value)))) {
+      return Number(bounds.west) < box.east
+        && Number(bounds.east) > box.west
+        && Number(bounds.south) < box.north
+        && Number(bounds.north) > box.south;
+    }
     const lat = Number(row?.lat);
     const lon = Number(row?.lon);
     return Number.isFinite(lat)
@@ -172,6 +184,7 @@ const GfwRecordCache = (() => {
       && meta.date === request.date
       && String(meta.limit) === String(request.limit)
       && String(meta.columns || "display") === String(request.columns || "display")
+      && String(meta.resolution || "auto") === String(request.resolution || "auto")
       && meta.box;
   }
 
@@ -225,10 +238,9 @@ const GfwRecordCache = (() => {
 
   function rowsKey(row) {
     return [
-      row?.lat ?? "",
+      row?.cell_id ?? row?.lat ?? "",
       row?.lon ?? "",
-      row?.cell_lat ?? "",
-      row?.cell_lon ?? "",
+      row?.resolution_km ?? "",
       row?.date ?? "",
     ].join("|");
   }
@@ -288,22 +300,28 @@ const GfwRecordCache = (() => {
     return true;
   }
 
-  function urlFor({ datasetId, date, bbox, limit, columns }) {
+  function urlFor({ datasetId, date, bbox, limit, columns, resolution, zoom, latitude }) {
     const params = new URLSearchParams();
     params.set("date", date);
     params.set("limit", limit == null ? "max" : String(limit));
     params.set("bbox", bbox);
     if (columns) params.set("columns", columns);
+    if (resolution != null) params.set("resolution", String(resolution));
+    if (zoom != null) params.set("zoom", String(zoom));
+    if (latitude != null) params.set("latitude", String(latitude));
     return `/api/datasets/${datasetId}/records?${params}`;
   }
 
-  function rangeUrlFor({ datasetId, start, end, bbox, limit, columns }) {
+  function rangeUrlFor({ datasetId, start, end, bbox, limit, columns, resolution, zoom, latitude }) {
     const params = new URLSearchParams();
     params.set("start", start);
     params.set("end", end);
     params.set("limit", limit == null ? "max" : String(limit));
     params.set("bbox", bbox);
     if (columns) params.set("columns", columns);
+    if (resolution != null) params.set("resolution", String(resolution));
+    if (zoom != null) params.set("zoom", String(zoom));
+    if (latitude != null) params.set("latitude", String(latitude));
     return `/api/datasets/${datasetId}/records/range?${params}`;
   }
 
@@ -446,6 +464,9 @@ const GfwRecordCache = (() => {
             limit: context.limit,
             bbox: context.bbox,
             columns: context.columns || "render",
+            resolution: context.resolution,
+            zoom: context.zoom,
+            latitude: context.latitude,
           });
         }
       }
@@ -458,6 +479,9 @@ const GfwRecordCache = (() => {
             limit: context.limit,
             bbox: context.bbox,
             columns: context.columns || "render",
+            resolution: context.resolution,
+            zoom: context.zoom,
+            latitude: context.latitude,
           });
         }
       }
@@ -468,18 +492,25 @@ const GfwRecordCache = (() => {
       limit: context.limit,
       bbox: bboxForCenterZoom(context.center, zoom),
       columns: context.columns || "render",
+      resolution: SampledGridContract.requestResolution({
+        datasetId: context.datasetId,
+        zoom,
+        latitude: context.center?.lat,
+      }),
+      zoom,
+      latitude: context.center?.lat,
     })));
     return requests;
   }
 
   async function prewarmWorker(queue, generation) {
     while (queue.length > 0) {
-      if (generation !== prewarmGeneration || state.dataLayer !== "gfw") return;
+      if (generation !== prewarmGeneration || !currentLayerUsesRecordCache()) return;
       const request = queue.shift();
       const key = requestKey(request);
       if (!hasPacket(request) && !inflight.has(key)) {
-        await fetchPacket(request).catch((err) => console.warn("GFW prewarm failed", err));
-        if (generation === prewarmGeneration && state.dataLayer === "gfw") {
+        await fetchPacket(request).catch((err) => console.warn("Sampled-grid prewarm failed", err));
+        if (generation === prewarmGeneration && currentLayerUsesRecordCache()) {
           incrementStat("prewarmCompleted");
         }
       }
@@ -489,7 +520,7 @@ const GfwRecordCache = (() => {
 
   async function prefetchWorker(queue, generation, onProgress) {
     while (queue.length > 0) {
-      if (generation !== prewarmGeneration || state.dataLayer !== "gfw") return;
+      if (generation !== playbackPrefetchGeneration || !currentLayerUsesRecordCache()) return;
       const request = queue.shift();
       const key = requestKey(request);
       const wasCached = hasPacket(request);
@@ -501,7 +532,7 @@ const GfwRecordCache = (() => {
           ok: true,
         });
       } catch (err) {
-        console.warn("GFW playback prefetch failed", err);
+        console.warn("Sampled-grid playback prefetch failed", err);
         onProgress?.({
           request,
           cacheHit: false,
@@ -522,10 +553,8 @@ const GfwRecordCache = (() => {
   }
 
   async function prefetchRequests(requests, { concurrency = 2, onProgress } = {}) {
-    prewarmGeneration += 1;
-    const generation = prewarmGeneration;
-    clearTimeout(prewarmTimer);
-    prewarmTimer = null;
+    playbackPrefetchGeneration += 1;
+    const generation = playbackPrefetchGeneration;
     const unique = uniqueRequests(requests);
     const queue = unique.filter((request) => {
       const key = requestKey(request);
@@ -553,15 +582,14 @@ const GfwRecordCache = (() => {
     return { total: unique.length, ...progress };
   }
 
-  async function prefetchRange({ dates, bbox, datasetId, limit, columns = "render" }, { concurrency = 2, onProgress } = {}) {
-    prewarmGeneration += 1;
-    clearTimeout(prewarmTimer);
-    prewarmTimer = null;
+  async function prefetchRange({ dates, bbox, datasetId, limit, columns = "render", resolution, zoom, latitude }, { concurrency = 2, onProgress } = {}) {
+    playbackPrefetchGeneration += 1;
+    const generation = playbackPrefetchGeneration;
     const uniqueDates = [...new Set((dates || []).filter(Boolean))].sort();
     if (!uniqueDates.length) {
       return { total: 0, fetched: 0, cacheHits: 0, failed: 0, range: false };
     }
-    const requests = uniqueDates.map((date) => ({ datasetId, date, bbox, limit, columns }));
+    const requests = uniqueDates.map((date) => ({ datasetId, date, bbox, limit, columns, resolution, zoom, latitude }));
     const missing = requests.filter((request) => !hasPacket(request));
     const immediateHits = requests.length - missing.length;
     for (let index = 0; index < immediateHits; index += 1) {
@@ -580,15 +608,25 @@ const GfwRecordCache = (() => {
         bbox,
         limit,
         columns,
+        resolution,
+        zoom,
+        latitude,
       }));
     } catch (err) {
-      console.warn("GFW range preheat failed; falling back to per-date prefetch", err);
+      if (generation !== playbackPrefetchGeneration) {
+        return { total: requests.length, fetched: 0, cacheHits: immediateHits, failed: 0, cancelled: true };
+      }
+      console.warn("Sampled-grid range preheat failed; falling back to per-date prefetch", err);
       return prefetchRequests(missing, { concurrency, onProgress });
+    }
+    if (generation !== playbackPrefetchGeneration) {
+      return { total: requests.length, fetched: 0, cacheHits: immediateHits, failed: 0, cancelled: true };
     }
     let fetched = 0;
     let failed = 0;
     const snapshots = rangePacket.snapshots || {};
     for (const request of missing) {
+      if (generation !== playbackPrefetchGeneration) break;
       const rows = Array.isArray(snapshots[request.date]) ? snapshots[request.date] : [];
       if (!rows.length && rangePacket.truncated && rangePacket.limit_mode !== "per_snapshot") {
         try {
@@ -630,13 +668,21 @@ const GfwRecordCache = (() => {
   }
 
   function schedulePrewarm(context) {
+    if (state.isPlaying || state.playbackCache?.isPreheating || state.playbackCache?.isBackgroundPreloading) {
+      prewarmGeneration += 1;
+      clearTimeout(prewarmTimer);
+      prewarmTimer = null;
+      return false;
+    }
     prewarmGeneration += 1;
     const generation = prewarmGeneration;
     clearTimeout(prewarmTimer);
     prewarmTimer = setTimeout(() => {
       prewarmTimer = null;
-      prewarmQueue(context, generation).catch((err) => console.warn("GFW prewarm queue failed", err));
-    }, 700);
+      if (state.isPlaying || state.playbackCache?.isPreheating || state.playbackCache?.isBackgroundPreloading) return;
+      prewarmQueue(context, generation).catch((err) => console.warn("Sampled-grid prewarm queue failed", err));
+    }, options().prewarmIdleDelayMs);
+    return true;
   }
 
   function cancelPrewarm() {
@@ -645,8 +691,13 @@ const GfwRecordCache = (() => {
     prewarmTimer = null;
   }
 
+  function cancelPrefetch() {
+    playbackPrefetchGeneration += 1;
+  }
+
   function clear() {
     prewarmGeneration += 1;
+    playbackPrefetchGeneration += 1;
     clearTimeout(prewarmTimer);
     prewarmTimer = null;
     cache.clear();
@@ -670,5 +721,8 @@ const GfwRecordCache = (() => {
     enforceBudget,
     schedulePrewarm,
     cancelPrewarm,
+    cancelPrefetch,
   };
 })();
+
+const GfwRecordCache = SampledGridRecordCache;

@@ -1,5 +1,5 @@
 self.onmessage = (event) => {
-  const { rows = [], dateColumn = "obs_date", allowedDates = [] } = event.data || {};
+  const { rows = [], dateColumn = "date", allowedDates = [] } = event.data || {};
   const allowed = Array.isArray(allowedDates) && allowedDates.length
     ? new Set(allowedDates)
     : null;

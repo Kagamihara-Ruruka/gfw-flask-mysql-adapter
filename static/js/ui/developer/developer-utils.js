@@ -27,15 +27,6 @@
     target.classList.toggle("is-error", Boolean(isError));
   }
 
-  function setParseBadge(text, stateName) {
-    const badge = element("developer-config-parse-badge");
-    if (!badge) {
-      return;
-    }
-    badge.textContent = text;
-    badge.className = `developer-status-badge ${stateName || "is-idle"}`;
-  }
-
   function formatBytes(bytes) {
     if (!Number.isFinite(bytes)) {
       return "-";
@@ -98,7 +89,6 @@
     setHidden,
     isHidden,
     setMessage,
-    setParseBadge,
     formatBytes,
     escapeHtml,
     sanitizeIdentifier,

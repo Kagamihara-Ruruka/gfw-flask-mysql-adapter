@@ -40,7 +40,6 @@
         editor.value = "";
       }
       this.sourceGroupSelector.setValue("");
-      this.Utils.setParseBadge("待命", "is-idle");
       this.syncControls();
     }
 
@@ -59,7 +58,6 @@
         meta.textContent = `${packet.path} / ${this.Utils.formatBytes(packet.summary?.size_bytes || 0)}`;
       }
       this.sourceGroupSelector.setValue(this.selectedConfig?.source_group || "");
-      this.Utils.setParseBadge(packet.parse_ok ? "JSON 正常" : "JSON 錯誤", packet.parse_ok ? "is-ok" : "is-error");
       this.syncControls();
       return this.selectedConfig;
     }

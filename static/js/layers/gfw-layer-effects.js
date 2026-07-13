@@ -1,6 +1,6 @@
-const GfwLayerEffects = (() => {
+const SampledGridLayerEffects = (() => {
   function transitionMs(targetState) {
-    const baseMs = Math.max(0, Number(targetState.gfwTransitionMs || 0));
+    const baseMs = Math.max(0, Number(targetState.sampledGridTransitionMs ?? targetState.gfwTransitionMs ?? 0));
     if (typeof PlaybackInterpolationController !== "undefined") {
       return PlaybackInterpolationController.playbackTransitionMs(targetState, baseMs);
     }
@@ -8,7 +8,7 @@ const GfwLayerEffects = (() => {
   }
 
   function blurPx(targetState) {
-    return Math.max(0, Number(targetState.gfwZoomBlurPx || 0));
+    return Math.max(0, Number(targetState.sampledGridZoomBlurPx ?? targetState.gfwZoomBlurPx ?? 0));
   }
 
   function layerElement(layer) {
@@ -16,13 +16,13 @@ const GfwLayerEffects = (() => {
   }
 
   function setPaneOpacity(targetMap, opacity) {
-    const pane = targetMap.getPane("gfwPane");
+    const pane = targetMap.getPane("sampledGridPane");
     if (!pane) return;
     pane.style.opacity = String(opacity);
   }
 
   function syncTransitionStyle(targetMap, targetState) {
-    const pane = targetMap.getPane("gfwPane");
+    const pane = targetMap.getPane("sampledGridPane");
     if (!pane) return;
     pane.style.opacity = "1";
     pane.style.transition = `filter ${transitionMs(targetState)}ms ease`;
@@ -49,7 +49,7 @@ const GfwLayerEffects = (() => {
   }
 
   function setPaneBlur(targetMap, targetState, active) {
-    const pane = targetMap.getPane("gfwPane");
+    const pane = targetMap.getPane("sampledGridPane");
     if (!pane) return;
     const px = blurPx(targetState);
     pane.style.filter = active && px > 0 ? `blur(${px}px)` : "";
@@ -80,13 +80,13 @@ const GfwLayerEffects = (() => {
     if (targetMap.hasLayer(layer)) {
       targetMap.removeLayer(layer);
     }
-    if (Array.isArray(targetState.gfwRetiringLayers)) {
-      targetState.gfwRetiringLayers = targetState.gfwRetiringLayers.filter((item) => item !== layer);
+    if (Array.isArray(targetState.sampledGridRetiringLayers)) {
+      targetState.sampledGridRetiringLayers = targetState.sampledGridRetiringLayers.filter((item) => item !== layer);
     }
   }
 
   function removeRetiredLayers({ targetMap, targetState }) {
-    const retiring = Array.isArray(targetState.gfwRetiringLayers) ? [...targetState.gfwRetiringLayers] : [];
+    const retiring = Array.isArray(targetState.sampledGridRetiringLayers) ? [...targetState.sampledGridRetiringLayers] : [];
     for (const layer of retiring) {
       removeRetiredLayer({ targetMap, targetState, layer });
     }
@@ -107,8 +107,8 @@ const GfwLayerEffects = (() => {
     setLayerTransition(previousLayer, targetState);
     setLayerBlur(previousLayer, targetState, false);
     setLayerOpacity(nextLayer, 0);
-    targetState.gfwRetiringLayers = targetState.gfwRetiringLayers || [];
-    targetState.gfwRetiringLayers.push(previousLayer);
+    targetState.sampledGridRetiringLayers = targetState.sampledGridRetiringLayers || [];
+    targetState.sampledGridRetiringLayers.push(previousLayer);
 
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
@@ -142,4 +142,5 @@ const GfwLayerEffects = (() => {
   };
 })();
 
-window.GfwLayerEffects = GfwLayerEffects;
+window.SampledGridLayerEffects = SampledGridLayerEffects;
+window.GfwLayerEffects = SampledGridLayerEffects;

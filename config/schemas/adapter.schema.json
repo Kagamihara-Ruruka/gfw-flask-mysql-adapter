@@ -108,7 +108,53 @@
         },
         "allow_webgl": { "type": "boolean" },
         "allow_webgpu": { "type": "boolean" },
-        "min_webgl_rows": { "type": "integer", "minimum": 1 }
+        "min_webgl_rows": { "type": "integer", "minimum": 1 },
+        "aerial_backdrop": {
+          "type": "object",
+          "required": [
+            "enabled",
+            "provider",
+            "endpoint",
+            "layer",
+            "fallback_layer",
+            "date_policy",
+            "lookback_days",
+            "minimum_image_bytes",
+            "image_format",
+            "output_width",
+            "output_height",
+            "context_scale",
+            "timeout_seconds",
+            "max_response_bytes",
+            "cache_max_entries",
+            "browser_cache_seconds",
+            "background_opacity",
+            "scrim_opacity",
+            "attribution"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "provider": { "type": "string", "enum": ["nasa_gibs_wms"] },
+            "endpoint": { "type": "string", "format": "uri", "pattern": "^https://" },
+            "layer": { "type": "string", "minLength": 1 },
+            "fallback_layer": { "type": "string", "minLength": 1 },
+            "date_policy": { "type": "string", "enum": ["latest_available"] },
+            "lookback_days": { "type": "integer", "minimum": 0, "maximum": 30 },
+            "minimum_image_bytes": { "type": "integer", "minimum": 1, "maximum": 33554432 },
+            "image_format": { "type": "string", "enum": ["image/jpeg", "image/png"] },
+            "output_width": { "type": "integer", "minimum": 320, "maximum": 1920 },
+            "output_height": { "type": "integer", "minimum": 180, "maximum": 1080 },
+            "context_scale": { "type": "number", "minimum": 1, "maximum": 80 },
+            "timeout_seconds": { "type": "number", "minimum": 1, "maximum": 60 },
+            "max_response_bytes": { "type": "integer", "minimum": 1048576, "maximum": 33554432 },
+            "cache_max_entries": { "type": "integer", "minimum": 1, "maximum": 256 },
+            "browser_cache_seconds": { "type": "integer", "minimum": 0, "maximum": 604800 },
+            "background_opacity": { "type": "number", "minimum": 0, "maximum": 1 },
+            "scrim_opacity": { "type": "number", "minimum": 0, "maximum": 1 },
+            "attribution": { "type": "string", "minLength": 1 }
+          }
+        }
       }
     },
     "default_dataset": {

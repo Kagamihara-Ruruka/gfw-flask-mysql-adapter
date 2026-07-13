@@ -42,6 +42,7 @@
         "database": "common_spatial",
         "table": "eez_v12",
         "tile_table": "eez_v12_tile",
+        "fill_table": "eez_v12_fill",
         "boundary_table": "eez_v12_boundary",
         "geometry_column": "geom",
         "mvt_layer": "eez"

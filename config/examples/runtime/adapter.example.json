@@ -48,7 +48,28 @@
     "hardware_acceleration": "auto",
     "allow_webgl": true,
     "allow_webgpu": false,
-    "min_webgl_rows": 1
+    "min_webgl_rows": 1,
+    "aerial_backdrop": {
+      "enabled": true,
+      "provider": "nasa_gibs_wms",
+      "endpoint": "https://gibs.earthdata.nasa.gov/wms/epsg4326/best/wms.cgi",
+      "layer": "VIIRS_SNPP_CorrectedReflectance_TrueColor",
+      "fallback_layer": "BlueMarble_ShadedRelief_Bathymetry",
+      "date_policy": "latest_available",
+      "lookback_days": 7,
+      "minimum_image_bytes": 20000,
+      "image_format": "image/jpeg",
+      "output_width": 1280,
+      "output_height": 720,
+      "context_scale": 80,
+      "timeout_seconds": 20,
+      "max_response_bytes": 8388608,
+      "cache_max_entries": 48,
+      "browser_cache_seconds": 86400,
+      "background_opacity": 0.82,
+      "scrim_opacity": 0.56,
+      "attribution": "NASA GIBS / EOSDIS"
+    }
   },
   "overlays": {
     "eez": {
@@ -89,6 +110,7 @@
         "database": "common_spatial",
         "table": "eez_v12",
         "tile_table": "eez_v12_tile",
+        "fill_table": "eez_v12_fill",
         "boundary_table": "eez_v12_boundary",
         "geometry_column": "geom",
         "mvt_layer": "eez"

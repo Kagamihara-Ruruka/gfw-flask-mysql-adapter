@@ -7,6 +7,8 @@ import subprocess
 import sys
 from typing import Any
 
+from common_adapter.render.backdrop import aerial_backdrop_capability
+
 
 def rendering_policy(config: dict[str, Any]) -> dict[str, Any]:
     settings = config.get("rendering", {})
@@ -79,5 +81,6 @@ def server_render_capability(config: dict[str, Any]) -> dict[str, Any]:
             "has_gpu_hint": bool(gpu_hints),
         },
         "policy": policy,
+        "aerial_backdrop": aerial_backdrop_capability(config),
         "note": "Browser WebGL probe is authoritative for map acceleration; server GPU hints are advisory.",
     }

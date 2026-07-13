@@ -1,14 +1,24 @@
 const RenderState = (() => {
   const layers = {
-    gfw: { label: "GFW", bit: 0, status: "off", detail: "關閉" },
     ais: { label: "AIS", bit: 0, status: "off", detail: "關閉" },
     eez: { label: "EEZ", bit: 0, status: "off", detail: "關閉" },
   };
-  const primaryExclusive = {
-    gfw: "ais",
-    ais: "gfw",
-  };
   const scopes = new Map();
+
+  function ensureLayer(layerId) {
+    const id = String(layerId || "").trim().toLowerCase();
+    if (!id) return null;
+    if (!layers[id]) {
+      const label = typeof layerLabel === "function" ? layerLabel(id) : id.toUpperCase();
+      layers[id] = { label, bit: 0, status: "off", detail: "關閉" };
+    }
+    return id;
+  }
+
+  function isPrimaryLayer(layerId) {
+    if (layerId === "ais") return true;
+    return typeof isSampledGridLayer === "function" && isSampledGridLayer(layerId);
+  }
 
   function element(id) {
     return document.getElementById(id);
@@ -20,12 +30,13 @@ const RenderState = (() => {
   }
 
   function syncLayer(layerId) {
-    const layer = layers[layerId];
+    const id = ensureLayer(layerId);
+    const layer = id ? layers[id] : null;
     if (!layer) return;
-    setText(`render-bit-${layerId}`, String(layer.bit));
-    setText(`render-detail-${layerId}`, layer.detail);
-    const light = element(`render-light-${layerId}`);
-    const chip = element(`render-chip-${layerId}`);
+    setText(`render-bit-${id}`, String(layer.bit));
+    setText(`render-detail-${id}`, layer.detail);
+    const light = element(`render-light-${id}`);
+    const chip = element(`render-chip-${id}`);
     if (!light || !chip) return;
     light.className = "render-light";
     chip.classList.remove("is-ready", "is-loading", "is-error", "is-off");
@@ -45,26 +56,29 @@ const RenderState = (() => {
   }
 
   function updateSummary() {
-    const bits = Object.entries(layers).map(([id, layer]) => `${id.toUpperCase()} ${layer.bit}`).join(" / ");
+    const bits = Object.values(layers).map((layer) => `${layer.label} ${layer.bit}`).join(" / ");
     setText("render-gate-summary", bits);
   }
 
   function enforcePrimaryExclusion(layerId, bit) {
-    if (!bit || !primaryExclusive[layerId]) return;
-    const otherLayerId = primaryExclusive[layerId];
-    layers[otherLayerId].bit = 0;
-    layers[otherLayerId].status = "off";
-    layers[otherLayerId].detail = "互斥關閉";
-    syncLayer(otherLayerId);
+    if (!bit || !isPrimaryLayer(layerId)) return;
+    for (const [otherLayerId, layer] of Object.entries(layers)) {
+      if (otherLayerId === layerId || !isPrimaryLayer(otherLayerId)) continue;
+      layer.bit = 0;
+      layer.status = "off";
+      layer.detail = "互斥關閉";
+      syncLayer(otherLayerId);
+    }
   }
 
   function setLayer(layerId, bit, status, detail) {
-    if (!layers[layerId]) return;
-    enforcePrimaryExclusion(layerId, bit);
-    layers[layerId].bit = bit ? 1 : 0;
-    layers[layerId].status = status || (bit ? "ready" : "off");
-    layers[layerId].detail = detail || layers[layerId].status;
-    syncLayer(layerId);
+    const id = ensureLayer(layerId);
+    if (!id) return;
+    enforcePrimaryExclusion(id, bit);
+    layers[id].bit = bit ? 1 : 0;
+    layers[id].status = status || (bit ? "ready" : "off");
+    layers[id].detail = detail || layers[id].status;
+    syncLayer(id);
     updateSummary();
   }
 

@@ -2,15 +2,162 @@ function layerItems() {
   return Array.from(document.querySelectorAll(".layer-item"));
 }
 
+function layerOptionsContainer() {
+  return document.querySelector("[data-layer-options]") || document.querySelector(".data-layer-options");
+}
+
+function layerIdOf(contract) {
+  return String(contract?.layer_id || "").trim().toLowerCase();
+}
+
+function layerContractById(layerId) {
+  const id = String(layerId || "").trim().toLowerCase();
+  return (state.layerContracts || []).find((contract) => layerIdOf(contract) === id) || null;
+}
+
+function layerLabel(layerId) {
+  const contract = layerContractById(layerId);
+  return contract?.label || contract?.source_label || String(layerId || "").toUpperCase();
+}
+
+function isImportedLayer(layerId) {
+  const id = String(layerId || "").trim().toLowerCase();
+  return Boolean(id && state.importedLayers?.[id]);
+}
+
+function isRelationalLayer(layerId) {
+  const contract = layerContractById(layerId);
+  return Boolean(contract?.capabilities?.relational_query || contract?.source_route_group === "database");
+}
+
+function isSampledGridLayer(layerId) {
+  const contract = layerContractById(layerId);
+  return Boolean(contract?.capabilities?.sampled_grid);
+}
+
+function isWebsocketLayer(layerId) {
+  const contract = layerContractById(layerId);
+  return Boolean(contract?.source_route_group === "websocket" || contract?.contract_group === "websocket");
+}
+
+function isSpatialLayer(layerId) {
+  const contract = layerContractById(layerId);
+  return Boolean(contract?.source_route_group === "spatial" || contract?.contract_group === "spatial");
+}
+
+function isPrimaryDataLayer(layerId) {
+  if (isSampledGridLayer(layerId)) return true;
+  return String(layerId || "").trim().toLowerCase() === "ais" && isWebsocketLayer(layerId);
+}
+
+function hasOverlayHandler(layerId) {
+  return String(layerId || "").trim().toLowerCase() === "eez" && isSpatialLayer(layerId);
+}
+
+function hasLayerHandler(layerId) {
+  return isPrimaryDataLayer(layerId) || hasOverlayHandler(layerId);
+}
+
+function layerInputId(layerId) {
+  const id = String(layerId || "").trim().toLowerCase();
+  return id === "eez" ? "eez-toggle" : `layer-${id}`;
+}
+
+function layerPaneNames(layerId) {
+  const id = String(layerId || "").trim().toLowerCase();
+  if (id === "eez") return ["eezPaneA", "eezPaneB"];
+  if (id === "ais") return ["aisPane"];
+  if (isSampledGridLayer(id)) return ["sampledGridPane"];
+  return [`${id}Pane`];
+}
+
+function layerSettingsPanelKind(layerId) {
+  const id = String(layerId || "").trim().toLowerCase();
+  if (isSampledGridLayer(id)) return "sampled-grid";
+  if (id === "ais" && isWebsocketLayer(id)) return "ais";
+  if (id === "eez" && isSpatialLayer(id)) return "eez";
+  return "";
+}
+
+function importedLayerContracts() {
+  return (state.layerContracts || []).filter((contract) => isImportedLayer(layerIdOf(contract)));
+}
+
+function renderDataLayerMenu() {
+  const container = layerOptionsContainer();
+  if (!container) return;
+  container.replaceChildren();
+  const contracts = importedLayerContracts();
+  if (!contracts.length) {
+    const empty = document.createElement("div");
+    empty.className = "layer-empty-state";
+    empty.textContent = "No imported data layers";
+    container.appendChild(empty);
+    return;
+  }
+  for (const contract of contracts) {
+    const layerId = layerIdOf(contract);
+    const item = document.createElement("div");
+    item.className = "layer-item";
+    item.dataset.layerId = layerId;
+    item.dataset.layerGroup = contract.source_route_group || contract.contract_group || "";
+    item.dataset.layerImported = isImportedLayer(layerId) ? "1" : "0";
+
+    const option = document.createElement("div");
+    option.className = "layer-option";
+
+    const handle = document.createElement("span");
+    handle.className = "drag-handle";
+    handle.title = "Drag to reorder layers";
+    handle.textContent = "::";
+
+    const label = document.createElement("label");
+    label.className = "checkbox-row";
+
+    const input = document.createElement("input");
+    input.id = layerInputId(layerId);
+    input.type = "checkbox";
+    input.value = layerId;
+    input.dataset.layerToggle = layerId;
+    input.dataset.layerToggleKind = hasOverlayHandler(layerId) ? "overlay" : "primary";
+    input.disabled = !hasLayerHandler(layerId);
+    input.checked = hasOverlayHandler(layerId) ? state.overlayLayers?.[layerId] !== false : state.dataLayer === layerId;
+
+    const title = document.createElement("span");
+    title.textContent = layerLabel(layerId);
+    if (!hasLayerHandler(layerId)) {
+      title.title = "Layer contract is imported, but this dashboard has no renderer for it yet.";
+    }
+
+    label.append(input, title);
+    option.append(handle, label);
+
+    const settingsPanelKind = layerSettingsPanelKind(layerId);
+    if (settingsPanelKind && document.querySelector(`[data-layer-settings-panel="${settingsPanelKind}"]`)) {
+      const settings = document.createElement("button");
+      settings.className = "icon-button layer-settings-toggle layer-gear-button";
+      settings.type = "button";
+      settings.dataset.settingsLayer = layerId;
+      settings.setAttribute("aria-label", `${layerLabel(layerId)} settings`);
+      settings.setAttribute("aria-expanded", "false");
+      settings.textContent = "\u2699";
+      option.append(settings);
+    }
+
+    item.append(option);
+    container.appendChild(item);
+  }
+  bindLayerOrderDrag();
+}
+
 function applyLayerOrder() {
   const baseZ = 520;
   const step = 50;
-  const order = state.layerOrder.length ? state.layerOrder : ["gfw", "ais", "eez"];
+  const contractOrder = importedLayerContracts().map((contract) => layerIdOf(contract));
+  const order = state.layerOrder.length ? state.layerOrder : contractOrder;
   order.forEach((layerId, index) => {
-    // The first item in the selector is the top visual layer.
     const zIndex = String(baseZ + ((order.length - index) * step));
-    const paneNames = layerId === "eez" ? ["eezPaneA", "eezPaneB"] : [`${layerId}Pane`];
-    for (const paneName of paneNames) {
+    for (const paneName of layerPaneNames(layerId)) {
       const pane = map.getPane(paneName);
       if (pane) {
         pane.style.zIndex = zIndex;
@@ -20,73 +167,60 @@ function applyLayerOrder() {
 }
 
 function applyLayerAlpha(layerId) {
-  if (layerId === "gfw" && state.gridLayer) {
+  const id = String(layerId || "").trim().toLowerCase();
+  if (isSampledGridLayer(id) && state.gridLayer) {
     state.gridLayer.setRows(state.rows);
     return;
   }
-  if (layerId === "ais" && state.aisLayer) {
+  if (id === "ais" && state.aisLayer) {
     state.aisLayer.setRows(state.rows);
     return;
   }
-  if (layerId === "eez") {
+  if (id === "eez") {
     for (const paneName of ["eezPaneA", "eezPaneB"]) {
       const pane = map.getPane(paneName);
       if (!pane) continue;
-      pane.style.opacity = paneName === state.eezActivePane && $("eez-toggle").checked
+      pane.style.opacity = paneName === state.eezActivePane && $("eez-toggle")?.checked
         ? String(state.layerAlpha.eez)
         : "0";
     }
   }
 }
 
-function isImportedLayer(layerId) {
-  return state.importedLayers?.[layerId] !== false;
-}
-
-function setLayerItemAvailability(layerId, available) {
-  const item = document.querySelector(`[data-layer-id="${layerId}"]`);
-  if (item) {
-    item.hidden = !available;
-    item.classList.toggle("is-not-imported", !available);
-  }
-  const inputId = layerId === "eez" ? "eez-toggle" : `layer-${layerId}`;
-  const input = $(inputId);
-  if (input) {
-    input.disabled = !available;
-    if (!available) {
-      input.checked = false;
-    }
-  }
-}
-
 function enforceImportedLayerState() {
-  for (const layerId of ["gfw", "ais", "eez"]) {
-    setLayerItemAvailability(layerId, isImportedLayer(layerId));
-  }
-  if (state.dataLayer && !isImportedLayer(state.dataLayer)) {
+  if (state.dataLayer && (!isImportedLayer(state.dataLayer) || !isPrimaryDataLayer(state.dataLayer))) {
     const removedLayer = state.dataLayer;
     state.dataLayer = null;
-    if (removedLayer === "gfw") {
-      removeGfwLayer();
+    if (isSampledGridLayer(removedLayer)) {
+      removeSampledGridLayer();
     }
     if (removedLayer === "ais") {
       removeAisLayer();
     }
   }
-  if (!isImportedLayer("eez")) {
+  if (!isImportedLayer("eez") && typeof syncEezLayer === "function") {
     syncEezLayer();
   }
 }
 
 function updateDataLayerMenu() {
   enforceImportedLayerState();
-  $("layer-gfw").checked = isImportedLayer("gfw") && state.dataLayer === "gfw";
-  $("layer-ais").checked = isImportedLayer("ais") && state.dataLayer === "ais";
+  for (const input of document.querySelectorAll("[data-layer-toggle]")) {
+    const layerId = input.dataset.layerToggle;
+    input.checked = hasOverlayHandler(layerId)
+      ? state.overlayLayers?.[layerId] !== false
+      : state.dataLayer === layerId;
+    input.disabled = !hasLayerHandler(layerId);
+  }
   const labels = [];
-  if (state.dataLayer === "gfw") labels.push("GFW");
-  if (state.dataLayer === "ais") labels.push("AIS");
-  if (isImportedLayer("eez") && $("eez-toggle").checked) labels.push("EEZ");
-  $("data-layer-summary").textContent = labels.length ? labels.join(" + ") : "無";
+  if (state.dataLayer) labels.push(layerLabel(state.dataLayer));
+  for (const contract of importedLayerContracts()) {
+    const layerId = layerIdOf(contract);
+    if (hasOverlayHandler(layerId) && $(layerInputId(layerId))?.checked) {
+      labels.push(layerLabel(layerId));
+    }
+  }
+  $("data-layer-summary").textContent = labels.length ? labels.join(" + ") : "No layer";
   updatePlaybackControls();
   applyLayerOrder();
 }
@@ -104,6 +238,38 @@ function bindDataLayerMenuDismiss() {
     if (event.key === "Escape" && menu.open) {
       menu.open = false;
     }
+  });
+}
+
+function bindDataLayerControls() {
+  const container = layerOptionsContainer();
+  if (!container || container.dataset.layerControlsBound === "1") return;
+  container.dataset.layerControlsBound = "1";
+  container.addEventListener("change", (event) => {
+    const input = event.target;
+    if (!(input instanceof HTMLInputElement) || !input.matches("[data-layer-toggle]")) {
+      return;
+    }
+    const layerId = input.dataset.layerToggle;
+    if (input.dataset.layerToggleKind === "overlay") {
+      state.overlayLayers[layerId] = input.checked;
+      updateDataLayerMenu();
+      if (layerId === "eez") {
+        if (input.checked) {
+          reloadEezLayer().catch((err) => console.error("EEZ overlay failed", err));
+        } else {
+          syncEezLayer();
+        }
+      }
+      return;
+    }
+    selectDataLayer(layerId).catch((err) => setStatus(err.message, true));
+  });
+  container.addEventListener("click", (event) => {
+    const button = event.target instanceof Element ? event.target.closest(".layer-settings-toggle") : null;
+    if (!button) return;
+    event.stopPropagation();
+    toggleLayerSettings({ currentTarget: button });
   });
 }
 
@@ -126,17 +292,27 @@ function setLayerSettingsModal(layerId, open) {
     return;
   }
 
-  const labels = {
-    gfw: ["GFW 漁業網格", "網格圖層顯示控制。"],
-    ais: ["AIS 船舶位置", "即時 AIS 來源與顯示控制。"],
-    eez: ["EEZ 經濟海域邊界", "海事邊界圖層控制。"],
-  };
-  const [title, subtitle] = labels[layerId] || ["圖層設定", "調整所選地圖圖層。"];
-  $("layer-settings-title").textContent = title;
-  $("layer-settings-subtitle").textContent = subtitle;
+  const contract = layerContractById(layerId);
+  $("layer-settings-title").textContent = contract?.label || layerLabel(layerId);
+  $("layer-settings-subtitle").textContent = contract?.detail || contract?.source_config_path || "";
 
+  const panelKind = layerSettingsPanelKind(layerId);
   for (const panel of document.querySelectorAll("[data-layer-settings-panel]")) {
-    panel.hidden = panel.dataset.layerSettingsPanel !== layerId;
+    panel.hidden = panel.dataset.layerSettingsPanel !== panelKind;
+  }
+  if (panelKind === "sampled-grid") {
+    const alphaInput = document.querySelector('[data-layer-settings-panel="sampled-grid"] .alpha-slider');
+    if (alphaInput) {
+      if (state.layerAlpha[layerId] === undefined) {
+        const defaultAlpha = Number(state.sampledGridPaint?.alpha ?? (alphaInput.defaultValue || alphaInput.value));
+        state.layerAlpha[layerId] = Number.isFinite(defaultAlpha) ? defaultAlpha : 1;
+      }
+      alphaInput.dataset.alphaLayer = layerId;
+      alphaInput.value = String(state.layerAlpha[layerId]);
+    }
+    if (typeof syncSampledGridPaintControls === "function") {
+      syncSampledGridPaintControls(layerId);
+    }
   }
 }
 
@@ -166,24 +342,35 @@ function bindLayerSettingsModalControls() {
   });
 }
 
+async function selectDatasetForLayer(layerId) {
+  const id = String(layerId || "").trim().toLowerCase();
+  const match = Object.entries(state.datasets || {}).find(([, dataset]) => (
+    String(dataset.layer_id || "").trim().toLowerCase() === id
+  ));
+  if (!match || match[0] === state.datasetId) return;
+  await selectDataset(match[0], { reload: false });
+}
+
 async function selectDataLayer(layerId) {
-  if (!["gfw", "ais"].includes(layerId)) {
-    updateDataLayerMenu();
-    return;
-  }
-  if (!isImportedLayer(layerId)) {
+  const id = String(layerId || "").trim().toLowerCase();
+  if (!isImportedLayer(id) || !isPrimaryDataLayer(id)) {
     updateDataLayerMenu();
     return;
   }
   stopPlayback();
-  state.dataLayer = state.dataLayer === layerId ? null : layerId;
+  if (state.dataLayer === id) {
+    state.dataLayer = null;
+  } else {
+    await selectDatasetForLayer(id);
+    state.dataLayer = id;
+  }
   updateDataLayerMenu();
   $("data-layer-menu").open = false;
   if (state.dataLayer !== "ais") {
     removeAisLayer();
   }
-  if (state.dataLayer !== "gfw") {
-    removeGfwLayer();
+  if (!isSampledGridLayer(state.dataLayer)) {
+    removeSampledGridLayer();
   }
   await reloadActiveLayer();
 }
@@ -196,6 +383,8 @@ function syncLayerOrderFromDom() {
 function bindLayerOrderDrag() {
   let draggedItem = null;
   for (const item of layerItems()) {
+    if (item.dataset.layerOrderBound === "1") continue;
+    item.dataset.layerOrderBound = "1";
     const handle = item.querySelector(".drag-handle");
     item.draggable = false;
     if (handle) {
@@ -208,7 +397,6 @@ function bindLayerOrderDrag() {
       });
     }
     for (const control of item.querySelectorAll("input, select, button, label, .layer-settings")) {
-      control.addEventListener("click", (event) => event.stopPropagation());
       control.addEventListener("dragstart", (event) => event.stopPropagation());
     }
     item.addEventListener("dragstart", (event) => {

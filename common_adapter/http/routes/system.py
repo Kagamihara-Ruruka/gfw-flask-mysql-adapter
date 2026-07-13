@@ -6,6 +6,7 @@ from typing import Any
 from flask import Flask, jsonify, render_template
 
 from common_adapter.db.connect import dataset_backend_info, mysql_connection
+from common_adapter.layers.runtime import database_datasets_from_mappings
 from common_adapter.render.capability import server_render_capability
 from common_adapter.spatial.overlay import elapsed_ms
 
@@ -31,22 +32,29 @@ class SystemRoutes:
         def health():
             started = time.perf_counter()
             try:
-                default_dataset = config["datasets"][config.get("default_dataset")]
-                backend_kind, connection_ref, connection = dataset_backend_info(config, default_dataset)
+                datasets, mapping_errors = database_datasets_from_mappings(config)
+                configured_default = str(config.get("default_dataset") or "")
+                default_dataset_id = configured_default if configured_default in datasets else next(iter(datasets), None)
                 ok = True
                 db_ping_ms = None
-                if backend_kind == "mysql":
-                    database = default_dataset.get("database") or connection["database"]
-                    with mysql_connection(config, database, dict_cursor=True, connection=connection) as conn, conn.cursor() as cur:
-                        cur.execute("SELECT 1 AS ok")
-                        ok = cur.fetchone()["ok"] == 1
-                    db_ping_ms = elapsed_ms(started)
+                backend_packet = None
+                if default_dataset_id is not None:
+                    default_dataset = datasets[default_dataset_id]
+                    backend_kind, connection_ref, connection = dataset_backend_info(config, default_dataset)
+                    backend_packet = {"kind": backend_kind, "connection_ref": connection_ref}
+                    if backend_kind == "mysql":
+                        database = default_dataset.get("database") or connection["database"]
+                        with mysql_connection(config, database, dict_cursor=True, connection=connection) as conn, conn.cursor() as cur:
+                            cur.execute("SELECT 1 AS ok")
+                            ok = cur.fetchone()["ok"] == 1
+                        db_ping_ms = elapsed_ms(started)
                 return jsonify(
                     {
                         "status": "ok" if ok else "degraded",
                         "backend": config.get("sql_backend", {"kind": "mysql", "driver": "pymysql"}),
-                        "default_dataset_backend": {"kind": backend_kind, "connection_ref": connection_ref},
-                        "datasets": sorted(config["datasets"].keys()),
+                        "default_dataset_backend": backend_packet,
+                        "datasets": sorted(datasets.keys()),
+                        "mapping_errors": mapping_errors,
                         "timing": {"db_ping_ms": db_ping_ms},
                     }
                 )

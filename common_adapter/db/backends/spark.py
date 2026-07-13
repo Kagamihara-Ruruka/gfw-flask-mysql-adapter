@@ -28,6 +28,7 @@ class SparkReadBackend:
         limit: int,
         offset: int,
         column_profile: str | None = None,
+        query_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         raise UnsupportedBackendOperation(
             "spark",
@@ -43,6 +44,7 @@ class SparkReadBackend:
         bbox: tuple[float, float, float, float] | None,
         limit: int,
         column_profile: str | None = None,
+        query_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         raise UnsupportedBackendOperation(
             "spark",

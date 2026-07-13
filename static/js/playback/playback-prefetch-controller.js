@@ -13,7 +13,6 @@ const PlaybackPrefetchController = (() => {
 
   function shouldQueue({
     options,
-    isBackgroundPreloading = false,
     dates,
     startIndex = null,
     currentDate = "",
@@ -22,7 +21,7 @@ const PlaybackPrefetchController = (() => {
     intervalMs,
     rate,
   } = {}) {
-    if (options?.mode !== "progressive" || isBackgroundPreloading) {
+    if (options?.mode !== "progressive") {
       return { shouldQueue: false, index: -1, anchorDate: "" };
     }
     const index = targetIndex({ dates, startIndex, currentDate });
@@ -37,7 +36,7 @@ const PlaybackPrefetchController = (() => {
     });
     const ready = cacheService.countReadyPrefix(dates, index, requestContext);
     return {
-      shouldQueue: ready <= policy.resume,
+      shouldQueue: ready <= policy.lowWatermark,
       index,
       anchorDate: anchorDate({ dates, startIndex, currentDate }),
       policy,

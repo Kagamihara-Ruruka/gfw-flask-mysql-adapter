@@ -1,14 +1,22 @@
 const PlaybackCacheService = (() => {
-  const CACHE_LAYER_IDS = new Set(["gfw"]);
   const BYTES_PER_GB = 1024 * 1024 * 1024;
+  const STARTUP_RENDERABLE_FRAME_COUNT = 1;
   let backgroundPreloadRun = null;
   let backgroundPreloadSignature = "";
+  let backgroundPreloadScopeSignature = "";
+  let pendingBackgroundPreload = null;
   let backgroundPreloadVersion = 0;
   let activeBackgroundPreloadVersion = 0;
   const failedRequests = new Map();
 
+  function recordCache() {
+    if (typeof SampledGridRecordCache !== "undefined") return SampledGridRecordCache;
+    if (typeof GfwRecordCache !== "undefined") return GfwRecordCache;
+    return null;
+  }
+
   function isEnabledForCurrentLayer() {
-    return CACHE_LAYER_IDS.has(state.dataLayer);
+    return typeof isSampledGridLayer === "function" && isSampledGridLayer(state.dataLayer);
   }
 
   function layerLabel() {
@@ -17,8 +25,12 @@ const PlaybackCacheService = (() => {
 
   function options() {
     const rawConcurrency = state.playbackCache?.concurrency ?? "auto";
+    const mode = state.playbackCache?.mode === "before_play" ? "before_play" : "progressive";
+    if (state.playbackCache && state.playbackCache.mode !== mode) {
+      state.playbackCache.mode = mode;
+    }
     return {
-      mode: state.playbackCache?.mode || "progressive",
+      mode,
       concurrency: rawConcurrency,
       resolvedConcurrency: PlaybackWorkerPolicy.resolve(rawConcurrency, { task: "prefetch" }),
       concurrencyLabel: PlaybackWorkerPolicy.label(rawConcurrency, { task: "prefetch" }),
@@ -27,7 +39,7 @@ const PlaybackCacheService = (() => {
       windowAhead: Math.max(1, Number(state.playbackCache?.windowAhead ?? 8)),
       maxGb: Math.max(
         0.25,
-        Number(state.gfwRecordCache?.maxBytes || 2 * BYTES_PER_GB) / BYTES_PER_GB,
+        Number(state.sampledGridRecordCache?.maxBytes || 2 * BYTES_PER_GB) / BYTES_PER_GB,
       ),
     };
   }
@@ -42,8 +54,8 @@ const PlaybackCacheService = (() => {
 
   function statusText() {
     const stats = state.playbackCache?.stats || {};
-    const cacheStats = state.gfwRecordCache?.stats || {};
-    const cacheLimit = cacheStats.cacheLimitBytes || state.gfwRecordCache?.maxBytes;
+    const cacheStats = state.sampledGridRecordCache?.stats || {};
+    const cacheLimit = cacheStats.cacheLimitBytes || state.sampledGridRecordCache?.maxBytes;
     const cacheText = `快取容量：${formatBytes(cacheStats.cacheBytes)} / ${formatBytes(cacheLimit)}`;
     const total = Number(stats.queued || 0);
     if (state.playbackCache?.isPreheating) {
@@ -58,13 +70,24 @@ const PlaybackCacheService = (() => {
     return `待命：${cacheText}`;
   }
 
-  function requestForDate(date, { bbox, datasetId, limit, columns = "render" } = {}) {
+  function requestForDate(date, {
+    bbox,
+    datasetId,
+    limit,
+    columns = "render",
+    resolution,
+    zoom,
+    latitude,
+  } = {}) {
     return {
       datasetId,
       date,
       bbox,
       limit,
       columns,
+      resolution,
+      zoom,
+      latitude,
     };
   }
 
@@ -72,8 +95,15 @@ const PlaybackCacheService = (() => {
     return (Array.isArray(dates) ? dates : []).map((date) => requestForDate(date, context));
   }
 
-  function requestFailureKey({ datasetId, date, bbox, limit, columns } = {}) {
-    return [datasetId || "", date || "", bbox || "", limit == null ? "" : String(limit), columns || "render"].join("|");
+  function requestFailureKey({ datasetId, date, bbox, limit, columns, resolution } = {}) {
+    return [
+      datasetId || "",
+      date || "",
+      bbox || "",
+      limit == null ? "" : String(limit),
+      columns || "render",
+      resolution == null ? "auto" : String(resolution),
+    ].join("|");
   }
 
   function failureMessage(error) {
@@ -104,7 +134,7 @@ const PlaybackCacheService = (() => {
   function hasDate(date, context) {
     if (!date || !context) return false;
     const request = requestForDate(date, context);
-    const hasPacket = Boolean(GfwRecordCache.hasPacket?.(request));
+    const hasPacket = Boolean(recordCache()?.hasPacket?.(request));
     if (hasPacket) {
       clearFailure(request);
     }
@@ -215,21 +245,86 @@ const PlaybackCacheService = (() => {
     return selected;
   }
 
+  function startupBufferPlan(dates, { anchorDate = null } = {}) {
+    const allDates = Array.isArray(dates) ? dates : [];
+    if (allDates.length <= 1) {
+      return {
+        anchorIndex: allDates.length ? 0 : -1,
+        nextIndex: -1,
+        required: 0,
+        resume: 0,
+        startupRequired: 0,
+        dates: [...allDates],
+      };
+    }
+    const requestedAnchorIndex = anchorDate ? allDates.indexOf(anchorDate) : 0;
+    const anchorIndex = requestedAnchorIndex >= 0 ? requestedAnchorIndex : 0;
+    const nextIndex = anchorIndex + 1;
+    const remainingDates = Math.max(0, allDates.length - nextIndex);
+    if (remainingDates <= 0) {
+      return {
+        anchorIndex,
+        nextIndex: -1,
+        required: 0,
+        resume: 0,
+        startupRequired: 0,
+        dates: [allDates[anchorIndex]],
+      };
+    }
+    const policy = bufferPolicy({
+      intervalMs: state.playIntervalMs,
+      rate: state.playbackRate,
+      remainingDates,
+    });
+    const startupRequired = Math.min(remainingDates, STARTUP_RENDERABLE_FRAME_COUNT);
+    return {
+      ...policy,
+      anchorIndex,
+      nextIndex,
+      startupRequired,
+      dates: allDates.slice(anchorIndex, anchorIndex + startupRequired + 1),
+    };
+  }
+
+  function startupReadiness(dates, { anchorDate = null, requestContext = null } = {}) {
+    const plan = startupBufferPlan(dates, { anchorDate });
+    const ready = plan.nextIndex >= 0 && requestContext
+      ? countReadyPrefix(dates, plan.nextIndex, requestContext)
+      : 0;
+    return {
+      ...plan,
+      ready,
+      isReady: plan.startupRequired <= 0 || ready >= plan.startupRequired,
+    };
+  }
+
   function selectedPreheatDates(dates, { anchorDate = null, mode = "progressive", blocking = false } = {}) {
     if (mode === "before_play" && blocking) {
       return selectFullPlaybackDates(dates, { anchorDate });
     }
+    if (mode === "progressive" && blocking) {
+      return startupBufferPlan(dates, { anchorDate }).dates;
+    }
     return selectPlaybackWindowDates(dates, { anchorDate });
   }
 
-  function preloadSignature({ mode, background, dates, bbox, datasetId, limit, columns }) {
+  function preloadScopeSignature({ datasetId, bbox, limit, columns, resolution, zoom, latitude }) {
     return [
-      mode,
-      background ? "background" : "blocking",
       datasetId,
       bbox,
       limit,
       columns || "render",
+      resolution == null ? "auto" : resolution,
+      zoom == null ? "auto" : zoom,
+      latitude == null ? "auto" : latitude,
+    ].join("|");
+  }
+
+  function preloadSignature({ mode, background, dates, bbox, datasetId, limit, columns, resolution, zoom, latitude }) {
+    return [
+      mode,
+      background ? "background" : "blocking",
+      preloadScopeSignature({ datasetId, bbox, limit, columns, resolution, zoom, latitude }),
       dates.join(","),
     ].join("|");
   }
@@ -247,9 +342,12 @@ const PlaybackCacheService = (() => {
   function cancelBackground() {
     backgroundPreloadRun = null;
     backgroundPreloadSignature = "";
+    backgroundPreloadScopeSignature = "";
+    pendingBackgroundPreload = null;
     backgroundPreloadVersion += 1;
     activeBackgroundPreloadVersion = 0;
     state.playbackCache.isBackgroundPreloading = false;
+    recordCache()?.cancelPrefetch?.();
     failedRequests.clear();
   }
 
@@ -277,7 +375,7 @@ const PlaybackCacheService = (() => {
 
   function resolveRangeRequest({ intent, dates, bbox, datasetId, limit, anchorDate } = {}) {
     if (intent && typeof RenderIntentService !== "undefined") {
-      return RenderIntentService.toGfwRangeRequest(intent);
+      return RenderIntentService.toSampledGridRangeRequest(intent);
     }
     return {
       dates: Array.isArray(dates) ? dates : [],
@@ -291,12 +389,12 @@ const PlaybackCacheService = (() => {
 
   async function preheat({ intent, dates, bbox, datasetId, limit, anchorDate, blocking = true, onStateChange } = {}) {
     const cacheOptions = options();
-    if (cacheOptions.mode === "off" || !isEnabledForCurrentLayer()) {
+    if (!isEnabledForCurrentLayer()) {
       return true;
     }
 
     const resolved = resolveRangeRequest({ intent, dates, bbox, datasetId, limit, anchorDate });
-    const background = cacheOptions.mode === "progressive" || !blocking;
+    const background = !blocking;
     const preheatDates = selectedPreheatDates(resolved.dates, {
       anchorDate: resolved.anchorDate,
       mode: cacheOptions.mode,
@@ -312,6 +410,9 @@ const PlaybackCacheService = (() => {
       limit: resolved.limit,
       anchorDate: resolved.anchorDate,
       columns: resolved.columns || "render",
+      resolution: resolved.resolution,
+      zoom: resolved.zoom,
+      latitude: resolved.latitude,
     };
     const requests = requestsForDates(preheatDates, requestContext);
     const label = layerLabel();
@@ -324,8 +425,34 @@ const PlaybackCacheService = (() => {
       datasetId: resolved.datasetId,
       limit: resolved.limit,
       columns: requestContext.columns,
+      resolution: requestContext.resolution,
+      zoom: requestContext.zoom,
+      latitude: requestContext.latitude,
     });
-    if (background && backgroundPreloadRun && backgroundPreloadSignature === signature) {
+    const scopeSignature = preloadScopeSignature({
+      datasetId: resolved.datasetId,
+      bbox: resolved.bbox,
+      limit: resolved.limit,
+      columns: requestContext.columns,
+      resolution: requestContext.resolution,
+      zoom: requestContext.zoom,
+      latitude: requestContext.latitude,
+    });
+    if (background && backgroundPreloadRun) {
+      if (backgroundPreloadSignature === signature) return true;
+      pendingBackgroundPreload = {
+        intent,
+        dates,
+        bbox,
+        datasetId,
+        limit,
+        anchorDate,
+        blocking: false,
+        onStateChange,
+      };
+      if (backgroundPreloadScopeSignature !== scopeSignature) {
+        recordCache()?.cancelPrefetch?.();
+      }
       return true;
     }
     if (!background && backgroundPreloadRun) {
@@ -339,6 +466,7 @@ const PlaybackCacheService = (() => {
     if (background) {
       backgroundPreloadVersion = runVersion;
       activeBackgroundPreloadVersion = runVersion;
+      backgroundPreloadScopeSignature = scopeSignature;
       state.playbackCache.isBackgroundPreloading = true;
     } else {
       state.playbackCache.isPreheating = true;
@@ -347,18 +475,25 @@ const PlaybackCacheService = (() => {
     onStateChange?.();
     setStatus(`正在預熱 ${label} 播放快取 0 / ${requests.length}`);
 
+    const cache = recordCache();
+    if (!cache) {
+      throw new Error("取樣網格快取尚未載入");
+    }
     const useRangePrefetch = cacheOptions.mode === "before_play"
       && blocking
-      && typeof GfwRecordCache.prefetchRange === "function";
+      && typeof cache.prefetchRange === "function";
     const prefetch = useRangePrefetch
-      ? GfwRecordCache.prefetchRange.bind(GfwRecordCache, {
+      ? cache.prefetchRange.bind(cache, {
         dates: preheatDates,
         bbox: resolved.bbox,
         datasetId: resolved.datasetId,
         limit: resolved.limit,
         columns: requestContext.columns,
+        resolution: requestContext.resolution,
+        zoom: requestContext.zoom,
+        latitude: requestContext.latitude,
       })
-      : GfwRecordCache.prefetchRequests.bind(GfwRecordCache, requests);
+      : cache.prefetchRequests.bind(cache, requests);
     const run = prefetch({
       concurrency: cacheOptions.resolvedConcurrency,
       onProgress: (event) => {
@@ -370,22 +505,30 @@ const PlaybackCacheService = (() => {
       },
     }).finally(() => {
       if (background && activeBackgroundPreloadVersion !== runVersion) return;
-      if (background) {
-        state.playbackCache.isBackgroundPreloading = false;
-      } else {
+      if (!background) {
         state.playbackCache.isPreheating = false;
       }
       if (backgroundPreloadRun === run) {
         backgroundPreloadRun = null;
         backgroundPreloadSignature = "";
+        backgroundPreloadScopeSignature = "";
         activeBackgroundPreloadVersion = 0;
+      }
+      if (background) {
+        const pending = pendingBackgroundPreload;
+        pendingBackgroundPreload = null;
+        if (pending) {
+          Promise.resolve().then(() => preheat(pending)).catch((err) => setStatus(err.message, true));
+        } else {
+          state.playbackCache.isBackgroundPreloading = false;
+        }
       }
       onStateChange?.();
       const stats = state.playbackCache.stats;
       setStatus(`${label} 播放快取預熱完成 ${stats.completed} / ${stats.queued}`);
     });
 
-    if (cacheOptions.mode === "progressive" || !blocking) {
+    if (background) {
       backgroundPreloadRun = run;
       backgroundPreloadSignature = signature;
       run.catch((err) => {
@@ -418,6 +561,8 @@ const PlaybackCacheService = (() => {
     selectFullPlaybackDates,
     selectPlaybackWindowDates,
     setBufferState,
+    startupBufferPlan,
+    startupReadiness,
     statusText,
   };
 })();

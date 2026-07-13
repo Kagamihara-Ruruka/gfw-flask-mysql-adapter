@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import time
 from pathlib import Path
@@ -14,6 +15,7 @@ from common_adapter.ais.ingest import (
     ais_ingest_should_start,
     ais_sql_locked_packet,
     ais_sql_read_allowed,
+    apply_ais_collector_handoff,
     get_ais_ingest_status,
     remove_ais_collector_handoff,
     write_ais_collector_handoff,
@@ -111,10 +113,11 @@ class LiveRoutes:
         @app.get("/api/live/ais/diagnostics")
         def ais_diagnostics():
             try:
-                settings = ais_stream_settings(config)
+                diagnostic_config = apply_ais_collector_handoff(copy.deepcopy(config))
+                settings = ais_stream_settings(diagnostic_config)
                 if settings["provider"] != "aisstream":
                     if settings["provider"] == "aishub_polling":
-                        packet = probe_aishub(config, bbox=parse_bbox(request.args.get("bbox")))
+                        packet = probe_aishub(diagnostic_config, bbox=parse_bbox(request.args.get("bbox")))
                         return jsonify(packet)
                     return jsonify(
                         {

@@ -28,6 +28,7 @@ class HiveReadBackend:
         limit: int,
         offset: int,
         column_profile: str | None = None,
+        query_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         raise UnsupportedBackendOperation(
             "hive",
@@ -43,6 +44,7 @@ class HiveReadBackend:
         bbox: tuple[float, float, float, float] | None,
         limit: int,
         column_profile: str | None = None,
+        query_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         raise UnsupportedBackendOperation(
             "hive",

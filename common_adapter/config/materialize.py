@@ -99,8 +99,6 @@ def _dataset_layer_id(dataset_id: str, dataset: dict[str, Any]) -> str:
     configured = str(dataset.get("data_layer") or dataset.get("layer_id") or "").strip().lower()
     if configured:
         return configured
-    if dataset_id.lower().startswith("gfw"):
-        return "gfw"
     return dataset_id.strip().lower()
 
 
@@ -160,6 +158,7 @@ def _mapping_from_dataset(config_ref: str, route_config: dict[str, Any], dataset
         "backend": str(dataset.get("backend") or route_config.get("sql_backend", {}).get("kind") or "mysql").strip().lower(),
         "database": database,
         "table": table,
+        "dataset_id": dataset_id.strip().lower(),
         "layer_id": layer_id,
         "label": str(dataset.get("label") or dataset_id),
         "roles": roles,

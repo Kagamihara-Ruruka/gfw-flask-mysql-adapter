@@ -6,7 +6,6 @@
     setMessage: setDeveloperMessage,
     sanitizeIdentifier,
     sanitizeFilename,
-    commaList,
   } = window.DeveloperUtils;
 
   let wizardStep = 1;
@@ -59,22 +58,11 @@
     return port;
   }
 
-  function wizardMaxLimitValue() {
-    const value = String(wizardValue("wizard-max-limit") || "").trim().toLowerCase();
-    if (!value || value === "max" || value === "all" || value === "unbounded" || value === "null") {
-      return null;
-    }
-    const parsed = Number.parseInt(value, 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-  }
-
   function buildWizardConfig() {
     const kind = wizardBackendKind();
     const driver = sanitizeIdentifier(wizardValue("wizard-driver"), wizardDefaultForKind(kind).driver);
     const connectionRef = sanitizeIdentifier(wizardValue("wizard-connection-ref"), wizardDefaultForKind(kind).connectionRef);
     const database = sanitizeIdentifier(wizardValue("wizard-database"), "common_adapter");
-    const table = sanitizeIdentifier(wizardValue("wizard-table"), "dataset_table");
-    const datasetId = sanitizeIdentifier(wizardValue("wizard-dataset-id"), "dataset_main");
     const connection = {
       kind,
       driver,
@@ -84,64 +72,15 @@
       password: wizardValue("wizard-password"),
       database,
     };
-    const displayColumns = commaList(wizardValue("wizard-display-columns"));
-    const dataset = {
-      label: wizardValue("wizard-dataset-label") || datasetId,
-      backend: kind,
-      connection_ref: connectionRef,
-      table,
-      time_column: sanitizeIdentifier(wizardValue("wizard-time-column"), "obs_date"),
-      lat_column: sanitizeIdentifier(wizardValue("wizard-lat-column"), "lat"),
-      lon_column: sanitizeIdentifier(wizardValue("wizard-lon-column"), "lon"),
-      id_column: sanitizeIdentifier(wizardValue("wizard-id-column"), "grid_id"),
-      display_columns: displayColumns.length ? displayColumns : ["obs_date", "grid_id", "lat", "lon"],
-      metric_columns: commaList(wizardValue("wizard-metric-columns")),
-      category_columns: commaList(wizardValue("wizard-category-columns")),
-    };
-    if (kind === "mysql") {
-      dataset.duckdb_source_table = table;
-      dataset.mysql_table = table;
-    }
-    const config = {
+    return {
+      schema: "rrkal.adapter.database.v1",
+      role: "database",
       sql_backend: { kind, driver },
       default_connection_ref: connectionRef,
       connections: {
         [connectionRef]: connection,
       },
-      query_policy: {
-        default_limit: null,
-        max_limit: wizardMaxLimitValue(),
-        table_preview_limit: 300,
-        require_time_or_bbox_filter: true,
-      },
-      server: {
-        default_command: "serve",
-        host: "127.0.0.1",
-        port: 5057,
-        debug: false,
-        kill_port_if_busy: true,
-      },
-      rendering: {
-        hardware_acceleration: "auto",
-        allow_webgl: true,
-        allow_webgpu: false,
-        min_webgl_rows: 1,
-      },
-      default_dataset: datasetId,
-      datasets: {
-        [datasetId]: dataset,
-      },
     };
-    if (kind === "mysql") {
-      config.mysql = {
-        host: connection.host,
-        port: connection.port,
-        user: connection.user,
-        password: connection.password,
-        database: connection.database,
-      };
-    }
-    return config;
   }
 
   function updateWizardPreview() {
@@ -165,10 +104,10 @@
       prev.disabled = wizardStep === 1;
     }
     if (next) {
-      setElementHidden(next, wizardStep === 4);
+      setElementHidden(next, wizardStep === 3);
     }
     if (importButton) {
-      setElementHidden(importButton, wizardStep !== 4);
+      setElementHidden(importButton, wizardStep !== 3);
     }
     updateWizardPreview();
   }
@@ -221,7 +160,7 @@
       renderWizardStep();
     });
     developerElement("wizard-next")?.addEventListener("click", () => {
-      wizardStep = Math.min(4, wizardStep + 1);
+      wizardStep = Math.min(3, wizardStep + 1);
       renderWizardStep();
     });
     developerElement("wizard-import")?.addEventListener("click", () => {

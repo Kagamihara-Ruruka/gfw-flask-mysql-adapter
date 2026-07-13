@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import threading
 import time
@@ -597,10 +598,26 @@ def get_ais_ingest_status(config: dict[str, Any] | None = None) -> dict[str, Any
     else:
         status = worker.status()
     if config is not None:
-        status["enabled"] = ais_ingest_should_start(config)
-        status["store"] = ais_latest_store_status(config)
-        status["key_gate"] = ais_collector_key_gate_status(config)
-        status["handoff"] = ais_collector_handoff_status(config)
+        effective_config = apply_ais_collector_handoff(copy.deepcopy(config))
+        status["enabled"] = ais_ingest_should_start(effective_config)
+        status["store"] = ais_latest_store_status(effective_config)
+        gate = ais_collector_key_gate_status(effective_config)
+        status["key_gate"] = gate
+        status["handoff"] = ais_collector_handoff_status(effective_config)
+        if worker is None:
+            collector_status = str(gate.get("collector_status") or "").lower()
+            external_running = bool(gate.get("authorized_sql_read")) and collector_status in {"connected", "ingesting", "running"}
+            status["runner"] = "external_sql_meta" if external_running else "none"
+            if external_running:
+                status["running"] = True
+                status["connected"] = True
+                status["collector_status"] = collector_status
+                status["collector_last_seen_at"] = gate.get("collector_last_seen_at")
+                status["collector_last_seen_age_seconds"] = gate.get("collector_last_seen_age_seconds")
+                status["accepted_messages"] = int(gate.get("accepted_messages") or 0)
+                status["written_rows"] = int(gate.get("written_rows") or 0)
+        else:
+            status["runner"] = "in_process"
     return status
 
 

@@ -54,8 +54,7 @@
                 <ol class="developer-wizard-steps" aria-label="精靈步驟">
                   <li data-wizard-indicator="1">1. 類型</li>
                   <li data-wizard-indicator="2">2. 連線</li>
-                  <li data-wizard-indicator="3">3. 資料集</li>
-                  <li data-wizard-indicator="4">4. 預覽</li>
+                  <li data-wizard-indicator="3">3. 預覽</li>
                 </ol>
 
                 <div class="developer-wizard-stage" data-wizard-step="1">
@@ -117,55 +116,6 @@
                 </div>
 
                 <div class="developer-wizard-stage" data-wizard-step="3" hidden>
-                  <div class="developer-wizard-grid">
-                    <label>
-                      <span>Dataset id</span>
-                      <input id="wizard-dataset-id" type="text" value="dataset_main" spellcheck="false">
-                    </label>
-                    <label>
-                      <span>Dataset 顯示名稱</span>
-                      <input id="wizard-dataset-label" type="text" value="Generated dataset" spellcheck="false">
-                    </label>
-                    <label>
-                      <span>Table / collection</span>
-                      <input id="wizard-table" type="text" value="gold_grid" spellcheck="false">
-                    </label>
-                    <label>
-                      <span>時間欄位</span>
-                      <input id="wizard-time-column" type="text" value="obs_date" spellcheck="false">
-                    </label>
-                    <label>
-                      <span>緯度欄位</span>
-                      <input id="wizard-lat-column" type="text" value="lat" spellcheck="false">
-                    </label>
-                    <label>
-                      <span>經度欄位</span>
-                      <input id="wizard-lon-column" type="text" value="lon" spellcheck="false">
-                    </label>
-                    <label>
-                      <span>ID 欄位</span>
-                      <input id="wizard-id-column" type="text" value="grid_id" spellcheck="false">
-                    </label>
-                    <label>
-                      <span>查詢上限</span>
-                      <input id="wizard-max-limit" type="text" value="max" spellcheck="false">
-                    </label>
-                    <label class="developer-wizard-wide">
-                      <span>顯示欄位（逗號分隔）</span>
-                      <input id="wizard-display-columns" type="text" value="obs_date,grid_id,lat,lon" spellcheck="false">
-                    </label>
-                    <label>
-                      <span>數值欄位</span>
-                      <input id="wizard-metric-columns" type="text" value="" spellcheck="false">
-                    </label>
-                    <label>
-                      <span>分類欄位</span>
-                      <input id="wizard-category-columns" type="text" value="" spellcheck="false">
-                    </label>
-                  </div>
-                </div>
-
-                <div class="developer-wizard-stage" data-wizard-step="4" hidden>
                   <label class="developer-note-field">
                     <span>使用者註記</span>
                     <textarea id="wizard-note" rows="2" maxlength="500" placeholder="例如：上游 Hive sink、Airflow 測試庫、本機 PostgreSQL 空間資料。"></textarea>
@@ -265,7 +215,6 @@
                       <h3>Config 檢視器</h3>
                       <p id="developer-config-editor-meta">尚未選取 config。</p>
                     </div>
-                    <span id="developer-config-parse-badge" class="developer-status-badge is-idle">待命</span>
                   </header>
                   <div class="developer-editor-toolbar">
                     <select id="developer-config-group-select" class="developer-config-group-select" hidden aria-label="選擇 config 所屬群組"></select>
@@ -318,14 +267,15 @@
                             <th>Config</th>
                             <th>Provider</th>
                             <th>Endpoint</th>
-                            <th>啟用</th>
                             <th>設定</th>
+                            <th>Pipeline</th>
+                            <th>啟用</th>
                             <th>細節</th>
                           </tr>
                         </thead>
                         <tbody id="developer-websocket-status-body">
                           <tr>
-                            <td colspan="6">等待 WebSocket 狀態資料。</td>
+                            <td colspan="7">等待 WebSocket 狀態資料。</td>
                           </tr>
                         </tbody>
                       </table>
@@ -438,7 +388,7 @@
   <script src="/static/js/ui/developer/developer-config-list.js?v=endpoint-source-v79"></script>
   <script src="/static/js/ui/developer/developer-status-table.js?v=config-drawer-centered-v34"></script>
   <script src="/static/js/ui/developer/developer-mapping-controller.js?v=config-drawer-centered-v34"></script>
-  <script src="/static/js/ui/developer/developer-status-machines.js?v=endpoint-source-v79"></script>
+  <script src="/static/js/ui/developer/developer-status-machines.js?v=ais-pipeline-state-v80"></script>
   <script src="/static/js/ui/developer/developer-import.js?v=config-drawer-centered-v34"></script>
   <script src="/static/js/ui/developer/developer-wizard.js?v=config-drawer-centered-v34"></script>
   <script src="/static/js/ui/developer/developer-source-group-selector.js?v=config-source-selector-v35"></script>

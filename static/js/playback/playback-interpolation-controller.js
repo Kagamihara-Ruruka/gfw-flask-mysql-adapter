@@ -5,16 +5,9 @@ const PlaybackInterpolationController = (() => {
     return MODES.has(value) ? value : "layer_crossfade";
   }
 
-  function normalizeTargetFps(value) {
-    const parsed = Number(value);
-    if (!Number.isFinite(parsed)) return 24;
-    return Math.min(60, Math.max(12, Math.round(parsed)));
-  }
-
   function ensureState(targetState) {
     targetState.playbackInterpolation = targetState.playbackInterpolation || {};
     targetState.playbackInterpolation.mode = normalizeMode(targetState.playbackInterpolation.mode);
-    targetState.playbackInterpolation.targetFps = normalizeTargetFps(targetState.playbackInterpolation.targetFps);
     return targetState.playbackInterpolation;
   }
 
@@ -22,20 +15,12 @@ const PlaybackInterpolationController = (() => {
     const interpolation = ensureState(targetState);
     return {
       mode: normalizeMode(interpolation.mode),
-      targetFps: normalizeTargetFps(interpolation.targetFps),
-      dataBlendAvailable: false,
     };
   }
 
   function setMode(targetState, mode) {
     const interpolation = ensureState(targetState);
     interpolation.mode = normalizeMode(mode);
-    return options(targetState);
-  }
-
-  function setTargetFps(targetState, targetFps) {
-    const interpolation = ensureState(targetState);
-    interpolation.targetFps = normalizeTargetFps(targetFps);
     return options(targetState);
   }
 
@@ -54,7 +39,6 @@ const PlaybackInterpolationController = (() => {
     options,
     playbackTransitionMs,
     setMode,
-    setTargetFps,
   };
 })();
 

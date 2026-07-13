@@ -1,10 +1,42 @@
+const EezPolTypeStyle = Object.freeze({
+  normal: Object.freeze({ colorKey: "fillColor" }),
+  disputed: Object.freeze({ colorKey: "disputed", fallbackColor: "#ef5b5b" }),
+  joint: Object.freeze({ colorKey: "joint", fallbackColor: "#f5a524" }),
+  other: Object.freeze({ colorKey: "other", fallbackColor: "#94a3b8" }),
+});
+
+function eezPolTypeKind(properties = {}) {
+  const polType = String(properties.pol_type || properties.POL_TYPE || "").trim().toLowerCase();
+  if (polType === "overlapping claim") return "disputed";
+  if (polType === "joint regime") return "joint";
+  if (polType === "200nm") return "normal";
+  return "other";
+}
+
+function eezFillPaint(properties = {}) {
+  const kind = eezPolTypeKind(properties);
+  const style = EezPolTypeStyle[kind] || EezPolTypeStyle.other;
+  const baseOpacity = Number(state.eezPaint.fillOpacity);
+  return {
+    kind,
+    fillColor: eezPolTypeFillColor(kind, style),
+    fillOpacity: Math.min(0.28, Math.max(0, Number.isFinite(baseOpacity) ? baseOpacity : 0.08)),
+  };
+}
+
+function eezPolTypeFillColor(kind, style) {
+  if (kind === "normal") return state.eezPaint.fillColor;
+  return state.eezPaint.polTypeColors?.[style.colorKey] || style.fallbackColor || state.eezPaint.fillColor;
+}
+
 function eezStyle(feature) {
+  const fillPaint = eezFillPaint(feature?.properties || {});
   return {
     color: state.eezPaint.boundaryColor,
     weight: 2.4,
     opacity: state.eezPaint.boundaryOpacity,
-    fillColor: state.eezPaint.fillColor,
-    fillOpacity: state.eezPaint.fillOpacity,
+    fillColor: fillPaint.fillColor,
+    fillOpacity: fillPaint.fillOpacity,
   };
 }
 
@@ -19,14 +51,15 @@ function eezPopup(feature) {
 }
 
 function eezVectorTileStyle(properties, zoom) {
+  const fillPaint = eezFillPaint(properties);
   return {
     stroke: false,
     color: "transparent",
     weight: 0,
     opacity: 0,
     fill: true,
-    fillColor: state.eezPaint.fillColor,
-    fillOpacity: state.eezPaint.fillOpacity,
+    fillColor: fillPaint.fillColor,
+    fillOpacity: fillPaint.fillOpacity,
   };
 }
 
@@ -78,14 +111,14 @@ function hasActiveEezVectorTiles() {
 }
 
 function markEezTilesUpdating(reason = "瓦片更新中") {
-  if (!$("eez-toggle").checked || !hasActiveEezVectorTiles()) return false;
+  if (!$("eez-toggle")?.checked || !hasActiveEezVectorTiles()) return false;
   RenderState.loading("eez", reason);
   TimingMetrics.setText("eez-ms", "更新中");
   return true;
 }
 
 async function refreshEezTileReadiness(reason = "瓦片快取") {
-  if (!$("eez-toggle").checked) {
+  if (!$("eez-toggle")?.checked) {
     TimingMetrics.setText("eez-ms", "關閉");
     RenderState.off("eez", "關閉");
     return;
@@ -114,7 +147,7 @@ async function refreshEezTileReadiness(reason = "瓦片快取") {
 
 function createEezVectorTileLayer(paneName) {
   const rendererFactory = L.canvas?.tile || L.svg.tile;
-  const fillLayer = createEezVectorGrid("/api/overlays/eez/tiles/{z}/{x}/{y}.pbf?v=eez-fill-lod-v6", {
+  const fillLayer = createEezVectorGrid("/api/overlays/eez/tiles/{z}/{x}/{y}.pbf?v=eez-fill-table-v1", {
     pane: paneName,
     rendererFactory,
     maxNativeZoom: 14,
@@ -123,7 +156,7 @@ function createEezVectorTileLayer(paneName) {
       eez: eezVectorTileStyle,
     },
   });
-  const boundaryLayer = createEezVectorGrid("/api/overlays/eez/boundary/tiles/{z}/{x}/{y}.pbf?v=eez-boundary-lod-v6", {
+  const boundaryLayer = createEezVectorGrid("/api/overlays/eez/boundary/tiles/{z}/{x}/{y}.pbf?v=eez-poltype-boundary-v1", {
     pane: paneName,
     rendererFactory,
     maxNativeZoom: 14,
@@ -150,7 +183,7 @@ async function reloadEezLayer(options = {}) {
   const seq = ++state.eezSeq;
   const transaction = RenderState.begin("eez", ["eez"]);
   clearEezLayerForReload();
-  if (!$("eez-toggle").checked) {
+  if (!$("eez-toggle")?.checked) {
     TimingMetrics.setText("eez-ms", "關閉");
     RenderState.off("eez", "關閉");
     return;
@@ -161,18 +194,11 @@ async function reloadEezLayer(options = {}) {
     const staged = createEezVectorTileLayer(paneName);
     staged.layer.addTo(map);
     applyLayerOrder();
+    let tileWaitTimedOut = false;
     try {
       await TimingMetrics.waitForLayers(staged.tileLayers, 8000);
     } catch (err) {
-      if (map.hasLayer(staged.layer)) {
-        map.removeLayer(staged.layer);
-      }
-      if (seq === state.eezSeq) {
-        TimingMetrics.setText("eez-ms", "失敗");
-        RenderState.fail(transaction, "瓦片載入失敗");
-        setStatus(err.message || "EEZ 瓦片載入失敗", true);
-      }
-      return;
+      tileWaitTimedOut = true;
     }
     if (seq !== state.eezSeq || !RenderState.isCurrent(transaction)) {
       if (map.hasLayer(staged.layer)) {
@@ -189,8 +215,8 @@ async function reloadEezLayer(options = {}) {
     setEezPaneVisibility(state.eezActivePane, true);
     TimingMetrics.setMs("eez-ms", timing.elapsed());
     TimingMetrics.updateSummary();
-    RenderState.finish(transaction, { eez: "瓦片就緒" });
-    setStatus("EEZ MVT 瓦片就緒");
+    RenderState.finish(transaction, { eez: tileWaitTimedOut ? "瓦片載入中" : "瓦片就緒" });
+    setStatus(tileWaitTimedOut ? "EEZ MVT 瓦片載入中" : "EEZ MVT 瓦片就緒");
     return;
   }
   setStatus("正在載入 EEZ");
@@ -221,7 +247,7 @@ async function reloadEezLayer(options = {}) {
 }
 
 function syncEezLayer() {
-  if ($("eez-toggle").checked) {
+  if ($("eez-toggle")?.checked) {
     if (!state.eezLayer) {
       RenderState.off("eez", "未載入");
       return;

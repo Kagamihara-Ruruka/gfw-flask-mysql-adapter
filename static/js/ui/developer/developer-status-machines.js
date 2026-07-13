@@ -45,8 +45,9 @@
         { key: "config_path", width: "24%", render: (row) => escapeHtml(row.config_path) },
         { key: "provider", width: "10rem", render: (row) => escapeHtml(row.provider || "-") },
         { key: "endpoint", width: "28%", className: "developer-long-value", render: (row) => escapeHtml(row.endpoint || "-") },
-        { key: "enabled", width: "5rem", className: "developer-status-bit-cell", render: (row) => bitCell(row.enabled) },
         { key: "configured", width: "5rem", className: "developer-status-bit-cell", render: (row) => bitCell(row.configured) },
+        { key: "pipeline_ready", width: "5rem", className: "developer-status-bit-cell", render: (row) => bitCell(row.pipeline_ready) },
+        { key: "enabled", width: "5rem", className: "developer-status-bit-cell", render: (row) => bitCell(row.enabled) },
         { key: "detail", className: "developer-long-value", render: (row) => escapeHtml(row.detail || "") },
       ],
     }).render(rows);

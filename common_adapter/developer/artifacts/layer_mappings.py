@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable
 
@@ -16,6 +17,7 @@ from common_adapter.developer.state.manifest import (
 from common_adapter.spatial.overlay import validate_identifier
 
 MAPPING_LABEL_MAX_LENGTH = 120
+SAMPLED_GRID_CONTRACT = "rrkal.sampled_grid.v1"
 
 
 class LayerMappingStore:
@@ -90,18 +92,42 @@ class LayerMappingStore:
         table = str(value.get("table") or value.get("table_ref") or "").strip()
         database = str(value.get("database") or "").strip()
         layer_id = str(value.get("layer_id") or "").strip().lower()
+        dataset_id = str(value.get("dataset_id") or "").strip().lower()
         label = str(value.get("label") or layer_id or table).strip()
+        sampled_grid = value.get("sampled_grid") if isinstance(value.get("sampled_grid"), dict) else None
+        target_contract = str(value.get("target_contract") or "").strip()
+        is_sampled_grid_catalog = bool(sampled_grid and isinstance(sampled_grid.get("catalog"), dict))
         if not connection_ref:
             raise ValueError("mapping connection_ref is required")
         validate_identifier(connection_ref, "mapping connection_ref")
-        validate_identifier(table, "mapping table")
+        if table:
+            validate_identifier(table, "mapping table")
+        elif not is_sampled_grid_catalog:
+            raise ValueError("mapping table is required")
         if database:
             validate_identifier(database, "mapping database")
         if not DATA_LAYER_ID_PATTERN.match(layer_id):
             raise ValueError("mapping layer_id is invalid")
+        if dataset_id and not DATA_LAYER_ID_PATTERN.match(dataset_id):
+            raise ValueError("mapping dataset_id is invalid")
         roles = value.get("roles") if isinstance(value.get("roles"), dict) else {}
         normalized_roles: dict[str, str] = {}
-        for role in ("time", "lat", "lon", "id"):
+        for role in (
+            "time",
+            "lat",
+            "lon",
+            "id",
+            "value",
+            "resolution",
+            "coverage",
+            "status",
+            "row",
+            "column",
+            "west",
+            "south",
+            "east",
+            "north",
+        ):
             column = str(roles.get(role) or value.get(f"{role}_column") or "").strip()
             if column:
                 validate_identifier(column, f"mapping {role}_column")
@@ -116,7 +142,7 @@ class LayerMappingStore:
         for column in [*display_columns, *metric_columns, *category_columns]:
             if column not in selected_columns:
                 selected_columns.append(column)
-        return {
+        normalized = {
             "mapping_id": str(value.get("mapping_id") or self.mapping_id(config_ref, connection_ref, table, layer_id)),
             "enabled": bool(value.get("enabled", True)),
             "config_path": config_ref,
@@ -124,6 +150,7 @@ class LayerMappingStore:
             "backend": str(value.get("backend") or "mysql").strip().lower(),
             "database": database,
             "table": table,
+            "dataset_id": dataset_id or layer_id,
             "layer_id": layer_id,
             "label": label[:MAPPING_LABEL_MAX_LENGTH],
             "roles": normalized_roles,
@@ -132,6 +159,16 @@ class LayerMappingStore:
             "metric_columns": metric_columns,
             "category_columns": category_columns,
         }
+        if target_contract:
+            normalized["target_contract"] = target_contract
+        elif sampled_grid:
+            normalized["target_contract"] = SAMPLED_GRID_CONTRACT
+        if sampled_grid:
+            normalized["sampled_grid"] = deepcopy(sampled_grid)
+        source_ref = str(value.get("source_ref") or "").strip()
+        if source_ref:
+            normalized["source_ref"] = source_ref
+        return normalized
 
     def upsert(self, mapping: dict[str, Any]) -> dict[str, Any]:
         normalized = self.normalize(mapping)
@@ -141,7 +178,8 @@ class LayerMappingStore:
         self.save({"mappings": rows})
         manifest = load_router_manifest()
         layers = set(normalize_imported_layers(manifest.get("imported_layers")))
-        layers.add(normalized["layer_id"])
+        if not isinstance(normalized.get("sampled_grid", {}).get("catalog"), dict):
+            layers.add(normalized["layer_id"])
         manifest["imported_layers"] = sorted(layers)
         save_router_manifest(manifest)
         return {"status": "ok", "mapping": normalized, "mappings": self.load()["mappings"], "manifest": load_router_manifest()}

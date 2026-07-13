@@ -9,7 +9,7 @@ const PlaybackSnapshotSplitter = (() => {
     return target;
   }
 
-  function splitSync(rows, { dateColumn = "obs_date", dates = [] } = {}) {
+  function splitSync(rows, { dateColumn = "date", dates = [] } = {}) {
     const allowed = Array.isArray(dates) && dates.length ? new Set(dates) : null;
     const snapshots = {};
     for (const row of rows || []) {
@@ -64,7 +64,7 @@ const PlaybackSnapshotSplitter = (() => {
     try {
       const chunks = chunkRows(sourceRows, workerCount);
       const partials = await Promise.all(chunks.map((chunk) => runWorker(chunk, {
-        dateColumn: options.dateColumn || "obs_date",
+        dateColumn: options.dateColumn || "date",
         dates: options.dates || [],
       })));
       return partials.reduce((merged, partial) => mergeSnapshots(merged, partial), {});

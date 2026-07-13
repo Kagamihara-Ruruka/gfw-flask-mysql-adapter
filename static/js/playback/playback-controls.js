@@ -1,4 +1,3 @@
-const TIME_CONTROL_LAYER_IDS = new Set(["gfw"]);
 const PLAYBACK_CONTROL_IDS = ["latest-date", "replay", "prev-day", "play-toggle", "next-day"];
 const DEFAULT_PLAYBACK_INTERVAL_MS = 1400;
 const PLAYBACK_BUFFER_POLL_MS = 180;
@@ -23,9 +22,9 @@ function bindPlaybackControlFeedback() {
 }
 
 function syncPlaybackCacheCapacityMeter() {
-  const stats = state.gfwRecordCache?.stats || {};
+  const stats = state.sampledGridRecordCache?.stats || {};
   const usedBytes = Math.max(0, Number(stats.cacheBytes || 0));
-  const limitBytes = Math.max(0, Number(stats.cacheLimitBytes || state.gfwRecordCache?.maxBytes || 0));
+  const limitBytes = Math.max(0, Number(stats.cacheLimitBytes || state.sampledGridRecordCache?.maxBytes || 0));
   const ratio = limitBytes > 0 ? Math.min(1, usedBytes / limitBytes) : 0;
   const percent = Math.round(ratio * 100);
   const capacityText = $("playback-cache-capacity-text");
@@ -61,7 +60,7 @@ function playbackRequestContext() {
     layerId: state.dataLayer,
     renderProfile: "dashboard.playback",
   });
-  return RenderIntentService.toGfwPacketRequest(intent);
+  return RenderIntentService.toSampledGridPacketRequest(intent);
 }
 
 function playbackBufferText() {
@@ -217,7 +216,6 @@ function progressivePreheatDecision({ startIndex = null } = {}) {
   const dates = datesInSelectedRange();
   return PlaybackPrefetchController.shouldQueue({
     options,
-    isBackgroundPreloading: state.playbackCache?.isBackgroundPreloading,
     dates,
     startIndex,
     currentDate: $("date").value,
@@ -244,22 +242,12 @@ function queueProgressivePreheat({ startIndex = null } = {}) {
 
 function syncPlaybackSettingsInputs() {
   const options = PlaybackCacheService.options();
-  const delivery = PlaybackDeliveryPolicy.apply(state);
+  PlaybackDeliveryPolicy.apply(state);
   const interpolation = PlaybackInterpolationController.options(state);
   if ($("play-speed")) $("play-speed").value = String(normalizedPlaybackRate());
   if ($("playback-rate")) $("playback-rate").value = String(normalizedPlaybackRate());
-  if ($("playback-delivery-policy")) $("playback-delivery-policy").value = delivery.requestedMode;
-  if ($("playback-delivery-status")) $("playback-delivery-status").textContent = delivery.statusText;
   if ($("playback-cache-mode")) $("playback-cache-mode").value = options.mode;
-  if ($("playback-step-mode")) {
-    $("playback-step-mode").value = delivery.stepMode;
-    $("playback-step-mode").disabled = true;
-  }
   if ($("playback-interpolation-mode")) $("playback-interpolation-mode").value = interpolation.mode;
-  if ($("playback-interpolation-fps")) {
-    $("playback-interpolation-fps").value = String(interpolation.targetFps);
-    $("playback-interpolation-fps").disabled = !interpolation.dataBlendAvailable;
-  }
   if ($("playback-cache-concurrency")) $("playback-cache-concurrency").value = String(options.concurrency);
   if ($("playback-cache-max-dates")) $("playback-cache-max-dates").value = String(options.maxDates);
   if ($("playback-cache-window-behind")) $("playback-cache-window-behind").value = String(options.windowBehind);
@@ -279,32 +267,13 @@ function releasePlaybackRenderArtifacts(reason) {
 
 function bindPlaybackSettingsControls() {
   $("playback-rate")?.addEventListener("change", () => updatePlaybackSpeed("playback-rate"));
-  $("playback-delivery-policy")?.addEventListener("change", (event) => {
-    const delivery = PlaybackDeliveryPolicy.setMode(state, event.target.value);
-    if (!delivery.implemented) {
-      setStatus(delivery.statusText);
-    }
-    if (state.isPlaying) {
-      reschedulePlaybackTimelineAfterSpeedChange(state.playbackCache.generation);
-      schedulePlaybackTick(state.playbackCache.generation);
-    }
-    syncPlaybackSettingsInputs();
-  });
   $("playback-cache-mode")?.addEventListener("change", (event) => {
-    state.playbackCache.mode = event.target.value;
-    syncPlaybackSettingsInputs();
-  });
-  $("playback-step-mode")?.addEventListener("change", (event) => {
-    event.target.value = playbackStepMode();
+    state.playbackCache.mode = event.target.value === "before_play" ? "before_play" : "progressive";
     syncPlaybackSettingsInputs();
   });
   $("playback-interpolation-mode")?.addEventListener("change", (event) => {
     PlaybackInterpolationController.setMode(state, event.target.value);
     syncGfwTransitionStyle();
-    syncPlaybackSettingsInputs();
-  });
-  $("playback-interpolation-fps")?.addEventListener("change", (event) => {
-    PlaybackInterpolationController.setTargetFps(state, event.target.value);
     syncPlaybackSettingsInputs();
   });
   $("playback-cache-concurrency")?.addEventListener("change", (event) => {
@@ -327,12 +296,12 @@ function bindPlaybackSettingsControls() {
   });
   $("playback-cache-max-gb")?.addEventListener("change", (event) => {
     const maxGb = Math.max(0.25, Number(event.target.value || 2));
-    state.gfwRecordCache.maxBytes = Math.round(maxGb * PlaybackCacheService.BYTES_PER_GB);
-    GfwRecordCache.enforceBudget?.();
+    state.sampledGridRecordCache.maxBytes = Math.round(maxGb * PlaybackCacheService.BYTES_PER_GB);
+    SampledGridRecordCache.enforceBudget?.();
     syncPlaybackSettingsInputs();
   });
   $("playback-cache-clear")?.addEventListener("click", () => {
-    GfwRecordCache.clear?.();
+    SampledGridRecordCache.clear?.();
     GfwRenderArtifactCache.clear?.({ reason: "manual_cache_clear" });
     state.playbackCache.isPreheating = false;
     state.playbackCache.isBackgroundPreloading = false;
@@ -371,7 +340,9 @@ function selectedLayerIds() {
 }
 
 function hasSelectedTimeControlLayer() {
-  return selectedLayerIds().some((layerId) => TIME_CONTROL_LAYER_IDS.has(layerId));
+  return selectedLayerIds().some((layerId) => (
+    typeof isSampledGridLayer === "function" && isSampledGridLayer(layerId)
+  ));
 }
 
 function hasPlaybackCacheLayer() {
@@ -521,7 +492,7 @@ async function preparePlaybackStart() {
   return true;
 }
 
-async function preheatPlaybackCache({ blocking = true, anchorDate = $("date").value } = {}) {
+async function preheatPlaybackCache({ blocking = true, anchorDate = $("date").value, onStateChange = null } = {}) {
   const dates = datesInSelectedRange();
   const intent = RenderIntentService.range({
     dates,
@@ -535,6 +506,7 @@ async function preheatPlaybackCache({ blocking = true, anchorDate = $("date").va
     intent,
     blocking,
     onStateChange: () => {
+      onStateChange?.();
       updatePlaybackControls();
       syncPlaybackSettingsInputs();
     },
@@ -571,12 +543,6 @@ function playbackBufferAttempt(packet) {
 function playbackBufferTimedOut(waitStartedAt) {
   const startedAt = Number(waitStartedAt || 0);
   return startedAt > 0 && nowMs() - startedAt > PLAYBACK_BUFFER_TIMEOUT_MS;
-}
-
-function shouldDemandRenderPlaybackTarget(timeline, frameNumber, currentIndex, targetIndex) {
-  return timelineStepMode(timeline) === "sequential"
-    && Number(frameNumber || 1) <= 1
-    && targetIndex === currentIndex + 1;
 }
 
 function markPlaybackTargetFailed(dates, targetIndex, decision, { waitStartedAt = 0, attempts = 0, reason = "" } = {}) {
@@ -667,13 +633,6 @@ async function advancePlaybackToTimelineTarget(generation, frameNumber) {
   }
   const renderIndex = decision.renderIndex;
   if (renderIndex < 0) {
-    if (shouldDemandRenderPlaybackTarget(timeline, frameNumber, currentIndex, targetIndex)) {
-      PlaybackCacheService.clearBufferState();
-      updatePlaybackControls();
-      syncPlaybackSettingsInputs();
-      await renderPlaybackDateIndex(dates, targetIndex);
-      return { advanced: true, rendered: true, done: targetIndex >= dates.length - 1 };
-    }
     if (timelineStepMode(timeline) === "fluid") {
       markPlaybackTargetWaiting(dates, targetIndex, decision, waitState);
       return { advanced: true, held: true, done: false };
@@ -768,13 +727,6 @@ async function setPlayback(active) {
   if (options.mode === "before_play") {
     await preheatPlaybackCache({ blocking: true });
     if (!isPlaybackGenerationActive(generation)) return;
-  } else if (options.mode === "progressive") {
-    state.isPlaying = true;
-    updatePlaybackControls();
-    preheatPlaybackCache({ blocking: false }).catch((err) => {
-      if (!isPlaybackGenerationActive(generation)) return;
-      setStatus(err.message, true);
-    });
   }
   state.isPlaying = true;
   const timeline = startPlaybackTimeline(generation);
@@ -793,6 +745,12 @@ async function setPlayback(active) {
   }
   updatePlaybackControls();
   schedulePlaybackTick(generation);
+  if (options.mode === "progressive") {
+    preheatPlaybackCache({ blocking: false, anchorDate: $("date").value }).catch((err) => {
+      if (!isPlaybackGenerationActive(generation)) return;
+      setStatus(err.message, true);
+    });
+  }
 }
 
 async function normalizeDateInputs({ reload = true } = {}) {

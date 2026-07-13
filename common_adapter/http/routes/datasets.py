@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import time
-from pathlib import Path
 from typing import Any
 
 from flask import Flask, jsonify, request
@@ -15,41 +14,72 @@ from common_adapter.db.connect import (
     schema_packet,
     time_series_packet,
 )
-from common_adapter.developer.config_service import normalize_config_ref, read_config_json
-from common_adapter.layers.runtime import dataset_layer_id, imported_layer_ids, is_layer_imported, resolve_runtime_dataset
+from common_adapter.endpoint.runtime import endpoint_datasets_from_routes
+from common_adapter.layers.runtime import (
+    active_config_files_by_group,
+    active_layer_contract_rows,
+    database_datasets_from_mappings,
+    dataset_layer_id,
+    imported_layer_ids,
+    is_layer_imported,
+)
 from common_adapter.spatial.overlay import elapsed_ms
+from common_adapter.query.sampled_grid import (
+    sampled_grid_public_contract,
+    sampled_grid_public_fields,
+)
 
 
 class DatasetRoutes:
     def __init__(self, config: dict[str, Any]) -> None:
         self.config = config
+        self.database_datasets: dict[str, dict[str, Any]] = {}
+        self.database_errors: list[dict[str, Any]] = []
+        self.endpoint_datasets: dict[str, dict[str, Any]] = {}
+        self.endpoint_errors: list[dict[str, Any]] = []
 
-    def source_config(self, dataset_id: str) -> str | None:
-        for fragment_path in self.config.get("__config_fragments", []):
-            fragment, error = read_config_json(Path(fragment_path))
-            if error or fragment is None:
-                continue
-            if dataset_id in fragment.get("datasets", {}):
-                return normalize_config_ref(fragment_path)
-        if dataset_id in self.config.get("datasets", {}):
-            config_path = self.config.get("__config_path")
-            if config_path:
-                try:
-                    return normalize_config_ref(config_path)
-                except Exception:
-                    return str(config_path)
-        return None
+    def refresh_database_datasets(self) -> dict[str, dict[str, Any]]:
+        self.database_datasets, self.database_errors = database_datasets_from_mappings(self.config)
+        return self.database_datasets
+
+    def refresh_endpoint_datasets(self) -> dict[str, dict[str, Any]]:
+        self.endpoint_datasets, self.endpoint_errors = endpoint_datasets_from_routes(
+            active_config_files_by_group("endpoint", self.config)
+        )
+        return self.endpoint_datasets
 
     def get_dataset(self, dataset_id: str) -> dict[str, Any]:
-        if dataset_id not in self.config["datasets"]:
+        if dataset_id not in self.database_datasets:
+            self.refresh_database_datasets()
+        dataset = self.database_datasets.get(dataset_id)
+        if dataset is None:
+            if dataset_id not in self.endpoint_datasets:
+                self.refresh_endpoint_datasets()
+            dataset = self.endpoint_datasets.get(dataset_id)
+        if dataset is None:
             raise ValueError(f"unknown dataset: {dataset_id}")
-        dataset, runtime = resolve_runtime_dataset(self.config, dataset_id, self.config["datasets"][dataset_id])
+        runtime = {
+            "layer_id": dataset_layer_id(dataset_id, dataset),
+            "source": dataset.get("__runtime_source"),
+        }
         layer_id = dataset_layer_id(dataset_id, dataset)
         if not is_layer_imported(layer_id):
             raise ValueError(f"data layer is not imported: {layer_id}")
         if runtime["source"] != "mapping_controller_contract":
             raise ValueError(f"data layer has no generated mapping contract: {layer_id}")
         return dataset
+
+    @staticmethod
+    def sampled_grid_packet(dataset: dict[str, Any]) -> dict[str, Any] | None:
+        return sampled_grid_public_contract(dataset)
+
+    @staticmethod
+    def query_context() -> dict[str, Any]:
+        return {
+            "requested_resolution_km": request.args.get("resolution"),
+            "zoom": request.args.get("zoom"),
+            "latitude": request.args.get("latitude"),
+        }
 
     @staticmethod
     def runtime_packet(dataset_id: str, dataset: dict[str, Any]) -> dict[str, Any]:
@@ -71,13 +101,13 @@ class DatasetRoutes:
             safe = {}
             policy = query_policy(config)
             imported_layers = imported_layer_ids()
-            for dataset_id, dataset in config["datasets"].items():
-                runtime_dataset, runtime = resolve_runtime_dataset(config, dataset_id, dataset)
+            database_datasets = self.refresh_database_datasets()
+            for dataset_id, runtime_dataset in database_datasets.items():
+                runtime = self.runtime_packet(dataset_id, runtime_dataset)
                 if runtime["layer_id"] not in imported_layers:
                     continue
-                if runtime["source"] != "mapping_controller_contract":
-                    continue
                 backend_kind, connection_ref, _connection = dataset_backend_info(config, runtime_dataset)
+                public_fields = sampled_grid_public_fields(runtime_dataset)
                 safe[dataset_id] = {
                     "label": runtime_dataset.get("label", dataset_id),
                     "backend": backend_kind,
@@ -85,17 +115,32 @@ class DatasetRoutes:
                     "contract_group": runtime["contract_group"],
                     "source_route_group": runtime["source_route_group"],
                     "layer_id": runtime["layer_id"],
-                    "source_config": self.source_config(dataset_id),
+                    "source_config": runtime_dataset.get("__runtime_source_config_path"),
                     "runtime_config": runtime["config_path"],
                     "source_config_path": runtime["source_config_path"],
-                    "time_column": runtime_dataset["time_column"],
-                    "id_column": runtime_dataset.get("id_column"),
-                    "lat_column": runtime_dataset["lat_column"],
-                    "lon_column": runtime_dataset["lon_column"],
-                    "display_columns": runtime_dataset["display_columns"],
-                    "metric_columns": runtime_dataset.get("metric_columns", []),
-                    "category_columns": runtime_dataset.get("category_columns", []),
+                    **public_fields,
+                    "sampled_grid": self.sampled_grid_packet(runtime_dataset),
                     "runtime": runtime,
+                }
+            endpoint_datasets = self.refresh_endpoint_datasets()
+            for dataset_id, runtime_dataset in endpoint_datasets.items():
+                layer_id = dataset_layer_id(dataset_id, runtime_dataset)
+                if layer_id not in imported_layers:
+                    continue
+                public_fields = sampled_grid_public_fields(runtime_dataset)
+                safe[dataset_id] = {
+                    "label": runtime_dataset.get("label", dataset_id),
+                    "backend": runtime_dataset.get("backend"),
+                    "connection_ref": runtime_dataset.get("connection_ref"),
+                    "contract_group": runtime_dataset.get("__runtime_contract_group"),
+                    "source_route_group": runtime_dataset.get("__runtime_source_route_group"),
+                    "layer_id": layer_id,
+                    "source_config": runtime_dataset.get("__runtime_source_config_path"),
+                    "runtime_config": runtime_dataset.get("__runtime_config_path"),
+                    "source_config_path": runtime_dataset.get("__runtime_source_config_path"),
+                    **public_fields,
+                    "sampled_grid": self.sampled_grid_packet(runtime_dataset),
+                    "runtime": self.runtime_packet(dataset_id, runtime_dataset),
                 }
             configured_default = str(config.get("default_dataset") or "")
             default_dataset = configured_default if configured_default in safe else (next(iter(safe.keys()), None))
@@ -106,6 +151,8 @@ class DatasetRoutes:
                     "query_policy": policy,
                     "datasets": safe,
                     "imported_layers": sorted(imported_layers),
+                    "layers": active_layer_contract_rows(config, endpoint_datasets=endpoint_datasets),
+                    "source_errors": [*self.database_errors, *self.endpoint_errors],
                 }
             )
 
@@ -133,6 +180,7 @@ class DatasetRoutes:
                     limit=request.args.get("limit", query_policy(config)["default_limit"]),
                     offset=int(request.args.get("offset", "0")),
                     column_profile=request.args.get("columns"),
+                    query_context=self.query_context(),
                 )
                 packet["dataset_id"] = dataset_id
                 packet["runtime"] = self.runtime_packet(dataset_id, dataset)
@@ -158,6 +206,7 @@ class DatasetRoutes:
                     bbox=parse_bbox(request.args.get("bbox")),
                     limit=request.args.get("limit", query_policy(config)["default_limit"]),
                     column_profile=request.args.get("columns") or "render",
+                    query_context=self.query_context(),
                 )
                 packet["dataset_id"] = dataset_id
                 packet["runtime"] = self.runtime_packet(dataset_id, dataset)

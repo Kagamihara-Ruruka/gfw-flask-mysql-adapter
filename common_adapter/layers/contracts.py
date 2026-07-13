@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from common_adapter.developer.config_service import load_layer_mappings, spatial_status_from_config
+from common_adapter.query.sampled_grid import sampled_grid_available_resolutions
 
 
 LAYER_CONTRACT_VERSION = "rrkal.layer_contract.v1"
@@ -15,18 +16,19 @@ def _text(value: Any, fallback: str = "") -> str:
 
 
 def _layer_label(layer_id: str, fallback: str = "") -> str:
-    labels = {
-        "gfw": "GFW 漁業活動",
-        "ais": "AIS 船舶動態",
-        "eez": "EEZ 經濟海域",
-    }
-    return labels.get(layer_id, fallback or layer_id)
+    return fallback or layer_id.upper()
 
 
-def _mapping_contracts() -> list[dict[str, Any]]:
+def _mapping_contracts(database_routes: list[tuple[str, Any, dict[str, Any]]]) -> list[dict[str, Any]]:
     contracts: list[dict[str, Any]] = []
+    active_config_refs = {str(config_ref) for config_ref, _path, _route in database_routes}
     for mapping in load_layer_mappings().get("mappings", []):
         if not mapping.get("enabled", True):
+            continue
+        if str(mapping.get("config_path") or "") not in active_config_refs:
+            continue
+        sampled_grid = mapping.get("sampled_grid") if isinstance(mapping.get("sampled_grid"), dict) else None
+        if sampled_grid and isinstance(sampled_grid.get("catalog"), dict):
             continue
         layer_id = _text(mapping.get("layer_id")).lower()
         roles = mapping.get("roles") if isinstance(mapping.get("roles"), dict) else {}
@@ -59,11 +61,14 @@ def _mapping_contracts() -> list[dict[str, Any]]:
                     "display_columns": mapping.get("display_columns") or [],
                     "metric_columns": mapping.get("metric_columns") or [],
                     "category_columns": mapping.get("category_columns") or [],
+                    "sampled_grid": sampled_grid or {},
                 },
                 "capabilities": {
                     "relational_query": True,
                     "schema_inspection": True,
                     "mapping_controller": True,
+                    "sampled_grid": bool(sampled_grid),
+                    "viewport_lod": bool(sampled_grid and sampled_grid_available_resolutions({"sampled_grid": sampled_grid})),
                 },
             }
         )
@@ -144,11 +149,10 @@ def build_layer_contracts(
     spatial_routes: list[tuple[str, Any, dict[str, Any]]],
 ) -> list[dict[str, Any]]:
     contracts = [
-        *_mapping_contracts(),
+        *_mapping_contracts(database_routes),
         *_websocket_contracts(websocket_routes),
         *_spatial_contracts(spatial_routes),
     ]
-    layer_order = {"gfw": 0, "ais": 1, "eez": 2}
     source_order = {
         "mapping_controller_contract": 0,
         "websocket_route_contract": 2,
@@ -157,9 +161,8 @@ def build_layer_contracts(
     return sorted(
         contracts,
         key=lambda row: (
-            layer_order.get(str(row.get("layer_id")), 99),
-            str(row.get("layer_id")),
             source_order.get(str(row.get("contract_source")), 99),
+            str(row.get("layer_id")),
             str(row.get("config_path")),
             str(row.get("source_ref")),
         ),

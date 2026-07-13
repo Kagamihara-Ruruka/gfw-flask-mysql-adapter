@@ -55,6 +55,7 @@ def import_eez(config_path: str | None, *, replace: bool) -> None:
     pg = eez["postgis"]
     target_table = validate_identifier(pg.get("table", "eez_v12"), "postgis table")
     tile_table = validate_identifier(pg.get("tile_table", f"{target_table}_tile"), "postgis tile table")
+    fill_table = validate_identifier(pg.get("fill_table", f"{target_table}_fill"), "postgis fill table")
     boundary_table = validate_identifier(pg.get("boundary_table", f"{target_table}_boundary"), "postgis boundary table")
     target_geom = validate_identifier(pg.get("geometry_column", "geom"), "postgis geometry column")
     gpkg_table = validate_identifier(eez.get("gpkg_table", "eez_v12"), "gpkg table")
@@ -66,6 +67,7 @@ def import_eez(config_path: str | None, *, replace: bool) -> None:
             if replace:
                 cur.execute(f"DROP TABLE IF EXISTS {target_table}")
                 cur.execute(f"DROP TABLE IF EXISTS {tile_table}")
+                cur.execute(f"DROP TABLE IF EXISTS {fill_table}")
                 cur.execute(f"DROP TABLE IF EXISTS {boundary_table}")
             cur.execute(
                 f"""
@@ -176,6 +178,32 @@ def import_eez(config_path: str | None, *, replace: bool) -> None:
                 cur.execute(f"ANALYZE {name}")
 
             create_tile_table(tile_table, f"source.{target_geom}")
+            cur.execute(f"DROP TABLE IF EXISTS {fill_table}")
+            cur.execute(
+                f"""
+                CREATE TABLE {fill_table} AS
+                SELECT
+                    source.fid,
+                    source.mrgid,
+                    source.name,
+                    source.pol_type,
+                    source.territory,
+                    source.iso3,
+                    source.sovereign,
+                    source.area_km2,
+                    ST_Multi(
+                        ST_CollectionExtract(
+                            ST_Transform(source.{target_geom}, 3857),
+                            3
+                        )
+                    )::geometry(MultiPolygon, 3857) AS {target_geom}
+                FROM {target_table} AS source
+                WHERE NOT ST_IsEmpty(source.{target_geom})
+                """
+            )
+            cur.execute(f"DELETE FROM {fill_table} WHERE ST_IsEmpty({target_geom})")
+            cur.execute(f"CREATE INDEX idx_{fill_table}_{target_geom}_gist ON {fill_table} USING GIST ({target_geom})")
+            cur.execute(f"ANALYZE {fill_table}")
             cur.execute(f"DROP TABLE IF EXISTS {boundary_table}")
             cur.execute(
                 f"""
@@ -215,7 +243,7 @@ def import_eez(config_path: str | None, *, replace: bool) -> None:
             cur.execute(f"CREATE INDEX idx_{boundary_table}_{target_geom}_gist ON {boundary_table} USING GIST ({target_geom})")
             cur.execute(f"ANALYZE {boundary_table}")
         pg_conn.commit()
-    print(f"import_complete rows={inserted} tile_table={tile_table} boundary_table={boundary_table}")
+    print(f"import_complete rows={inserted} tile_table={tile_table} fill_table={fill_table} boundary_table={boundary_table}")
 
 
 def main() -> None:

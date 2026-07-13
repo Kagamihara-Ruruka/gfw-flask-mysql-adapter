@@ -134,11 +134,13 @@ map.getPane("eezPaneB").style.opacity = "0";
 
 createOverlayPane("graticulePane", 545);
 
-createOverlayPane("gfwPane", 570);
-map.getPane("gfwPane").style.opacity = "1";
-map.getPane("gfwPane").style.transition = `opacity ${state.gfwTransitionMs}ms ease, filter ${state.gfwTransitionMs}ms ease`;
+createOverlayPane("sampledGridPane", 570);
+map.getPane("sampledGridPane").style.opacity = "1";
+map.getPane("sampledGridPane").style.transition = `opacity ${state.sampledGridTransitionMs}ms ease, filter ${state.sampledGridTransitionMs}ms ease`;
 
 createOverlayPane("aisPane", 610);
+
+createOverlayPane("sampledGridMaskPane", 780);
 
 setBasemap(state.mapSettings.basemapId);
 

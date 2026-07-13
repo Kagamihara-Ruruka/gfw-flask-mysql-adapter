@@ -7,12 +7,12 @@ function schedulePrimaryReload(delayMs = 0) {
 }
 
 function invalidatePrimaryRenderForViewport({ lodChanging = false } = {}) {
-  if (state.dataLayer === "gfw") {
+  if (typeof isSampledGridLayer === "function" && isSampledGridLayer(state.dataLayer)) {
     state.fetchSeq += 1;
     if (lodChanging) {
-      clearGfwLayerForLodReload();
+      clearSampledGridLayerForLodReload();
     } else {
-      RenderState.loading("gfw", "視窗變更");
+      RenderState.loading(state.dataLayer, "視窗變更");
     }
     return;
   }
@@ -22,7 +22,7 @@ function invalidatePrimaryRenderForViewport({ lodChanging = false } = {}) {
 }
 
 function invalidateEezRenderForZoom() {
-  if (!$("eez-toggle").checked) return;
+  if (!$("eez-toggle")?.checked) return;
   if (markEezTilesUpdating("縮放更新")) return;
   RenderState.loading("eez", "縮放變更");
   TimingMetrics.setText("eez-ms", "載入中");
@@ -75,7 +75,7 @@ function bindMapRefresh() {
     if (primaryPrepared && state.dataLayer) {
       schedulePrimaryReload(250);
     }
-    if (eezZoomPrepared && $("eez-toggle").checked) {
+    if (eezZoomPrepared && $("eez-toggle")?.checked) {
       eezTimer = setTimeout(() => {
         refreshEezTileReadiness("縮放更新").catch((err) => console.error("EEZ overlay failed", err));
       }, 120);

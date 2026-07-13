@@ -17,15 +17,21 @@ const RenderIntentService = (() => {
   }
 
   function baseIntent({ layerId = state.dataLayer, renderProfile = "dashboard.snapshot" } = {}) {
+    const viewport = currentViewport();
     return {
       kind: "render_intent",
       version: 1,
       layerId,
       datasetId: state.datasetId,
-      viewport: currentViewport(),
+      viewport,
       query: {
         limit: unlimitedLimit(),
         columns: DEFAULT_COLUMNS,
+        requestedResolutionKm: SampledGridContract.requestResolution({
+          datasetId: state.datasetId,
+          zoom: viewport.zoom,
+          latitude: viewport.center?.lat,
+        }),
       },
       renderProfile,
     };
@@ -65,7 +71,7 @@ const RenderIntentService = (() => {
     };
   }
 
-  function toGfwPacketRequest(intent) {
+  function toSampledGridPacketRequest(intent) {
     return {
       datasetId: intent?.datasetId,
       date: intent?.time?.date,
@@ -76,10 +82,12 @@ const RenderIntentService = (() => {
       zoom: intent?.viewport?.zoom,
       layerId: intent?.layerId,
       renderProfile: intent?.renderProfile,
+      resolution: intent?.query?.requestedResolutionKm,
+      latitude: intent?.viewport?.center?.lat,
     };
   }
 
-  function toGfwRangeRequest(intent) {
+  function toSampledGridRangeRequest(intent) {
     return {
       dates: intent?.time?.dates || [],
       bbox: intent?.viewport?.bbox,
@@ -89,14 +97,19 @@ const RenderIntentService = (() => {
       anchorDate: intent?.time?.anchorDate,
       layerId: intent?.layerId,
       renderProfile: intent?.renderProfile,
+      resolution: intent?.query?.requestedResolutionKm,
+      zoom: intent?.viewport?.zoom,
+      latitude: intent?.viewport?.center?.lat,
     };
   }
 
   return {
     range,
     snapshot,
-    toGfwPacketRequest,
-    toGfwRangeRequest,
+    toSampledGridPacketRequest,
+    toSampledGridRangeRequest,
+    toGfwPacketRequest: toSampledGridPacketRequest,
+    toGfwRangeRequest: toSampledGridRangeRequest,
     unlimitedLimit,
   };
 })();

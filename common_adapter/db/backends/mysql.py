@@ -39,6 +39,7 @@ class MySqlReadBackend:
         limit: Any,
         offset: int,
         column_profile: str | None = None,
+        query_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         packet = _mysql_records_packet(
             self.config,
@@ -61,6 +62,7 @@ class MySqlReadBackend:
         bbox: tuple[float, float, float, float] | None,
         limit: Any,
         column_profile: str | None = None,
+        query_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         packet = _mysql_records_range_packet(
             self.config,

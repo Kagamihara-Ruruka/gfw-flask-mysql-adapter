@@ -1,4 +1,4 @@
-const GfwWebglLayer = L.Layer.extend({
+const SampledGridWebglLayer = L.Layer.extend({
   initialize() {
     this._rows = [];
     this._drawMs = 0;
@@ -6,7 +6,7 @@ const GfwWebglLayer = L.Layer.extend({
   },
   onAdd(targetMap) {
     this._map = targetMap;
-    this._canvas = L.DomUtil.create("canvas", "grid-canvas-layer gfw-webgl-layer");
+    this._canvas = L.DomUtil.create("canvas", "grid-canvas-layer sampled-grid-webgl-layer");
     this._gl = this._canvas.getContext("webgl2", {
       alpha: true,
       antialias: false,
@@ -18,7 +18,7 @@ const GfwWebglLayer = L.Layer.extend({
       this._failed = true;
       return;
     }
-    targetMap.getPane("gfwPane").appendChild(this._canvas);
+    targetMap.getPane("sampledGridPane").appendChild(this._canvas);
     targetMap.on("move zoom resize", this._reset, this);
     this._reset();
   },
@@ -138,33 +138,47 @@ const GfwWebglLayer = L.Layer.extend({
     gl.clear(gl.COLOR_BUFFER_BIT);
 
     const vertices = [];
-    const alpha = Math.max(0, Math.min(1, Number(state.layerAlpha.gfw ?? 0.58)));
-    const renderRows = aggregateGfwRowsForRender(this._rows);
-    const halfDegrees = gfwRenderCellHalfDegrees();
+    const alpha = Math.max(0, Math.min(1, Number(
+      state.layerAlpha[state.dataLayer] ?? state.sampledGridPaint?.alpha ?? 1
+    )));
+    const renderRows = sampledGridRowsForRender(this._rows);
+    const model = SampledGridContract.model();
     const hitCells = [];
     for (const row of renderRows) {
-      const lat = Number(row.lat);
-      const lon = Number(row.lon);
-      if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
-      const nw = this._map.latLngToContainerPoint([lat + halfDegrees, lon - halfDegrees]);
-      const se = this._map.latLngToContainerPoint([lat - halfDegrees, lon + halfDegrees]);
+      const bounds = model.bounds(row);
+      if (!bounds) continue;
+      const nw = this._map.latLngToContainerPoint([bounds.north, bounds.west]);
+      const se = this._map.latLngToContainerPoint([bounds.south, bounds.east]);
       const x = Math.floor(Math.min(nw.x, se.x));
       const y = Math.floor(Math.min(nw.y, se.y));
       const w = Math.max(1, Math.ceil(Math.abs(se.x - nw.x)));
       const h = Math.max(1, Math.ceil(Math.abs(se.y - nw.y)));
       if (x > size.x || y > size.y || x + w < 0 || y + h < 0) continue;
-      this._pushRect(vertices, x, y, w, h, size.x, size.y, gfwCellColorParts(row), alpha);
+      const cellOpacity = sampledGridCellOpacity(row);
+      if (cellOpacity > 0) {
+        this._pushRect(
+          vertices,
+          x,
+          y,
+          w,
+          h,
+          size.x,
+          size.y,
+          sampledGridCellColorParts(row),
+          alpha * cellOpacity
+        );
+      }
       hitCells.push({
         row,
         rect: { x, y, w, h },
         bounds: {
-          west: normalizeLongitude(lon - halfDegrees),
-          south: lat - halfDegrees,
-          east: normalizeLongitude(lon + halfDegrees),
-          north: lat + halfDegrees,
-          leaflet: L.latLngBounds([lat - halfDegrees, lon - halfDegrees], [lat + halfDegrees, lon + halfDegrees]),
+          ...bounds,
+          leaflet: L.latLngBounds([bounds.south, bounds.west], [bounds.north, bounds.east]),
         },
-        center: { lat, lon: normalizeLongitude(lon) },
+        center: {
+          lat: (bounds.south + bounds.north) / 2,
+          lon: normalizeLongitude((bounds.west + bounds.east) / 2),
+        },
       });
     }
     this._hitCells = hitCells;
@@ -190,7 +204,7 @@ const GfwWebglLayer = L.Layer.extend({
       this._drawMs = performance.now() - started;
       return this._drawMs;
     } catch (err) {
-      console.warn("GFW WebGL draw failed", err);
+      console.warn("Sampled-grid WebGL draw failed", err);
       this._failed = true;
       this._drawMs = performance.now() - started;
       return this._drawMs;
@@ -209,9 +223,10 @@ const GfwWebglLayer = L.Layer.extend({
   },
 });
 
-GfwWebglLayer.isSupported = function isSupported() {
+SampledGridWebglLayer.isSupported = function isSupported() {
   const canvas = document.createElement("canvas");
   return Boolean(canvas.getContext("webgl2", { powerPreference: "high-performance" }));
 };
 
-window.GfwWebglLayer = GfwWebglLayer;
+window.SampledGridWebglLayer = SampledGridWebglLayer;
+window.GfwWebglLayer = SampledGridWebglLayer;

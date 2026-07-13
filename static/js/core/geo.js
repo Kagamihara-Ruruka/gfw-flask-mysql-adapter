@@ -1,31 +1,3 @@
-const GFW_CELL_HALF_DEGREES = 0.0416667;
-const GFW_CELL_DEGREES = GFW_CELL_HALF_DEGREES * 2;
-const GFW_MIN_RENDER_CELL_KM = 9;
-const KM_PER_LATITUDE_DEGREE = 111.32;
-
-function gfwCellCenter(value) {
-  return Math.round(value / GFW_CELL_DEGREES) * GFW_CELL_DEGREES;
-}
-
-function gfwRenderCellKm() {
-  const value = Number(state.gfwPaint?.renderCellKm ?? GFW_MIN_RENDER_CELL_KM);
-  if (!Number.isFinite(value)) return GFW_MIN_RENDER_CELL_KM;
-  return Math.max(GFW_MIN_RENDER_CELL_KM, value);
-}
-
-function gfwRenderCellDegrees() {
-  return Math.max(GFW_CELL_DEGREES, gfwRenderCellKm() / KM_PER_LATITUDE_DEGREE);
-}
-
-function gfwRenderCellHalfDegrees() {
-  return gfwRenderCellDegrees() / 2;
-}
-
-function gfwRenderCellCenter(value) {
-  const degrees = gfwRenderCellDegrees();
-  return Math.round(value / degrees) * degrees;
-}
-
 function bboxStringFromBounds(bounds) {
   const segments = wrappedBboxesFromValues(
     bounds.getWest(),

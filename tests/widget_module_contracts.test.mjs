@@ -1,0 +1,140 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const read = (relativePath) => readFileSync(path.join(root, relativePath), "utf8");
+
+const jsModules = [
+  "static/js/ui/widgets/core/widget-core.js",
+  "static/js/ui/widgets/capabilities/shared.js",
+  "static/js/ui/widgets/capabilities/line-chart.js",
+  "static/js/ui/widgets/capabilities/horizontal-bar-chart.js",
+  "static/js/ui/widgets/capabilities/pie-chart.js",
+  "static/js/ui/widgets/capabilities/eez-attribution.js",
+  "static/js/ui/widgets/capabilities/table.js",
+  "static/js/ui/widgets/capabilities/map-jump.js",
+  "static/js/ui/widgets/capabilities/metrics.js",
+  "static/js/ui/widgets/registry/widget-registry.js",
+  "static/js/ui/widgets/runtime/widgets-runtime.js",
+  "static/js/ui/widgets/widgets-panel.js",
+  "static/js/ui/widgets/widget-launchpad.js",
+];
+
+const cssModules = [
+  "static/css/widgets/core/panel.css",
+  "static/css/widgets/core/launchpad.css",
+  "static/css/widgets/core/widget-core.css",
+  "static/css/widgets/capabilities/line-chart.css",
+  "static/css/widgets/capabilities/horizontal-bar-chart.css",
+  "static/css/widgets/capabilities/pie-chart.css",
+  "static/css/widgets/capabilities/table.css",
+  "static/css/widgets/capabilities/map-jump.css",
+  "static/css/widgets/capabilities/eez-attribution.css",
+  "static/css/widgets/capabilities/metrics.css",
+  "static/css/widgets/core/size-adaptations.css",
+  "static/css/widgets/runtime/popover.css",
+];
+
+function assertOrdered(documentText, paths) {
+  let cursor = -1;
+  for (const relativePath of paths) {
+    const publicPath = `/${relativePath}`;
+    const index = documentText.indexOf(publicPath);
+    assert.ok(index > cursor, `${publicPath} must be present in dependency order`);
+    cursor = index;
+  }
+}
+
+test("widget JavaScript modules load in dependency order", () => {
+  assertOrdered(read("templates/index.html"), jsModules);
+});
+
+test("widget CSS modules preserve cascade order", () => {
+  const template = read("templates/index.html");
+  assertOrdered(template, cssModules);
+  const mainStylesIndex = template.indexOf("/static/styles.css");
+  const lastWidgetStyleIndex = template.indexOf(`/${cssModules.at(-1)}`);
+  assert.ok(mainStylesIndex > lastWidgetStyleIndex, "main responsive styles must load after Widgets CSS");
+});
+
+test("launchpad SVG size is owned by a module-scoped selector", () => {
+  const launchpadStyles = read("static/css/widgets/core/launchpad.css");
+  const rule = launchpadStyles.match(
+    /\.widget-launchpad-app-icon\s+\.widget-launchpad-lucide-icon\.control-icon\s*\{([^}]*)\}/,
+  );
+  assert.ok(rule, "Launchpad icons must outrank the global control-icon rule without relying on load order");
+  assert.match(rule[1], /width:\s*46%;/);
+  assert.match(rule[1], /height:\s*46%;/);
+});
+
+test("legacy widget entrypoint remains a compatibility shim", () => {
+  const shim = read("static/js/ui/widgets/widgets-panel.js");
+  assert.match(shim, /WidgetRuntimeReady/);
+  assert.doesNotMatch(shim, /\bclass\s+/);
+  assert.ok(shim.split(/\r?\n/).length <= 8, "compatibility entrypoint must not regain implementation code");
+});
+
+test("widget dependency direction stays one-way", () => {
+  const core = read("static/js/ui/widgets/core/widget-core.js");
+  assert.doesNotMatch(core, /WidgetCapabilities|WidgetRegistry|WidgetRuntime/);
+
+  for (const relativePath of jsModules.filter((item) => item.includes("/capabilities/"))) {
+    const capability = read(relativePath);
+    assert.doesNotMatch(capability, /WidgetRegistry|WidgetRuntime/);
+  }
+
+  const registry = read("static/js/ui/widgets/registry/widget-registry.js");
+  assert.doesNotMatch(registry, /addEventListener\(|map\.on\(|fetchJson\(/);
+});
+
+test("widget page lifecycle is owned by runtime only", () => {
+  for (const relativePath of jsModules) {
+    const source = read(relativePath);
+    if (relativePath.endsWith("runtime/widgets-runtime.js")) {
+      assert.match(source, /initWidgetsPanels\(\)/);
+      assert.match(source, /bindChartWidgetRefresh\(\)/);
+      continue;
+    }
+    assert.doesNotMatch(source, /initWidgetsPanels\(\)|bindChartWidgetRefresh\(\)/);
+  }
+});
+
+test("widget deletion policy is owned by the ability registry", () => {
+  const registry = read("static/js/ui/widgets/registry/widget-registry.js");
+  const runtime = read("static/js/ui/widgets/runtime/widgets-runtime.js");
+  const metricsDefinition = registry.match(/metrics:\s*Object\.freeze\(\{([\s\S]*?)\}\),/);
+  const defaultMetrics = runtime.match(/Object\.freeze\(\{\s*type:\s*"metrics"([^}]*)\}\),/);
+
+  assert.ok(metricsDefinition, "metrics ability must be registered");
+  assert.match(metricsDefinition[1], /deletable:\s*true/);
+  assert.ok(defaultMetrics, "metrics must exist in the default layout");
+  assert.doesNotMatch(defaultMetrics[1], /deletable:/);
+  assert.match(runtime, /deletable:\s*definition\?\.deletable/);
+});
+
+test("launchpad enumerates registered abilities instead of blank templates", () => {
+  const registry = read("static/js/ui/widgets/registry/widget-registry.js");
+  const runtime = read("static/js/ui/widgets/runtime/widgets-runtime.js");
+  const launchpad = read("static/js/ui/widgets/widget-launchpad.js");
+
+  assert.match(registry, /function createRegisteredWidgetCatalog\(\)/);
+  assert.match(registry, /createWidgetCatalog\(\)\.filter\(\(item\) => item\.group === "registered"\)/);
+  assert.match(runtime, /registered:\s*createRegisteredWidgetCatalog/);
+  assert.match(launchpad, /WidgetCatalog\?\.registered\?\.\(\)/);
+  assert.doesNotMatch(launchpad, /WidgetCatalog\?\.create\?\.\(\)/);
+});
+
+test("widget CSS modules are syntactically balanced", () => {
+  for (const relativePath of cssModules) {
+    const source = read(relativePath);
+    const openCount = source.match(/\{/g)?.length || 0;
+    const closeCount = source.match(/\}/g)?.length || 0;
+    assert.equal(openCount, closeCount, `${relativePath} has unbalanced braces`);
+  }
+  const mainStyles = read("static/styles.css");
+  assert.doesNotMatch(mainStyles, /\.widget-template-line\s*\{/);
+  assert.doesNotMatch(mainStyles, /\.widget-popover-layer\s*\{/);
+});

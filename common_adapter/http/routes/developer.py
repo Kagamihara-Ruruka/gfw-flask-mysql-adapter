@@ -6,6 +6,8 @@ from typing import Any
 
 from flask import Flask, jsonify, request
 
+from common_adapter.ais.ingest import get_ais_ingest_status
+from common_adapter.db.connect import load_config
 from common_adapter.developer.config_service import (
     connection_status_from_config,
     create_source_group,
@@ -37,8 +39,7 @@ from common_adapter.developer.config_service import (
     write_config_json_content,
 )
 from common_adapter.developer.schema_inspector import inspect_relational_routes
-from common_adapter.layers.contracts import build_layer_contracts
-from common_adapter.layers.runtime import imported_layer_ids
+from common_adapter.layers.runtime import active_layer_contract_rows
 
 
 def runtime_config_ref(runtime_config: dict[str, Any] | None) -> str | None:
@@ -92,6 +93,63 @@ def response_manifest(runtime_config: dict[str, Any] | None) -> dict[str, Any]:
     return manifest
 
 
+def reloaded_runtime_config(runtime_config: dict[str, Any] | None) -> dict[str, Any]:
+    config_path = runtime_config.get("__config_path") if runtime_config else None
+    if not config_path:
+        return runtime_config or {}
+    try:
+        loaded = load_config(config_path)
+        loaded["__config_path"] = str(Path(config_path).resolve())
+        return loaded
+    except Exception:
+        return runtime_config or {}
+
+
+def websocket_pipeline_state(provider: str, data: dict[str, Any], runtime_config: dict[str, Any]) -> dict[str, Any]:
+    live_ais = data.get("live", {}).get("ais", {}) if isinstance(data.get("live"), dict) else {}
+    provider_name = str(provider or live_ais.get("provider") or "").lower()
+    is_ais_source = bool(live_ais) or provider_name in {"aisstream", "aishub_polling", "mysql"}
+    if not is_ais_source:
+        return {"pipeline_ready": True, "detail": "設定可用"}
+
+    try:
+        status = get_ais_ingest_status(runtime_config)
+    except Exception as exc:
+        return {"pipeline_ready": False, "detail": f"AIS pipeline 檢查失敗: {exc}"}
+
+    source_enabled = bool(live_ais.get("enabled", runtime_config.get("live", {}).get("ais", {}).get("enabled", False)))
+    handoff = status.get("handoff") or {}
+    store = status.get("store") or {}
+    gate = status.get("key_gate") or {}
+    store_ok = store.get("status") == "ok"
+    gate_ok = bool(gate.get("authorized_sql_read"))
+    pipeline_ready = source_enabled and store_ok and gate_ok
+
+    if not source_enabled:
+        detail = "AIS source disabled"
+    elif not handoff.get("has_api_key") and provider_name == "aisstream":
+        detail = "AIS collector handoff 缺少金鑰"
+    elif not store_ok:
+        detail = f"AIS SQL store 未就緒: {store.get('error') or store.get('status') or '-'}"
+    elif not gate_ok:
+        detail = gate.get("message") or "AIS key gate 尚未解鎖"
+    else:
+        vessel_count = store.get("vessel_count", 0)
+        collector = gate.get("collector_status") or ("running" if status.get("running") else "external")
+        detail = f"AIS pipeline 可用；collector {collector}，可見船舶 {vessel_count}"
+    return {
+        "pipeline_ready": pipeline_ready,
+        "detail": detail,
+        "pipeline": {
+            "source_enabled": source_enabled,
+            "store": store,
+            "key_gate": gate,
+            "handoff": handoff,
+            "running": bool(status.get("running")),
+        },
+    }
+
+
 def active_config_files_by_group(group: str, runtime_config: dict[str, Any] | None = None) -> list[tuple[str, Path, dict[str, Any]]]:
     manifest = load_router_manifest()
     active_refs = active_refs_with_runtime(runtime_config)
@@ -113,22 +171,7 @@ def active_config_files_by_group(group: str, runtime_config: dict[str, Any] | No
 
 
 def route_provided_layer_rows(runtime_config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    manifest = load_router_manifest()
-    imported_layers = imported_layer_ids()
-    contracts = build_layer_contracts(
-        database_routes=active_config_files_by_group("database", runtime_config),
-        websocket_routes=active_config_files_by_group("websocket", runtime_config),
-        spatial_routes=active_config_files_by_group("spatial", runtime_config),
-    )
-    seen: set[str] = set()
-    rows: list[dict[str, Any]] = []
-    for contract in contracts:
-        layer_id = str(contract.get("layer_id") or "").strip().lower()
-        if not layer_id or layer_id in seen:
-            continue
-        seen.add(layer_id)
-        rows.append({**contract, "imported": layer_id in imported_layers})
-    return rows
+    return active_layer_contract_rows(runtime_config)
 
 
 def database_router_status_rows(runtime_config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -445,6 +488,7 @@ def register_developer_routes(app: Flask, runtime_config: dict[str, Any] | None 
     def developer_websocket_status():
         try:
             manifest = response_manifest(runtime_config)
+            status_runtime_config = reloaded_runtime_config(runtime_config)
             active_refs = active_refs_with_runtime(runtime_config)
             locked_refs = locked_refs_with_runtime(runtime_config)
             runtime_refs = runtime_config_refs(runtime_config)
@@ -460,7 +504,7 @@ def register_developer_routes(app: Flask, runtime_config: dict[str, Any] | None 
                 provider = "-"
                 endpoint = "-"
                 configured = False
-                enabled = False
+                source_enabled = False
                 if data:
                     live_ais = data.get("live", {}).get("ais", {}) if isinstance(data.get("live"), dict) else {}
                     provider = str(
@@ -477,16 +521,23 @@ def register_developer_routes(app: Flask, runtime_config: dict[str, Any] | None 
                         or "-"
                     )
                     ingest = data.get("ingest") if isinstance(data.get("ingest"), dict) else {}
-                    enabled = bool(ingest.get("enabled", live_ais.get("enabled", True)))
+                    source_enabled = bool(ingest.get("enabled", live_ais.get("enabled", True)))
                     configured = bool(provider and endpoint != "-")
+                pipeline_state = websocket_pipeline_state(provider, data or {}, status_runtime_config)
+                pipeline_ready = bool(pipeline_state.get("pipeline_ready"))
+                enabled = bool(source_enabled and configured and not error and pipeline_ready)
+                detail = error or pipeline_state.get("detail") or ("設定可用" if configured else "缺少 provider 或 endpoint")
                 rows.append(
                     {
                         "config_path": ref,
                         "provider": provider,
                         "endpoint": endpoint,
                         "enabled": enabled,
+                        "source_enabled": source_enabled,
                         "configured": configured and not error,
-                        "detail": error or ("設定可用" if configured else "缺少 provider 或 endpoint"),
+                        "pipeline_ready": pipeline_ready,
+                        "pipeline": pipeline_state.get("pipeline", {}),
+                        "detail": detail,
                     }
                 )
             return jsonify({"manifest": manifest, "rows": rows})
@@ -602,14 +653,6 @@ def register_developer_routes(app: Flask, runtime_config: dict[str, Any] | None 
     @app.get("/api/developer/layer-contracts")
     def developer_layer_contracts():
         try:
-            return jsonify(
-                {
-                    "contracts": build_layer_contracts(
-                        database_routes=active_config_files_by_group("database", runtime_config),
-                        websocket_routes=active_config_files_by_group("websocket", runtime_config),
-                        spatial_routes=active_config_files_by_group("spatial", runtime_config),
-                    )
-                }
-            )
+            return jsonify({"contracts": active_layer_contract_rows(runtime_config)})
         except Exception as exc:
             return jsonify({"error": str(exc)}), 400

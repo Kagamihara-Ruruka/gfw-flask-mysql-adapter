@@ -45,8 +45,7 @@ def _as_tuple(value: Any, fallback: tuple[str, ...]) -> tuple[str, ...]:
     if isinstance(value, str) and value.strip():
         return (value.strip(),)
     if isinstance(value, list):
-        items = tuple(str(item).strip() for item in value if str(item).strip())
-        return items or fallback
+        return tuple(str(item).strip() for item in value if str(item).strip())
     return fallback
 
 
@@ -242,18 +241,19 @@ class EndpointProbe:
             ]
 
         attempts: list[EndpointProbeAttempt] = []
-        for path in (*target.catalog_paths, *target.health_paths, *target.discovery_paths):
+        probe_paths = dict.fromkeys((*target.catalog_paths, *target.health_paths, *target.discovery_paths))
+        for path in probe_paths:
             attempt = _fetch_json(target, path)
             attempts.append(attempt)
-            if attempt.ok and path in target.catalog_paths:
-                break
 
         catalog_attempt = next((attempt for attempt in attempts if attempt.path in target.catalog_paths and attempt.ok), None)
+        health_attempt = next((attempt for attempt in attempts if attempt.path in target.health_paths and attempt.ok), None)
         reachable_attempt = next((attempt for attempt in attempts if attempt.reachable), None)
         best_attempt = catalog_attempt or reachable_attempt or (attempts[0] if attempts else None)
         reachable = any(attempt.reachable for attempt in attempts)
         contract_detected = catalog_attempt is not None
-        detail = self._detail(catalog_attempt, best_attempt)
+        healthy = health_attempt is not None if target.health_paths else None
+        detail = self._detail(catalog_attempt, health_attempt, best_attempt, bool(target.health_paths))
         return [
             {
                 "config_path": config_ref,
@@ -263,20 +263,34 @@ class EndpointProbe:
                 "configured": True,
                 "reachable": reachable,
                 "contract_detected": contract_detected,
+                "healthy": healthy,
+                "health_path": health_attempt.path if health_attempt else None,
                 "probe_path": best_attempt.path if best_attempt else "-",
                 "status_code": best_attempt.status_code if best_attempt else None,
                 "detail": detail,
             }
         ]
 
-    def _detail(self, catalog_attempt: EndpointProbeAttempt | None, best_attempt: EndpointProbeAttempt | None) -> str:
+    def _detail(
+        self,
+        catalog_attempt: EndpointProbeAttempt | None,
+        health_attempt: EndpointProbeAttempt | None,
+        best_attempt: EndpointProbeAttempt | None,
+        health_expected: bool,
+    ) -> str:
         if catalog_attempt is not None:
             body = catalog_attempt.json_body
             if isinstance(body, dict):
-                return f"catalog detected at {catalog_attempt.path}; keys: {', '.join(sorted(str(key) for key in body.keys())[:6]) or '-'}"
-            if isinstance(body, list):
-                return f"catalog detected at {catalog_attempt.path}; {len(body)} items"
-            return f"catalog detected at {catalog_attempt.path}"
+                catalog_detail = f"catalog detected at {catalog_attempt.path}; keys: {', '.join(sorted(str(key) for key in body.keys())[:6]) or '-'}"
+            elif isinstance(body, list):
+                catalog_detail = f"catalog detected at {catalog_attempt.path}; {len(body)} items"
+            else:
+                catalog_detail = f"catalog detected at {catalog_attempt.path}"
+            if health_attempt is not None:
+                return f"{catalog_detail}; health ok at {health_attempt.path}"
+            if health_expected:
+                return f"{catalog_detail}; health endpoint unavailable"
+            return catalog_detail
         if best_attempt is None:
             return "no endpoint probe paths configured"
         if best_attempt.reachable:

@@ -1,0 +1,133 @@
+.widget-template-pie {
+  flex-direction: column;
+  gap: 8px;
+}
+
+.widget-template-pie.is-pie-svg {
+  align-items: center;
+  justify-content: center;
+}
+
+.widget-template-pie.is-pie-plotly {
+  align-items: stretch;
+  justify-content: stretch;
+}
+
+.widget-pie-shape {
+  width: min(72px, 76%);
+  aspect-ratio: 1;
+  border-radius: 999px;
+  background: var(--widget-pie-gradient, conic-gradient(
+    rgba(63, 191, 131, 0.96) 0 38%,
+    rgba(96, 165, 250, 0.92) 38% 72%,
+    rgba(245, 158, 11, 0.94) 72% 100%
+  ));
+  box-shadow: inset 0 0 0 10px rgba(15, 23, 42, 0.72);
+}
+
+.widget-pie-center {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  color: rgba(226, 232, 240, 0.96);
+  text-align: center;
+}
+
+.widget-pie-center strong,
+.widget-pie-center em {
+  display: block;
+  max-width: 52%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.widget-pie-center strong {
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.widget-pie-center em {
+  color: var(--muted);
+  font-size: 9px;
+  font-style: normal;
+  line-height: 1.1;
+}
+
+.widget-pie-plotly-stage {
+  display: grid;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.widget-pie-plotly-chart {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border-color: rgba(148, 163, 184, 0.16);
+  border-radius: 12px;
+}
+
+.widget-pie-plotly-chart.pipeline-chart-empty {
+  min-height: 100%;
+}
+
+.widget-legend-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px 8px;
+  width: 100%;
+  font-size: 10px;
+}
+
+.widget-legend-list span {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.widget-legend-list b,
+.widget-legend-list em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.widget-legend-list b {
+  color: rgba(226, 232, 240, 0.82);
+  font-weight: 600;
+}
+
+.widget-legend-list em {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-style: normal;
+}
+
+.widget-legend-list i {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+}
+
+.legend-a {
+  background: rgba(63, 191, 131, 0.96);
+}
+
+.legend-b {
+  background: rgba(96, 165, 250, 0.92);
+}
+
+.legend-c {
+  background: rgba(245, 158, 11, 0.94);
+}
+
+.legend-d {
+  background: rgba(168, 85, 247, 0.86);
+}

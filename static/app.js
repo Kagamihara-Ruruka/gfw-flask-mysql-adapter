@@ -1,6 +1,7 @@
 async function init() {
   try {
-    await loadRenderCapability();
+    const renderCapability = await loadRenderCapability();
+    window.aerialBackdropController?.configure(renderCapability?.server?.aerial_backdrop);
     syncHardwareSettingsControls();
     await loadDatasets();
     await loadSchema();
@@ -16,6 +17,43 @@ async function init() {
 }
 
 let pendingFullscreenBounds = null;
+let mapResizeObserver = null;
+let mapResizeFrame = null;
+let mapResizeEezTimer = null;
+let lastMapContainerSize = null;
+
+function scheduleEezResizeReload(reason) {
+  if (state.isBootstrapping || !$("eez-toggle")?.checked || typeof reloadEezLayer !== "function") return;
+  clearTimeout(mapResizeEezTimer);
+  mapResizeEezTimer = setTimeout(() => {
+    reloadEezLayer({ force: true }).catch((err) => console.error("EEZ overlay failed", err));
+  }, 120);
+}
+
+function syncMapContainerSize(reason = "尺寸更新") {
+  const shell = $("map-shell");
+  if (!shell) return;
+  const rect = shell.getBoundingClientRect();
+  const nextSize = `${Math.round(rect.width)}x${Math.round(rect.height)}`;
+  if (nextSize === lastMapContainerSize) return;
+  lastMapContainerSize = nextSize;
+  cancelAnimationFrame(mapResizeFrame);
+  mapResizeFrame = requestAnimationFrame(() => {
+    map.invalidateSize({ animate: false, pan: false });
+    scheduleEezResizeReload(reason);
+  });
+}
+
+function bindMapContainerResize() {
+  const shell = $("map-shell");
+  if (!shell || mapResizeObserver) return;
+  if (typeof ResizeObserver === "function") {
+    mapResizeObserver = new ResizeObserver(() => syncMapContainerSize());
+    mapResizeObserver.observe(shell);
+  }
+  window.addEventListener("resize", () => syncMapContainerSize());
+  syncMapContainerSize("初始化尺寸");
+}
 
 async function toggleMapFullscreen() {
   const shell = $("map-shell");
@@ -66,7 +104,7 @@ function setActivePage(pageId) {
     stopPlayback();
     return;
   }
-  setTimeout(() => map.invalidateSize(), 60);
+  setTimeout(() => syncMapContainerSize("頁籤切換"), 60);
 }
 
 function bindPageTabs() {
@@ -77,23 +115,18 @@ function bindPageTabs() {
 
 function bindControls() {
   bindPageTabs();
-  $("layer-gfw").addEventListener("change", () => selectDataLayer("gfw"));
-  $("layer-ais").addEventListener("change", () => selectDataLayer("ais"));
   $("dataset-select")?.addEventListener("change", (event) => {
     selectDataset(event.target.value).catch((err) => setStatus(err.message, true));
   });
   bindDataLayerMenuDismiss();
-  for (const button of document.querySelectorAll(".layer-settings-toggle")) {
-    button.setAttribute("aria-expanded", "false");
-    button.addEventListener("click", toggleLayerSettings);
-  }
-  bindLayerOrderDrag();
+  bindDataLayerControls();
   bindLayerAlphaControls();
   bindEezPaintControls();
-  bindGfwPaintControls();
+  bindSampledGridPaintControls();
   bindMapSettingsControls();
   bindMapExportControls();
   bindLayerSettingsModalControls();
+  bindMapContainerResize();
   bindAisSettingsControls();
   bindPlaybackControlFeedback();
   bindFullscreenPlaybackControls();
@@ -128,14 +161,6 @@ function bindControls() {
   });
   ControlButtons.bindFeedback(["map-fullscreen"]);
   document.addEventListener("fullscreenchange", syncMapFullscreenButton);
-  $("eez-toggle").addEventListener("change", () => {
-    updateDataLayerMenu();
-    if ($("eez-toggle").checked) {
-      reloadEezLayer().catch((err) => console.error("EEZ overlay failed", err));
-    } else {
-      syncEezLayer();
-    }
-  });
   $("table-scroll").addEventListener("scroll", () => requestAnimationFrame(renderTableWindow));
 }
 
