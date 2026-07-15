@@ -58,6 +58,9 @@ class RuntimeCompositionRoot {
       preheaterStatus: snapshot.status,
       preheaterReadyAhead: Number(snapshot.readyAhead || 0),
       preheaterInflight: Number(snapshot.inflight || 0),
+      effectiveLowWatermark: Number(snapshot.lowWatermark || 0),
+      effectiveHighWatermark: Number(snapshot.highWatermark || 0),
+      effectiveWatermarkStrategy: snapshot.strategy || "fixed",
     });
   }
 
@@ -118,6 +121,7 @@ class RuntimeCompositionRoot {
       sampledGridContract: this.sampledGridContract,
       clock: clockDomain.monotonic,
     }));
+    let adaptiveWatermarkController = null;
     const playbackPreheater = this.own("PlaybackPreheater", new PlaybackPreheaterController({
       store: dataFrameStore,
       demandService: frameDemandService,
@@ -125,19 +129,11 @@ class RuntimeCompositionRoot {
       frameIdentity: this.frameIdentity,
       clock: clockDomain.monotonic,
       optionsProvider: () => this.state.playbackCache || {},
+      watermarkPolicyProvider: (fixedPolicy, context) => (
+        adaptiveWatermarkController?.resolve({ fixedPolicy, ...context }) || fixedPolicy
+      ),
       stateSink: (snapshot) => this.syncPreheater(snapshot),
     }));
-    if (typeof createPlaybackCacheService !== "undefined") {
-      this.own("PlaybackCacheService", createPlaybackCacheService({
-        targetState: this.state,
-        dataFrameStore,
-        preheater: playbackPreheater,
-        frameIdentity: this.frameIdentity,
-        sampledGridLayerPredicate: (layerId) => (
-          typeof isSampledGridLayer === "function" && isSampledGridLayer(layerId)
-        ),
-      }));
-    }
     const playbackEngine = this.own("PlaybackEngine", new PlaybackEngineCore({
       store: dataFrameStore,
       demandService: frameDemandService,
@@ -158,6 +154,28 @@ class RuntimeCompositionRoot {
         clock: clockDomain.monotonic,
       }),
     );
+    adaptiveWatermarkController = this.own(
+      "AdaptiveWatermarkController",
+      new AdaptiveWatermarkControllerCore({
+        metricsProvider: () => runtimePerformanceMetrics.inputs(),
+        cacheSnapshotProvider: () => dataFrameStore.snapshot(),
+        configProvider: () => this.state.playbackCache || {},
+        eventLog,
+        clock: clockDomain.monotonic,
+      }),
+    );
+    if (typeof createPlaybackCacheService !== "undefined") {
+      this.own("PlaybackCacheService", createPlaybackCacheService({
+        targetState: this.state,
+        dataFrameStore,
+        preheater: playbackPreheater,
+        watermarkController: adaptiveWatermarkController,
+        frameIdentity: this.frameIdentity,
+        sampledGridLayerPredicate: (layerId) => (
+          typeof isSampledGridLayer === "function" && isSampledGridLayer(layerId)
+        ),
+      }));
+    }
     if (typeof VirtualGridRuntimeController !== "undefined" && typeof VirtualGridContract !== "undefined") {
       const virtualGridController = this.own("VirtualGridController", new VirtualGridRuntimeController({
         targetState: this.state,

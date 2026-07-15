@@ -209,3 +209,14 @@ test("dashboard bootstrap keeps the developer control plane lazy", () => {
   assert.match(template, /layer-activation-controller\.js/);
   assert.doesNotMatch(aisSettings, /function bindAisSettingsControls\(\)\s*\{[\s\S]*?loadAisSettings\(\)/);
 });
+
+test("hidden dashboard resize cannot publish a zero-sized map viewport", () => {
+  const source = fs.readFileSync(path.join(root, "static/app.js"), "utf8");
+  const start = source.indexOf("function syncMapContainerSize");
+  const end = source.indexOf("function bindMapContainerResize", start);
+  const body = source.slice(start, end);
+
+  assert.match(body, /rect\.width <= 0 \|\| rect\.height <= 0/);
+  assert.match(body, /\{ force = false \}/);
+  assert.match(source, /syncMapContainerSize\([^\n]+\{ force: true \}\)/);
+});

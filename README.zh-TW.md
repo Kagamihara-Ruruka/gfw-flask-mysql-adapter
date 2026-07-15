@@ -20,6 +20,8 @@ Widget UI／Application 邊界拆分後的回歸結果記錄在
 [`benchmarks/widget_application_boundary_acceptance_2026-07-16.md`](benchmarks/widget_application_boundary_acceptance_2026-07-16.md)。
 Clock Domain 與可信效能指標校正後的回歸結果記錄在
 [`benchmarks/clock_domain_acceptance_2026-07-16.md`](benchmarks/clock_domain_acceptance_2026-07-16.md)。
+自適應水位與最終全年冷／暖快取驗收結果記錄在
+[`benchmarks/adaptive_watermark_acceptance_2026-07-16.md`](benchmarks/adaptive_watermark_acceptance_2026-07-16.md)。
 
 ## 專案邊界
 
@@ -80,7 +82,7 @@ Runtime 只引用 `common_adapter/` 的正式模組。舊 root modules 與 `data
 - `static/app.js`：啟動 app，綁定 UI 與事件。
 - `static/js/core`：共用 state、DOM、map、geo、render-state。
 - `static/js/services`：render intent、中央 query coordinator、sampled-grid canonical cache、API client 與共用 service helper。
-- `static/js/playback`：播放控制、純時間線 scheduler、frame readiness buffer、playback renderer handoff、playback interpolation policy、獨立水位預熱器與 snapshot splitter。
+- `static/js/playback`：播放控制、純時間線 scheduler、frame readiness buffer、playback renderer handoff、playback interpolation policy、獨立水位預熱器、自適應水位控制器與 snapshot splitter。
 - `static/js/layers`：GFW、AIS、EEZ、graticule 圖層行為，以及 GFW zoom blur / crossfade 視覺效果邊界。
 - `static/js/rendering`：WebGL/Canvas 能力檢查、renderer registry、GFW paint 設定。
 - `static/js/ui`：table、播放控制、圖層選單、地圖設定、圖層樣式設定。
@@ -169,7 +171,7 @@ Hive 與 Spark 目前只是明確保留的 unsupported stub。這代表架構上
 
 - 播放時間軸：播放交付策略與 `playbackRate` 決定播放器正在追哪一張真實 snapshot。分析模式已實作；流暢與嚴格模式是已暴露但未啟用的保留端口。
 - Frame buffer：分析模式會回報 `fetching/missing/ready/waiting/failed` 邊界；`LifecycleEventLog` 會把 `BUFFER_ENTERED`、`BUFFER_RESUMED`、`FRAME_VISIBLE` 與 Queue/HTTP/cache/render 分開觀測。
-- 資料快取 / 預熱：獨立生產者維持 ready-ahead 高低水位；scheduler 並行數與 RAM 容量限制其工作。
+- 資料快取 / 預熱：獨立生產者維持冷啟動、恢復及 ready-ahead 高低水位；預設由可信供需、cache-ready P95、剩餘切片與 RAM 預算自適應計算，也可切回固定基準水位。scheduler 並行數仍獨立限制實際查詢工作。
 - Frame 補間：播放可選用現有 layer crossfade 作為純視覺補間，也可在播放時直接切換真實 snapshot；真正資料 blend 仍保留給未來由 render artifact 支撐的 `requestAnimationFrame` 循環。
 - 視覺效果：淡入淡出只修飾 layer 替換；高斯模糊只限縮放 / LOD 重算時遮罩。
 - 渲染壓力與測速：renderer policy 與儀表板測速 Widget 只觀測或降級，不擁有播放 clock；`consumption_rate`、`supply_rate`、`cache_ready_latency_p95`、`ready_ahead_slices` 與 `ready_ahead_seconds` 由 Runtime 統一提供。
@@ -187,7 +189,9 @@ python scripts/playback_contract_smoke.py
 - progressive cold cache 會回報 `fetching 0 / 1`；target packet ready 後先記錄 `BUFFER_RESUMED`，然後才記錄 `FRAME_VISIBLE`。
 - progressive request 失敗會回報 `failed` 並留下 lifecycle error event；若 target frame 長時間等不到，會以真實 monotonic 30 秒 timeout 停止播放，而不是受倍率影響或無限等待。
 - 被取消或被取代的 progressive preheat，不得把 late progress、status 或 failure state 套到目前播放 generation。
-- 播放器不等待完整預熱批次。獨立預熱器逐張補足至高水位，播放器持續消費 ready frame；只有當下 target 缺少時才可進入 `BUFFERING`。
+- 冷快取播放先進入 `PREPARING`，累積至冷啟動水位才開始；這段準備等待不計入播放停頓。播放期間由獨立預熱器逐張補足至高水位。
+- 只有當下 target 缺少時才可進入 `BUFFERING`；恢復時必須累積至恢復水位，不再使用一張到貨即重播的 gate。手動 Seek 仍只提升目標影格，不進入冷啟動準備。
+- `AdaptiveWatermarkController` 只讀 `RuntimePerformanceMetrics` 與 `DataFrameStore` 容量快照；它不執行 transport、不改變 query concurrency，也不清除快取。UI 只能預覽或顯示目前策略，只有 Preheater reconcile 能套用策略。
 - `fluid` 是唯一允許把 elapsed time 映射到未來日期的 step mode；目前仍保留在 disabled 的流暢交付端口後面。
 - prefetch、render、interpolation、blur 與測速觀測只供應或修飾 frame，不擁有播放日期 clock。
 
@@ -207,7 +211,8 @@ python scripts/playback_contract_smoke.py
 | `static/js/services/layer-query-coordinator.js` | QueryScheduler：相同 intent 單次執行、queued task 提升、consumer scope 取消與前景保留槽。 |
 | `static/js/services/frame-demand-service.js` | sampled-grid 唯一 transport 邊界；先查 `DataFrameStore`，miss 才排程，回傳後只提交一次 canonical packet。 |
 | `static/js/playback/playback-preheater.js` | 長時間存在的生產者，獨立維護 ready-ahead 高低水位，不擁有播放 clock。 |
-| `static/js/playback/playback-engine.js` | 純 frame 消費者與播放生命週期 owner；只要求缺少的 target、pin 可見 frame，並記錄 buffering/render 事件。 |
+| `static/js/playback/adaptive-watermark-controller.js` | DI 建立的有狀態 policy owner；依可信供需、cache-ready P95、播放消耗率與 RAM 預算決定有效水位，並以 monotonic hysteresis 防止頻繁下降。 |
+| `static/js/playback/playback-engine.js` | frame 消費者與播放生命週期 owner；擁有冷啟動準備、target miss 緩衝、恢復 gate、可見 frame pin 與相關 lifecycle event。 |
 | `static/js/playback/playback-cache-service.js` | 播放快取設定與狀態 facade；只暴露水位與 RAM 容量，不擁有 transport 或 batch pipeline。 |
 | `static/js/services/lifecycle-event-log.js` | 有界事件記錄、Run 匯出，以及 Queue/HTTP/cache/render/stall 體感指標。 |
 | `static/js/services/runtime-performance-metrics.js` | 由 lifecycle、preheater 與 engine 組合唯一可信的供需、尾端延遲、ready-ahead 與 buffer wait snapshot。 |
@@ -220,6 +225,9 @@ flowchart LR
   UI["地圖與播放命令"] --> Engine["PlaybackEngine"]
   Engine -->|"frame demand"| Demand["FrameDemandService"]
   Preheater["PlaybackPreheater"] -->|"水位補充 demand"| Demand
+  Metrics["RuntimePerformanceMetrics"] --> Watermark["AdaptiveWatermarkController"]
+  Store --> Watermark
+  Watermark -->|"有效高低水位"| Preheater
   Demand --> Scheduler["QueryScheduler"]
   Scheduler --> Adapter["Flask API + Mapping adapter"]
   Adapter --> Store["DataFrameStore：canonical RAM frames"]
@@ -244,7 +252,11 @@ AIS live 模式目前不走日期播放器。
 - `static/js/playback/playback-cache-service.js` 提供水位、容量與狀態顯示；實際補充生命週期由 `PlaybackPreheater` 擁有。
 - `static/js/playback/playback-controls.js` 保留控制器事件、按鈕狀態、播放節奏與設定視窗。
 - 預熱器在圖層、日期範圍與查詢 scope 確定後獨立運作；低於低水位時非同步補到高水位。
-- 預熱器 `FETCHING` 與播放器 `PLAYING` 可同時成立。只有 target frame miss 且前方已無 ready frame 時，播放器才進入 `BUFFERING`。
+- `AdaptiveWatermarkController` 以固定 5/10 與至少 10 張冷啟動樣本作為樣本不足時的基準；指標可信後，使用播放消耗率、供應率、cache-ready P95、剩餘切片、尾端安全係數與 frame-size P95 計算冷啟動、恢復及高低候選水位。
+- 有效高水位受設定上限與 `DataFrameStore` RAM／entry 預算共同限制。水位提高可立即生效；降低使用 monotonic hold 與有限步長，避免短期波動造成來回震盪。
+- 高水位代表目標 ready-ahead，不代表開相同數量的 HTTP。網路並行數與前景保留槽仍由 `QueryScheduler` 單獨管理。
+- 設定頁可在自適應與固定水位間切換；切換只重算 policy，不會清除已完成的 Canonical frame。
+- 預熱器 `FETCHING` 與播放器 `PLAYING` 可同時成立。冷啟動使用 `PREPARING`；只有 target frame miss 且前方已無 ready frame 時，播放器才進入 `BUFFERING`，並累積至恢復水位後才繼續。
 - 快取有容量上限，預設 2 GB，可在播放設定中調整。
 - 快取生命週期以瀏覽器頁面為主；關閉頁面後可視為釋放。
 - HTTP sampled-grid adapter 另有 server-side canonical source snapshot cache；`query_policy.snapshot_cache_max_rows` 是跨 dataset namespace 的全域 row budget，不會讓每個資料集各自無上限常駐。

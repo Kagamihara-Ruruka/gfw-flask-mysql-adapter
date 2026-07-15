@@ -18,6 +18,17 @@ class PlaybackEngineCore {
     this.targetRuns = new Map();
     this.bufferStartedAt = null;
     this.bufferIntentKey = "";
+    this.bufferTargetIndex = -1;
+    this.bufferScopeId = "";
+    this.bufferRequired = 0;
+    this.bufferReady = 0;
+    this.bufferPolicyReason = "";
+    this.prepareSequence = 0;
+    this.prepareStartedAt = null;
+    this.prepareScopeId = "";
+    this.prepareRequired = 0;
+    this.prepareReady = 0;
+    this.preparePolicyReason = "";
     this.displayedFrameKey = "";
   }
 
@@ -35,10 +46,15 @@ class PlaybackEngineCore {
     if (previousScope && previousScope !== nextScope) {
       for (const target of this.targetRuns.values()) target.controller?.abort?.();
       this.targetRuns.clear();
+      this.cancelPreparation("scope_changed", { dataset: previousDataset, date: previousDate });
       this.cancelBuffer("scope_changed", { dataset: previousDataset, date: previousDate });
       this.releaseDisplayedFrame();
       if (this.runId) {
-        this.status = previousStatus === "BUFFERING" ? "PLAYING" : previousStatus;
+        this.status = previousStatus === "BUFFERING"
+          ? "PLAYING"
+          : previousStatus === "PREPARING"
+            ? "PAUSED"
+            : previousStatus;
         this.eventLog.record("PLAYBACK_SCOPE_CHANGED", {
           run_id: this.runId,
           previous_scope: previousScope,
@@ -60,8 +76,9 @@ class PlaybackEngineCore {
     return this.snapshot();
   }
 
-  start(metadata = {}) {
+  async start(metadata = {}) {
     if (!this.dates.length || !this.requestContext) return false;
+    this.cancelPreparation("restarted");
     this.cancelBuffer("restarted");
     if (this.runId) this.eventLog.endRun({ run_id: this.runId, reason: "restarted" });
     this.runId = this.eventLog.beginRun({
@@ -72,8 +89,92 @@ class PlaybackEngineCore {
       frame_count: this.dates.length,
       ...metadata,
     });
-    this.status = "PLAYING";
-    return true;
+    const token = ++this.prepareSequence;
+    const startIndex = Math.max(0, this.currentIndex + 1);
+    const startedAt = this.clock.now();
+    this.status = "PREPARING";
+    this.prepareStartedAt = startedAt;
+    this.prepareScopeId = `playback-startup:${this.runId}`;
+    this.prepareRequired = 0;
+    this.prepareReady = this.preheater.readyAhead?.(startIndex) || 0;
+    const initialGate = this.watermarkGate("startup", startIndex);
+    this.prepareRequired = initialGate.required;
+    this.preparePolicyReason = initialGate.degradationReason;
+    this.eventLog.record("PREPARE_STARTED", {
+      run_id: this.runId,
+      dataset: this.requestContext.datasetId,
+      date: this.dates[startIndex] || this.dates[this.currentIndex] || "",
+      ready_slices: this.prepareReady,
+      required_slices: this.prepareRequired,
+      policy_reason: initialGate.policyReason,
+      degradation_reason: initialGate.degradationReason,
+      monotonic_ms: startedAt,
+    });
+
+    try {
+      while (token === this.prepareSequence && this.status === "PREPARING") {
+        const gate = this.watermarkGate("startup", startIndex);
+        this.prepareRequired = Math.max(this.prepareRequired, gate.required);
+        this.prepareReady = this.preheater.readyAhead?.(startIndex) || 0;
+        this.preparePolicyReason = gate.degradationReason;
+        if (this.prepareReady >= this.prepareRequired) break;
+        const requestedDates = this.dates.slice(startIndex, startIndex + this.prepareRequired);
+        const progress = await this.preheater.waitForDates(requestedDates, {
+          lane: "playback-window",
+          scopeId: this.prepareScopeId,
+        });
+        if (token !== this.prepareSequence || this.status !== "PREPARING") return false;
+        this.prepareReady = this.preheater.readyAhead?.(startIndex) || 0;
+        this.eventLog.record("PREPARE_PROGRESS", {
+          run_id: this.runId,
+          dataset: this.requestContext.datasetId,
+          date: this.dates[startIndex] || "",
+          ready_slices: this.prepareReady,
+          required_slices: this.prepareRequired,
+          failed_slices: Number(progress?.failed || 0),
+          degradation_reason: this.preparePolicyReason,
+        });
+        if (Number(progress?.failed || 0) > 0 && this.prepareReady < this.prepareRequired) {
+          throw new Error(`Startup buffer failed for ${Number(progress.failed)} frame(s)`);
+        }
+      }
+      if (token !== this.prepareSequence || this.status !== "PREPARING") return false;
+      const readyAt = this.clock.now();
+      this.status = "PLAYING";
+      this.eventLog.record("PREPARE_READY", {
+        run_id: this.runId,
+        dataset: this.requestContext.datasetId,
+        date: this.dates[startIndex] || this.dates[this.currentIndex] || "",
+        ready_slices: this.prepareReady,
+        required_slices: this.prepareRequired,
+        duration_ms: Math.max(0, readyAt - startedAt),
+        degradation_reason: this.preparePolicyReason,
+        monotonic_ms: readyAt,
+      });
+      this.prepareStartedAt = null;
+      this.prepareScopeId = "";
+      return true;
+    } catch (error) {
+      if (error?.name === "AbortError" || token !== this.prepareSequence) return false;
+      const failedAt = this.clock.now();
+      this.status = "FAILED";
+      this.eventLog.record("PREPARE_FAILED", {
+        run_id: this.runId,
+        dataset: this.requestContext.datasetId,
+        date: this.dates[startIndex] || "",
+        ready_slices: this.prepareReady,
+        required_slices: this.prepareRequired,
+        duration_ms: Math.max(0, failedAt - startedAt),
+        error: error?.message || String(error),
+        monotonic_ms: failedAt,
+      });
+      if (this.prepareScopeId) {
+        this.demandService.cancelScope?.(this.prepareScopeId, { includeActive: true });
+      }
+      this.prepareStartedAt = null;
+      this.prepareScopeId = "";
+      throw error;
+    }
   }
 
   pause(reason = "paused") {
@@ -87,15 +188,42 @@ class PlaybackEngineCore {
       target.controller?.abort?.();
     }
     this.targetRuns.clear();
+    this.cancelPreparation(reason);
     this.cancelBuffer(reason);
     this.status = reason === "ended" ? "ENDED" : "IDLE";
     if (this.runId) this.eventLog.endRun({ run_id: this.runId, reason });
     this.runId = "";
   }
 
+  cancelPreparation(reason = "cancelled", detail = {}) {
+    if (this.prepareStartedAt === null) return false;
+    const endedAt = this.clock.now();
+    this.prepareSequence += 1;
+    if (this.prepareScopeId) {
+      this.demandService.cancelScope?.(this.prepareScopeId, { includeActive: true });
+    }
+    this.eventLog.record("PREPARE_CANCELLED", {
+      run_id: this.runId,
+      dataset: detail.dataset || this.requestContext?.datasetId || "",
+      date: detail.date || this.dates[this.currentIndex + 1] || this.dates[this.currentIndex] || "",
+      ready_slices: this.prepareReady,
+      required_slices: this.prepareRequired,
+      duration_ms: Math.max(0, endedAt - this.prepareStartedAt),
+      reason,
+      ...detail,
+      monotonic_ms: endedAt,
+    });
+    this.prepareStartedAt = null;
+    this.prepareScopeId = "";
+    return true;
+  }
+
   cancelBuffer(reason = "cancelled", detail = {}) {
     if (this.bufferStartedAt === null) return false;
     const endedAt = this.clock.now();
+    if (this.bufferScopeId) {
+      this.demandService.cancelScope?.(this.bufferScopeId, { includeActive: true });
+    }
     this.eventLog.record("BUFFER_CANCELLED", {
       run_id: this.runId,
       intent_key: this.bufferIntentKey,
@@ -108,7 +236,41 @@ class PlaybackEngineCore {
     });
     this.bufferStartedAt = null;
     this.bufferIntentKey = "";
+    this.bufferTargetIndex = -1;
+    this.bufferScopeId = "";
+    this.bufferRequired = 0;
+    this.bufferReady = 0;
+    this.bufferPolicyReason = "";
     return true;
+  }
+
+  watermarkGate(kind, startIndex) {
+    const remaining = Math.max(0, this.dates.length - Math.max(0, startIndex));
+    const policy = this.preheater.snapshot?.() || {};
+    const configured = kind === "startup"
+      ? policy.startupWatermark ?? policy.lowWatermark ?? 1
+      : policy.resumeWatermark ?? policy.lowWatermark ?? 2;
+    return Object.freeze({
+      kind,
+      remaining,
+      required: Math.min(remaining, Math.max(remaining > 1 && kind === "resume" ? 2 : 1, Number(configured || 1))),
+      policyReason: String(policy.policyReason || "configured"),
+      degradationReason: String(policy.degradationReason || ""),
+    });
+  }
+
+  bufferGate() {
+    const active = this.bufferStartedAt !== null && this.bufferTargetIndex >= 0;
+    if (!active) return Object.freeze({ active: false, ready: true, readyCount: 0, required: 0 });
+    this.bufferReady = this.preheater.readyAhead?.(this.bufferTargetIndex) || 0;
+    return Object.freeze({
+      active: true,
+      ready: this.bufferReady >= this.bufferRequired,
+      readyCount: this.bufferReady,
+      required: this.bufferRequired,
+      targetIndex: this.bufferTargetIndex,
+      degradationReason: this.bufferPolicyReason,
+    });
   }
 
   requestForIndex(index) {
@@ -126,10 +288,10 @@ class PlaybackEngineCore {
 
   requireTarget(index) {
     const inspected = this.inspectTarget(index);
-    if (inspected.status === "ready") return Promise.resolve(inspected);
     const intentKey = inspected.request ? this.frameIdentity.intentKey(inspected.request) : "";
+    if (intentKey && this.targetRuns.has(intentKey)) return this.targetRuns.get(intentKey).promise;
+    if (inspected.status === "ready") return Promise.resolve(inspected);
     if (!intentKey) return Promise.reject(new Error("Playback target is outside the configured scope"));
-    if (this.targetRuns.has(intentKey)) return this.targetRuns.get(intentKey).promise;
 
     const controller = new AbortController();
     this.eventLog.record("TARGET_REQUIRED", {
@@ -142,20 +304,50 @@ class PlaybackEngineCore {
       this.status = "BUFFERING";
       this.bufferStartedAt = this.clock.now();
       this.bufferIntentKey = intentKey;
+      this.bufferTargetIndex = index;
+      this.bufferScopeId = `playback-resume:${this.runId || "idle"}:${inspected.date}`;
+      const gate = this.watermarkGate("resume", index);
+      this.bufferRequired = gate.required;
+      this.bufferReady = this.preheater.readyAhead?.(index) || 0;
+      this.bufferPolicyReason = gate.degradationReason;
       this.eventLog.record("BUFFER_ENTERED", {
         run_id: this.runId,
         intent_key: intentKey,
         dataset: inspected.request.datasetId,
         date: inspected.date,
+        ready_slices: this.bufferReady,
+        required_slices: this.bufferRequired,
+        policy_reason: gate.policyReason,
+        degradation_reason: gate.degradationReason,
         monotonic_ms: this.bufferStartedAt,
       });
     }
-    const promise = this.demandService.demand(inspected.request, {
+    const targetPromise = this.demandService.demand(inspected.request, {
       lane: "playback-target",
       signal: controller.signal,
       scopeId: `playback:${this.runId || "idle"}`,
       consumerId: `target:${inspected.date}`,
-    }).then((result) => {
+    });
+    const promise = (async () => {
+      const result = await targetPromise;
+      while (this.bufferStartedAt !== null && this.bufferIntentKey === intentKey) {
+        const gate = this.watermarkGate("resume", index);
+        this.bufferRequired = Math.max(this.bufferRequired, gate.required);
+        this.bufferPolicyReason = gate.degradationReason;
+        this.bufferReady = this.preheater.readyAhead?.(index) || 0;
+        if (this.bufferReady >= this.bufferRequired) break;
+        const progress = await this.preheater.waitForDates(
+          this.dates.slice(index, index + this.bufferRequired),
+          {
+            lane: "playback-window",
+            scopeId: this.bufferScopeId,
+          },
+        );
+        this.bufferReady = this.preheater.readyAhead?.(index) || 0;
+        if (Number(progress?.failed || 0) > 0 && this.bufferReady < this.bufferRequired) {
+          throw new Error(`Resume buffer failed for ${Number(progress.failed)} frame(s)`);
+        }
+      }
       const resumedAt = this.clock.now();
       if (this.status === "BUFFERING") this.status = "PLAYING";
       this.eventLog.record("BUFFER_RESUMED", {
@@ -164,13 +356,21 @@ class PlaybackEngineCore {
         frame_key: result.frameKey,
         dataset: inspected.request.datasetId,
         date: inspected.date,
+        ready_slices: this.bufferReady,
+        required_slices: this.bufferRequired,
+        degradation_reason: this.bufferPolicyReason,
         duration_ms: this.bufferStartedAt === null ? 0 : Math.max(0, resumedAt - this.bufferStartedAt),
         monotonic_ms: resumedAt,
       });
       this.bufferStartedAt = null;
       this.bufferIntentKey = "";
+      this.bufferTargetIndex = -1;
+      this.bufferScopeId = "";
+      this.bufferRequired = 0;
+      this.bufferReady = 0;
+      this.bufferPolicyReason = "";
       return { ...result, request: inspected.request, date: inspected.date, index };
-    }).catch((error) => {
+    })().catch((error) => {
       if (error?.name !== "AbortError") {
         this.cancelBuffer("target_failed", {
           dataset: inspected.request.datasetId,
@@ -239,7 +439,14 @@ class PlaybackEngineCore {
     return this.bufferStartedAt === null ? 0 : Math.max(0, this.clock.now() - this.bufferStartedAt);
   }
 
+  preparationWaitMs() {
+    return this.prepareStartedAt === null ? 0 : Math.max(0, this.clock.now() - this.prepareStartedAt);
+  }
+
   snapshot() {
+    if (this.prepareStartedAt !== null) {
+      this.prepareReady = this.preheater.readyAhead?.(Math.max(0, this.currentIndex + 1)) || 0;
+    }
     return Object.freeze({
       status: this.status,
       runId: this.runId,
@@ -252,6 +459,12 @@ class PlaybackEngineCore {
       bufferStartedMonotonicMs: this.bufferStartedAt,
       bufferIntentKey: this.bufferIntentKey,
       bufferWaitMs: this.bufferWaitMs(),
+      bufferGate: this.bufferGate(),
+      preparationStartedMonotonicMs: this.prepareStartedAt,
+      preparationWaitMs: this.preparationWaitMs(),
+      preparationReady: this.prepareReady,
+      preparationRequired: this.prepareRequired,
+      preparationDegradationReason: this.preparePolicyReason,
       preheater: this.preheater.snapshot(),
     });
   }

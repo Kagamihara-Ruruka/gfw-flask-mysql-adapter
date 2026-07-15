@@ -29,12 +29,13 @@ function scheduleEezResizeReload(reason) {
   }, 120);
 }
 
-function syncMapContainerSize(reason = "尺寸更新") {
+function syncMapContainerSize(reason = "尺寸更新", { force = false } = {}) {
   const shell = $("map-shell");
   if (!shell) return;
   const rect = shell.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return;
   const nextSize = `${Math.round(rect.width)}x${Math.round(rect.height)}`;
-  if (nextSize === lastMapContainerSize) return;
+  if (!force && nextSize === lastMapContainerSize) return;
   lastMapContainerSize = nextSize;
   cancelAnimationFrame(mapResizeFrame);
   mapResizeFrame = requestAnimationFrame(() => {
@@ -110,7 +111,7 @@ function setActivePage(pageId) {
     stopPlayback();
     return;
   }
-  setTimeout(() => syncMapContainerSize("頁籤切換"), 60);
+  setTimeout(() => syncMapContainerSize("頁籤切換", { force: true }), 60);
 }
 
 function bindPageTabs() {

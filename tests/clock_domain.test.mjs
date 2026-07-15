@@ -96,6 +96,8 @@ test("five seconds of buffering stays five wall-clock seconds at every playback 
     const preheater = {
       setScope() {},
       setPlayhead() {},
+      readyAhead: () => 4,
+      waitForDates: async () => ({ failed: 0 }),
       snapshot: () => ({ status: "FETCHING", readyAhead: 4 }),
     };
     const engine = new PlaybackEngineCore({
@@ -191,12 +193,13 @@ test("trusted rates, tail latency and ready-ahead values share one event clock",
   clock.advance(1500);
   eventLog.record("CACHE_READY", { run_id: runId, intent_key: "two" });
 
-  const metrics = createRuntimePerformanceMetrics({
+  const metricService = createRuntimePerformanceMetrics({
     eventLog,
     preheater: { snapshot: () => ({ status: "FETCHING", readyAhead: 6 }) },
     playbackEngine: { snapshot: () => ({ status: "PLAYING", bufferWaitMs: 0 }) },
     clock: clock.domain.monotonic,
-  }).snapshot(runId);
+  });
+  const metrics = metricService.snapshot(runId);
 
   assert.equal(metrics.consumption_rate, 2);
   assert.equal(metrics.supply_rate, 0.5);
@@ -204,6 +207,13 @@ test("trusted rates, tail latency and ready-ahead values share one event clock",
   assert.equal(metrics.ready_ahead_slices, 6);
   assert.equal(metrics.ready_ahead_seconds, 3);
   assert.equal(metrics.monotonic_ms, 3000);
+  assert.equal(metrics.supply_samples, 2);
+  assert.equal(metrics.cache_ready_latency_samples, 2);
+
+  eventLog.endRun({ run_id: runId });
+  const afterRun = metricService.inputs();
+  assert.equal(afterRun.run_id, runId);
+  assert.equal(afterRun.consumption_rate, 2);
 });
 
 test("runtime timing owners do not read playback speed outside the playback clock path", () => {
@@ -232,7 +242,9 @@ test("runtime timing owners do not read playback speed outside the playback cloc
     path.join(root, "static/js/ui/widgets/capabilities/event-viewer.js"),
     "utf8",
   );
-  assert.match(controls, /RuntimePerformanceMetrics\?\.snapshot\?\.\(\)\.buffer_wait_ms/);
+  assert.match(controls, /RuntimePerformanceMetrics\?\.snapshot\?\.\(\)/);
+  assert.match(controls, /runtime\.buffer_wait_ms/);
+  assert.match(controls, /runtime\.preparation_wait_ms/);
   assert.match(metricsWidget, /runtimeMetricsProvider/);
   assert.match(eventViewer, /runtimeMetricsProvider/);
 });

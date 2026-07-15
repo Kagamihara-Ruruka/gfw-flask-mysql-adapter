@@ -2,11 +2,12 @@ function createPlaybackCacheService({
   targetState,
   dataFrameStore,
   preheater,
+  watermarkController,
   frameIdentity,
   sampledGridLayerPredicate,
 } = {}) {
-  if (!targetState || !dataFrameStore || !preheater || !frameIdentity) {
-    throw new TypeError("PlaybackCacheService requires state, store, preheater and frame identity");
+  if (!targetState || !dataFrameStore || !preheater || !watermarkController || !frameIdentity) {
+    throw new TypeError("PlaybackCacheService requires state, store, preheater, watermark controller and frame identity");
   }
   if (typeof sampledGridLayerPredicate !== "function") {
     throw new TypeError("PlaybackCacheService requires a sampled-grid predicate");
@@ -14,6 +15,7 @@ function createPlaybackCacheService({
   const state = targetState;
   const DataFrameStore = dataFrameStore;
   const PlaybackPreheater = preheater;
+  const WatermarkController = watermarkController;
   const FrameIdentity = frameIdentity;
   const BYTES_PER_GB = 1024 * 1024 * 1024;
   function isEnabledForCurrentLayer() {
@@ -26,12 +28,34 @@ function createPlaybackCacheService({
 
   function options() {
     const highWatermark = Math.max(2, Number(state.playbackCache?.highWatermark ?? state.playbackCache?.windowAhead ?? 10));
-    return {
+    const fixedPolicy = {
       windowBehind: Math.max(0, Number(state.playbackCache?.windowBehind ?? 1)),
-      windowAhead: highWatermark,
       highWatermark,
       lowWatermark: Math.max(1, Math.min(highWatermark - 1, Number(state.playbackCache?.lowWatermark ?? 5))),
+      startupWatermark: Math.max(1, Math.min(
+        highWatermark,
+        Number(state.playbackCache?.startupWatermark ?? state.playbackCache?.lowWatermark ?? 5),
+      )),
+      resumeWatermark: Math.max(2, Math.min(
+        highWatermark,
+        Number(state.playbackCache?.resumeWatermark ?? state.playbackCache?.lowWatermark ?? 5),
+      )),
+    };
+    const policy = WatermarkController.preview({ fixedPolicy });
+    return {
+      ...fixedPolicy,
+      windowAhead: highWatermark,
       maxGb: Math.max(0.25, Number(state.dataFrameStore?.maxBytes || 2 * BYTES_PER_GB) / BYTES_PER_GB),
+      strategy: policy.strategy,
+      policyStatus: policy.status,
+      effectiveLowWatermark: policy.lowWatermark,
+      effectiveHighWatermark: policy.highWatermark,
+      effectiveStartupWatermark: policy.startupWatermark,
+      effectiveResumeWatermark: policy.resumeWatermark,
+      ramBudgetFrames: policy.ramBudgetFrames,
+      estimatedFrameBytes: policy.estimatedFrameBytes,
+      policyReason: policy.reason,
+      degradationReason: policy.degradationReason || "",
     };
   }
 
@@ -51,6 +75,22 @@ function createPlaybackCacheService({
       return `背景補充中：前方已備 ${preheater.readyAhead} 張，傳輸中 ${preheater.inflight} 張，${capacity}`;
     }
     return `待命：前方已備 ${preheater.readyAhead || 0} 張，${capacity}`;
+  }
+
+  function policyStatusText() {
+    const policy = options();
+    const gates = ` · 啟動 ${policy.effectiveStartupWatermark} / 恢復 ${policy.effectiveResumeWatermark}`;
+    if (policy.strategy === "fixed") {
+      return `固定水位：低 ${policy.effectiveLowWatermark} / 高 ${policy.effectiveHighWatermark}${gates}`;
+    }
+    if (policy.policyStatus === "WARMING") {
+      return `自適應水位：樣本累積中 · 低 ${policy.effectiveLowWatermark} / 高 ${policy.effectiveHighWatermark}${gates}`;
+    }
+    const budget = Number.isFinite(Number(policy.ramBudgetFrames))
+      ? ` · RAM 上限 ${Number(policy.ramBudgetFrames)} 張`
+      : "";
+    const degradation = policy.degradationReason ? ` · ${policy.degradationReason}` : "";
+    return `自適應水位：低 ${policy.effectiveLowWatermark} / 高 ${policy.effectiveHighWatermark}${gates}${budget}${degradation}`;
   }
 
   function requestForDate(date, context = {}) {
@@ -121,6 +161,11 @@ function createPlaybackCacheService({
     return PlaybackPreheater.reconcile({ force: true });
   }
 
+  function resetPolicy(reason = "configuration_changed") {
+    WatermarkController.reset(reason);
+    return reconcilePolicy();
+  }
+
   return Object.freeze({
     BYTES_PER_GB,
     clear,
@@ -132,7 +177,9 @@ function createPlaybackCacheService({
     isEnabledForCurrentLayer,
     layerLabel,
     options,
+    policyStatusText,
     reconcilePolicy,
+    resetPolicy,
     requestForDate,
     requestsForDates,
     setBufferState,

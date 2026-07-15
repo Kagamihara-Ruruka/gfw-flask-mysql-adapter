@@ -134,7 +134,12 @@ class MetricsWidget extends DashboardWidget {
     const ready = Number(runtime.ready_ahead_slices || 0);
     const seconds = Number(runtime.ready_ahead_seconds || 0);
     const supply = Number(runtime.supply_rate || 0);
-    return `${runtime.playback_status || "IDLE"} · 前方 ${ready} 張 / ${seconds.toFixed(1)}s · 補給 ${supply.toFixed(2)}/s`;
+    const watermark = runtime.watermark_policy || {};
+    const policy = Number(watermark.high_watermark || 0) > 0
+      ? ` · 水位 ${Number(watermark.low_watermark || 0)}/${Number(watermark.high_watermark || 0)} · 啟動/恢復 ${Number(watermark.startup_watermark || 0)}/${Number(watermark.resume_watermark || 0)}`
+      : "";
+    const degradation = watermark.degradation_reason ? ` · ${watermark.degradation_reason}` : "";
+    return `${runtime.playback_status || "IDLE"} · 前方 ${ready} 張 / ${seconds.toFixed(1)}s · 補給 ${supply.toFixed(2)}/s${policy}${degradation}`;
   }
 
   primaryMetric(packet) {

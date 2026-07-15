@@ -6,6 +6,7 @@ class PlaybackPreheaterController {
     frameIdentity,
     clock,
     optionsProvider = null,
+    watermarkPolicyProvider = null,
     stateSink = null,
   } = {}) {
     if (!store || !demandService || !eventLog || !frameIdentity || !clock) {
@@ -20,6 +21,7 @@ class PlaybackPreheaterController {
     this.frameIdentity = frameIdentity;
     this.clock = clock;
     this.optionsProvider = optionsProvider || (() => ({}));
+    this.watermarkPolicyProvider = watermarkPolicyProvider;
     this.stateSink = stateSink;
     this.scope = null;
     this.scopeSequence = 0;
@@ -33,10 +35,58 @@ class PlaybackPreheaterController {
     const cache = this.optionsProvider() || {};
     const highWatermark = Math.max(2, Number(cache.highWatermark ?? cache.windowAhead ?? 10));
     const lowWatermark = Math.max(1, Math.min(highWatermark - 1, Number(cache.lowWatermark ?? 5)));
-    return {
+    const fixedPolicy = {
       highWatermark,
       lowWatermark,
+      startupWatermark: Math.max(1, Math.min(
+        highWatermark,
+        Number(cache.startupWatermark ?? lowWatermark),
+      )),
+      resumeWatermark: Math.max(2, Math.min(
+        highWatermark,
+        Number(cache.resumeWatermark ?? lowWatermark),
+      )),
       windowBehind: Math.max(0, Number(cache.windowBehind ?? 1)),
+    };
+    const policy = this.watermarkPolicyProvider?.(fixedPolicy, {
+      datasetId: this.scope?.requestContext?.datasetId || "",
+      date: this.scope?.anchorDate || "",
+      remainingSlices: this.scope
+        ? Math.max(0, this.scope.dates.length - this.scope.cursorIndex - 1)
+        : 0,
+    }) || fixedPolicy;
+    const effectiveHigh = Math.max(2, Number(policy.highWatermark ?? highWatermark));
+    return {
+      ...fixedPolicy,
+      highWatermark: effectiveHigh,
+      lowWatermark: Math.max(1, Math.min(
+        effectiveHigh - 1,
+        Number(policy.lowWatermark ?? lowWatermark),
+      )),
+      windowBehind: fixedPolicy.windowBehind,
+      startupWatermark: Math.max(1, Math.min(
+        effectiveHigh,
+        Number(policy.startupWatermark ?? fixedPolicy.startupWatermark),
+      )),
+      resumeWatermark: Math.max(2, Math.min(
+        effectiveHigh,
+        Number(policy.resumeWatermark ?? fixedPolicy.resumeWatermark),
+      )),
+      strategy: policy.strategy || "fixed",
+      policyStatus: policy.status || "FIXED",
+      policyReason: policy.reason || "configured",
+      candidateLowWatermark: Number(policy.candidateLowWatermark ?? lowWatermark),
+      candidateHighWatermark: Number(policy.candidateHighWatermark ?? highWatermark),
+      ramBudgetFrames: Number.isFinite(Number(policy.ramBudgetFrames))
+        ? Number(policy.ramBudgetFrames)
+        : null,
+      estimatedFrameBytes: Math.max(0, Number(policy.estimatedFrameBytes || 0)),
+      consumptionRate: Math.max(0, Number(policy.consumptionRate || 0)),
+      supplyRate: Math.max(0, Number(policy.supplyRate || 0)),
+      latencyP95Ms: Math.max(0, Number(policy.latencyP95Ms || 0)),
+      remainingSlices: Math.max(0, Number(policy.remainingSlices || 0)),
+      sustainable: policy.sustainable ?? null,
+      degradationReason: String(policy.degradationReason || ""),
     };
   }
 

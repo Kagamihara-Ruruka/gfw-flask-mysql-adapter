@@ -173,6 +173,8 @@ test("event viewer is a registered read-only lifecycle widget", () => {
   assert.match(eventViewer, /scheduleBindingRender\(binding\)/);
   assert.match(eventViewer, /this\.services\.schedule\?\.\(\(\) =>/);
   assert.match(eventViewer, /bindingByContainer = new WeakMap\(\)/);
+  assert.match(eventViewer, /WATERMARK_POLICY_CHANGED/);
+  assert.match(eventViewer, /effective|有效水位|低 \$\{Number\(event\.low_watermark/);
   assert.doesNotMatch(eventViewer, /\n\s*renderExpanded\s*\(/);
   assert.doesNotMatch(eventViewer, /FrameDemandService|LayerQueryCoordinator|fetchJson|["'`]\/api\//);
   assert.match(registry, /"event-viewer"/);

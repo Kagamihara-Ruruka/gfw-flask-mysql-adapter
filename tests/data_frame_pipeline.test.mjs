@@ -56,6 +56,7 @@ function createContext({ fetchJson, statePatch = {} } = {}) {
     "static/js/services/frame-demand-service.js",
     "static/js/playback/playback-preheater.js",
     "static/js/playback/playback-engine.js",
+    "static/js/playback/adaptive-watermark-controller.js",
     "static/js/playback/playback-renderer.js",
     "static/js/services/runtime-performance-metrics.js",
     "static/js/runtime/runtime-composition-root.js",

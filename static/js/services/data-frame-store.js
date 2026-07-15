@@ -81,6 +81,22 @@ class DataFrameStoreCore {
     ));
   }
 
+  function frameSizeStats() {
+    const sizes = [...packetSizes.values()]
+      .map(Number)
+      .filter((value) => Number.isFinite(value) && value > 0)
+      .sort((left, right) => left - right);
+    if (!sizes.length) {
+      return { averageFrameBytes: 0, estimatedFrameBytes: 0, largestFrameBytes: 0 };
+    }
+    const p95Index = Math.min(sizes.length - 1, Math.max(0, Math.ceil(sizes.length * 0.95) - 1));
+    return {
+      averageFrameBytes: sizes.reduce((total, value) => total + value, 0) / sizes.length,
+      estimatedFrameBytes: sizes[p95Index],
+      largestFrameBytes: sizes[sizes.length - 1],
+    };
+  }
+
   function notify(change) {
     for (const listener of listeners) {
       try {
@@ -483,6 +499,7 @@ class DataFrameStoreCore {
       entries: cache.size,
       aliases: aliases.size,
       bytes: cacheBytes,
+      ...frameSizeStats(),
       maxBytes,
       maxEntries,
       pinned: [...pins.values()].reduce((total, owners) => total + owners.size, 0),

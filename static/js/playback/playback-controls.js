@@ -44,7 +44,13 @@ function syncPlaybackCacheCapacityMeter() {
 
 function updatePlaybackCacheStatus(text) {
   syncPlaybackCacheCapacityMeter();
+  syncPlaybackPolicyStatus();
   updatePlaybackBufferStatus();
+}
+
+function syncPlaybackPolicyStatus() {
+  const status = $("playback-cache-policy-status");
+  if (status) status.textContent = PlaybackCacheService.policyStatusText();
 }
 
 function playbackRequestContext() {
@@ -64,12 +70,58 @@ function playbackBufferText() {
   const stateName = cache.bufferStateName ? ` · ${cache.bufferStateName}` : "";
   const date = cache.bufferCurrentDate ? ` ${cache.bufferCurrentDate}` : "";
   const error = cache.bufferErrorMessage ? ` · ${cache.bufferErrorMessage}` : "";
-  const waitMs = Number(RuntimePerformanceMetrics?.snapshot?.().buffer_wait_ms || 0);
+  const runtime = RuntimePerformanceMetrics?.snapshot?.() || {};
+  const waitMs = Number(cache.bufferStatus === "prebuffering"
+    ? runtime.preparation_wait_ms
+    : runtime.buffer_wait_ms) || 0;
   const waitText = waitMs >= 1000 ? ` · 等待 ${(waitMs / 1000).toFixed(1)}s` : "";
+  if (cache.bufferStatus === "prebuffering") {
+    return `播放準備中${date}${stateName}：${ready} / ${required}${waitText}${error}`;
+  }
   if (cache.bufferStatus === "failed") {
     return `播放失敗${date}${stateName}：${ready} / ${required}${waitText}${error}`;
   }
-  return `緩衝中${date}${stateName}：${ready} / ${required}${waitText}`;
+  return `緩衝中${date}${stateName}：${ready} / ${required}${waitText}${error}`;
+}
+
+function playbackDegradationText(reason) {
+  return {
+    startup_capacity_capped: "供給低於消耗，啟動水位已達容量上限",
+    supply_below_consumption: "供給低於目前播放消耗",
+    insufficient_metrics: "正在建立吞吐基準",
+  }[String(reason || "")] || "";
+}
+
+function syncPlaybackRuntimeGateState() {
+  const engine = PlaybackEngine.snapshot();
+  if (engine.status === "PREPARING") {
+    PlaybackCacheService.setBufferState({
+      buffering: false,
+      status: "prebuffering",
+      ready: engine.preparationReady,
+      required: engine.preparationRequired,
+      resume: engine.preparationRequired,
+      currentDate: datesInSelectedRange()[engine.currentIndex + 1] || engine.currentDate,
+      targetIndex: engine.currentIndex + 1,
+      stateName: "PREPARING",
+      errorMessage: playbackDegradationText(engine.preparationDegradationReason),
+    });
+  } else if (engine.status === "BUFFERING") {
+    const gate = engine.bufferGate || {};
+    PlaybackCacheService.setBufferState({
+      buffering: true,
+      status: "waiting",
+      ready: gate.readyCount,
+      required: gate.required,
+      resume: gate.required,
+      currentDate: state.playbackCache?.bufferCurrentDate || "",
+      targetIndex: gate.targetIndex ?? state.playbackCache?.bufferTargetIndex ?? -1,
+      attempts: state.playbackCache?.bufferAttempts || 0,
+      stateName: "BUFFERING",
+      errorMessage: playbackDegradationText(gate.degradationReason),
+    });
+  }
+  updatePlaybackBufferStatus();
 }
 
 function updatePlaybackBufferStatus() {
@@ -212,9 +264,12 @@ function syncPlaybackSettingsInputs() {
   if ($("play-speed")) $("play-speed").value = String(normalizedPlaybackRate());
   if ($("playback-rate")) $("playback-rate").value = String(normalizedPlaybackRate());
   if ($("playback-interpolation-mode")) $("playback-interpolation-mode").value = interpolation.mode;
+  if ($("playback-cache-strategy")) $("playback-cache-strategy").value = options.strategy;
   if ($("query-network-concurrency")) $("query-network-concurrency").value = String(state.queryPolicy?.network_concurrency || 6);
   if ($("playback-cache-low-watermark")) $("playback-cache-low-watermark").value = String(options.lowWatermark);
   if ($("playback-cache-high-watermark")) $("playback-cache-high-watermark").value = String(options.highWatermark);
+  if ($("playback-cache-startup-watermark")) $("playback-cache-startup-watermark").value = String(state.playbackCache.startupWatermark);
+  if ($("playback-cache-resume-watermark")) $("playback-cache-resume-watermark").value = String(state.playbackCache.resumeWatermark);
   if ($("playback-cache-window-behind")) $("playback-cache-window-behind").value = String(options.windowBehind);
   if ($("playback-cache-max-gb")) $("playback-cache-max-gb").value = String(Math.round(options.maxGb * 100) / 100);
   if ($("gfw-transition-ms")) $("gfw-transition-ms").value = String(Math.max(0, Number(state.gfwTransitionMs || 0)));
@@ -231,6 +286,11 @@ function releasePlaybackRenderArtifacts(reason) {
 
 function bindPlaybackSettingsControls() {
   $("playback-rate")?.addEventListener("change", () => updatePlaybackSpeed("playback-rate"));
+  $("playback-cache-strategy")?.addEventListener("change", (event) => {
+    state.playbackCache.watermarkStrategy = event.target.value === "fixed" ? "fixed" : "adaptive";
+    PlaybackCacheService.resetPolicy("strategy_changed");
+    syncPlaybackSettingsInputs();
+  });
   $("playback-interpolation-mode")?.addEventListener("change", (event) => {
     PlaybackInterpolationController.setMode(state, event.target.value);
     syncGfwTransitionStyle();
@@ -244,26 +304,42 @@ function bindPlaybackSettingsControls() {
   $("playback-cache-low-watermark")?.addEventListener("change", (event) => {
     const high = PlaybackCacheService.options().highWatermark;
     state.playbackCache.lowWatermark = Math.max(1, Math.min(high - 1, Number(event.target.value || 1)));
-    PlaybackCacheService.reconcilePolicy();
+    PlaybackCacheService.resetPolicy("low_watermark_changed");
     syncPlaybackSettingsInputs();
   });
   $("playback-cache-high-watermark")?.addEventListener("change", (event) => {
     const high = Math.max(2, Number(event.target.value || 10));
     state.playbackCache.highWatermark = high;
     state.playbackCache.lowWatermark = Math.min(high - 1, Number(state.playbackCache.lowWatermark || 5));
-    PlaybackCacheService.reconcilePolicy();
+    state.playbackCache.startupWatermark = Math.min(high, Number(state.playbackCache.startupWatermark || 5));
+    state.playbackCache.resumeWatermark = Math.max(2, Math.min(high, Number(state.playbackCache.resumeWatermark || 5)));
+    PlaybackCacheService.resetPolicy("high_watermark_changed");
+    syncPlaybackSettingsInputs();
+  });
+  $("playback-cache-startup-watermark")?.addEventListener("change", (event) => {
+    const high = PlaybackCacheService.options().highWatermark;
+    state.playbackCache.startupWatermark = Math.max(1, Math.min(high, Number(event.target.value || 5)));
+    PlaybackCacheService.resetPolicy("startup_watermark_changed");
+    syncPlaybackSettingsInputs();
+  });
+  $("playback-cache-resume-watermark")?.addEventListener("change", (event) => {
+    const high = PlaybackCacheService.options().highWatermark;
+    state.playbackCache.resumeWatermark = Math.max(2, Math.min(high, Number(event.target.value || 5)));
+    PlaybackCacheService.resetPolicy("resume_watermark_changed");
     syncPlaybackSettingsInputs();
   });
   $("playback-cache-max-gb")?.addEventListener("change", (event) => {
     const maxGb = Math.max(0.25, Number(event.target.value || 2));
     state.dataFrameStore.maxBytes = Math.round(maxGb * PlaybackCacheService.BYTES_PER_GB);
     DataFrameStore.enforceBudget?.();
+    PlaybackCacheService.resetPolicy("ram_budget_changed");
     syncPlaybackSettingsInputs();
   });
   $("playback-cache-clear")?.addEventListener("click", () => {
     PlaybackCacheService.clear();
     DataFrameStore.evictAll?.();
     GfwRenderArtifactCache.clear?.({ reason: "manual_cache_clear" });
+    PlaybackCacheService.resetPolicy("cache_cleared");
     setStatus("播放快取已釋放");
     syncPlaybackSettingsInputs();
   });
@@ -275,6 +351,26 @@ function bindPlaybackSettingsControls() {
   $("gfw-zoom-blur-px")?.addEventListener("input", (event) => {
     state.gfwZoomBlurPx = Math.max(0, Number(event.target.value || 0));
     syncPlaybackSettingsInputs();
+  });
+  window.addEventListener("rrkal:data-frame-store-changed", () => {
+    syncPlaybackCacheCapacityMeter();
+    syncPlaybackPolicyStatus();
+    syncPlaybackRuntimeGateState();
+  });
+  window.addEventListener("rrkal:lifecycle-event", (event) => {
+    if (["WATERMARK_POLICY_CHANGED", "WATERMARK_POLICY_RESET"].includes(event.detail?.type)) {
+      syncPlaybackPolicyStatus();
+    }
+    if ([
+      "PREPARE_STARTED",
+      "PREPARE_PROGRESS",
+      "PREPARE_READY",
+      "PREPARE_FAILED",
+      "BUFFER_ENTERED",
+      "BUFFER_RESUMED",
+    ].includes(event.detail?.type)) {
+      syncPlaybackRuntimeGateState();
+    }
   });
   syncPlaybackSettingsInputs();
 }
@@ -451,6 +547,7 @@ function playbackFrameDecision(dates, currentIndex, targetIndex) {
     cacheService: PlaybackCacheService,
     intervalMs: normalizedPlaybackInterval(),
     rate: normalizedPlaybackRate(),
+    resumeGate: PlaybackEngine.bufferGate(),
   });
 }
 
@@ -488,11 +585,20 @@ function markPlaybackTargetFailed(dates, targetIndex, decision, { attempts = 0, 
 }
 
 function markPlaybackTargetWaiting(dates, targetIndex, decision, waitState = null) {
-  const packet = decision || playbackFrameDecision(dates, currentPlaybackDateIndex(dates), targetIndex);
+  let packet = decision || playbackFrameDecision(dates, currentPlaybackDateIndex(dates), targetIndex);
   const { attempts } = waitState || playbackBufferAttempt(packet);
   PlaybackEngine.requireTarget(targetIndex).catch((error) => {
     if (error?.name !== "AbortError") setStatus(error?.message || "目標影格查詢失敗", true);
   });
+  const gate = PlaybackEngine.bufferGate();
+  if (gate.active) {
+    packet = {
+      ...packet,
+      readyCount: gate.readyCount,
+      requiredCount: gate.required,
+      resumeCount: gate.required,
+    };
+  }
   PlaybackFrameBuffer.markWaiting({
     decision: packet,
     dates,
@@ -626,7 +732,8 @@ async function setPlayback(active) {
     requestContext: playbackRequestContext(),
     currentDate: $("date").value,
   });
-  PlaybackEngine.start({
+  state.isPlaying = true;
+  const startPromise = PlaybackEngine.start({
     rate: state.playbackRate,
     interval_ms: normalizedPlaybackInterval(),
     consumption_rate: ClockDomain.playback.consumptionRate({
@@ -638,7 +745,24 @@ async function setPlayback(active) {
     delivery_policy: PlaybackDeliveryPolicy.telemetryLabel(delivery),
     interpolation_mode: PlaybackInterpolationController.modeLabel(interpolation.mode),
   });
-  state.isPlaying = true;
+  syncPlaybackRuntimeGateState();
+  updatePlaybackControls();
+  let started = false;
+  try {
+    started = await startPromise;
+  } catch (error) {
+    if (isPlaybackGenerationActive(generation)) {
+      stopPlayback({ reason: "prepare_failed" });
+    }
+    throw error;
+  }
+  if (!started || !state.isPlaying || !isPlaybackGenerationActive(generation)) {
+    if (!started && state.isPlaying && isPlaybackGenerationActive(generation)) {
+      stopPlayback({ reason: "prepare_cancelled" });
+    }
+    return;
+  }
+  PlaybackCacheService.clearBufferState();
   startPlaybackTimeline(generation);
   if (typeof syncFullscreenPlaybackControls === "function") {
     syncFullscreenPlaybackControls();

@@ -12,6 +12,7 @@ const coreOwners = [
   ["static/js/services/data-frame-store.js", "DataFrameStoreCore"],
   ["static/js/playback/playback-preheater.js", "PlaybackPreheaterController"],
   ["static/js/playback/playback-engine.js", "PlaybackEngineCore"],
+  ["static/js/playback/adaptive-watermark-controller.js", "AdaptiveWatermarkControllerCore"],
   ["static/js/playback/playback-renderer.js", "PlaybackRendererController"],
   ["static/js/core/render-state.js", "RenderStateController"],
   ["static/js/services/gfw-render-artifact-cache.js", "RenderArtifactCache"],
@@ -67,6 +68,7 @@ test("runtime definitions load before the composition root and consumers load af
     "/static/js/playback/playback-cache-service.js",
     "/static/js/playback/playback-preheater.js",
     "/static/js/playback/playback-engine.js",
+    "/static/js/playback/adaptive-watermark-controller.js",
     "/static/js/playback/playback-renderer.js",
   ]) {
     assert.ok(indexOf(definition) >= 0 && indexOf(definition) < rootIndex, definition);
@@ -88,6 +90,7 @@ test("runtime-owned resources expose symmetric teardown", () => {
     "static/js/services/data-frame-store.js",
     "static/js/playback/playback-preheater.js",
     "static/js/playback/playback-engine.js",
+    "static/js/playback/adaptive-watermark-controller.js",
     "static/js/playback/playback-renderer.js",
     "static/js/rendering/virtual-grid-contract.js",
     "static/js/ui/map/layer-viewport-controller.js",

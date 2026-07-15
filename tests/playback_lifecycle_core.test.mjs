@@ -41,7 +41,14 @@ function contextFor(fetchJson) {
       datasets: { ocean: { backend: "endpoint", sampled_grid: { mapping_version: "v1" } } },
       queryPolicy: { network_concurrency: 3 },
       dataFrameStore: { maxEntries: 0, maxBytes: 128 * 1024 * 1024, stats: {} },
-      playbackCache: { highWatermark: 10, lowWatermark: 5, windowBehind: 1 },
+      playbackCache: {
+        watermarkStrategy: "fixed",
+        highWatermark: 10,
+        lowWatermark: 5,
+        startupWatermark: 1,
+        resumeWatermark: 2,
+        windowBehind: 1,
+      },
       lifecycleEvents: { maxEntries: 5000 },
     },
     SampledGridContract: { recordResolvedResolution() {} },
@@ -59,6 +66,7 @@ function contextFor(fetchJson) {
     "static/js/services/frame-demand-service.js",
     "static/js/playback/playback-preheater.js",
     "static/js/playback/playback-engine.js",
+    "static/js/playback/adaptive-watermark-controller.js",
     "static/js/playback/playback-renderer.js",
     "static/js/services/runtime-performance-metrics.js",
     "static/js/runtime/runtime-composition-root.js",
@@ -115,6 +123,145 @@ test("preheater replenishes individual frames to the high watermark without a ba
   assert.equal(api(context, "LayerQueryCoordinator").snapshot().queued.length, 0);
 });
 
+test("watermark policy status cannot overwrite the preheater lifecycle status", () => {
+  const context = contextFor(async () => ({ rows: [], row_count: 0 }));
+  const Preheater = api(context, "PlaybackPreheaterController");
+  const preheater = new Preheater({
+    store: { subscribe: () => () => {}, inspect: () => ({ status: "missing" }) },
+    demandService: { demand: () => new Promise(() => {}), cancelScope() {} },
+    eventLog: api(context, "LifecycleEventLog"),
+    frameIdentity: api(context, "FrameIdentity"),
+    clock: api(context, "ClockDomain").monotonic,
+    optionsProvider: () => ({ lowWatermark: 5, highWatermark: 10, windowBehind: 1 }),
+    watermarkPolicyProvider: (fixedPolicy) => ({
+      ...fixedPolicy,
+      strategy: "adaptive",
+      status: "WARMING",
+    }),
+  });
+
+  preheater.setScope({ dates: dates(2), requestContext: requestContext(), anchorDate: dates(2)[0] });
+  assert.equal(preheater.snapshot().status, "FETCHING");
+  assert.equal(preheater.snapshot().policyStatus, "WARMING");
+  preheater.stop("test_complete");
+});
+
+test("cold playback remains PREPARING until the startup watermark and does not record a stall", async () => {
+  const context = contextFor(async () => ({ rows: [], row_count: 0 }));
+  const Engine = api(context, "PlaybackEngineCore");
+  const identity = api(context, "FrameIdentity");
+  const log = api(context, "LifecycleEventLog");
+  const startup = deferred();
+  let ready = 0;
+  const engine = new Engine({
+    store: {
+      inspect(request) { return { status: "missing", request }; },
+      pin() { return true; },
+      release() { return true; },
+    },
+    demandService: { cancelScope() {}, demand: async () => ({ frameKey: "unused" }) },
+    preheater: {
+      setScope() {},
+      setPlayhead() {},
+      readyAhead() { return ready; },
+      waitForDates: async () => {
+        await startup.promise;
+        return { failed: 0 };
+      },
+      snapshot() {
+        return {
+          status: "FETCHING",
+          startupWatermark: 3,
+          resumeWatermark: 2,
+          policyReason: "configured",
+          degradationReason: "",
+        };
+      },
+    },
+    eventLog: log,
+    frameIdentity: identity,
+    clock: api(context, "ClockDomain").playback,
+  });
+  const allDates = dates(5);
+  engine.configure({ dates: allDates, requestContext: requestContext(), currentDate: allDates[0] });
+  const pending = engine.start({ consumption_rate: 1 });
+
+  assert.equal(engine.snapshot().status, "PREPARING");
+  assert.equal(engine.snapshot().preparationRequired, 3);
+  assert.equal(log.query({ type: "PREPARE_STARTED" }).length, 1);
+  assert.equal(log.query({ type: "BUFFER_ENTERED" }).length, 0);
+
+  ready = 3;
+  startup.resolve();
+  assert.equal(await pending, true);
+  assert.equal(engine.snapshot().status, "PLAYING");
+  assert.equal(log.query({ type: "PREPARE_READY" }).length, 1);
+  assert.equal(log.summary(engine.snapshot().runId).stallCount, 0);
+  engine.stop("test_complete");
+});
+
+test("buffer recovery waits for the resume watermark instead of one frame", async () => {
+  const context = contextFor(async () => ({ rows: [], row_count: 0 }));
+  const Engine = api(context, "PlaybackEngineCore");
+  const identity = api(context, "FrameIdentity");
+  const log = api(context, "LifecycleEventLog");
+  const targetResponse = deferred();
+  const resumeWindow = deferred();
+  let ready = 5;
+  const engine = new Engine({
+    store: {
+      inspect(request) { return { status: "missing", request }; },
+      pin() { return true; },
+      release() { return true; },
+    },
+    demandService: {
+      cancelScope() {},
+      demand: () => targetResponse.promise,
+    },
+    preheater: {
+      setScope() {},
+      setPlayhead() {},
+      readyAhead() { return ready; },
+      waitForDates: async () => {
+        await resumeWindow.promise;
+        return { failed: 0 };
+      },
+      snapshot() {
+        return {
+          status: "FETCHING",
+          startupWatermark: 1,
+          resumeWatermark: 3,
+          policyReason: "configured",
+          degradationReason: "",
+        };
+      },
+    },
+    eventLog: log,
+    frameIdentity: identity,
+    clock: api(context, "ClockDomain").playback,
+  });
+  const allDates = dates(6);
+  engine.configure({ dates: allDates, requestContext: requestContext(), currentDate: allDates[0] });
+  await engine.start({ consumption_rate: 1 });
+  ready = 0;
+  const target = engine.requireTarget(1);
+  targetResponse.resolve({ frameKey: "target-frame" });
+  await Promise.resolve();
+  ready = 1;
+  assert.equal(engine.bufferGate().required, 3);
+  assert.equal(engine.bufferGate().ready, false);
+  assert.equal(engine.snapshot().status, "BUFFERING");
+
+  ready = 3;
+  resumeWindow.resolve();
+  await target;
+  assert.equal(engine.snapshot().status, "PLAYING");
+  const resumed = log.query({ type: "BUFFER_RESUMED" }).at(-1);
+  assert.equal(resumed.required_slices, 3);
+  assert.equal(resumed.ready_slices, 3);
+  engine.stop("test_complete");
+});
+
 test("playback target promotes an existing preheat request and resumes from the same result", async () => {
   const responses = new Map();
   let requests = 0;
@@ -130,15 +277,18 @@ test("playback target promotes an existing preheat request and resumes from the 
   const allDates = dates(4);
   store.put(requestContext(), { rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
   engine.configure({ dates: allDates, requestContext: requestContext(), currentDate: allDates[0] });
-  engine.start();
   await waitFor(() => responses.has(allDates[1]));
-  const target = engine.requireTarget(1);
+  const starting = engine.start();
+  responses.get(allDates[1]).resolve({ rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
+  await starting;
+  const target = engine.requireTarget(2);
   const queuedOrActive = api(context, "LayerQueryCoordinator").snapshot();
   const targetTask = [...queuedOrActive.active, ...queuedOrActive.queued]
-    .find((task) => task.metadata?.date === allDates[1]);
+    .find((task) => task.metadata?.date === allDates[2]);
   assert.equal(targetTask?.lane, "playback-target");
 
-  responses.get(allDates[1]).resolve({ rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
+  responses.get(allDates[2]).resolve({ rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
+  responses.get(allDates[3]).resolve({ rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
   const result = await target;
   assert.equal(result.status, "ready");
   assert.equal(requests >= 1, true);
@@ -213,7 +363,16 @@ test("playback scope changes cancel stale targets and keep engine and preheater 
     preheater: {
       setScope(scope) { preheaterScopes.push(scope); },
       setPlayhead() {},
-      snapshot() { return { status: "IDLE" }; },
+      readyAhead() { return 2; },
+      waitForDates: async () => ({ failed: 0 }),
+      snapshot() {
+        return {
+          status: "READY",
+          startupWatermark: 1,
+          resumeWatermark: 2,
+          policyReason: "configured",
+        };
+      },
     },
     eventLog: api(context, "LifecycleEventLog"),
     frameIdentity: identity,
@@ -221,7 +380,7 @@ test("playback scope changes cancel stale targets and keep engine and preheater 
   });
   const allDates = dates(3);
   engine.configure({ dates: allDates, requestContext: requestContext(), currentDate: allDates[0] });
-  engine.start();
+  await engine.start();
   const oldTarget = engine.requireTarget(1);
   engine.configure({
     dates: allDates,
@@ -241,17 +400,24 @@ test("playback scope changes cancel stale targets and keep engine and preheater 
 });
 
 test("a target that becomes ready while paused does not restart playback", async () => {
-  const response = deferred();
-  const context = contextFor(async () => response.promise);
+  const responses = new Map();
+  const context = contextFor(async (url) => {
+    const date = new URL(`http://local${url}`).searchParams.get("date");
+    if (!responses.has(date)) responses.set(date, deferred());
+    return responses.get(date).promise;
+  });
   const store = api(context, "DataFrameStore");
   const engine = api(context, "PlaybackEngine");
-  const allDates = dates(2);
+  const allDates = dates(3);
   store.put(requestContext(), { rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
   engine.configure({ dates: allDates, requestContext: requestContext(), currentDate: allDates[0] });
-  engine.start();
-  const target = engine.requireTarget(1);
+  await waitFor(() => responses.has(allDates[1]));
+  const starting = engine.start();
+  responses.get(allDates[1]).resolve({ rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
+  await starting;
+  const target = engine.requireTarget(2);
   engine.pause("user_pause");
-  response.resolve({ rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
+  responses.get(allDates[2]).resolve({ rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
   await target;
 
   assert.equal(engine.snapshot().status, "PAUSED");

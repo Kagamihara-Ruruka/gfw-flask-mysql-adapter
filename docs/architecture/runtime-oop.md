@@ -54,6 +54,7 @@ flowchart LR
   ROOT --> DFS["DataFrameStore"]
   ROOT --> FDS["FrameDemand Application Service"]
   ROOT --> PP["PlaybackPreheater"]
+  ROOT --> AWC["AdaptiveWatermarkController"]
   ROOT --> PE["PlaybackEngine"]
   ROOT --> PR["PlaybackRenderer"]
   ROOT --> SS["SelectionSession"]
@@ -65,6 +66,9 @@ flowchart LR
   FDS --> LE
   PP --> FDS
   PP --> DFS
+  AWC --> DFS
+  AWC --> LE
+  AWC --> PP
   PE --> PP
   PE --> FDS
   PE --> DFS
@@ -79,8 +83,9 @@ flowchart LR
 | Runtime 角色 | 唯一 owner | 建立位置 | 生命週期／銷毀責任 |
 | --- | --- | --- | --- |
 | Monotonic／playback／render 時鐘 | `ClockDomain` immutable value | `RuntimeCompositionRoot` | 頁面期存活；只提供注入 clock interface，不保存業務狀態 |
-| 播放狀態、日期、target、buffer | `PlaybackEngine` | `RuntimeCompositionRoot` | `start / pause / stop / dispose`；停止時取消 target demand 並解除 frame pin |
+| 播放狀態、日期、startup／resume gate、target、buffer | `PlaybackEngine` | `RuntimeCompositionRoot` | `start / pause / stop / dispose`；停止時取消 preparation、target、resume demand 並解除 frame pin |
 | 預熱 scope、inflight、retry timer | `PlaybackPreheater` | `RuntimeCompositionRoot` | `setScope / stop / dispose`；銷毀時取消 scope、timer 與 Store subscription |
+| 有效高低水位、下降 hold 與上次套用時間 | `AdaptiveWatermarkController` | `RuntimeCompositionRoot` | `resolve / reset / dispose`；只決定 policy，不擁有 query、cache 或 playback clock |
 | query queue、active task、consumer | `QueryScheduler` | `RuntimeCompositionRoot` | `demand / cancelScope / dispose`；銷毀時 abort 未完成 task |
 | Canonical frame、alias、pin、failure、LRU | `DataFrameStore` | `RuntimeCompositionRoot` | `put / inspect / pin / release / dispose`；銷毀時清空 RAM 與 listener |
 | lifecycle event、run、listener | `LifecycleEventLog` | `RuntimeCompositionRoot` | `beginRun / record / endRun / dispose`；銷毀時清空 bounded log 與 subscription |
@@ -121,7 +126,7 @@ flowchart LR
 
 ## 維持 Pure Function／Factory 的角色
 
-- `FrameIdentity`、BBOX／coverage 計算、watermark/date window、color domain、Mapping 與 Canonical normalization 是 pure function 或 immutable registry。
+- `FrameIdentity`、BBOX／coverage 計算、`calculateAdaptiveWatermarkPolicy`、watermark/date window、color domain、Mapping 與 Canonical normalization 是 pure function 或 immutable registry。
 - `FrameDemandService`、`PlaybackCacheService` 與 `RenderIntentService` 沒有跨呼叫私有狀態，因此使用注入依賴的 stateless factory，不為形式一致而 class 化。
 - `PlaybackScheduler`、`PlaybackFrameBuffer`、`PlaybackDeliveryPolicy` 與 interpolation policy 是純 policy／計算物件，不擁有播放生命週期。
 - `RendererRegistry`、`WidgetAbilityRegistry`、`WidgetSizeAbleDict` 與 Mapping registry 仍負責決策；Runtime class 只接收決策結果或 registry interface。
@@ -176,6 +181,23 @@ Render Clock
 - 30 秒 buffer timeout 是純 monotonic policy；`1x／2x／4x` 不得改變等待秒數。
 
 `tests/clock_domain.test.mjs` 使用可前進的假時鐘驗證上述規則。舊 `PlaybackTelemetry` 與 Widget 自行累加等待時間的路徑已刪除，不保留雙軌 shim。
+
+## Adaptive Watermark 邊界
+
+`AdaptiveWatermarkController` 是 DI 建立的有狀態 policy owner。純函數 `calculateAdaptiveWatermarkPolicy` 接收固定基準水位、可信 metrics、Store 容量快照及設定，回傳候選水位；class 只擁有跨次計算所需的 monotonic hysteresis、目前 policy 與 lifecycle event。
+
+不變式：
+
+- 樣本不足時使用固定 5/10 基準，不推測不存在的供應能力。
+- 指標可信後，以 `consumption_rate`、`supply_rate`、`cache_ready_latency_p95`、尾端安全係數與 reserve slices 推導水位。
+- 有效高水位不得超過設定上限或以 frame-size P95 換算的 RAM／entry 預算。
+- 水位上升立即生效；下降使用 monotonic hold 與有限步長。播放倍率不得進入 hold、latency 或 timeout 計算。
+- Controller 不呼叫 Adapter、Demand 或 Scheduler，不清除 Store，也不調整 query concurrency。
+- UI 與 Widget 只能讀 `preview/snapshot`；只有 `PlaybackPreheater.reconcile()` 可呼叫 `resolve()` 套用策略。
+- 策略狀態使用 `policyStatus`，不得覆蓋 Preheater 的 `READY/FETCHING/STOPPED` 生命週期狀態。
+- 冷快取由 `PlaybackEngine` 進入 `PREPARING` 並等待 `startupWatermark`；這段耗時獨立記為 preparation，不得併入 stall。
+- target miss 進入 `BUFFERING` 後，必須累積至 `resumeWatermark` 才能發出 `BUFFER_RESUMED`。gate 在同一次等待中只能提高，不能因短期指標波動降低。
+- 手動 Seek 不呼叫 `PlaybackEngine.start()`，只由地圖 current demand 提升目標；其後的 Preheater 補貨維持背景工作。
 
 ## 停止條件
 

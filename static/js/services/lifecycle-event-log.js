@@ -197,6 +197,7 @@ class LifecycleEventLogCore {
     const cacheReadyDurations = lifecyclePairedDurations(selected, "TASK_QUEUED", "CACHE_READY");
     const renderDurations = lifecyclePairedDurations(selected, "RENDER_STARTED", "FRAME_VISIBLE", "render_ms");
     const targetDurations = lifecyclePairedDurations(selected, "TARGET_REQUIRED", "FRAME_VISIBLE");
+    const preparationDurations = lifecyclePairedDurations(selected, "PREPARE_STARTED", "PREPARE_READY");
     return Object.freeze({
       runId: runId || "",
       eventCount: selected.length,
@@ -205,6 +206,7 @@ class LifecycleEventLogCore {
       cacheMisses: selected.filter((event) => event.type === "CACHE_MISS").length,
       promotedTasks: selected.filter((event) => event.type === "TASK_PROMOTED").length,
       httpRequests: selected.filter((event) => event.type === "HTTP_STARTED").length,
+      prepareCount: selected.filter((event) => event.type === "PREPARE_STARTED").length,
       stallCount: allStalls.length,
       activeStallCount: activeStalls.length,
       totalStallMs,
@@ -219,11 +221,15 @@ class LifecycleEventLogCore {
         network: lifecycleDurationStats(networkDurations),
         cacheCommit: lifecycleDurationStats(cacheCommitDurations),
         render: lifecycleDurationStats(renderDurations),
+        preparation: lifecycleDurationStats(preparationDurations),
       }),
       trustedMetrics: Object.freeze({
         observed_consumption_rate: lifecycleRate(visible),
         supply_rate: lifecycleRate(cacheReady),
         cache_ready_latency_p95: lifecyclePercentile(cacheReadyDurations, 0.95),
+        consumption_samples: visible.length,
+        supply_samples: cacheReady.length,
+        cache_ready_latency_samples: cacheReadyDurations.length,
       }),
       elapsedMs,
       startedAt: first?.wall_time || "",

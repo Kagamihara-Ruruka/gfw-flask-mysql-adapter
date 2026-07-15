@@ -21,6 +21,8 @@ The Widget UI/Application boundary regression report is available at
 [`benchmarks/widget_application_boundary_acceptance_2026-07-16.md`](benchmarks/widget_application_boundary_acceptance_2026-07-16.md).
 The Clock Domain and trusted runtime-metrics acceptance report is available at
 [`benchmarks/clock_domain_acceptance_2026-07-16.md`](benchmarks/clock_domain_acceptance_2026-07-16.md).
+The adaptive-watermark and final full-year cold/warm acceptance report is available at
+[`benchmarks/adaptive_watermark_acceptance_2026-07-16.md`](benchmarks/adaptive_watermark_acceptance_2026-07-16.md).
 
 ## Upstream Handoff
 
@@ -61,7 +63,7 @@ The frontend is deliberately split by responsibility:
 - `static/js/services`: render intent, the central query coordinator, canonical sampled-grid cache, API calls, and shared service helpers.
 - `static/js/layers`: sampled-grid, AIS, and EEZ rendering behavior, plus layer visual effects such as zoom blur and crossfade handoff.
 - `static/js/rendering`: renderer capability checks, renderer selection, WebGL/canvas paint helpers, virtual-grid contracts, and data-driven paint configuration.
-- `static/js/playback`: playback controls, delivery policy, pure timeline scheduler, frame readiness buffer, playback renderer handoff, playback interpolation policy, the independent watermark preheater, and snapshot splitting helpers.
+- `static/js/playback`: playback controls, delivery policy, pure timeline scheduler, frame readiness buffer, playback renderer handoff, playback interpolation policy, the independent preheater, the adaptive-watermark controller, and snapshot splitting helpers.
 - `static/js/ui`: table, playback, layer selector, map settings, and shared layer style controls.
 
 Runtime timing is injected by `ClockDomain`: monotonic wall time owns queue, network, cache, buffering, timeout, and percentile measurements; playback time alone applies the speed multiplier; render time owns animation-frame and draw measurements. Lifecycle events use `monotonic_ms`, and the status line, metrics Widget, and event viewer consume the same `RuntimePerformanceMetrics` snapshot instead of maintaining separate playback telemetry.
@@ -200,7 +202,7 @@ The settings page exposes playback as separate responsibility boxes instead of o
 
 - Playback timeline: delivery policy and `playbackRate` decide which real snapshot date the player is trying to show. Analysis mode is implemented; smooth and strict modes are reserved ports.
 - Frame buffer: analysis mode reports `fetching/missing/ready/waiting/failed` state boundaries. The timing box records `buffering`, `resumed`, and `shown` events separately from SQL/API/render work.
-- Data cache / preheat: an independent producer maintains low/high ready-ahead watermarks; scheduler concurrency and the RAM budget bound its work.
+- Data cache / preheat: an independent producer maintains startup, resume, and low/high ready-ahead watermarks. Trusted supply/consumption metrics, cache-ready P95, remaining slices, and the RAM budget determine adaptive watermarks by default; fixed baseline watermarks remain available. Scheduler concurrency independently bounds actual query work.
 - Frame interpolation: playback can use the existing layer crossfade as a visual-only interpolation policy or switch directly between real snapshots; data blending remains reserved for a future `requestAnimationFrame` loop backed by render artifacts.
 - Visual effects: crossfade decorates layer replacement; Gaussian blur is limited to zoom / LOD reload masking.
 - Render pressure and timing: renderer policy and the dashboard timing box observe performance without owning the playback clock.
@@ -218,7 +220,9 @@ The guarded contracts are:
 - Progressive cold cache reports `fetching 0 / 1`; when the target packet is ready it records `BUFFER_RESUMED` and then `FRAME_VISIBLE`.
 - Progressive request failures report `failed`, emit a lifecycle error event, and stop playback after a real monotonic 30-second timeout instead of retrying forever.
 - Cancelled or replaced progressive preheats cannot apply late progress, status, or failure state to the current playback generation.
-- Playback never waits for a complete preheat batch. The independent preheater fills individual missing frames to the high watermark while playback consumes ready frames; only a missing target can enter `BUFFERING`.
+- Cold playback enters `PREPARING` and waits for the startup watermark without counting that wait as a playback stall. During playback, the independent preheater fills individual missing frames to the high watermark while playback consumes ready frames.
+- Only a missing target can enter `BUFFERING`; recovery waits for the resume watermark instead of resuming on a one-frame gate. Manual seek still promotes only its target and does not enter startup preparation.
+- `AdaptiveWatermarkController` reads only `RuntimePerformanceMetrics` and the `DataFrameStore` capacity snapshot. It performs no transport, changes no query concurrency, and never clears cache. UI paths may preview or display policy; only Preheater reconciliation applies it.
 - `fluid` is the only step mode allowed to map elapsed time to future dates. It remains reserved behind the disabled smooth delivery port.
 - Prefetch, render, interpolation, blur, and timing observations supply or decorate frames; none of them owns the playback date clock.
 
@@ -238,7 +242,8 @@ Current frontend module boundaries:
 | `static/js/services/layer-query-coordinator.js` | Priority scheduler with one execution per intent key, queued-task promotion, consumer-scoped cancellation, and a reserved foreground slot. |
 | `static/js/services/frame-demand-service.js` | The only sampled-grid transport boundary. It checks `DataFrameStore`, schedules a miss, normalizes the returned packet, and commits it once. |
 | `static/js/playback/playback-preheater.js` | Long-lived producer that independently maintains low/high ready-ahead watermarks. It does not own the playback clock. |
-| `static/js/playback/playback-engine.js` | Pure frame consumer and playback lifecycle owner. It requests only a missing target, pins the visible frame, and records buffering/render events. |
+| `static/js/playback/adaptive-watermark-controller.js` | DI-owned stateful policy owner. It derives effective watermarks from trusted supply, cache-ready P95, playback consumption, and RAM budget, with monotonic decrease hysteresis. |
+| `static/js/playback/playback-engine.js` | Frame consumer and playback lifecycle owner. It owns startup preparation, target-miss buffering, resume gates, visible-frame pins, and their lifecycle events. |
 | `static/js/playback/playback-cache-service.js` | Playback cache settings/status facade. It exposes watermarks and RAM capacity but owns neither transport nor a batch pipeline. |
 | `static/js/services/lifecycle-event-log.js` | Bounded event log, run export, and user-perceived Queue/HTTP/cache/render/stall metrics. |
 | `static/js/services/runtime-performance-metrics.js` | The single trusted projection for supply, consumption, cache-ready tail latency, ready-ahead, and buffer-wait values. |
@@ -251,6 +256,9 @@ flowchart LR
   UI["Map and playback commands"] --> Engine["PlaybackEngine"]
   Engine -->|"frame demand"| Demand["FrameDemandService"]
   Preheater["PlaybackPreheater"] -->|"watermark demand"| Demand
+  Metrics["RuntimePerformanceMetrics"] --> Watermark["AdaptiveWatermarkController"]
+  Store --> Watermark
+  Watermark -->|"effective watermarks"| Preheater
   Demand --> Scheduler["QueryScheduler"]
   Scheduler --> Adapter["Flask API + Mapping adapter"]
   Adapter --> Store["DataFrameStore: canonical RAM frames"]

@@ -89,6 +89,36 @@ class LifecycleEventViewerWidget extends DashboardWidget {
   }
 
   eventDetail(event) {
+    if (event.type === "WATERMARK_POLICY_CHANGED") {
+      return [
+        event.strategy || "watermark",
+        `低 ${Number(event.low_watermark || 0)} / 高 ${Number(event.high_watermark || 0)}`,
+        `啟動 ${Number(event.startup_watermark || 0)} / 恢復 ${Number(event.resume_watermark || 0)}`,
+        event.reason || "",
+        event.degradation_reason || "",
+      ].filter(Boolean).join(" · ");
+    }
+    if (event.type === "WATERMARK_POLICY_RESET") {
+      return `水位策略重設 · ${event.reason || "configuration_changed"}`;
+    }
+    if (/^PREPARE_/.test(event.type)) {
+      return [
+        event.dataset || "",
+        event.date || "",
+        `${Number(event.ready_slices || 0)} / ${Number(event.required_slices || 0)} 張`,
+        event.duration_ms ? this.formatDuration(event.duration_ms) : "",
+        event.degradation_reason || "",
+      ].filter(Boolean).join(" · ");
+    }
+    if (/^BUFFER_(ENTERED|RESUMED)$/.test(event.type)) {
+      return [
+        event.dataset || "",
+        event.date || "",
+        `${Number(event.ready_slices || 0)} / ${Number(event.required_slices || 0)} 張`,
+        event.duration_ms ? this.formatDuration(event.duration_ms) : "",
+        event.degradation_reason || "",
+      ].filter(Boolean).join(" · ");
+    }
     return [
       event.dataset || event.dataset_id || "",
       event.date || "",
@@ -153,11 +183,16 @@ class LifecycleEventViewerWidget extends DashboardWidget {
         <span><b>${lineChartEscape(this.formatDuration(summary.phases?.render?.p95Ms))}</b><em>Render P95</em></span>
         <span><b>${Number(summary.maxQueueDepth || 0)}</b><em>最大 Queue</em></span>
         <span><b>${lineChartEscape(this.formatDuration(summary.targetToVisibleP95Ms))}</b><em>目標至可見 P95</em></span>
+        <span><b>${lineChartEscape(this.formatDuration(summary.phases?.preparation?.p95Ms))}</b><em>啟動準備 P95</em></span>
         <span><b>${Number(trusted.consumption_rate || 0).toFixed(2)} /s</b><em>消耗率</em></span>
         <span><b>${Number(trusted.supply_rate || 0).toFixed(2)} /s</b><em>補給率</em></span>
         <span><b>${lineChartEscape(this.formatDuration(trusted.cache_ready_latency_p95))}</b><em>Cache Ready P95</em></span>
         <span><b>${Number(trusted.ready_ahead_slices || 0)}</b><em>前方影格</em></span>
         <span><b>${Number(trusted.ready_ahead_seconds || 0).toFixed(1)} s</b><em>前方秒數</em></span>
+        <span><b>${Number(trusted.watermark_policy?.low_watermark || 0)} / ${Number(trusted.watermark_policy?.high_watermark || 0)}</b><em>有效水位</em></span>
+        <span><b>${Number(trusted.watermark_policy?.startup_watermark || 0)} / ${Number(trusted.watermark_policy?.resume_watermark || 0)}</b><em>啟動 / 恢復</em></span>
+        <span><b>${lineChartEscape(trusted.watermark_policy?.status || "-")}</b><em>水位策略</em></span>
+        <span><b>${lineChartEscape(trusted.watermark_policy?.degradation_reason || "-")}</b><em>降級原因</em></span>
       </div>
       <div class="event-viewer-table-wrap" data-widget-interactive="1">
         <table class="event-viewer-table">

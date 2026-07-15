@@ -262,6 +262,13 @@
             <section class="settings-section playback-settings-section">
               <h3>資料快取 / 預熱</h3>
               <label>
+                水位策略
+                <select id="playback-cache-strategy">
+                  <option value="adaptive" selected>自適應</option>
+                  <option value="fixed">固定</option>
+                </select>
+              </label>
+              <label>
                 網路查詢並行數
                 <select id="query-network-concurrency">
                   <option value="1">1</option>
@@ -273,17 +280,26 @@
                 </select>
               </label>
               <label>
-                低水位（張）
+                基準低水位（張）
                 <input id="playback-cache-low-watermark" type="number" min="1" max="59" step="1" value="5">
               </label>
               <label>
-                高水位（張）
+                基準高水位（張）
                 <input id="playback-cache-high-watermark" type="number" min="2" max="60" step="1" value="10">
+              </label>
+              <label>
+                冷啟動水位（張）
+                <input id="playback-cache-startup-watermark" type="number" min="1" max="60" step="1" value="5">
+              </label>
+              <label>
+                中斷恢復水位（張）
+                <input id="playback-cache-resume-watermark" type="number" min="2" max="60" step="1" value="5">
               </label>
               <label>
                 快取上限 (GB)
                 <input id="playback-cache-max-gb" type="number" min="0.25" max="16" step="0.25" value="2">
               </label>
+              <p id="playback-cache-policy-status" class="setting-note">自適應水位：樣本累積中 · 低 5 / 高 10 · 啟動 5 / 恢復 5</p>
               <p class="setting-note">預熱器與播放器獨立運作；下一幀尚未就緒時維持目前畫面，低水位觸發補貨至高水位。網路查詢並行數同時約束地圖、播放與 Widget 的共用排程器；快取上限控制記憶體壓力。</p>
               <div class="playback-cache-meter" aria-label="播放快取容量">
                 <div class="playback-cache-meter-label">
@@ -667,9 +683,9 @@
   <script src="/static/js/ui/telemetry/snapshot-performance-chart.js?v=plotly-detail-source-v8"></script>
   <script src="/static/js/core/clock-domain.js?v=clock-domain-v1"></script>
   <script src="/static/TimingMetrics.js?v=clock-domain-v1"></script>
-  <script src="/static/js/core/state.js?v=playback-watermark-v1"></script>
-  <script src="/static/js/services/lifecycle-event-log.js?v=clock-domain-v1"></script>
-  <script src="/static/js/services/runtime-performance-metrics.js?v=clock-domain-v1"></script>
+  <script src="/static/js/core/state.js?v=startup-resume-watermark-v1"></script>
+  <script src="/static/js/services/lifecycle-event-log.js?v=startup-resume-watermark-v1"></script>
+  <script src="/static/js/services/runtime-performance-metrics.js?v=startup-resume-watermark-v1"></script>
   <script src="/static/js/services/frame-identity.js?v=lifecycle-core-v1"></script>
   <script src="/static/js/core/dom.js?v=zh-tw-v99"></script>
   <script src="/static/js/core/render-state.js?v=zh-tw-v99"></script>
@@ -703,11 +719,12 @@
   <script src="/static/js/services/gfw-render-artifact-cache.js?v=gfw-render-artifact-cache-v1"></script>
   <script src="/static/js/services/render-intent-service.js?v=resolution-route-v2"></script>
   <script src="/static/js/services/layer-query-coordinator.js?v=clock-domain-v1"></script>
-  <script src="/static/js/services/data-frame-store.js?v=clock-domain-v1"></script>
+  <script src="/static/js/services/data-frame-store.js?v=startup-resume-watermark-v1"></script>
   <script src="/static/js/services/frame-demand-service.js?v=clock-domain-v1"></script>
-  <script src="/static/js/playback/playback-cache-service.js?v=runtime-oop-v1"></script>
-  <script src="/static/js/playback/playback-preheater.js?v=clock-domain-v1"></script>
-  <script src="/static/js/playback/playback-engine.js?v=clock-domain-v1"></script>
+  <script src="/static/js/playback/playback-cache-service.js?v=startup-resume-watermark-v1"></script>
+  <script src="/static/js/playback/playback-preheater.js?v=startup-resume-watermark-v1"></script>
+  <script src="/static/js/playback/playback-engine.js?v=startup-resume-watermark-v1"></script>
+  <script src="/static/js/playback/adaptive-watermark-controller.js?v=startup-resume-watermark-v1"></script>
   <script src="/static/js/playback/playback-renderer.js?v=runtime-oop-v1"></script>
   <script src="/static/js/services/api-client.js?v=runtime-oop-v1"></script>
   <script src="/static/js/application/widgets/widget-model-functions.js?v=widget-application-v1"></script>
@@ -717,16 +734,16 @@
   <script src="/static/js/application/widgets/table-widget-data-source.js?v=widget-application-v1"></script>
   <script src="/static/js/application/widgets/eez-attribution-data-source.js?v=widget-application-v1"></script>
   <script src="/static/js/application/widgets/widget-application-runtime.js?v=widget-application-v1"></script>
-  <script src="/static/js/runtime/runtime-composition-root.js?v=clock-domain-v1"></script>
+  <script src="/static/js/runtime/runtime-composition-root.js?v=startup-resume-watermark-v1"></script>
   <script src="/static/js/ui/map/tile-selection-layer.js?v=runtime-oop-v1"></script>
   <script src="/static/js/playback/playback-delivery-policy.js?v=playback-delivery-policy-v2"></script>
   <script src="/static/js/ui/settings/hardware-settings.js?v=dynamic-layer-menu-v1"></script>
   <script src="/static/js/ui/settings/virtual-grid-settings.js?v=virtual-grid-settings-v1"></script>
   <script src="/static/js/playback/playback-scheduler.js?v=playback-scheduler-v1"></script>
-  <script src="/static/js/playback/playback-frame-buffer.js?v=playback-watermark-v1"></script>
+  <script src="/static/js/playback/playback-frame-buffer.js?v=startup-resume-watermark-v1"></script>
   <script src="/static/js/playback/playback-time-policy.js?v=clock-domain-v1"></script>
   <script src="/static/js/playback/playback-interpolation-controller.js?v=playback-interpolation-v2"></script>
-  <script src="/static/js/playback/playback-controls.js?v=clock-domain-v1"></script>
+  <script src="/static/js/playback/playback-controls.js?v=startup-resume-watermark-v1"></script>
   <script src="/static/js/playback/fullscreen-playback-controls.js?v=fullscreen-svg-v1"></script>
   <script src="/static/js/ui/layers/layer-activation-controller.js?v=layer-activation-controller-v1"></script>
   <script src="/static/js/ui/widgets/core/widget-core.js?v=widget-plotly-lifecycle-v1"></script>
@@ -737,11 +754,11 @@
   <script src="/static/js/ui/widgets/capabilities/eez-attribution.js?v=widgets-modules-v1"></script>
   <script src="/static/js/ui/widgets/capabilities/table.js?v=widgets-modules-v1"></script>
   <script src="/static/js/ui/widgets/capabilities/map-jump.js?v=widgets-modules-v1"></script>
-  <script src="/static/js/ui/widgets/capabilities/metrics.js?v=clock-domain-v1"></script>
-  <script src="/static/js/ui/widgets/capabilities/event-viewer.js?v=clock-domain-v1"></script>
+  <script src="/static/js/ui/widgets/capabilities/metrics.js?v=startup-resume-watermark-v1"></script>
+  <script src="/static/js/ui/widgets/capabilities/event-viewer.js?v=startup-resume-watermark-v1"></script>
   <script src="/static/js/ui/widgets/registry/widget-registry.js?v=widgets-launchpad-registered-v3"></script>
   <script src="/static/js/ui/widgets/runtime/widgets-runtime.js?v=line-chart-active-slice-v2"></script>
   <script src="/static/js/ui/widgets/widget-launchpad.js?v=widgets-launchpad-registered-v3"></script>
-  <script src="/static/app.js?v=layer-activation-controller-v1"></script>
+  <script src="/static/app.js?v=startup-resume-watermark-v1"></script>
 </body>
 </html>

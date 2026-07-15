@@ -100,6 +100,8 @@ function loadPlaybackCacheService({ waitForDates = async (dates) => ({
       windowBehind: 1,
       highWatermark: 10,
       lowWatermark: 5,
+      startupWatermark: 5,
+      resumeWatermark: 5,
       isBackgroundPreloading: false,
       buffering: false,
       bufferStatus: "idle",
@@ -140,6 +142,15 @@ function loadPlaybackCacheService({ waitForDates = async (dates) => ({
       stop() {},
       waitForDates,
     },
+    AdaptiveWatermarkController: {
+      preview({ fixedPolicy }) {
+        return { strategy: "fixed", status: "FIXED", ...fixedPolicy };
+      },
+      resolve({ fixedPolicy }) {
+        return { strategy: "fixed", status: "FIXED", ...fixedPolicy };
+      },
+      reset() {},
+    },
     isSampledGridLayer(layerId) {
       return layerId === state.dataLayer;
     },
@@ -155,6 +166,7 @@ function loadPlaybackCacheService({ waitForDates = async (dates) => ({
     targetState: state,
     dataFrameStore: globals.DataFrameStore,
     preheater: globals.PlaybackPreheater,
+    watermarkController: globals.AdaptiveWatermarkController,
     frameIdentity: globals.FrameIdentity,
     sampledGridLayerPredicate: globals.isSampledGridLayer,
   });
@@ -341,7 +353,7 @@ test("progressive cold cache produces a target-frame fetching decision", () => {
   });
 });
 
-test("progressive ready target renders the target frame with a 1-frame gate", () => {
+test("a ready target renders immediately when no recovery gate is active", () => {
   const { PlaybackFrameBuffer } = loadPlaybackCore();
   const service = cacheService({
     readyDates: ["2024-01-02", "2024-01-03"],
@@ -365,6 +377,27 @@ test("progressive ready target renders the target frame with a 1-frame gate", ()
   assert.equal(decision.resumeCount, 1);
   assert.equal(decision.canRender, true);
   assert.equal(decision.isFallback, false);
+});
+
+test("an active recovery gate blocks a ready target until the resume watermark", () => {
+  const { PlaybackFrameBuffer } = loadPlaybackCore();
+  const service = cacheService({ readyDates: ["2024-01-02"] });
+  const decision = PlaybackFrameBuffer.inspectTarget({
+    dates,
+    currentIndex: 0,
+    targetIndex: 1,
+    hasCacheLayer: true,
+    requestContext: { dataset: "gfw_full" },
+    cacheService: service,
+    resumeGate: { active: true, readyCount: 1, required: 3 },
+  });
+
+  assert.equal(decision.state, PlaybackFrameBuffer.FRAME_STATES.waiting);
+  assert.equal(decision.renderIndex, -1);
+  assert.equal(decision.readyCount, 1);
+  assert.equal(decision.requiredCount, 3);
+  assert.equal(decision.resumeCount, 3);
+  assert.equal(decision.canRender, false);
 });
 
 test("progressive target failure becomes an explicit failed frame-buffer state", () => {
@@ -416,13 +449,30 @@ test("playback watermarks are explicit runtime policy", () => {
   const { PlaybackCacheService, state } = loadPlaybackCacheService();
   assert.equal(PlaybackCacheService.options().lowWatermark, 5);
   assert.equal(PlaybackCacheService.options().highWatermark, 10);
+  assert.equal(PlaybackCacheService.options().effectiveStartupWatermark, 5);
+  assert.equal(PlaybackCacheService.options().effectiveResumeWatermark, 5);
   state.playbackCache.highWatermark = 4;
   state.playbackCache.lowWatermark = 8;
   assert.equal(PlaybackCacheService.options().highWatermark, 4);
   assert.equal(PlaybackCacheService.options().lowWatermark, 3);
+  assert.equal(PlaybackCacheService.options().effectiveStartupWatermark, 4);
+  assert.equal(PlaybackCacheService.options().effectiveResumeWatermark, 4);
 });
 
-test("watermark playback does not block startup on cache preheat", () => {
+test("playback settings preview policy without applying lifecycle state", () => {
+  const source = readFileSync(
+    path.join(repoRoot, "static/js/playback/playback-cache-service.js"),
+    "utf8",
+  );
+  const start = source.indexOf("function options()");
+  const end = source.indexOf("function formatBytes", start);
+  const body = source.slice(start, end);
+
+  assert.match(body, /WatermarkController\.preview/);
+  assert.doesNotMatch(body, /WatermarkController\.resolve/);
+});
+
+test("watermark playback awaits the engine-owned startup gate without calling the preheater from UI", () => {
   const source = readFileSync(
     path.join(repoRoot, "static/js/playback/playback-controls.js"),
     "utf8",
@@ -432,7 +482,8 @@ test("watermark playback does not block startup on cache preheat", () => {
   const body = source.slice(start, end);
 
   assert.ok(start >= 0 && end > start);
-  assert.doesNotMatch(body, /await\s+awaitProgressiveStartupBuffer/);
+  assert.match(body, /const startPromise = PlaybackEngine\.start/);
+  assert.match(body, /started = await startPromise/);
   assert.match(body, /state\.isPlaying = true;[\s\S]*schedulePlaybackTick\(generation\);/);
   assert.doesNotMatch(body, /PlaybackPreheater\.|preheatPlaybackCache|before_play/);
 });

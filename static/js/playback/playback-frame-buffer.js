@@ -40,6 +40,7 @@ const PlaybackFrameBuffer = (() => {
     hasCacheLayer,
     requestContext,
     cacheService,
+    resumeGate = null,
   }) {
     const allDates = Array.isArray(dates) ? dates : [];
     if (targetIndex < 0 || targetIndex >= allDates.length) {
@@ -68,6 +69,16 @@ const PlaybackFrameBuffer = (() => {
       }
     }
     if (renderIndex >= 0) {
+      if (resumeGate?.active) {
+        return {
+          ...emptyDecision(targetIndex),
+          state: FRAME_STATES.waiting,
+          targetDate,
+          readyCount: Math.max(0, Number(resumeGate.readyCount || 0)),
+          requiredCount: Math.max(1, Number(resumeGate.required || 1)),
+          resumeCount: Math.max(1, Number(resumeGate.required || 1)),
+        };
+      }
       return {
         ...emptyDecision(targetIndex),
         state: FRAME_STATES.ready,
@@ -99,9 +110,11 @@ const PlaybackFrameBuffer = (() => {
       ...emptyDecision(targetIndex),
       state: FRAME_STATES.fetching,
       targetDate,
-      readyCount: cacheService.countReadyPrefix?.(allDates, targetIndex, requestContext) || 0,
-      requiredCount: 1,
-      resumeCount: 1,
+      readyCount: resumeGate?.active
+        ? Math.max(0, Number(resumeGate.readyCount || 0))
+        : cacheService.countReadyPrefix?.(allDates, targetIndex, requestContext) || 0,
+      requiredCount: resumeGate?.active ? Math.max(1, Number(resumeGate.required || 1)) : 1,
+      resumeCount: resumeGate?.active ? Math.max(1, Number(resumeGate.required || 1)) : 1,
     };
   }
 
