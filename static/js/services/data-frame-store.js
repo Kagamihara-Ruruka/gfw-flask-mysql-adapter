@@ -5,8 +5,12 @@ class DataFrameStoreCore {
     optionsProvider = null,
     statsTargetProvider = null,
     eventTarget = null,
+    clock,
   } = {}) {
   if (!frameIdentity) throw new TypeError("DataFrameStore requires FrameIdentity");
+  if (!clock || typeof clock.now !== "function") {
+    throw new TypeError("DataFrameStore requires a monotonic clock");
+  }
   const FrameIdentity = frameIdentity;
   const LifecycleEventLog = eventLog;
   const DEFAULT_MAX_BYTES = 2 * 1024 * 1024 * 1024;
@@ -429,7 +433,7 @@ class DataFrameStoreCore {
     const failure = Object.freeze({
       message: error?.message || String(error || "request failed"),
       name: error?.name || "Error",
-      at: Date.now(),
+      monotonic_ms: clock.now(),
     });
     failures.set(intentKey, failure);
     notify({ type: "failed", intentKey, datasetId: normalized.datasetId, date: normalized.date, failure });

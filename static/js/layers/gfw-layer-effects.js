@@ -62,9 +62,12 @@ const SampledGridLayerEffects = (() => {
     setLayerBlur(targetState.gridLayer, targetState, true);
   }
 
-  function waitTransition(targetState) {
+  function waitTransition(targetState, renderClock) {
+    if (!renderClock || typeof renderClock.schedule !== "function") {
+      throw new TypeError("SampledGrid transition requires a render clock");
+    }
     return new Promise((resolve) => {
-      window.setTimeout(resolve, transitionMs(targetState));
+      renderClock.schedule(resolve, transitionMs(targetState));
     });
   }
 
@@ -92,7 +95,10 @@ const SampledGridLayerEffects = (() => {
     }
   }
 
-  function crossfade({ targetMap, targetState, previousLayer, nextLayer }) {
+  function crossfade({ targetMap, targetState, previousLayer, nextLayer, renderClock }) {
+    if (!renderClock || typeof renderClock.request !== "function" || typeof renderClock.schedule !== "function") {
+      throw new TypeError("SampledGrid crossfade requires a render clock");
+    }
     syncTransitionStyle(targetMap, targetState);
     setPaneBlur(targetMap, targetState, false);
     setPaneOpacity(targetMap, 1);
@@ -110,14 +116,14 @@ const SampledGridLayerEffects = (() => {
     targetState.sampledGridRetiringLayers = targetState.sampledGridRetiringLayers || [];
     targetState.sampledGridRetiringLayers.push(previousLayer);
 
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
+    renderClock.request(() => {
+      renderClock.request(() => {
         setLayerOpacity(nextLayer, 1);
         setLayerOpacity(previousLayer, 0);
       });
     });
 
-    window.setTimeout(() => {
+    renderClock.schedule(() => {
       if (targetState.gridLayer !== previousLayer) {
         removeRetiredLayer({ targetMap, targetState, layer: previousLayer });
       }

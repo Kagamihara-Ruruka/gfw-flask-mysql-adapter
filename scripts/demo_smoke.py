@@ -26,7 +26,9 @@ REQUIRED_HTML_MARKERS = (
     "playback-scheduler.js",
     "playback-frame-buffer.js",
     "playback-renderer.js",
-    "playback-telemetry.js",
+    "clock-domain.js",
+    "runtime-performance-metrics.js",
+    "playback-time-policy.js",
     "playback-interpolation-controller.js",
     "lifecycle-event-log.js",
     "data-frame-store.js",
@@ -39,8 +41,10 @@ REQUIRED_HTML_MARKERS = (
 )
 
 REQUIRED_SCRIPT_ORDER = (
+    "clock-domain.js",
     "TimingMetrics.js",
     "lifecycle-event-log.js",
+    "runtime-performance-metrics.js",
     "frame-identity.js",
     "render-intent-service.js",
     "layer-query-coordinator.js",
@@ -55,7 +59,7 @@ REQUIRED_SCRIPT_ORDER = (
     "playback-delivery-policy.js",
     "playback-scheduler.js",
     "playback-frame-buffer.js",
-    "playback-telemetry.js",
+    "playback-time-policy.js",
     "playback-interpolation-controller.js",
     "playback-controls.js",
 )

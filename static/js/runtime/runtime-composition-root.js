@@ -7,6 +7,7 @@ class RuntimeCompositionRoot {
     frameIdentity,
     fetchJson: fetchJsonFn,
     sampledGridContract = null,
+    clockDomain = null,
   } = {}) {
     if (!targetState || !globalTarget || !eventTarget || !frameIdentity || typeof fetchJsonFn !== "function") {
       throw new TypeError("RuntimeCompositionRoot requires state, globals, events, identity and fetchJson");
@@ -18,6 +19,7 @@ class RuntimeCompositionRoot {
     this.frameIdentity = frameIdentity;
     this.fetchJson = fetchJsonFn;
     this.sampledGridContract = sampledGridContract;
+    this.clockDomain = clockDomain || createSystemClockDomain({ globalTarget });
     this.instances = new Map();
     this.exposedNames = new Map();
     this.disposalOrder = [];
@@ -61,9 +63,17 @@ class RuntimeCompositionRoot {
 
   composeCore() {
     if (this.composed) return this;
+    const clockDomain = this.own("ClockDomain", this.clockDomain);
     const eventLog = this.own("LifecycleEventLog", new LifecycleEventLogCore({
       maxEntriesProvider: () => this.state.lifecycleEvents?.maxEntries,
       eventTarget: this.eventTarget,
+      clock: clockDomain.monotonic,
+    }));
+    const timingMetrics = this.own("TimingMetrics", new TimingMetricsService({
+      monotonicClock: clockDomain.monotonic,
+      renderClock: clockDomain.render,
+      eventTarget: this.eventTarget,
+      documentTarget: this.globalTarget.document,
     }));
     if (typeof RenderStateController !== "undefined") {
       this.own("RenderState", new RenderStateController({
@@ -78,12 +88,14 @@ class RuntimeCompositionRoot {
       this.own("GfwRenderArtifactCache", new RenderArtifactCache({
         targetState: this.state,
         rendererRegistry: RendererRegistry,
+        clock: clockDomain.monotonic,
       }));
     }
     const scheduler = this.own("QuerySchedulerInstance", new QueryScheduler({
       concurrencyProvider: () => this.state.queryPolicy?.network_concurrency ?? 6,
       eventLog,
       snapshotSink: (snapshot) => this.syncQueryScheduler(snapshot),
+      clock: clockDomain.monotonic,
     }), { expose: false });
     const queryCoordinator = this.own("LayerQueryCoordinator", createLayerQueryCoordinator({
       scheduler,
@@ -95,6 +107,7 @@ class RuntimeCompositionRoot {
       optionsProvider: () => this.state.dataFrameStore || {},
       statsTargetProvider: () => this.dataFrameStatsTarget(),
       eventTarget: this.eventTarget,
+      clock: clockDomain.monotonic,
     }));
     const frameDemandService = this.own("FrameDemandService", createFrameDemandService({
       frameIdentity: this.frameIdentity,
@@ -103,11 +116,14 @@ class RuntimeCompositionRoot {
       eventLog,
       fetchJson: this.fetchJson,
       sampledGridContract: this.sampledGridContract,
+      clock: clockDomain.monotonic,
     }));
     const playbackPreheater = this.own("PlaybackPreheater", new PlaybackPreheaterController({
       store: dataFrameStore,
       demandService: frameDemandService,
       eventLog,
+      frameIdentity: this.frameIdentity,
+      clock: clockDomain.monotonic,
       optionsProvider: () => this.state.playbackCache || {},
       stateSink: (snapshot) => this.syncPreheater(snapshot),
     }));
@@ -122,16 +138,26 @@ class RuntimeCompositionRoot {
         ),
       }));
     }
-    this.own("PlaybackEngine", new PlaybackEngineCore({
+    const playbackEngine = this.own("PlaybackEngine", new PlaybackEngineCore({
       store: dataFrameStore,
       demandService: frameDemandService,
       preheater: playbackPreheater,
       eventLog,
       frameIdentity: this.frameIdentity,
+      clock: clockDomain.playback,
     }));
     this.own("PlaybackRenderer", new PlaybackRendererController({
       eventTarget: this.eventTarget,
     }));
+    const runtimePerformanceMetrics = this.own(
+      "RuntimePerformanceMetrics",
+      createRuntimePerformanceMetrics({
+        eventLog,
+        preheater: playbackPreheater,
+        playbackEngine,
+        clock: clockDomain.monotonic,
+      }),
+    );
     if (typeof VirtualGridRuntimeController !== "undefined" && typeof VirtualGridContract !== "undefined") {
       const virtualGridController = this.own("VirtualGridController", new VirtualGridRuntimeController({
         targetState: this.state,
@@ -202,9 +228,10 @@ class RuntimeCompositionRoot {
         queryCoordinator,
         eventLog,
         eventSink,
-        timingMetricsProvider: () => this.globalTarget.TimingMetrics || null,
-        schedule: (callback, delay) => this.globalTarget.setTimeout(callback, delay),
-        cancelSchedule: (timer) => this.globalTarget.clearTimeout(timer),
+        timingMetricsProvider: () => timingMetrics,
+        runtimeMetricsProvider: (runId = "") => runtimePerformanceMetrics.snapshot(runId),
+        schedule: clockDomain.monotonic.schedule,
+        cancelSchedule: clockDomain.monotonic.cancel,
       }));
     }
     this.composed = true;

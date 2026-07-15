@@ -18,6 +18,8 @@
 [`benchmarks/runtime_oop_acceptance_2026-07-15.md`](benchmarks/runtime_oop_acceptance_2026-07-15.md)。
 Widget UI／Application 邊界拆分後的回歸結果記錄在
 [`benchmarks/widget_application_boundary_acceptance_2026-07-16.md`](benchmarks/widget_application_boundary_acceptance_2026-07-16.md)。
+Clock Domain 與可信效能指標校正後的回歸結果記錄在
+[`benchmarks/clock_domain_acceptance_2026-07-16.md`](benchmarks/clock_domain_acceptance_2026-07-16.md)。
 
 ## 專案邊界
 
@@ -78,7 +80,7 @@ Runtime 只引用 `common_adapter/` 的正式模組。舊 root modules 與 `data
 - `static/app.js`：啟動 app，綁定 UI 與事件。
 - `static/js/core`：共用 state、DOM、map、geo、render-state。
 - `static/js/services`：render intent、中央 query coordinator、sampled-grid canonical cache、API client 與共用 service helper。
-- `static/js/playback`：播放控制、純時間線 scheduler、frame readiness buffer、playback renderer handoff、playback interpolation policy、telemetry、獨立水位預熱器與 snapshot splitter。
+- `static/js/playback`：播放控制、純時間線 scheduler、frame readiness buffer、playback renderer handoff、playback interpolation policy、獨立水位預熱器與 snapshot splitter。
 - `static/js/layers`：GFW、AIS、EEZ、graticule 圖層行為，以及 GFW zoom blur / crossfade 視覺效果邊界。
 - `static/js/rendering`：WebGL/Canvas 能力檢查、renderer registry、GFW paint 設定。
 - `static/js/ui`：table、播放控制、圖層選單、地圖設定、圖層樣式設定。
@@ -155,14 +157,22 @@ Hive 與 Spark 目前只是明確保留的 unsupported stub。這代表架構上
 
 播放排程以時間線為主控：播放速度是時間軸倍率，不是舊的「上一格完成後再等待」迴圈。預設交付策略是分析模式：每一張選取範圍內的真實 snapshot 都會依序消耗，`playbackRate` 只改變下一張 snapshot 的目標節拍。設定頁已暴露流暢與嚴格模式端口，但兩者明確標示為尚未實作，因此現階段不會接管播放 clock。查詢與渲染工作不會在每格後再額外疊一個完整 interval。progressive 模式不會為了完整 prebuffer 阻塞開播；分析模式會進入 buffering 而不是跳過下一張，等待期間不推進播放進度，frame ready 後會先記錄 resumed，再顯示真實 snapshot。target request 失敗會成為明確的 frame-buffer failed 狀態，不會永遠停在 `fetching`；暫停、重播、切圖層與切資料集會讓舊背景預載進度失效。
 
+所有 Runtime 計時由 `ClockDomain` 經 DI 注入，分成三個互不混用的時鐘：
+
+- Monotonic wall clock：Queue、HTTP、Mapping、Cache、Buffer、timeout 與 P95。
+- Playback clock：切片日期與播放節拍；只有這條路徑接受 `playbackRate`。
+- Render clock：`requestAnimationFrame`、draw 與畫面可見時間。
+
+生命周期事件只記錄 `monotonic_ms`。事件檢視器、測速 Widget 與狀態列共同讀取 `RuntimePerformanceMetrics`，不再各自建立等待時間或播放 telemetry 真相。
+
 設定頁把播放器拆成多個責任 box，而不是把所有選項混在同一個控制面：
 
 - 播放時間軸：播放交付策略與 `playbackRate` 決定播放器正在追哪一張真實 snapshot。分析模式已實作；流暢與嚴格模式是已暴露但未啟用的保留端口。
-- Frame buffer：分析模式會回報 `fetching/missing/ready/waiting/failed` 邊界；測速 box 會把 `buffering`、`resumed`、`顯示 snapshot` 與 SQL/API/render 分開觀測。
+- Frame buffer：分析模式會回報 `fetching/missing/ready/waiting/failed` 邊界；`LifecycleEventLog` 會把 `BUFFER_ENTERED`、`BUFFER_RESUMED`、`FRAME_VISIBLE` 與 Queue/HTTP/cache/render 分開觀測。
 - 資料快取 / 預熱：獨立生產者維持 ready-ahead 高低水位；scheduler 並行數與 RAM 容量限制其工作。
 - Frame 補間：播放可選用現有 layer crossfade 作為純視覺補間，也可在播放時直接切換真實 snapshot；真正資料 blend 仍保留給未來由 render artifact 支撐的 `requestAnimationFrame` 循環。
 - 視覺效果：淡入淡出只修飾 layer 替換；高斯模糊只限縮放 / LOD 重算時遮罩。
-- 渲染壓力與測速：renderer policy 與儀表板測速 box 只觀測或降級，不擁有播放 clock。
+- 渲染壓力與測速：renderer policy 與儀表板測速 Widget 只觀測或降級，不擁有播放 clock；`consumption_rate`、`supply_rate`、`cache_ready_latency_p95`、`ready_ahead_slices` 與 `ready_ahead_seconds` 由 Runtime 統一提供。
 
 播放器不變式由 `tests/playback_contracts.test.mjs` 保護，可用下列命令執行：
 
@@ -174,8 +184,8 @@ python scripts/playback_contract_smoke.py
 
 - `analysis` 交付策略使用 `sequential` 步進：即使 clock late 或速度是 4x，下一個 render target 仍必須是 `currentIndex + 1`。
 - buffering 可以平移 scheduler clock，但 frame ready 前不能推進選取日期。
-- progressive cold cache 會回報 `fetching 0 / 1`；target packet ready 後以 `1 / 1` resumed，然後才記錄 `顯示 snapshot`。
-- progressive request 失敗會回報 `failed`、在測速 box 留下錯誤事件；若 target frame 長時間等不到，會在等待逾時後停止播放，而不是無限等待。
+- progressive cold cache 會回報 `fetching 0 / 1`；target packet ready 後先記錄 `BUFFER_RESUMED`，然後才記錄 `FRAME_VISIBLE`。
+- progressive request 失敗會回報 `failed` 並留下 lifecycle error event；若 target frame 長時間等不到，會以真實 monotonic 30 秒 timeout 停止播放，而不是受倍率影響或無限等待。
 - 被取消或被取代的 progressive preheat，不得把 late progress、status 或 failure state 套到目前播放 generation。
 - 播放器不等待完整預熱批次。獨立預熱器逐張補足至高水位，播放器持續消費 ready frame；只有當下 target 缺少時才可進入 `BUFFERING`。
 - `fluid` 是唯一允許把 elapsed time 映射到未來日期的 step mode；目前仍保留在 disabled 的流暢交付端口後面。
@@ -186,7 +196,9 @@ python scripts/playback_contract_smoke.py
 | Module | 邊界 |
 | --- | --- |
 | `static/js/playback/playback-delivery-policy.js` | 播放交付策略：analysis / smooth / strict 時間軸語意的唯一上層入口。目前只啟用分析模式；流暢與嚴格模式明確標示為保留端口。 |
+| `static/js/core/clock-domain.js` | DI 注入的 monotonic、playback 與 render clocks；播放倍率只存在 playback cadence／consumption rate 計算。 |
 | `static/js/playback/playback-scheduler.js` | 純時間線計算：cadence、due frame、speed/rate 映射與目標日期 index。 |
+| `static/js/playback/playback-time-policy.js` | 純 timeout policy；buffer timeout 使用 monotonic elapsed time，不讀播放倍率。 |
 | `static/js/playback/playback-frame-buffer.js` | frame readiness 決策：missing/fetching/ready/waiting/failed 狀態 packet、target-frame buffering，以及最近 ready frame 選擇。 |
 | `static/js/playback/playback-renderer.js` | 播放器到渲染的 handoff：設定選取日期、同步控制狀態、呼叫既有 active-layer reload。 |
 | `static/js/playback/playback-interpolation-controller.js` | 播放補間 policy：播放時選擇 layer crossfade 或直接切換；資料 blend 尚未啟用。 |
@@ -198,10 +210,10 @@ python scripts/playback_contract_smoke.py
 | `static/js/playback/playback-engine.js` | 純 frame 消費者與播放生命週期 owner；只要求缺少的 target、pin 可見 frame，並記錄 buffering/render 事件。 |
 | `static/js/playback/playback-cache-service.js` | 播放快取設定與狀態 facade；只暴露水位與 RAM 容量，不擁有 transport 或 batch pipeline。 |
 | `static/js/services/lifecycle-event-log.js` | 有界事件記錄、Run 匯出，以及 Queue/HTTP/cache/render/stall 體感指標。 |
+| `static/js/services/runtime-performance-metrics.js` | 由 lifecycle、preheater 與 engine 組合唯一可信的供需、尾端延遲、ready-ahead 與 buffer wait snapshot。 |
 | `static/js/ui/widgets/capabilities/event-viewer.js` | 唯讀生命週期事件檢視器 Widget，支援 Run/資料集/事件篩選與 JSON 匯出。 |
-| `static/js/playback/playback-telemetry.js` | 播放控制事件送進測速 box，和 SQL/API/render timing 分開。 |
 | `static/js/layers/gfw-layer-effects.js` | 純視覺 sampled-grid layer effects：zoom/LOD blur、reveal、retired-layer cleanup 與 crossfade。檔名是歷史名稱，只輸出 `SampledGridLayerEffects`。 |
-| `static/TimingMetrics.js` | 測速 box 狀態、dynamic/persistent/event lanes 與 snapshot timing history。 |
+| `static/TimingMetrics.js` | DI 建立的渲染與查詢測速 service；只接受 ClockDomain，不保存播放事件第二真相。 |
 
 ```mermaid
 flowchart LR

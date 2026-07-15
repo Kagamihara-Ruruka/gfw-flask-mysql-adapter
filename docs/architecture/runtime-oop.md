@@ -48,6 +48,7 @@ flowchart LR
 flowchart LR
   CFG["Config / runtime state adapters"] --> ROOT["RuntimeCompositionRoot"]
   REG["Registry + capability matrix"] --> ROOT
+  ROOT --> CLOCK["ClockDomain"]
   ROOT --> LE["LifecycleEventLog"]
   ROOT --> QS["QueryScheduler"]
   ROOT --> DFS["DataFrameStore"]
@@ -77,6 +78,7 @@ flowchart LR
 
 | Runtime 角色 | 唯一 owner | 建立位置 | 生命週期／銷毀責任 |
 | --- | --- | --- | --- |
+| Monotonic／playback／render 時鐘 | `ClockDomain` immutable value | `RuntimeCompositionRoot` | 頁面期存活；只提供注入 clock interface，不保存業務狀態 |
 | 播放狀態、日期、target、buffer | `PlaybackEngine` | `RuntimeCompositionRoot` | `start / pause / stop / dispose`；停止時取消 target demand 並解除 frame pin |
 | 預熱 scope、inflight、retry timer | `PlaybackPreheater` | `RuntimeCompositionRoot` | `setScope / stop / dispose`；銷毀時取消 scope、timer 與 Store subscription |
 | query queue、active task、consumer | `QueryScheduler` | `RuntimeCompositionRoot` | `demand / cancelScope / dispose`；銷毀時 abort 未完成 task |
@@ -91,6 +93,8 @@ flowchart LR
 | 圖層啟用 transition queue | `LayerActivationController` | `AppRuntime.install` | 序列化 transition；`dispose` 關閉後續 command |
 | Widget panel、popover、全域事件 subscription | `WidgetRuntimeController` | `AppRuntime.install` | `mount / dispose`；AbortSignal、map listener、panel、popover 對稱釋放 |
 | Widget instance collection、slot placement | 各 `WidgetsPanel` | `WidgetRuntimeController` | Widget 只能由 `WidgetRegistry` factory 建立；替換、刪除與 panel dispose 均呼叫 instance `dispose` |
+| 查詢／渲染測速狀態 | `TimingMetrics` | `RuntimeCompositionRoot` | 只持有注入的 clocks、bounded history 與 subscribers；`dispose` 清除 subscription/history |
+| 可信播放效能快照 | 無獨立可變狀態 | `RuntimeCompositionRoot` 建立 `RuntimePerformanceMetrics` factory | 每次從 LifecycleEventLog、PlaybackEngine 與 PlaybackPreheater 投影，不建立第二份時間真相 |
 
 `RuntimeCompositionRoot.snapshot()` 只暴露 owner 名稱與組裝狀態供測試／診斷，不建立第二份 Runtime 狀態。全域名稱是既有 call site 的唯讀 reference；真正的建立與 teardown 仍只有 composition root 一條路徑。
 
@@ -146,6 +150,32 @@ flowchart LR
 - 折線圖、圓餅圖與橫條圖只透過注入的 Application DataSource 取資料；允許補查時也只能提交 widget lane demand。
 - Application service 不建立 DOM；Capability 不擁有 query cache。
 - DataSource 的建立與銷毀集中在 composition root，不保留 `.shared()`、wrapper 或雙軌 shim。
+
+## Clock Domain 與量測真相
+
+Checkpoint C 將 Runtime 計時拆成三個 DI clock interface：
+
+```text
+Monotonic Wall Clock
+  Queue / HTTP / Mapping / Cache / Buffer / Timeout / P95
+
+Playback Clock
+  snapshot cadence / date advancement / consumption rate
+
+Render Clock
+  requestAnimationFrame / draw / FRAME_VISIBLE
+```
+
+不變式：
+
+- `playbackRate` 只允許出現在 playback cadence 與日期推進路徑。
+- Query、HTTP、cache、buffer wait 與 timeout 一律使用 monotonic wall time。
+- 所有 lifecycle event 只保存 `monotonic_ms`；`wall_time` 只供人類閱讀，不參與耗時計算。
+- `TimingMetrics`、`PlaybackEngine`、`PlaybackPreheater`、`QueryScheduler`、`DataFrameStore` 與 renderer 都由 composition root 注入 clock，不自行呼叫 `Date.now()` 或 `performance.now()`。
+- `RuntimePerformanceMetrics` 是狀態列、測速 Widget、事件檢視器與後續控制器共用的唯一投影，公開 `consumption_rate`、`supply_rate`、`cache_ready_latency_p95`、`ready_ahead_slices`、`ready_ahead_seconds` 與 `buffer_wait_ms`。
+- 30 秒 buffer timeout 是純 monotonic policy；`1x／2x／4x` 不得改變等待秒數。
+
+`tests/clock_domain.test.mjs` 使用可前進的假時鐘驗證上述規則。舊 `PlaybackTelemetry` 與 Widget 自行累加等待時間的路徑已刪除，不保留雙軌 shim。
 
 ## 停止條件
 

@@ -82,21 +82,6 @@ function createPlaybackCacheService({
     return ready;
   }
 
-  function bufferPolicy({ intervalMs, remainingDates, rate } = {}) {
-    const interval = Math.max(1, Number(intervalMs || 1400));
-    const timelineRate = Math.max(0.25, Number(rate || state.playbackRate || 1));
-    const speed = Math.max(0.25, (1400 / interval) * timelineRate);
-    const required = Math.max(2, Math.ceil(speed * 3));
-    const resume = Math.max(required, Math.ceil(speed * 4));
-    const remaining = Math.max(1, Number(remainingDates || required));
-    return {
-      speed,
-      required: Math.min(remaining, required),
-      resume: Math.min(remaining, resume),
-      lowWatermark: options().lowWatermark,
-    };
-  }
-
   function setBufferState({
     buffering = false,
     status = "idle",
@@ -105,7 +90,6 @@ function createPlaybackCacheService({
     resume = 0,
     currentDate = "",
     targetIndex = -1,
-    waitStartedAt = 0,
     attempts = 0,
     stateName = "",
     errorMessage = "",
@@ -118,7 +102,6 @@ function createPlaybackCacheService({
       bufferResume: resume,
       bufferCurrentDate: currentDate,
       bufferTargetIndex: targetIndex,
-      bufferWaitStartedAt: waitStartedAt,
       bufferAttempts: attempts,
       bufferStateName: stateName,
       bufferErrorMessage: errorMessage,
@@ -140,7 +123,6 @@ function createPlaybackCacheService({
 
   return Object.freeze({
     BYTES_PER_GB,
-    bufferPolicy,
     clear,
     clearBufferState,
     countReadyPrefix,

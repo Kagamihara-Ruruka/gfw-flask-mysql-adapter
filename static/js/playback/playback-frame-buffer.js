@@ -110,7 +110,6 @@ const PlaybackFrameBuffer = (() => {
     dates,
     targetIndex,
     cacheService,
-    waitStartedAt = 0,
     attempts = 0,
   }) {
     const packet = decision || emptyDecision(targetIndex);
@@ -122,7 +121,6 @@ const PlaybackFrameBuffer = (() => {
       resume: packet.resumeCount || packet.requiredCount || 1,
       currentDate: packet.targetDate || dates[targetIndex] || "",
       targetIndex,
-      waitStartedAt,
       attempts,
       stateName: packet.state,
       errorMessage: packet.errorMessage || "",
@@ -134,7 +132,6 @@ const PlaybackFrameBuffer = (() => {
     dates,
     targetIndex,
     cacheService,
-    waitStartedAt = 0,
     attempts = 0,
     errorMessage = "",
   }) {
@@ -147,7 +144,6 @@ const PlaybackFrameBuffer = (() => {
       resume: packet.resumeCount || packet.requiredCount || 1,
       currentDate: packet.targetDate || dates[targetIndex] || "",
       targetIndex,
-      waitStartedAt,
       attempts,
       stateName: packet.state || FRAME_STATES.failed,
       errorMessage: errorMessage || packet.errorMessage || "",

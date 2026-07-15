@@ -47,6 +47,7 @@ class LifecycleEventViewerWidget extends DashboardWidget {
     };
     const events = this.eventLog()?.query?.(filter) || [];
     const summary = this.eventLog()?.summary?.(runId) || {};
+    const trustedMetrics = this.services.runtimeMetricsProvider?.(runId) || {};
     const runStart = allEvents.find((event) => !runId || event.run_id === runId);
     return {
       allEvents,
@@ -57,7 +58,8 @@ class LifecycleEventViewerWidget extends DashboardWidget {
       runId,
       runIds: this.runIds(allEvents),
       summary,
-      baseTimestamp: Number(runStart?.timestamp || events[0]?.timestamp || 0),
+      trustedMetrics,
+      baseMonotonicMs: Number(runStart?.monotonic_ms || events[0]?.monotonic_ms || 0),
     };
   }
 
@@ -81,7 +83,7 @@ class LifecycleEventViewerWidget extends DashboardWidget {
   }
 
   relativeTime(event, model) {
-    const delta = Math.max(0, Number(event.timestamp || 0) - Number(model.baseTimestamp || 0));
+    const delta = Math.max(0, Number(event.monotonic_ms || 0) - Number(model.baseMonotonicMs || 0));
     if (!delta) return "+0 ms";
     return `+${this.formatDuration(delta)}`;
   }
@@ -128,6 +130,7 @@ class LifecycleEventViewerWidget extends DashboardWidget {
 
   renderExpandedContent(container, model) {
     const summary = model.summary;
+    const trusted = model.trustedMetrics || {};
     container.innerHTML = `
       <div class="event-viewer-toolbar" data-widget-interactive="1">
         <label><span>Run</span><select data-event-filter="run">${this.optionList(model.runIds, model.runId, "全部")}</select></label>
@@ -150,6 +153,11 @@ class LifecycleEventViewerWidget extends DashboardWidget {
         <span><b>${lineChartEscape(this.formatDuration(summary.phases?.render?.p95Ms))}</b><em>Render P95</em></span>
         <span><b>${Number(summary.maxQueueDepth || 0)}</b><em>最大 Queue</em></span>
         <span><b>${lineChartEscape(this.formatDuration(summary.targetToVisibleP95Ms))}</b><em>目標至可見 P95</em></span>
+        <span><b>${Number(trusted.consumption_rate || 0).toFixed(2)} /s</b><em>消耗率</em></span>
+        <span><b>${Number(trusted.supply_rate || 0).toFixed(2)} /s</b><em>補給率</em></span>
+        <span><b>${lineChartEscape(this.formatDuration(trusted.cache_ready_latency_p95))}</b><em>Cache Ready P95</em></span>
+        <span><b>${Number(trusted.ready_ahead_slices || 0)}</b><em>前方影格</em></span>
+        <span><b>${Number(trusted.ready_ahead_seconds || 0).toFixed(1)} s</b><em>前方秒數</em></span>
       </div>
       <div class="event-viewer-table-wrap" data-widget-interactive="1">
         <table class="event-viewer-table">

@@ -5,11 +5,15 @@ function createFrameDemandService({
   eventLog,
   fetchJson: fetchJsonFn,
   sampledGridContract = null,
+  clock,
 } = {}) {
   if (!frameIdentity || !queryCoordinator || !dataFrameStore || !eventLog) {
     throw new TypeError("FrameDemandService requires identity, coordinator, store and event log");
   }
   if (typeof fetchJsonFn !== "function") throw new TypeError("FrameDemandService requires fetchJson");
+  if (!clock || typeof clock.now !== "function") {
+    throw new TypeError("FrameDemandService requires a monotonic clock");
+  }
   const FrameIdentity = frameIdentity;
   const LayerQueryCoordinator = queryCoordinator;
   const DataFrameStore = dataFrameStore;
@@ -48,11 +52,11 @@ function createFrameDemandService({
       consumerId,
       metadata: eventDetail(request, { resource: "sampled-grid" }),
       execute: async (taskSignal) => {
-        const startedAt = typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
+        const startedAt = clock.now();
         LifecycleEventLog?.record?.("HTTP_STARTED", eventDetail(request, { lane }));
         try {
           const packet = await fetchJsonFn(urlFor(request), { signal: taskSignal });
-          const elapsedMs = (typeof performance !== "undefined" && performance.now ? performance.now() : Date.now()) - startedAt;
+          const elapsedMs = clock.now() - startedAt;
           LifecycleEventLog?.record?.("HTTP_FINISHED", eventDetail(request, {
             lane,
             duration_ms: elapsedMs,

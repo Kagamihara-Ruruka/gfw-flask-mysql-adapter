@@ -1,5 +1,9 @@
 const SampledGridCanvasLayer = L.Layer.extend({
-  initialize() {
+  initialize({ renderClock } = {}) {
+    if (!renderClock || typeof renderClock.now !== "function") {
+      throw new TypeError("SampledGridCanvasLayer requires a render clock");
+    }
+    this._renderClock = renderClock;
     this._rows = [];
     this._hitCells = [];
   },
@@ -30,7 +34,7 @@ const SampledGridCanvasLayer = L.Layer.extend({
     this._draw();
   },
   _draw() {
-    const started = performance.now();
+    const started = this._renderClock.now();
     if (!this._ctx || !this._map) return 0;
     const ctx = this._ctx;
     const size = this._map.getSize();
@@ -69,7 +73,7 @@ const SampledGridCanvasLayer = L.Layer.extend({
     }
     this._hitCells = hitCells;
     ctx.globalAlpha = 1;
-    return performance.now() - started;
+    return this._renderClock.now() - started;
   },
   hitTest(containerPoint) {
     const point = L.point(containerPoint);
@@ -123,7 +127,7 @@ function fadeOutGfwLayer() {
 }
 
 function waitGfwTransition() {
-  return SampledGridLayerEffects.waitTransition(state);
+  return SampledGridLayerEffects.waitTransition(state, ClockDomain.render);
 }
 
 function revealGfwLayer() {
@@ -139,7 +143,13 @@ function removeRetiredGfwLayers() {
 }
 
 function crossfadeGfwLayer(previousLayer, nextLayer) {
-  SampledGridLayerEffects.crossfade({ targetMap: map, targetState: state, previousLayer, nextLayer });
+  SampledGridLayerEffects.crossfade({
+    targetMap: map,
+    targetState: state,
+    previousLayer,
+    nextLayer,
+    renderClock: ClockDomain.render,
+  });
 }
 
 function removeSampledGridLayer() {
@@ -167,7 +177,7 @@ function clearSampledGridLayerForLodReload() {
 }
 
 function createSampledGridLayer(layerClass) {
-  const layer = new layerClass().addTo(map);
+  const layer = new layerClass({ renderClock: ClockDomain.render }).addTo(map);
   setGfwLayerTransition(layer);
   setGfwLayerOpacity(layer, 0);
   setGfwLayerBlur(layer, false);

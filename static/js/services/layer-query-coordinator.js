@@ -20,12 +20,17 @@ class QueryScheduler {
     foregroundCutoff = 5,
     eventLog = null,
     snapshotSink = null,
+    clock,
   } = {}) {
+    if (!clock || typeof clock.now !== "function") {
+      throw new TypeError("QueryScheduler requires a monotonic clock");
+    }
     this.configuredConcurrency = concurrency;
     this.concurrencyProvider = concurrencyProvider || (() => 6);
     this.foregroundCutoff = foregroundCutoff;
     this.eventLog = eventLog;
     this.snapshotSink = snapshotSink;
+    this.clock = clock;
     this.queue = [];
     this.active = new Map();
     this.tasksByKey = new Map();
@@ -193,7 +198,7 @@ class QueryScheduler {
       controller: new AbortController(),
       consumers: new Map(),
       status: "queued",
-      queuedAt: Date.now(),
+      queuedMonotonicMs: this.clock.now(),
     };
     this.tasksByKey.set(task.key, task);
     this.queue.push(task);
@@ -226,7 +231,9 @@ class QueryScheduler {
     }
     task.status = "active";
     this.active.set(task.id, task);
-    this.record("TASK_DISPATCHED", task, { wait_ms: Math.max(0, Date.now() - task.queuedAt) });
+    this.record("TASK_DISPATCHED", task, {
+      wait_ms: Math.max(0, this.clock.now() - task.queuedMonotonicMs),
+    });
     Promise.resolve()
       .then(() => task.execute(task.controller.signal))
       .then((value) => {

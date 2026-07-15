@@ -1,5 +1,9 @@
 const SampledGridWebglLayer = L.Layer.extend({
-  initialize() {
+  initialize({ renderClock } = {}) {
+    if (!renderClock || typeof renderClock.now !== "function") {
+      throw new TypeError("SampledGridWebglLayer requires a render clock");
+    }
+    this._renderClock = renderClock;
     this._rows = [];
     this._drawMs = 0;
     this._hitCells = [];
@@ -129,7 +133,7 @@ const SampledGridWebglLayer = L.Layer.extend({
     );
   },
   _draw() {
-    const started = performance.now();
+    const started = this._renderClock.now();
     if (!this._gl || !this._map || !this._canvas) return 0;
     const gl = this._gl;
     const size = this._map.getSize();
@@ -183,7 +187,7 @@ const SampledGridWebglLayer = L.Layer.extend({
     }
     this._hitCells = hitCells;
     if (!vertices.length) {
-      this._drawMs = performance.now() - started;
+      this._drawMs = this._renderClock.now() - started;
       return this._drawMs;
     }
 
@@ -206,12 +210,12 @@ const SampledGridWebglLayer = L.Layer.extend({
       );
       gl.drawArrays(gl.TRIANGLES, 0, vertices.length / 6);
       gl.disable(gl.BLEND);
-      this._drawMs = performance.now() - started;
+      this._drawMs = this._renderClock.now() - started;
       return this._drawMs;
     } catch (err) {
       console.warn("Sampled-grid WebGL draw failed", err);
       this._failed = true;
-      this._drawMs = performance.now() - started;
+      this._drawMs = this._renderClock.now() - started;
       return this._drawMs;
     }
   },

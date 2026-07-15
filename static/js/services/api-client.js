@@ -532,7 +532,7 @@ function reloadGfwRecords() {
 }
 
 function clearPrimaryLayerRecords() {
-  clearTimeout(state.primaryReloadTimer);
+  ClockDomain.monotonic.cancel(state.primaryReloadTimer);
   state.primaryReloadTimer = null;
   state.primaryFetchController?.abort();
   state.primaryFetchController = null;

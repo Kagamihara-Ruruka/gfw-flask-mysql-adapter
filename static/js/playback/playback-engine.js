@@ -1,20 +1,22 @@
 class PlaybackEngineCore {
-  constructor({ store, demandService, preheater, eventLog, frameIdentity } = {}) {
-    if (!store || !demandService || !preheater || !eventLog || !frameIdentity) {
-      throw new TypeError("PlaybackEngine requires store, demandService, preheater, eventLog and frameIdentity");
+  constructor({ store, demandService, preheater, eventLog, frameIdentity, clock } = {}) {
+    if (!store || !demandService || !preheater || !eventLog || !frameIdentity || !clock) {
+      throw new TypeError("PlaybackEngine requires store, demand service, preheater, event log, identity and clock");
     }
+    if (typeof clock.now !== "function") throw new TypeError("PlaybackEngine requires a monotonic clock");
     this.store = store;
     this.demandService = demandService;
     this.preheater = preheater;
     this.eventLog = eventLog;
     this.frameIdentity = frameIdentity;
+    this.clock = clock;
     this.dates = [];
     this.requestContext = null;
     this.currentIndex = -1;
     this.status = "IDLE";
     this.runId = "";
     this.targetRuns = new Map();
-    this.bufferStartedAt = 0;
+    this.bufferStartedAt = null;
     this.bufferIntentKey = "";
     this.displayedFrameKey = "";
   }
@@ -92,8 +94,8 @@ class PlaybackEngineCore {
   }
 
   cancelBuffer(reason = "cancelled", detail = {}) {
-    if (!this.bufferStartedAt) return false;
-    const endedAt = typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
+    if (this.bufferStartedAt === null) return false;
+    const endedAt = this.clock.now();
     this.eventLog.record("BUFFER_CANCELLED", {
       run_id: this.runId,
       intent_key: this.bufferIntentKey,
@@ -102,8 +104,9 @@ class PlaybackEngineCore {
       duration_ms: Math.max(0, endedAt - this.bufferStartedAt),
       reason,
       ...detail,
+      monotonic_ms: endedAt,
     });
-    this.bufferStartedAt = 0;
+    this.bufferStartedAt = null;
     this.bufferIntentKey = "";
     return true;
   }
@@ -137,13 +140,14 @@ class PlaybackEngineCore {
     });
     if (this.status !== "BUFFERING") {
       this.status = "BUFFERING";
-      this.bufferStartedAt = typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
+      this.bufferStartedAt = this.clock.now();
       this.bufferIntentKey = intentKey;
       this.eventLog.record("BUFFER_ENTERED", {
         run_id: this.runId,
         intent_key: intentKey,
         dataset: inspected.request.datasetId,
         date: inspected.date,
+        monotonic_ms: this.bufferStartedAt,
       });
     }
     const promise = this.demandService.demand(inspected.request, {
@@ -152,7 +156,7 @@ class PlaybackEngineCore {
       scopeId: `playback:${this.runId || "idle"}`,
       consumerId: `target:${inspected.date}`,
     }).then((result) => {
-      const resumedAt = typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
+      const resumedAt = this.clock.now();
       if (this.status === "BUFFERING") this.status = "PLAYING";
       this.eventLog.record("BUFFER_RESUMED", {
         run_id: this.runId,
@@ -160,13 +164,18 @@ class PlaybackEngineCore {
         frame_key: result.frameKey,
         dataset: inspected.request.datasetId,
         date: inspected.date,
-        duration_ms: this.bufferStartedAt ? Math.max(0, resumedAt - this.bufferStartedAt) : 0,
+        duration_ms: this.bufferStartedAt === null ? 0 : Math.max(0, resumedAt - this.bufferStartedAt),
+        monotonic_ms: resumedAt,
       });
-      this.bufferStartedAt = 0;
+      this.bufferStartedAt = null;
       this.bufferIntentKey = "";
       return { ...result, request: inspected.request, date: inspected.date, index };
     }).catch((error) => {
       if (error?.name !== "AbortError") {
+        this.cancelBuffer("target_failed", {
+          dataset: inspected.request.datasetId,
+          date: inspected.date,
+        });
         this.status = "FAILED";
         this.eventLog.record("PLAYBACK_TARGET_FAILED", {
           run_id: this.runId,
@@ -226,6 +235,10 @@ class PlaybackEngineCore {
     return released;
   }
 
+  bufferWaitMs() {
+    return this.bufferStartedAt === null ? 0 : Math.max(0, this.clock.now() - this.bufferStartedAt);
+  }
+
   snapshot() {
     return Object.freeze({
       status: this.status,
@@ -236,6 +249,9 @@ class PlaybackEngineCore {
       frameCount: this.dates.length,
       targetInflight: this.targetRuns.size,
       displayedFrameKey: this.displayedFrameKey,
+      bufferStartedMonotonicMs: this.bufferStartedAt,
+      bufferIntentKey: this.bufferIntentKey,
+      bufferWaitMs: this.bufferWaitMs(),
       preheater: this.preheater.snapshot(),
     });
   }

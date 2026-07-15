@@ -665,9 +665,11 @@
   <script src="/static/vendor/Leaflet.VectorGrid.bundled.min.js?v=1.3.0"></script>
   <script src="/static/vendor/plotly-basic-3.6.0.min.js?v=3.6.0"></script>
   <script src="/static/js/ui/telemetry/snapshot-performance-chart.js?v=plotly-detail-source-v8"></script>
-  <script src="/static/TimingMetrics.js?v=timingmetrics-detail-source-v3"></script>
+  <script src="/static/js/core/clock-domain.js?v=clock-domain-v1"></script>
+  <script src="/static/TimingMetrics.js?v=clock-domain-v1"></script>
   <script src="/static/js/core/state.js?v=playback-watermark-v1"></script>
-  <script src="/static/js/services/lifecycle-event-log.js?v=lifecycle-core-v2"></script>
+  <script src="/static/js/services/lifecycle-event-log.js?v=clock-domain-v1"></script>
+  <script src="/static/js/services/runtime-performance-metrics.js?v=clock-domain-v1"></script>
   <script src="/static/js/services/frame-identity.js?v=lifecycle-core-v1"></script>
   <script src="/static/js/core/dom.js?v=zh-tw-v99"></script>
   <script src="/static/js/core/render-state.js?v=zh-tw-v99"></script>
@@ -684,8 +686,8 @@
   <script src="/static/js/layers/eez-layer.js?v=eez-lod-pixel-v2"></script>
   <script src="/static/js/layers/graticule-layer.js?v=zh-tw-v99"></script>
   <script src="/static/js/layers/ais-layer.js?v=zh-tw-v99"></script>
-  <script src="/static/js/layers/gfw-layer-effects.js?v=gfw-layer-effects-v1"></script>
-  <script src="/static/js/layers/gfw-layer.js?v=layer-viewport-v1"></script>
+  <script src="/static/js/layers/gfw-layer-effects.js?v=clock-domain-v1"></script>
+  <script src="/static/js/layers/gfw-layer.js?v=clock-domain-v1"></script>
   <script src="/static/js/ui/map/table-view.js?v=records-updated-v1"></script>
   <script src="/static/js/ui/map/control-buttons.js?v=map-fullscreen-icon-v1"></script>
   <script src="/static/js/ui/map/map-settings.js?v=widgets-map-jump-v70"></script>
@@ -700,12 +702,12 @@
   <script src="/static/js/playback/playback-snapshot-splitter.js?v=playback-snapshot-splitter-v1"></script>
   <script src="/static/js/services/gfw-render-artifact-cache.js?v=gfw-render-artifact-cache-v1"></script>
   <script src="/static/js/services/render-intent-service.js?v=resolution-route-v2"></script>
-  <script src="/static/js/services/layer-query-coordinator.js?v=query-ownership-v1"></script>
-  <script src="/static/js/services/data-frame-store.js?v=lifecycle-core-v5"></script>
-  <script src="/static/js/services/frame-demand-service.js?v=lifecycle-core-v2"></script>
+  <script src="/static/js/services/layer-query-coordinator.js?v=clock-domain-v1"></script>
+  <script src="/static/js/services/data-frame-store.js?v=clock-domain-v1"></script>
+  <script src="/static/js/services/frame-demand-service.js?v=clock-domain-v1"></script>
   <script src="/static/js/playback/playback-cache-service.js?v=runtime-oop-v1"></script>
-  <script src="/static/js/playback/playback-preheater.js?v=runtime-oop-v1"></script>
-  <script src="/static/js/playback/playback-engine.js?v=runtime-oop-v1"></script>
+  <script src="/static/js/playback/playback-preheater.js?v=clock-domain-v1"></script>
+  <script src="/static/js/playback/playback-engine.js?v=clock-domain-v1"></script>
   <script src="/static/js/playback/playback-renderer.js?v=runtime-oop-v1"></script>
   <script src="/static/js/services/api-client.js?v=runtime-oop-v1"></script>
   <script src="/static/js/application/widgets/widget-model-functions.js?v=widget-application-v1"></script>
@@ -715,16 +717,16 @@
   <script src="/static/js/application/widgets/table-widget-data-source.js?v=widget-application-v1"></script>
   <script src="/static/js/application/widgets/eez-attribution-data-source.js?v=widget-application-v1"></script>
   <script src="/static/js/application/widgets/widget-application-runtime.js?v=widget-application-v1"></script>
-  <script src="/static/js/runtime/runtime-composition-root.js?v=widget-application-v1"></script>
+  <script src="/static/js/runtime/runtime-composition-root.js?v=clock-domain-v1"></script>
   <script src="/static/js/ui/map/tile-selection-layer.js?v=runtime-oop-v1"></script>
   <script src="/static/js/playback/playback-delivery-policy.js?v=playback-delivery-policy-v2"></script>
   <script src="/static/js/ui/settings/hardware-settings.js?v=dynamic-layer-menu-v1"></script>
   <script src="/static/js/ui/settings/virtual-grid-settings.js?v=virtual-grid-settings-v1"></script>
   <script src="/static/js/playback/playback-scheduler.js?v=playback-scheduler-v1"></script>
   <script src="/static/js/playback/playback-frame-buffer.js?v=playback-watermark-v1"></script>
-  <script src="/static/js/playback/playback-telemetry.js?v=playback-telemetry-events-v1"></script>
+  <script src="/static/js/playback/playback-time-policy.js?v=clock-domain-v1"></script>
   <script src="/static/js/playback/playback-interpolation-controller.js?v=playback-interpolation-v2"></script>
-  <script src="/static/js/playback/playback-controls.js?v=playback-watermark-v1"></script>
+  <script src="/static/js/playback/playback-controls.js?v=clock-domain-v1"></script>
   <script src="/static/js/playback/fullscreen-playback-controls.js?v=fullscreen-svg-v1"></script>
   <script src="/static/js/ui/layers/layer-activation-controller.js?v=layer-activation-controller-v1"></script>
   <script src="/static/js/ui/widgets/core/widget-core.js?v=widget-plotly-lifecycle-v1"></script>
@@ -735,8 +737,8 @@
   <script src="/static/js/ui/widgets/capabilities/eez-attribution.js?v=widgets-modules-v1"></script>
   <script src="/static/js/ui/widgets/capabilities/table.js?v=widgets-modules-v1"></script>
   <script src="/static/js/ui/widgets/capabilities/map-jump.js?v=widgets-modules-v1"></script>
-  <script src="/static/js/ui/widgets/capabilities/metrics.js?v=widgets-modules-v1"></script>
-  <script src="/static/js/ui/widgets/capabilities/event-viewer.js?v=lifecycle-widget-v3"></script>
+  <script src="/static/js/ui/widgets/capabilities/metrics.js?v=clock-domain-v1"></script>
+  <script src="/static/js/ui/widgets/capabilities/event-viewer.js?v=clock-domain-v1"></script>
   <script src="/static/js/ui/widgets/registry/widget-registry.js?v=widgets-launchpad-registered-v3"></script>
   <script src="/static/js/ui/widgets/runtime/widgets-runtime.js?v=line-chart-active-slice-v2"></script>
   <script src="/static/js/ui/widgets/widget-launchpad.js?v=widgets-launchpad-registered-v3"></script>

@@ -56,7 +56,7 @@ async function loadRenderCapability() {
     server,
     policy: server.policy || {},
     browser,
-    loadedAtMs: Date.now(),
+    loadedMonotonicMs: ClockDomain.monotonic.now(),
   };
   return state.renderCapability;
 }

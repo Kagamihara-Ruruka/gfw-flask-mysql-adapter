@@ -6,6 +6,7 @@ class WidgetApplicationRuntime {
     eventLog,
     eventSink,
     timingMetricsProvider,
+    runtimeMetricsProvider,
     schedule,
     cancelSchedule,
   } = {}) {
@@ -17,6 +18,7 @@ class WidgetApplicationRuntime {
     this.eventLog = eventLog || null;
     this.eventSink = eventSink;
     this.timingMetricsProvider = timingMetricsProvider;
+    this.runtimeMetricsProvider = runtimeMetricsProvider;
     this.schedule = schedule;
     this.cancelSchedule = cancelSchedule;
     this.serviceCache = new Map();
@@ -43,11 +45,16 @@ class WidgetApplicationRuntime {
       ...(dataSource ? { dataSource } : {}),
       ...(normalized === "event-viewer" ? {
         eventLog: this.eventLog,
+        runtimeMetricsProvider: this.runtimeMetricsProvider,
         schedule: this.schedule,
         cancelSchedule: this.cancelSchedule,
       } : {}),
       ...(normalized === "metrics" ? {
+        eventLog: this.eventLog,
         timingMetricsProvider: this.timingMetricsProvider,
+        runtimeMetricsProvider: this.runtimeMetricsProvider,
+        schedule: this.schedule,
+        cancelSchedule: this.cancelSchedule,
       } : {}),
       ...(normalized === "map-jump" ? {
         runViewAction: (id) => {
@@ -89,6 +96,7 @@ function createWidgetApplicationRuntime({
   eventLog,
   eventSink,
   timingMetricsProvider,
+  runtimeMetricsProvider,
   schedule,
   cancelSchedule,
 } = {}) {
@@ -136,6 +144,7 @@ function createWidgetApplicationRuntime({
     eventLog,
     eventSink,
     timingMetricsProvider,
+    runtimeMetricsProvider,
     schedule,
     cancelSchedule,
   });

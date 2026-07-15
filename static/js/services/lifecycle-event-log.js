@@ -27,8 +27,8 @@ function lifecycleMatches(event, filter = {}) {
   if (filter.frame_key && String(event.frame_key || "") !== String(filter.frame_key)) return false;
   if (filter.intent_key && String(event.intent_key || "") !== String(filter.intent_key)) return false;
   if (filter.scope_id && String(event.scope_id || "") !== String(filter.scope_id)) return false;
-  if (Number.isFinite(Number(filter.since)) && event.timestamp < Number(filter.since)) return false;
-  if (Number.isFinite(Number(filter.until)) && event.timestamp > Number(filter.until)) return false;
+  if (Number.isFinite(Number(filter.since)) && event.monotonic_ms < Number(filter.since)) return false;
+  if (Number.isFinite(Number(filter.until)) && event.monotonic_ms > Number(filter.until)) return false;
   return true;
 }
 
@@ -37,29 +37,35 @@ function lifecyclePairedDurations(selected, startType, endType, directField = ""
   const durations = [];
   for (const event of selected) {
     const key = event.intent_key || event.frame_key || event.task_id || event.date || "runtime";
-    if (event.type === startType) started.set(key, event.timestamp);
+    if (event.type === startType && !started.has(key)) started.set(key, event.monotonic_ms);
     if (event.type !== endType) continue;
     const direct = Number(directField ? event[directField] : NaN);
     if (Number.isFinite(direct) && direct >= 0) {
       durations.push(direct);
     } else if (started.has(key)) {
-      durations.push(Math.max(0, event.timestamp - started.get(key)));
+      durations.push(Math.max(0, event.monotonic_ms - started.get(key)));
     }
     started.delete(key);
   }
   return durations;
 }
 
+function lifecycleRate(events) {
+  if (!Array.isArray(events) || events.length < 2) return 0;
+  const first = Number(events[0]?.monotonic_ms);
+  const last = Number(events[events.length - 1]?.monotonic_ms);
+  const elapsedSeconds = (last - first) / 1000;
+  return elapsedSeconds > 0 ? (events.length - 1) / elapsedSeconds : 0;
+}
+
 class LifecycleEventLogCore {
-  constructor({ maxEntriesProvider = null, eventTarget = null, monotonicNow = null, wallNow = null } = {}) {
+  constructor({ maxEntriesProvider = null, eventTarget = null, clock } = {}) {
+    if (!clock || typeof clock.now !== "function" || typeof clock.wallNowIso !== "function") {
+      throw new TypeError("LifecycleEventLog requires a monotonic clock");
+    }
     this.maxEntriesProvider = maxEntriesProvider || (() => LIFECYCLE_DEFAULT_MAX_ENTRIES);
     this.eventTarget = eventTarget;
-    this.monotonicNow = monotonicNow || (() => (
-      typeof performance !== "undefined" && typeof performance.now === "function"
-        ? performance.now()
-        : Date.now()
-    ));
-    this.wallNow = wallNow || (() => new Date().toISOString());
+    this.clock = clock;
     this.listeners = new Set();
     this.events = [];
     this.sequence = 0;
@@ -78,7 +84,7 @@ class LifecycleEventLogCore {
 
   nextRunId(prefix = "playback") {
     this.runSequence += 1;
-    return `${prefix}-${Date.now().toString(36)}-${this.runSequence.toString(36)}`;
+    return `${prefix}-${Math.floor(this.clock.now()).toString(36)}-${this.runSequence.toString(36)}`;
   }
 
   notify(event) {
@@ -100,17 +106,18 @@ class LifecycleEventLogCore {
       : { ...(typeOrEvent || {}) };
     const type = String(source.type || "UNKNOWN").trim().toUpperCase();
     const runId = String(source.run_id || source.runId || this.currentRun || "");
-    const timestamp = Number.isFinite(Number(source.timestamp))
-      ? Number(source.timestamp)
-      : this.monotonicNow();
+    const monotonicMs = Number.isFinite(Number(source.monotonic_ms))
+      ? Number(source.monotonic_ms)
+      : this.clock.now();
     delete source.runId;
+    delete source.timestamp;
     return Object.freeze({
       ...source,
       seq: ++this.sequence,
       type,
       run_id: runId,
-      timestamp,
-      wall_time: source.wall_time || this.wallNow(),
+      monotonic_ms: monotonicMs,
+      wall_time: source.wall_time || this.clock.wallNowIso(),
     });
   }
 
@@ -151,32 +158,33 @@ class LifecycleEventLogCore {
     const first = selected[0];
     const last = selected[selected.length - 1];
     const visible = selected.filter((event) => event.type === "FRAME_VISIBLE");
-    const cadence = visible.slice(1).map((event, index) => event.timestamp - visible[index].timestamp);
+    const cadence = visible.slice(1).map((event, index) => event.monotonic_ms - visible[index].monotonic_ms);
+    const cacheReady = selected.filter((event) => event.type === "CACHE_READY");
     const openStalls = new Map();
     const stallDurations = [];
     for (const event of selected) {
       const key = event.intent_key || event.frame_key || event.date || "playback";
       if (event.type === "BUFFER_ENTERED" && !openStalls.has(key)) {
-        openStalls.set(key, event.timestamp);
+        openStalls.set(key, event.monotonic_ms);
       }
       if (["BUFFER_RESUMED", "BUFFER_CANCELLED"].includes(event.type) && openStalls.has(key)) {
         const direct = Number(event.duration_ms);
         stallDurations.push(Number.isFinite(direct) && direct >= 0
           ? direct
-          : Math.max(0, event.timestamp - openStalls.get(key)));
+          : Math.max(0, event.monotonic_ms - openStalls.get(key)));
         openStalls.delete(key);
       }
       if (event.type === "RUN_FINISHED" && openStalls.size) {
         for (const startedAt of openStalls.values()) {
-          stallDurations.push(Math.max(0, event.timestamp - startedAt));
+          stallDurations.push(Math.max(0, event.monotonic_ms - startedAt));
         }
         openStalls.clear();
       }
     }
-    const summaryTimestamp = last?.timestamp ?? this.monotonicNow();
+    const summaryTimestamp = last?.monotonic_ms ?? this.clock.now();
     const activeStalls = [...openStalls.values()].map((startedAt) => Math.max(0, summaryTimestamp - startedAt));
     const allStalls = [...stallDurations, ...activeStalls];
-    const elapsedMs = first && last ? Math.max(0, last.timestamp - first.timestamp) : 0;
+    const elapsedMs = first && last ? Math.max(0, last.monotonic_ms - first.monotonic_ms) : 0;
     const totalStallMs = allStalls.reduce((total, value) => total + value, 0);
     const firstVisible = visible[0];
     const queueDurations = selected
@@ -186,6 +194,7 @@ class LifecycleEventLogCore {
       .filter((event) => event.type === "HTTP_FINISHED")
       .map((event) => Number(event.duration_ms));
     const cacheCommitDurations = lifecyclePairedDurations(selected, "HTTP_FINISHED", "CACHE_READY");
+    const cacheReadyDurations = lifecyclePairedDurations(selected, "TASK_QUEUED", "CACHE_READY");
     const renderDurations = lifecyclePairedDurations(selected, "RENDER_STARTED", "FRAME_VISIBLE", "render_ms");
     const targetDurations = lifecyclePairedDurations(selected, "TARGET_REQUIRED", "FRAME_VISIBLE");
     return Object.freeze({
@@ -202,7 +211,7 @@ class LifecycleEventLogCore {
       maxStallMs: allStalls.length ? Math.max(...allStalls) : 0,
       stallRatio: elapsedMs > 0 ? totalStallMs / elapsedMs : 0,
       cadenceP95Ms: lifecyclePercentile(cadence, 0.95),
-      clickToFirstFrameMs: firstVisible && first ? Math.max(0, firstVisible.timestamp - first.timestamp) : 0,
+      clickToFirstFrameMs: firstVisible && first ? Math.max(0, firstVisible.monotonic_ms - first.monotonic_ms) : 0,
       targetToVisibleP95Ms: lifecyclePercentile(targetDurations, 0.95),
       maxQueueDepth: selected.reduce((maximum, event) => Math.max(maximum, Number(event.queue_depth) || 0), 0),
       phases: Object.freeze({
@@ -210,6 +219,11 @@ class LifecycleEventLogCore {
         network: lifecycleDurationStats(networkDurations),
         cacheCommit: lifecycleDurationStats(cacheCommitDurations),
         render: lifecycleDurationStats(renderDurations),
+      }),
+      trustedMetrics: Object.freeze({
+        observed_consumption_rate: lifecycleRate(visible),
+        supply_rate: lifecycleRate(cacheReady),
+        cache_ready_latency_p95: lifecyclePercentile(cacheReadyDurations, 0.95),
       }),
       elapsedMs,
       startedAt: first?.wall_time || "",
@@ -238,8 +252,8 @@ class LifecycleEventLogCore {
 
   exportRun(runId = this.currentRun) {
     const payload = {
-      schema: "rrkal.lifecycle-events.v1",
-      exported_at: this.wallNow(),
+      schema: "rrkal.lifecycle-events.v2",
+      exported_at: this.clock.wallNowIso(),
       run_id: runId || "",
       summary: this.summary(runId),
       events: this.query(runId ? { run_id: runId } : {}),
@@ -278,4 +292,5 @@ if (typeof globalThis !== "undefined") {
   globalThis.lifecycleDurationStats = lifecycleDurationStats;
   globalThis.lifecycleMatches = lifecycleMatches;
   globalThis.lifecyclePercentile = lifecyclePercentile;
+  globalThis.lifecycleRate = lifecycleRate;
 }

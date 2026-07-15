@@ -27,7 +27,6 @@ function loadPlaybackCore(globals = {}) {
   return loadBrowserScripts([
     "static/js/playback/playback-scheduler.js",
     "static/js/playback/playback-frame-buffer.js",
-    "static/js/playback/playback-telemetry.js",
   ], globals).window;
 }
 
@@ -109,7 +108,6 @@ function loadPlaybackCacheService({ waitForDates = async (dates) => ({
       bufferResume: 0,
       bufferCurrentDate: "",
       bufferTargetIndex: -1,
-      bufferWaitStartedAt: 0,
       bufferAttempts: 0,
       bufferStateName: "",
       bufferErrorMessage: "",
@@ -326,7 +324,6 @@ test("progressive cold cache produces a target-frame fetching decision", () => {
     dates,
     targetIndex: 1,
     cacheService: service,
-    waitStartedAt: 123,
     attempts: 2,
   });
 
@@ -338,7 +335,6 @@ test("progressive cold cache produces a target-frame fetching decision", () => {
     resume: 1,
     currentDate: "2024-01-02",
     targetIndex: 1,
-    waitStartedAt: 123,
     attempts: 2,
     stateName: "fetching",
     errorMessage: "",
@@ -398,7 +394,6 @@ test("progressive target failure becomes an explicit failed frame-buffer state",
     dates,
     targetIndex: 1,
     cacheService: service,
-    waitStartedAt: 456,
     attempts: 9,
     errorMessage: decision.errorMessage,
   });
@@ -411,116 +406,10 @@ test("progressive target failure becomes an explicit failed frame-buffer state",
     resume: 1,
     currentDate: "2024-01-02",
     targetIndex: 1,
-    waitStartedAt: 456,
     attempts: 9,
     stateName: "failed",
     errorMessage: "failed 2024-01-02",
   });
-});
-
-test("analysis playback event contract is buffering, resumed, then shown", () => {
-  const playbackEvents = [];
-  const { PlaybackFrameBuffer, PlaybackScheduler, PlaybackTelemetry } = loadPlaybackCore({
-    TimingMetrics: {
-      recordPlaybackEvent(event) {
-        playbackEvents.push(event);
-      },
-    },
-  });
-  const timeline = PlaybackScheduler.start({
-    generation: 4,
-    nowMs: 0,
-    intervalMs: 350,
-    rate: 4,
-    stepMode: "sequential",
-    baseDateIndex: 0,
-  });
-
-  PlaybackTelemetry.recordTimelineStart({
-    rate: 4,
-    stepMode: "sequential",
-    intervalMs: 350,
-    deliveryPolicy: "analysis",
-    interpolationMode: "Layer crossfade",
-  });
-
-  const targetIndex = PlaybackScheduler.targetDateIndex(timeline, {
-    datesLength: dates.length,
-    currentIndex: 0,
-    frameNumber: 8,
-  });
-  const coldService = cacheService();
-  const waitingDecision = PlaybackFrameBuffer.inspectTarget({
-    dates,
-    currentIndex: 0,
-    targetIndex,
-    mode: "progressive",
-    hasCacheLayer: true,
-    requestContext: { dataset: "gfw_full" },
-    cacheService: coldService,
-  });
-  PlaybackTelemetry.recordBuffering({
-    date: waitingDecision.targetDate,
-    state: PlaybackFrameBuffer.frameStateLabel(waitingDecision.state),
-    ready: waitingDecision.readyCount,
-    required: waitingDecision.requiredCount,
-    attempts: 1,
-  });
-
-  const warmService = cacheService({ readyDates: ["2024-01-02"] });
-  const readyDecision = PlaybackFrameBuffer.inspectTarget({
-    dates,
-    currentIndex: 0,
-    targetIndex,
-    mode: "progressive",
-    hasCacheLayer: true,
-    requestContext: { dataset: "gfw_full" },
-    cacheService: warmService,
-  });
-  PlaybackTelemetry.recordBufferResumed({
-    date: readyDecision.renderDate,
-    waitMs: 381,
-    ready: readyDecision.requiredCount,
-    required: readyDecision.requiredCount,
-  });
-  PlaybackTelemetry.recordFrameShown({ date: readyDecision.renderDate });
-
-  assert.deepEqual(
-    playbackEvents.map((event) => event.source),
-    ["start", "buffer", "resume", "renderer"],
-  );
-  assert.match(playbackEvents[1].text, /buffering 2024-01-02 .* 0 \/ 1/);
-  assert.match(playbackEvents[2].text, /resumed 2024-01-02 .* 1 \/ 1/);
-  assert.deepEqual(plain(playbackEvents[3]), {
-    label: "顯示 snapshot",
-    text: "2024-01-02",
-    status: "ok",
-    source: "renderer",
-  });
-  assert.ok(!playbackEvents.some((event) => event.source === "nearest-ready"));
-});
-
-test("frame-buffer failure emits an error telemetry event", () => {
-  const playbackEvents = [];
-  const { PlaybackTelemetry } = loadPlaybackCore({
-    TimingMetrics: {
-      recordPlaybackEvent(event) {
-        playbackEvents.push(event);
-      },
-    },
-  });
-
-  PlaybackTelemetry.recordBufferFailed({
-    date: "2024-01-02",
-    state: "failed · request failed",
-  });
-
-  assert.deepEqual(plain(playbackEvents), [{
-    label: "Frame buffer",
-    text: "failed 2024-01-02 · failed · request failed",
-    status: "error",
-    source: "buffer",
-  }]);
 });
 
 test("playback watermarks are explicit runtime policy", () => {

@@ -1,4 +1,10 @@
-﻿const TimingMetrics = (() => {
+﻿class TimingMetricsService {
+  constructor({ monotonicClock, renderClock, eventTarget, documentTarget } = {}) {
+  if (!monotonicClock || !renderClock || !eventTarget || !documentTarget) {
+    throw new TypeError("TimingMetrics requires monotonic/render clocks, events and document");
+  }
+  const window = eventTarget;
+  const document = documentTarget;
   const metricById = {
     "query-ms": "query",
     "serialize-ms": "serialize",
@@ -12,7 +18,6 @@
     serialize: { label: "序列化", value: null, text: "-", status: "idle" },
     api: { label: "API / 傳輸", value: null, text: "-", status: "idle" },
     client: { label: "前端到畫面", value: null, text: "-", status: "idle" },
-    playback: { label: "播放時間軸", value: null, text: "-", status: "idle", source: "" },
     interaction: { label: "按鍵到渲染開始", value: null, text: "-", status: "idle", source: "" },
     draw: { label: "渲染繪製", value: null, text: "-", status: "idle", source: "" },
     eez: { label: "EEZ 靜態圖層", value: null, text: "-", status: "idle" },
@@ -21,7 +26,6 @@
   const details = {
     rows: "-",
     persistentScaleMs: 0,
-    playbackEvents: [],
   };
   const snapshotHistory = [];
   const snapshotHistoryLimit = 48;
@@ -54,7 +58,6 @@
       details: {
         rows: details.rows,
         persistentScaleMs: details.persistentScaleMs,
-        playbackEvents: details.playbackEvents.map((item) => ({ ...item })),
       },
       snapshotHistory: snapshotHistory.map((item) => ({ ...item })),
     };
@@ -70,8 +73,7 @@
   function scheduleTelemetryUpdate() {
     if (notifyScheduled) return;
     notifyScheduled = true;
-    const schedule = window.requestAnimationFrame || window.setTimeout;
-    schedule(flushTelemetryUpdate, 0);
+    renderClock.request(flushTelemetryUpdate);
   }
 
   function subscribe(subscriber) {
@@ -136,7 +138,7 @@
   function markInteraction(label = "使用者操作") {
     activeInteraction = {
       label,
-      startedAt: performance.now(),
+      startedAt: monotonicClock.now(),
     };
     metrics.interaction = {
       ...metrics.interaction,
@@ -150,7 +152,7 @@
 
   function markRenderStart(source = "渲染") {
     if (!activeInteraction) return;
-    const elapsed = performance.now() - activeInteraction.startedAt;
+    const elapsed = monotonicClock.now() - activeInteraction.startedAt;
     metrics.interaction = {
       ...metrics.interaction,
       value: elapsed,
@@ -200,7 +202,7 @@
         api: metrics.api.source,
         draw: metrics.draw.source,
       },
-      recordedAt: performance.now(),
+      monotonic_ms: monotonicClock.now(),
     };
     const signature = [
       sample.label,
@@ -323,43 +325,6 @@
     return [];
   }
 
-  function recordPlaybackEvent(event = {}) {
-    const payload = typeof event === "string" ? { text: event } : event;
-    const parsed = numberOrNull(payload.valueMs ?? payload.ms);
-    const next = {
-      label: payload.label || metrics.playback.label,
-      value: parsed,
-      text: parsed === null ? String(payload.text || payload.detail || "-") : formatMs(parsed),
-      status: payload.status || (parsed === null ? "text" : "ok"),
-      source: payload.source || "",
-      kind: "playback",
-    };
-    metrics.playback = {
-      ...metrics.playback,
-      ...next,
-    };
-    if (payload.reset) {
-      details.playbackEvents = [];
-    }
-    if (next.text && next.text !== "-") {
-      details.playbackEvents.push(next);
-      while (details.playbackEvents.length > 5) {
-        details.playbackEvents.shift();
-      }
-    }
-    renderTimeline();
-  }
-
-  function buildPlaybackStages() {
-    if (!details.playbackEvents.length) {
-      return [];
-    }
-    return details.playbackEvents.map((item) => ({
-      ...item,
-      value: item.value === null ? 1 : item.value,
-    }));
-  }
-
   function buildPersistentStages() {
     if (metrics.eez.value !== null) {
       return [stage("EEZ 瓦片就緒", metrics.eez.value, metrics.eez.status, "", "eez")];
@@ -378,7 +343,6 @@
       transport: "API 總耗時扣除 SQL 與序列化後的傳輸、Flask 包裝與路由開銷。",
       draw: "前端把資料畫到 WebGL 或 Canvas 圖層上的實際繪製耗時。",
       browser: "快照已開始處理後，扣除 API 與繪製仍留在前端的未歸因時間，通常是快取整理、狀態機同步與 DOM 更新；它不是按鍵到渲染開始的等待時間。",
-      playback: "播放器時間軸事件，例如播放開始、等待 frame buffer、顯示 snapshot 或停止；它是控制面觀測，不與資料快照耗時相加。",
       interaction: "使用者按下播放、回到開始日期、前後一日等控制後，到第一個實際渲染函式被呼叫前的等待時間。",
       eez: "持久圖層的瓦片或快取準備時間；通常不會每張快照都重新查詢。",
       generic: "未分類的資料流階段。",
@@ -408,51 +372,6 @@
       `資料列：${rows}`,
       `管線：${rowTitle}`,
     ].join("\n");
-  }
-
-  function eventTooltip(item, rowTitle) {
-    const rows = details.rows || document.getElementById("row-count")?.textContent || "-";
-    const source = item.source ? `\n來源：${item.source}` : "";
-    return [
-      item.label,
-      `事件：${item.text}`,
-      `資料列：${rows}`,
-      `管線：${rowTitle}`,
-      source.trim(),
-    ].filter(Boolean).join("\n");
-  }
-
-  function renderEventRow(title, subtitle, stages) {
-    if (!stages.length) {
-      return `
-        <div class="pipeline-row">
-          <div class="pipeline-row-label">
-            <strong>${title}</strong>
-            <span>${subtitle}</span>
-          </div>
-          <div class="pipeline-track is-empty">沒有本輪資料</div>
-        </div>
-      `;
-    }
-    const events = stages.map((item) => {
-      const label = item.source ? `${item.label} · ${item.source}` : item.label;
-      const tooltip = escapeHtml(eventTooltip(item, title));
-      return `
-        <span class="pipeline-segment pipeline-event is-${item.status || "text"} kind-${item.kind || "generic"}" title="${tooltip}">
-          <b>${label}</b>
-          <em>${item.text}</em>
-        </span>
-      `;
-    }).join("");
-    return `
-      <div class="pipeline-row">
-        <div class="pipeline-row-label">
-          <strong>${title}</strong>
-          <span>${subtitle}</span>
-        </div>
-        <div class="pipeline-event-track">${events}</div>
-      </div>
-    `;
   }
 
   function renderRow(title, subtitle, stages, scaleTotal) {
@@ -525,7 +444,6 @@
     scheduleTelemetryUpdate();
     const root = document.getElementById("pipeline-timeline");
     if (!root) return;
-    const playbackStages = buildPlaybackStages();
     const interactionStages = buildInteractionStages();
     const dynamicStages = buildDynamicStages();
     const persistentStages = buildPersistentStages();
@@ -537,9 +455,6 @@
       1
     );
     const rows = [];
-    if (playbackStages.length) {
-      rows.push(renderEventRow("播放時間軸", "控制事件；不擁有查詢、渲染或模糊時間", playbackStages));
-    }
     if (interactionStages.length) {
       rows.push(renderRow("互動延遲", "使用者操作到第一個渲染呼叫；不與快照耗時相加", interactionStages, scaleTotal));
     }
@@ -548,9 +463,9 @@
       rows.push(renderRow("持久圖層快取", "本張快照通常沿用；啟動或縮放階梯變更時更新", persistentStages, scaleTotal));
     }
     root.innerHTML = rows.join("") + renderPerformanceChart();
-    window.requestAnimationFrame(() => {
+    renderClock.request(() => {
       renderPerformancePlotly();
-      window.requestAnimationFrame(() => {
+      renderClock.request(() => {
         window.SnapshotPerformanceChart?.refresh?.();
       });
     });
@@ -565,10 +480,10 @@
   }
 
   function stopwatch() {
-    const started = performance.now();
+    const started = monotonicClock.now();
     return {
       elapsed() {
-        return performance.now() - started;
+        return monotonicClock.now() - started;
       },
     };
   }
@@ -580,7 +495,7 @@
       const cleanup = () => {
         if (done) return;
         done = true;
-        clearTimeout(timer);
+        monotonicClock.cancel(timer);
         layer.off?.("load", onLoad);
         layer.off?.("tileerror", onError);
       };
@@ -594,7 +509,7 @@
       };
       layer.once?.("load", onLoad);
       layer.once?.("tileerror", onError);
-      timer = setTimeout(() => {
+      timer = monotonicClock.schedule(() => {
         cleanup();
         reject(new Error("圖層載入逾時"));
       }, timeoutMs);
@@ -605,7 +520,7 @@
     await Promise.all(layers.map((layer) => waitForLayerLoad(layer, timeoutMs)));
   }
 
-  return {
+  Object.assign(this, {
     formatMs,
     snapshot,
     subscribe,
@@ -616,13 +531,19 @@
     setMetricText,
     resetSnapshotPersistent,
     resetSnapshotHistory,
-    recordPlaybackEvent,
     markInteraction,
     markRenderStart,
     updateSummary,
     stopwatch,
     waitForLayers,
-  };
-})();
+    dispose() {
+      subscribers.clear();
+      activeInteraction = null;
+      snapshotHistory.length = 0;
+    },
+  });
+  Object.freeze(this);
+  }
+}
 
-window.TimingMetrics = TimingMetrics;
+if (typeof globalThis !== "undefined") globalThis.TimingMetricsService = TimingMetricsService;

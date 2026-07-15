@@ -3,15 +3,22 @@ class PlaybackPreheaterController {
     store,
     demandService,
     eventLog,
+    frameIdentity,
+    clock,
     optionsProvider = null,
     stateSink = null,
   } = {}) {
-    if (!store || !demandService || !eventLog) {
-      throw new TypeError("PlaybackPreheater requires store, demandService and eventLog");
+    if (!store || !demandService || !eventLog || !frameIdentity || !clock) {
+      throw new TypeError("PlaybackPreheater requires store, demand service, event log, identity and clock");
+    }
+    if (typeof clock.now !== "function" || typeof clock.schedule !== "function" || typeof clock.cancel !== "function") {
+      throw new TypeError("PlaybackPreheater requires a schedulable monotonic clock");
     }
     this.store = store;
     this.demandService = demandService;
     this.eventLog = eventLog;
+    this.frameIdentity = frameIdentity;
+    this.clock = clock;
     this.optionsProvider = optionsProvider || (() => ({}));
     this.stateSink = stateSink;
     this.scope = null;
@@ -35,7 +42,7 @@ class PlaybackPreheaterController {
 
   scopeSignature({ dates = [], requestContext = {} } = {}) {
     return [
-      FrameIdentity.scopeKey(requestContext),
+      this.frameIdentity.scopeKey(requestContext),
       dates[0] || "",
       dates[dates.length - 1] || "",
       dates.length,
@@ -44,12 +51,12 @@ class PlaybackPreheaterController {
 
   requestForDate(date) {
     if (!this.scope || !date) return null;
-    return FrameIdentity.normalizeRequest({ ...this.scope.requestContext, date });
+    return this.frameIdentity.normalizeRequest({ ...this.scope.requestContext, date });
   }
 
   setScope({ dates = [], requestContext = {}, anchorDate = "" } = {}) {
     const normalizedDates = [...new Set(dates.filter(Boolean))].sort();
-    const normalizedContext = FrameIdentity.normalizeRequest({ ...requestContext, date: anchorDate || normalizedDates[0] || "" });
+    const normalizedContext = this.frameIdentity.normalizeRequest({ ...requestContext, date: anchorDate || normalizedDates[0] || "" });
     const signature = this.scopeSignature({ dates: normalizedDates, requestContext: normalizedContext });
     const cursorIndex = Math.max(0, normalizedDates.indexOf(anchorDate));
     if (this.scope?.signature === signature) {
@@ -59,7 +66,7 @@ class PlaybackPreheaterController {
       return this.snapshot();
     }
     if (this.scope?.id) this.demandService.cancelScope?.(this.scope.id, { includeActive: true });
-    clearTimeout(this.retryTimer);
+    this.clock.cancel(this.retryTimer);
     this.retryTimer = null;
     const id = `preheater:${++this.scopeSequence}:${signature}`;
     this.inflight.clear();
@@ -137,9 +144,9 @@ class PlaybackPreheaterController {
       return this.snapshot();
     }
 
-    const now = Date.now();
+    const now = this.clock.now();
     const missing = this.windowRequests().filter((request) => {
-      const key = FrameIdentity.intentKey(request);
+      const key = this.frameIdentity.intentKey(request);
       const inspected = this.store.inspect(request);
       const retryAt = Number(this.retryAfter.get(key) || 0);
       return inspected.status !== "ready"
@@ -148,7 +155,7 @@ class PlaybackPreheaterController {
     });
     if (!missing.length) {
       const retryPending = this.windowRequests().some((request) => (
-        Number(this.retryAfter.get(FrameIdentity.intentKey(request)) || 0) > now
+        Number(this.retryAfter.get(this.frameIdentity.intentKey(request)) || 0) > now
       ));
       this.syncState(this.inflight.size ? "FETCHING" : retryPending ? "DEGRADED" : "READY");
       if (retryPending) this.scheduleRetry();
@@ -158,7 +165,7 @@ class PlaybackPreheaterController {
     this.scope.scheduledTotal += missing.length;
     this.syncState("FETCHING");
     for (const request of missing) {
-      const intentKey = FrameIdentity.intentKey(request);
+      const intentKey = this.frameIdentity.intentKey(request);
       const promise = this.demandService.demand(request, {
         lane: "playback-window",
         scopeId,
@@ -171,7 +178,7 @@ class PlaybackPreheaterController {
         .catch((error) => {
           if (error?.name !== "AbortError" && this.scope?.id === scopeId) {
             this.scope.failed += 1;
-            this.retryAfter.set(intentKey, Date.now() + 5000);
+            this.retryAfter.set(intentKey, this.clock.now() + 5000);
           }
           return null;
         })
@@ -180,7 +187,7 @@ class PlaybackPreheaterController {
           if (this.scope?.id !== scopeId) return;
           this.scope.readyAhead = this.readyAhead();
           const hasRetry = this.windowRequests().some((candidate) => (
-            Number(this.retryAfter.get(FrameIdentity.intentKey(candidate)) || 0) > Date.now()
+            Number(this.retryAfter.get(this.frameIdentity.intentKey(candidate)) || 0) > this.clock.now()
           ));
           this.syncState(this.inflight.size ? "FETCHING" : hasRetry ? "DEGRADED" : "READY");
           if (hasRetry) this.scheduleRetry();
@@ -195,11 +202,11 @@ class PlaybackPreheaterController {
     if (!this.scope || this.retryTimer) return;
     const scopeId = this.scope.id;
     const candidates = this.windowRequests()
-      .map((request) => Number(this.retryAfter.get(FrameIdentity.intentKey(request)) || 0))
-      .filter((value) => value > Date.now());
+      .map((request) => Number(this.retryAfter.get(this.frameIdentity.intentKey(request)) || 0))
+      .filter((value) => value > this.clock.now());
     if (!candidates.length) return;
-    const delay = Math.max(25, Math.min(...candidates) - Date.now());
-    this.retryTimer = setTimeout(() => {
+    const delay = Math.max(25, Math.min(...candidates) - this.clock.now());
+    this.retryTimer = this.clock.schedule(() => {
       this.retryTimer = null;
       if (this.scope?.id === scopeId) this.reconcile();
     }, delay);
@@ -242,7 +249,7 @@ class PlaybackPreheaterController {
     });
     this.inflight.clear();
     this.retryAfter.clear();
-    clearTimeout(this.retryTimer);
+    this.clock.cancel(this.retryTimer);
     this.retryTimer = null;
     this.scope = null;
     this.stateSink?.(this.snapshot());

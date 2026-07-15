@@ -1,11 +1,11 @@
 class RenderArtifactCache {
-  constructor({ targetState, rendererRegistry, now = null } = {}) {
-    if (!targetState || !rendererRegistry) {
-      throw new TypeError("RenderArtifactCache requires state and RendererRegistry");
+  constructor({ targetState, rendererRegistry, clock } = {}) {
+    if (!targetState || !rendererRegistry || !clock || typeof clock.now !== "function") {
+      throw new TypeError("RenderArtifactCache requires state, RendererRegistry and a monotonic clock");
     }
     this.state = targetState;
     this.rendererRegistry = rendererRegistry;
-    this.now = now || (() => Date.now());
+    this.clock = clock;
     this.generation = 0;
   }
 
@@ -35,7 +35,7 @@ class RenderArtifactCache {
       generation: this.generation,
       released,
       reason,
-      clearedAt: this.now(),
+      clearedMonotonicMs: this.clock.now(),
       gpu: this.webglAvailable(),
     };
 

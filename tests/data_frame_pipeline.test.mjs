@@ -22,8 +22,10 @@ function createContext({ fetchJson, statePatch = {} } = {}) {
     Set,
     String,
     URLSearchParams,
+    clearTimeout,
     console,
     performance,
+    setTimeout,
     fetchJson: fetchJson || (async () => ({ rows: [], row_count: 0 })),
     state: {
       datasets: {
@@ -38,12 +40,15 @@ function createContext({ fetchJson, statePatch = {} } = {}) {
       ...statePatch,
     },
     SampledGridContract: { recordResolvedResolution() {} },
+    document: { getElementById: () => null },
   };
   context.window = {
     dispatchEvent() {},
   };
   vm.createContext(context);
   for (const file of [
+    "static/js/core/clock-domain.js",
+    "static/TimingMetrics.js",
     "static/js/services/lifecycle-event-log.js",
     "static/js/services/frame-identity.js",
     "static/js/services/layer-query-coordinator.js",
@@ -52,6 +57,7 @@ function createContext({ fetchJson, statePatch = {} } = {}) {
     "static/js/playback/playback-preheater.js",
     "static/js/playback/playback-engine.js",
     "static/js/playback/playback-renderer.js",
+    "static/js/services/runtime-performance-metrics.js",
     "static/js/runtime/runtime-composition-root.js",
   ]) {
     vm.runInContext(fs.readFileSync(path.join(root, file), "utf8"), context);

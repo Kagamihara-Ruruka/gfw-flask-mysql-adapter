@@ -45,10 +45,13 @@ function contextFor(fetchJson) {
       lifecycleEvents: { maxEntries: 5000 },
     },
     SampledGridContract: { recordResolvedResolution() {} },
+    document: { getElementById: () => null },
   };
   context.window = { dispatchEvent() {} };
   vm.createContext(context);
   for (const file of [
+    "static/js/core/clock-domain.js",
+    "static/TimingMetrics.js",
     "static/js/services/lifecycle-event-log.js",
     "static/js/services/frame-identity.js",
     "static/js/services/layer-query-coordinator.js",
@@ -57,6 +60,7 @@ function contextFor(fetchJson) {
     "static/js/playback/playback-preheater.js",
     "static/js/playback/playback-engine.js",
     "static/js/playback/playback-renderer.js",
+    "static/js/services/runtime-performance-metrics.js",
     "static/js/runtime/runtime-composition-root.js",
   ]) {
     vm.runInContext(fs.readFileSync(path.join(root, file), "utf8"), context);
@@ -213,6 +217,7 @@ test("playback scope changes cancel stale targets and keep engine and preheater 
     },
     eventLog: api(context, "LifecycleEventLog"),
     frameIdentity: identity,
+    clock: api(context, "ClockDomain").playback,
   });
   const allDates = dates(3);
   engine.configure({ dates: allDates, requestContext: requestContext(), currentDate: allDates[0] });

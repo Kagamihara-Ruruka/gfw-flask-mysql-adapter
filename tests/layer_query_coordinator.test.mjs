@@ -40,6 +40,7 @@ function loadCoordinator(state, { eventLog = null } = {}) {
   const scheduler = new QuerySchedulerClass({
     concurrency: state?.queryPolicy?.network_concurrency ?? 6,
     eventLog,
+    clock: { now: () => performance.now() },
   });
   return createCoordinator({ scheduler, fetchJson: context.fetchJson });
 }

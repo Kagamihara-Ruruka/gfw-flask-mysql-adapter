@@ -55,6 +55,11 @@ class MetricsWidget extends DashboardWidget {
           <span><b data-widget-metric-value="draw">-</b><em>繪製</em></span>
           <span><b data-widget-metric-value="interaction">-</b><em>互動延遲</em></span>
           <span><b data-widget-metric-value="eez">-</b><em>EEZ</em></span>
+          <span><b data-widget-metric-value="consumptionRate">-</b><em>消耗 / 秒</em></span>
+          <span><b data-widget-metric-value="supplyRate">-</b><em>補給 / 秒</em></span>
+          <span><b data-widget-metric-value="cacheReadyP95">-</b><em>Cache Ready P95</em></span>
+          <span><b data-widget-metric-value="readyAheadSlices">-</b><em>前方影格</em></span>
+          <span><b data-widget-metric-value="readyAheadSeconds">-</b><em>前方秒數</em></span>
         </div>
       </div>
         <div class="widget-metrics-history-panel" data-widget-history-panel data-widget-interactive="1">
@@ -94,6 +99,11 @@ class MetricsWidget extends DashboardWidget {
         <span><b data-widget-metric-value="draw">-</b><em>繪製</em></span>
         <span><b data-widget-metric-value="interaction">-</b><em>互動延遲</em></span>
         <span><b data-widget-metric-value="eez">-</b><em>EEZ</em></span>
+        <span><b data-widget-metric-value="consumptionRate">-</b><em>消耗 / 秒</em></span>
+        <span><b data-widget-metric-value="supplyRate">-</b><em>補給 / 秒</em></span>
+        <span><b data-widget-metric-value="cacheReadyP95">-</b><em>Cache Ready P95</em></span>
+        <span><b data-widget-metric-value="readyAheadSlices">-</b><em>前方影格</em></span>
+        <span><b data-widget-metric-value="readyAheadSeconds">-</b><em>前方秒數</em></span>
       </div>
       <div class="widget-metrics-expanded-foot">
         <span>播放事件</span>
@@ -106,6 +116,10 @@ class MetricsWidget extends DashboardWidget {
     return this.services.timingMetricsProvider?.() || null;
   }
 
+  runtimeMetrics() {
+    return this.services.runtimeMetricsProvider?.() || null;
+  }
+
   metricText(packet, key) {
     return packet?.metrics?.[key]?.text || "-";
   }
@@ -115,10 +129,12 @@ class MetricsWidget extends DashboardWidget {
     return Number.isFinite(value) ? value : 0;
   }
 
-  latestPlaybackText(packet) {
-    const events = packet?.details?.playbackEvents || [];
-    const latest = events[events.length - 1];
-    return latest?.text && latest.text !== "-" ? latest.text : this.metricText(packet, "playback");
+  latestPlaybackText(runtime) {
+    if (!runtime) return "等待播放事件";
+    const ready = Number(runtime.ready_ahead_slices || 0);
+    const seconds = Number(runtime.ready_ahead_seconds || 0);
+    const supply = Number(runtime.supply_rate || 0);
+    return `${runtime.playback_status || "IDLE"} · 前方 ${ready} 張 / ${seconds.toFixed(1)}s · 補給 ${supply.toFixed(2)}/s`;
   }
 
   primaryMetric(packet) {
@@ -156,6 +172,11 @@ class MetricsWidget extends DashboardWidget {
     return `${numeric.toFixed(1)} ms`;
   }
 
+  formatRate(value) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? `${numeric.toFixed(2)} /s` : "-";
+  }
+
   historySamples(packet) {
     const history = Array.isArray(packet?.snapshotHistory) ? packet.snapshotHistory : [];
     return history.filter((sample) => (
@@ -191,21 +212,38 @@ class MetricsWidget extends DashboardWidget {
 
   bindTelemetry(container) {
     const api = this.timingMetricsApi();
-    const update = (packet) => this.updateTelemetryView(container, packet);
-    if (!api?.subscribe) {
-      update(api?.snapshot?.() || null);
-      return;
-    }
+    const eventLog = this.services.eventLog;
+    let latestPacket = api?.snapshot?.() || null;
     let wasConnected = false;
-    let unsubscribe = null;
-    unsubscribe = api.subscribe((packet) => {
+    let timer = 0;
+    const unsubscribers = [];
+    const dispose = () => {
+      this.services.cancelSchedule?.(timer);
+      timer = 0;
+      unsubscribers.splice(0).forEach((unsubscribe) => unsubscribe?.());
+    };
+    const update = () => {
+      timer = 0;
       if (container.isConnected) wasConnected = true;
       if (!container.isConnected && wasConnected) {
-        unsubscribe?.();
+        dispose();
         return;
       }
-      update(packet);
-    });
+      this.updateTelemetryView(container, latestPacket);
+    };
+    const scheduleUpdate = () => {
+      if (timer) return;
+      timer = this.services.schedule?.(update, 160) || 0;
+      if (!timer) update();
+    };
+    if (api?.subscribe) {
+      unsubscribers.push(api.subscribe((packet) => {
+        latestPacket = packet;
+        scheduleUpdate();
+      }));
+    }
+    if (eventLog?.subscribe) unsubscribers.push(eventLog.subscribe(scheduleUpdate, { emitCurrent: false }));
+    update();
   }
 
   updateTelemetryView(container, packet) {
@@ -215,7 +253,8 @@ class MetricsWidget extends DashboardWidget {
       });
     };
     const primary = this.primaryMetric(packet);
-    const playback = this.latestPlaybackText(packet);
+    const runtime = this.runtimeMetrics();
+    const playback = this.latestPlaybackText(runtime);
     setText("headlineLabel", primary.label);
     setText("headline", primary.value);
     setText("headlineHint", primary.hint);
@@ -229,6 +268,11 @@ class MetricsWidget extends DashboardWidget {
     setText("rows", this.rowsText(packet));
     setText("playback", playback && playback !== "-" ? playback : "等待播放事件");
     setText("interaction", this.metricText(packet, "interaction"));
+    setText("consumptionRate", this.formatRate(runtime?.consumption_rate));
+    setText("supplyRate", this.formatRate(runtime?.supply_rate));
+    setText("cacheReadyP95", this.formatMsValue(runtime?.cache_ready_latency_p95));
+    setText("readyAheadSlices", `${Number(runtime?.ready_ahead_slices || 0)} 張`);
+    setText("readyAheadSeconds", `${Number(runtime?.ready_ahead_seconds || 0).toFixed(1)} s`);
     this.updateHistoryChart(container, packet, setText);
 
     const values = ["query", "api", "draw"].map((key) => this.metricNumber(packet, key));

@@ -1,6 +1,6 @@
 function schedulePrimaryReload(delayMs = 0) {
-  clearTimeout(state.primaryReloadTimer);
-  state.primaryReloadTimer = setTimeout(() => {
+  ClockDomain.monotonic.cancel(state.primaryReloadTimer);
+  state.primaryReloadTimer = ClockDomain.monotonic.schedule(() => {
     state.primaryReloadTimer = null;
     reloadActiveLayer().catch((error) => {
       if (error?.name !== "AbortError") setStatus(error?.message || "圖層重新載入失敗", true);
@@ -37,8 +37,8 @@ function bindMapRefresh() {
   let eezZoomPrepared = false;
 
   function clearScheduledReloads() {
-    clearTimeout(state.primaryReloadTimer);
-    clearTimeout(eezTimer);
+    ClockDomain.monotonic.cancel(state.primaryReloadTimer);
+    ClockDomain.monotonic.cancel(eezTimer);
   }
 
   function preparePrimaryRender({ lodChanging = false } = {}) {
@@ -78,7 +78,7 @@ function bindMapRefresh() {
       schedulePrimaryReload(250);
     }
     if (eezZoomPrepared && $("eez-toggle")?.checked) {
-      eezTimer = setTimeout(() => {
+      eezTimer = ClockDomain.monotonic.schedule(() => {
         refreshEezTileReadiness("縮放更新").catch((err) => console.error("EEZ overlay failed", err));
       }, 120);
     }

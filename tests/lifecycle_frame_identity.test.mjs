@@ -6,6 +6,14 @@ import vm from "node:vm";
 
 const root = process.cwd();
 
+function steppingClock(stepMs = 10) {
+  let value = 0;
+  return {
+    now: () => (value += stepMs),
+    wallNowIso: () => "2026-07-16T00:00:00.000Z",
+  };
+}
+
 function load(file, context = {}) {
   const sandbox = {
     Date,
@@ -58,7 +66,10 @@ test("lifecycle log computes user-perceived stall and cadence metrics", () => {
     state: { lifecycleEvents: { maxEntries: 1000 } },
   });
   const LifecycleEventLogCore = vm.runInContext("globalThis.LifecycleEventLogCore", context);
-  const log = new LifecycleEventLogCore({ maxEntriesProvider: () => 1000 });
+  const log = new LifecycleEventLogCore({
+    maxEntriesProvider: () => 1000,
+    clock: steppingClock(),
+  });
   const runId = log.beginRun({ run_id: "annual-audit" });
   log.record("FRAME_VISIBLE", { run_id: runId, frame_key: "f1" });
   log.record("BUFFER_ENTERED", { run_id: runId, intent_key: "i2" });
@@ -83,7 +94,7 @@ test("lifecycle log computes user-perceived stall and cadence metrics", () => {
   assert.equal(summary.phases.cacheCommit.p95Ms, 10);
   assert.equal(summary.phases.render.p95Ms, 7);
   assert.equal(summary.maxQueueDepth, 4);
-  assert.equal(JSON.parse(log.exportRun(runId)).schema, "rrkal.lifecycle-events.v1");
+  assert.equal(JSON.parse(log.exportRun(runId)).schema, "rrkal.lifecycle-events.v2");
 });
 
 test("scope cancellation closes an active stall instead of leaving it open", () => {
@@ -91,7 +102,10 @@ test("scope cancellation closes an active stall instead of leaving it open", () 
     state: { lifecycleEvents: { maxEntries: 1000 } },
   });
   const LifecycleEventLogCore = vm.runInContext("globalThis.LifecycleEventLogCore", context);
-  const log = new LifecycleEventLogCore({ maxEntriesProvider: () => 1000 });
+  const log = new LifecycleEventLogCore({
+    maxEntriesProvider: () => 1000,
+    clock: steppingClock(),
+  });
   const runId = log.beginRun({ run_id: "scope-change" });
   log.record("BUFFER_ENTERED", { run_id: runId, intent_key: "old-scope" });
   log.record("BUFFER_CANCELLED", {
