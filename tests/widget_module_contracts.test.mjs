@@ -7,7 +7,18 @@ import path from "node:path";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (relativePath) => readFileSync(path.join(root, relativePath), "utf8");
 
+const applicationModules = [
+  "static/js/application/widgets/widget-model-functions.js",
+  "static/js/application/widgets/widget-query-context.js",
+  "static/js/application/widgets/line-chart-data-source.js",
+  "static/js/application/widgets/slice-chart-data-sources.js",
+  "static/js/application/widgets/table-widget-data-source.js",
+  "static/js/application/widgets/eez-attribution-data-source.js",
+  "static/js/application/widgets/widget-application-runtime.js",
+];
+
 const jsModules = [
+  ...applicationModules,
   "static/js/ui/widgets/core/widget-core.js",
   "static/js/ui/widgets/capabilities/shared.js",
   "static/js/ui/widgets/capabilities/line-chart.js",
@@ -103,6 +114,12 @@ test("widget dependency direction stays one-way", () => {
 
   const registry = read("static/js/ui/widgets/registry/widget-registry.js");
   assert.doesNotMatch(registry, /addEventListener\(|map\.on\(|fetchJson\(/);
+
+  for (const relativePath of applicationModules) {
+    const application = read(relativePath);
+    assert.doesNotMatch(application, /WidgetCore|WidgetCapabilities|WidgetRegistry|WidgetRuntime/);
+    assert.doesNotMatch(application, /\bdocument\.|\bwindow\./);
+  }
 });
 
 test("widget capabilities do not own server transport", () => {
@@ -115,12 +132,36 @@ test("widget capabilities do not own server transport", () => {
 
 test("table widget is a read-only current-snapshot cache inspector", () => {
   const table = read("static/js/ui/widgets/capabilities/table.js");
+  const source = read("static/js/application/widgets/table-widget-data-source.js");
   const runtime = read("static/js/ui/widgets/runtime/widgets-runtime.js");
 
-  assert.match(table, /DataFrameStore\.inspect/);
-  assert.match(table, /目前快照尚無快取資料/);
-  assert.doesNotMatch(table, /\bfetch\s*\(|\binflight\b|\/records\?/);
+  assert.match(source, /this\.dataFrameStore\.inspect/);
+  assert.match(source, /目前快照尚無快取資料/);
+  assert.doesNotMatch(source, /frameDemandService|queryCoordinator|\bfetch\s*\(|\binflight\b|\/records\?/);
+  assert.doesNotMatch(table, /DataFrameStore|FrameDemandService|LayerQueryCoordinator|\bstate\s*[?.]/);
   assert.doesNotMatch(runtime, /refreshTableWidgets[\s\S]{0,180}source\.clear\(\)/);
+});
+
+test("widget application services own data while capabilities only render injected models", () => {
+  const rootSource = read("static/js/runtime/runtime-composition-root.js");
+  const appRuntime = read("static/js/application/widgets/widget-application-runtime.js");
+  const registry = read("static/js/ui/widgets/registry/widget-registry.js");
+  const runtime = read("static/js/ui/widgets/runtime/widgets-runtime.js");
+
+  assert.match(rootSource, /createWidgetApplicationRuntime\(\{/);
+  assert.match(rootSource, /this\.own\("WidgetApplicationRuntime"/);
+  assert.match(appRuntime, /class WidgetApplicationRuntime/);
+  assert.match(appRuntime, /sources\.set\("line-chart"/);
+  assert.match(registry, /createWidgetInstance\(widgetType, params = \{\}, services = \{\}\)/);
+  assert.match(runtime, /applicationRuntime\.servicesFor/);
+  assert.match(runtime, /targetWidget\.dispose\?\.\(\)/);
+  assert.doesNotMatch(runtime, /currentWidget\.dispose\?\.\(\)/);
+
+  for (const relativePath of jsModules.filter((item) => item.includes("/capabilities/"))) {
+    const capability = read(relativePath);
+    assert.doesNotMatch(capability, /class \w+DataSource\b|\.shared\(\)/, relativePath);
+    assert.doesNotMatch(capability, /DataFrameStore|FrameDemandService|LayerQueryCoordinator/, relativePath);
+  }
 });
 
 test("event viewer is a registered read-only lifecycle widget", () => {
@@ -130,7 +171,7 @@ test("event viewer is a registered read-only lifecycle widget", () => {
   assert.match(eventViewer, /exportRun/);
   assert.match(eventViewer, /renderExpandedContent\(container, model\)/);
   assert.match(eventViewer, /scheduleBindingRender\(binding\)/);
-  assert.match(eventViewer, /window\.setTimeout\(\(\) =>/);
+  assert.match(eventViewer, /this\.services\.schedule\?\.\(\(\) =>/);
   assert.match(eventViewer, /bindingByContainer = new WeakMap\(\)/);
   assert.doesNotMatch(eventViewer, /\n\s*renderExpanded\s*\(/);
   assert.doesNotMatch(eventViewer, /FrameDemandService|LayerQueryCoordinator|fetchJson|["'`]\/api\//);

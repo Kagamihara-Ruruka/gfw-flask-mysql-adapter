@@ -1,167 +1,9 @@
 (() => {
 const { ChartWidget, WidgetPlotlyLifecycle } = window.WidgetCore;
-const {
-  lineChartEscape,
-  WidgetQueryContext,
-  SampledGridWidgetLayerFilter,
-} = window.WidgetCapabilityShared;
-
-class HorizontalBarChartDataSource {
-  static shared() {
-    if (!HorizontalBarChartDataSource.instance) {
-      HorizontalBarChartDataSource.instance = new HorizontalBarChartDataSource();
-    }
-    return HorizontalBarChartDataSource.instance;
-  }
-
-  constructor() {
-    this.cache = new Map();
-    this.inflight = new Map();
-    this.generation = 0;
-  }
-
-  clear() {
-    this.generation += 1;
-    this.cache.clear();
-    this.inflight.clear();
-  }
-
-  statusModel(stateName, title, detail) {
-    return {
-      state: stateName,
-      title,
-      detail,
-      xLabel: "canonical value",
-      yLabel: "儲存標籤",
-      categories: [],
-      values: [],
-      colors: [],
-      series: [],
-    };
-  }
-
-  requestForCurrentState({ excludedLayerIds = [], excludedSelectionIds = [], aliases = {}, sort = "selection" } = {}) {
-    const excludedSelections = new Set(excludedSelectionIds);
-    const selections = WidgetQueryContext.selections()
-      .filter((selection) => !excludedSelections.has(selection.selection_id));
-    if (!selections.length) {
-      return { blocked: this.statusModel("waiting", "等待儲存標籤", "請使用連續網格選取建立比較標籤") };
-    }
-    const layers = WidgetQueryContext.sampledGridLayers({ excludedLayerIds });
-    if (!layers.length) {
-      return { blocked: this.statusModel("waiting", "等待資料圖層", "沒有啟用的 sampled-grid 圖層") };
-    }
-    const key = JSON.stringify({
-      selections: selections.map((selection) => [
-        selection.selection_id,
-        WidgetQueryContext.currentDate(selection),
-        selection.bbox_string,
-      ]),
-      layers: layers.map((layer) => layer.layerId),
-      aliases,
-      sort,
-    });
-    return { key, selections, layers, aliases, sort };
-  }
-
-  defaultSelectionLabel(selection, index) {
-    const date = WidgetQueryContext.currentDate(selection);
-    const prefix = selection?.time_binding?.kind === "locked_axis" ? "異時" : "同時";
-    return `${prefix} ${index + 1}${date ? ` · ${date}` : ""}`;
-  }
-
-  sortSelections(selections, totals, sort) {
-    const indexed = selections.map((selection, index) => ({ selection, index, total: totals[index] }));
-    const compareMissingLast = (left, right, direction) => {
-      const leftAvailable = Number.isFinite(left.total);
-      const rightAvailable = Number.isFinite(right.total);
-      if (leftAvailable !== rightAvailable) return leftAvailable ? -1 : 1;
-      if (!leftAvailable) return left.index - right.index;
-      return direction * (left.total - right.total) || left.index - right.index;
-    };
-    if (sort === "value_desc") indexed.sort((left, right) => compareMissingLast(left, right, -1));
-    if (sort === "value_asc") indexed.sort((left, right) => compareMissingLast(left, right, 1));
-    return indexed;
-  }
-
-  comparableValue(result) {
-    if (!["observed", "zero"].includes(result?.status)) return null;
-    const value = Number(result.value);
-    return Number.isFinite(value) ? value : null;
-  }
-
-  async loadModel(request, generation) {
-    const matrix = await Promise.all(request.layers.map(async (layer) => ({
-      layer,
-      results: await Promise.all(request.selections.map((selection) => (
-        WidgetQueryContext.fetchValue(layer, selection)
-      ))),
-    })));
-    const totals = request.selections.map((_, selectionIndex) => {
-      const values = matrix
-        .map((row) => this.comparableValue(row.results[selectionIndex]))
-        .filter((value) => value !== null);
-      return values.length ? values.reduce((sum, value) => sum + value, 0) : null;
-    });
-    const ordered = this.sortSelections(request.selections, totals, request.sort);
-    const categories = ordered.map(({ selection, index }) => (
-      request.aliases[selection.selection_id] || this.defaultSelectionLabel(selection, index)
-    ));
-    const series = matrix.map(({ layer, results }) => ({
-      layerId: layer.layerId,
-      datasetId: layer.datasetId,
-      label: layer.label,
-      color: WidgetQueryContext.colorFor(layer.layerId, 0.88),
-      values: ordered.map(({ index }) => {
-        return this.comparableValue(results[index]);
-      }),
-      statuses: ordered.map(({ index }) => results[index]?.status || "missing"),
-    }));
-    const values = ordered.map(({ total }) => total);
-    const observed = matrix.flatMap((row) => row.results)
-      .filter((result) => ["observed", "zero"].includes(result.status));
-    const total = values.reduce((sum, value) => (
-      sum + (Number.isFinite(value) ? Math.max(0, value) : 0)
-    ), 0);
-    const model = {
-      state: observed.length ? (total > 0 ? "ready" : "zero") : "error",
-      title: observed.length ? (total > 0 ? "網格標籤比較" : "比較值皆為 0") : "沒有可比較資料",
-      detail: `${request.selections.length} 個標籤 / ${request.layers.length} 個圖層`,
-      xLabel: "canonical value",
-      yLabel: "儲存標籤",
-      categories,
-      values,
-      colors: categories.map((_, index) => WidgetQueryContext.colorFor(`selection-${index}`, 0.82)),
-      series,
-      rowCount: matrix.flatMap((row) => row.results).reduce((sum, result) => sum + Number(result.rowCount || 0), 0),
-    };
-    if (generation === this.generation) {
-      this.cache.set(request.key, model);
-      window.dispatchEvent(new CustomEvent("rrkal:horizontal-bar-data-changed", {
-        detail: { key: request.key, state: model.state },
-      }));
-    }
-    return model;
-  }
-
-  model(options = {}) {
-    const request = this.requestForCurrentState(options);
-    if (request.blocked) return request.blocked;
-    if (this.cache.has(request.key)) return this.cache.get(request.key);
-    if (!this.inflight.has(request.key)) {
-      const generation = this.generation;
-      const loader = this.loadModel(request, generation).finally(() => {
-        if (this.inflight.get(request.key) === loader) this.inflight.delete(request.key);
-      });
-      this.inflight.set(request.key, loader);
-    }
-    return this.statusModel("loading", "載入標籤比較", `${request.selections.length} 個標籤 / ${request.layers.length} 個圖層`);
-  }
-}
-
+const { lineChartEscape, SampledGridWidgetLayerFilter } = window.WidgetCapabilityShared;
 class HorizontalBarChartWidget extends ChartWidget {
   layerFilter() {
-    if (!this.sampledGridLayerFilter) this.sampledGridLayerFilter = new SampledGridWidgetLayerFilter();
+    if (!this.sampledGridLayerFilter) this.sampledGridLayerFilter = new SampledGridWidgetLayerFilter({ queryContext: this.services.queryContext });
     return this.sampledGridLayerFilter;
   }
 
@@ -178,7 +20,7 @@ class HorizontalBarChartWidget extends ChartWidget {
 
   chartModel() {
     const settings = this.settings();
-    return HorizontalBarChartDataSource.shared().model({
+    return this.services.dataSource.model({
       excludedLayerIds: [...this.layerFilter().excludedLayerIds],
       excludedSelectionIds: [...settings.excludedSelectionIds],
       aliases: Object.fromEntries(settings.aliases),
@@ -187,10 +29,8 @@ class HorizontalBarChartWidget extends ChartWidget {
   }
 
   refreshData() {
-    HorizontalBarChartDataSource.shared().clear();
-    window.dispatchEvent(new CustomEvent("rrkal:horizontal-bar-data-changed", {
-      detail: { reason: "settings_changed", widgetId: this.id },
-    }));
+    this.services.dataSource.clear();
+    this.services.emit?.("rrkal:horizontal-bar-data-changed", { reason: "settings_changed", widgetId: this.id });
   }
 
   renderSelectionSettings() {
@@ -200,7 +40,7 @@ class HorizontalBarChartWidget extends ChartWidget {
     heading.textContent = "比較標籤";
     const list = document.createElement("div");
     list.className = "widget-comparison-label-list";
-    const selections = WidgetQueryContext.selections();
+    const selections = this.services.queryContext.selections();
     const settings = this.settings();
     selections.forEach((selection, index) => {
       const row = document.createElement("div");
@@ -219,7 +59,7 @@ class HorizontalBarChartWidget extends ChartWidget {
       const alias = document.createElement("input");
       alias.type = "text";
       alias.value = settings.aliases.get(selection.selection_id) || "";
-      alias.placeholder = HorizontalBarChartDataSource.shared().defaultSelectionLabel(selection, index);
+      alias.placeholder = this.services.dataSource.defaultSelectionLabel(selection, index);
       alias.setAttribute("aria-label", `標籤 ${index + 1} 名稱`);
       alias.addEventListener("change", () => {
         const value = alias.value.trim();
@@ -432,8 +272,5 @@ class HorizontalBarChartWidget extends ChartWidget {
   }
 }
 
-Object.assign(window.WidgetCapabilities ||= {}, {
-  HorizontalBarChartDataSource,
-  HorizontalBarChartWidget,
-});
+Object.assign(window.WidgetCapabilities ||= {}, { HorizontalBarChartWidget });
 })();

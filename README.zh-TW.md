@@ -16,6 +16,8 @@
 [`benchmarks/playback_lifecycle_acceptance_2026-07-15.md`](benchmarks/playback_lifecycle_acceptance_2026-07-15.md)。
 第二輪 Runtime OOP 收斂後的全年回歸結果記錄在
 [`benchmarks/runtime_oop_acceptance_2026-07-15.md`](benchmarks/runtime_oop_acceptance_2026-07-15.md)。
+Widget UI／Application 邊界拆分後的回歸結果記錄在
+[`benchmarks/widget_application_boundary_acceptance_2026-07-16.md`](benchmarks/widget_application_boundary_acceptance_2026-07-16.md)。
 
 ## 專案邊界
 

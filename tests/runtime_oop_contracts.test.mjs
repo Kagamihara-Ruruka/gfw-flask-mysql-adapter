@@ -123,17 +123,13 @@ test("the Application Service template is stateless and dependency-injected", ()
   assert.doesNotMatch(template, /\bwindow\.|\bglobalThis\.|\bstate\./);
 });
 
-test("legacy shared data sources stay outside core Runtime ownership", () => {
-  for (const directory of [
-    "static/js/core",
-    "static/js/services",
-    "static/js/playback",
-    "static/js/rendering",
-    "static/js/ui/widgets/registry",
-  ]) {
-    for (const file of fs.readdirSync(path.join(root, directory)).filter((name) => name.endsWith(".js"))) {
-      const relativePath = `${directory}/${file}`;
-      assert.doesNotMatch(read(relativePath), /\.shared\(\)/, relativePath);
+test("runtime JavaScript has no shared service-locator entrypoint", () => {
+  const visit = (directory) => {
+    for (const entry of fs.readdirSync(path.join(root, directory), { withFileTypes: true })) {
+      const relativePath = `${directory}/${entry.name}`;
+      if (entry.isDirectory()) visit(relativePath);
+      else if (entry.name.endsWith(".js")) assert.doesNotMatch(read(relativePath), /\.shared\(\)/, relativePath);
     }
-  }
+  };
+  visit("static/js");
 });

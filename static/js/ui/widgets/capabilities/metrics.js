@@ -103,9 +103,7 @@ class MetricsWidget extends DashboardWidget {
   }
 
   timingMetricsApi() {
-    if (typeof window !== "undefined" && window.TimingMetrics) return window.TimingMetrics;
-    if (typeof TimingMetrics !== "undefined") return TimingMetrics;
-    return null;
+    return this.services.timingMetricsProvider?.() || null;
   }
 
   metricText(packet, key) {

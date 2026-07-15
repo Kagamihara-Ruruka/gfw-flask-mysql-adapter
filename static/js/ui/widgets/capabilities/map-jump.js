@@ -13,10 +13,7 @@ class MapJumpWidget extends DashboardWidget {
 
   runViewAction(action) {
     if (!action?.id) return false;
-    window.dispatchEvent(new CustomEvent("rrkal:map-view-action", {
-      detail: { id: action.id },
-    }));
-    return true;
+    return this.services.runViewAction?.(action.id) === true;
   }
 
   renderTemplate(container, { expanded = false } = {}) {

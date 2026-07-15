@@ -167,44 +167,43 @@ function loadWidgetQueryContext(packetRows) {
   const context = {
     console,
     URLSearchParams,
-    state: {
+    appState: {
       datasets: {},
       layerContracts: [],
       importedLayers: {},
       tileSelection: { selected: null, items: [] },
     },
-    map: {
-      getZoom: () => 6,
-      getCenter: () => ({ lat: 21, lng: 121 }),
-    },
-    document: {
-      getElementById: () => ({ value: "2024-01-01" }),
-    },
-    WidgetCore: { lineChartEscape: (value) => String(value) },
-    LayerRuntimeContractRegistry: { sampledGridLayers: () => [] },
-    SampledGridContract: {
+  };
+  context.window = context;
+  vm.createContext(context);
+  for (const file of ["widget-model-functions.js", "widget-query-context.js"]) {
+    vm.runInContext(
+      fs.readFileSync(path.join(root, "static/js/application/widgets", file), "utf8"),
+      context,
+    );
+  }
+  return new context.WidgetQueryContext({
+    stateProvider: () => context.appState,
+    layerRegistryProvider: () => ({ sampledGridLayers: () => [] }),
+    tileSelectionProvider: () => [],
+    selectedDateProvider: () => "2024-01-01",
+    mapSnapshotProvider: () => ({ zoom: 6, latitude: 21 }),
+    sampledGridContract: {
       queryResolution: () => 4,
       requestResolution: () => 4,
     },
-    RenderIntentService: { unlimitedLimit: () => "max" },
-    DataFrameStore: {
+    renderIntentService: { unlimitedLimit: () => "max" },
+    dataFrameStore: {
       inspect() {
         return { status: "ready", packet: { rows: packetRows }, cacheHit: true };
       },
     },
-    FrameDemandService: {
+    frameDemandService: {
       async demand() {
         return { status: "ready", packet: { rows: packetRows }, cacheHit: false };
       },
     },
-  };
-  context.window = context;
-  vm.createContext(context);
-  vm.runInContext(
-    fs.readFileSync(path.join(root, "static/js/ui/widgets/capabilities/shared.js"), "utf8"),
-    context,
-  );
-  return context.WidgetCapabilityShared.WidgetQueryContext;
+  });
 }
 
 function loadLayerViewportController(dataset) {
@@ -732,7 +731,11 @@ test("database config wizard owns connections but not dataset mappings", () => {
 
 test("sampled-grid widgets consume canonical roles instead of GFW identifiers", () => {
   const files = [
-    "static/js/ui/widgets/capabilities/shared.js",
+    "static/js/application/widgets/widget-model-functions.js",
+    "static/js/application/widgets/widget-query-context.js",
+    "static/js/application/widgets/line-chart-data-source.js",
+    "static/js/application/widgets/slice-chart-data-sources.js",
+    "static/js/application/widgets/table-widget-data-source.js",
     "static/js/ui/widgets/capabilities/line-chart.js",
     "static/js/ui/widgets/capabilities/pie-chart.js",
     "static/js/ui/widgets/capabilities/horizontal-bar-chart.js",
@@ -744,8 +747,8 @@ test("sampled-grid widgets consume canonical roles instead of GFW identifiers", 
     assert.equal(source.includes('dataLayer !== "gfw"'), false, `${file} still gates on the GFW layer id`);
     assert.equal(source.includes("GFW 顏色格"), false, `${file} still exposes GFW-only widget semantics`);
   }
-  const shared = fs.readFileSync(path.join(root, files[0]), "utf8");
-  assert.match(shared, /dataset\?\.sampled_grid\) return "value"/);
+  const functions = fs.readFileSync(path.join(root, files[0]), "utf8");
+  assert.match(functions, /dataset\?\.sampled_grid\) return "value"/);
 });
 
 test("widget queries use the virtual cell effective resolution after fallback", () => {
@@ -769,12 +772,12 @@ test("widget queries use the virtual cell effective resolution after fallback", 
 
 test("line chart derives its moving window from the canonical snapshot cache", () => {
   const source = fs.readFileSync(
-    path.join(root, "static/js/ui/widgets/capabilities/line-chart.js"),
+    path.join(root, "static/js/application/widgets/line-chart-data-source.js"),
     "utf8",
   );
-  assert.match(source, /WidgetQueryContext\.resolutionFor/);
-  assert.match(source, /DataFrameStore\.inspect/);
-  assert.match(source, /FrameDemandService\.demandRange/);
+  assert.match(source, /this\.queryContext\.resolutionFor/);
+  assert.match(source, /this\.dataFrameStore\.inspect/);
+  assert.match(source, /this\.frameDemandService\.demandRange/);
   assert.doesNotMatch(source, /\/time-series\?|\bfetchJson\s*\(|new AbortController\(\)/);
   assert.doesNotMatch(source, /Playback(?:FrameBuffer|Cache|Controller)/);
   assert.match(source, /rawValue === null/);
@@ -816,6 +819,10 @@ test("line charts follow semantic dates inside a scope-bounded moving window", (
     "utf8",
   );
   const lineChart = fs.readFileSync(
+    path.join(root, "static/js/application/widgets/line-chart-data-source.js"),
+    "utf8",
+  );
+  const lineChartView = fs.readFileSync(
     path.join(root, "static/js/ui/widgets/capabilities/line-chart.js"),
     "utf8",
   );
@@ -826,7 +833,7 @@ test("line charts follow semantic dates inside a scope-bounded moving window", (
   assert.match(activeDateHandler[1], /renderLineChartWidgets/);
   assert.doesNotMatch(activeDateHandler[1], /refreshLineChartWidgets/);
   assert.match(activeDateHandler[1], /ensureCurrentWindow/);
-  assert.match(lineChart, /WidgetQueryContext\.currentDate\(selected\)/);
+  assert.match(lineChart, /this\.queryContext\.currentDate\(selected\)/);
   assert.match(lineChart, /scopeDates\(selected/);
   const modelBody = lineChart.slice(lineChart.indexOf("  model() {"), lineChart.indexOf("  ensureCurrentWindow() {"));
   const ensureBody = lineChart.slice(lineChart.indexOf("  ensureCurrentWindow() {"), lineChart.indexOf("  packetRequest("));
@@ -834,12 +841,12 @@ test("line charts follow semantic dates inside a scope-bounded moving window", (
   assert.match(ensureBody, /this\.fill\(request\)/);
   assert.match(lineChart, /const windowSize = Math\.min\(scope\.length, \(this\.windowDays \* 2\) \+ 1\)/);
   assert.match(lineChart, /scope\.length - windowSize/);
-  assert.match(lineChart, /dateX\(model, model\.anchorDate\)/);
+  assert.match(lineChartView, /dateX\(model, model\.anchorDate\)/);
   assert.match(lineChart, /anchorDate:\s*request\.anchorDate/);
-  assert.match(lineChart, /x0:\s*model\.anchorDate/);
-  assert.match(lineChart, /x1:\s*model\.anchorDate/);
-  assert.match(lineChart, /range:\s*model\.xRange/);
-  assert.match(lineChart, /當下切片/);
+  assert.match(lineChartView, /x0:\s*model\.anchorDate/);
+  assert.match(lineChartView, /x1:\s*model\.anchorDate/);
+  assert.match(lineChartView, /range:\s*model\.xRange/);
+  assert.match(lineChartView, /當下切片/);
 });
 
 test("cache commit rendering cannot recursively schedule line-chart fills", () => {
@@ -856,14 +863,14 @@ test("cache commit rendering cannot recursively schedule line-chart fills", () =
 });
 
 test("pie and horizontal bar widgets query dynamic canonical layer matrices", () => {
-  const shared = fs.readFileSync(path.join(root, "static/js/ui/widgets/capabilities/shared.js"), "utf8");
-  const pie = fs.readFileSync(path.join(root, "static/js/ui/widgets/capabilities/pie-chart.js"), "utf8");
-  const horizontal = fs.readFileSync(path.join(root, "static/js/ui/widgets/capabilities/horizontal-bar-chart.js"), "utf8");
-  assert.match(shared, /LayerRuntimeContractRegistry\?\.sampledGridLayers\?\.\(\{ enabledOnly: true \}\)/);
-  assert.match(shared, /columns:\s*"render"/);
-  assert.match(shared, /row\?\.value/);
-  assert.match(pie, /WidgetQueryContext\.sampledGridLayers/);
-  assert.match(horizontal, /WidgetQueryContext\.selections/);
+  const queryContext = fs.readFileSync(path.join(root, "static/js/application/widgets/widget-query-context.js"), "utf8");
+  const charts = fs.readFileSync(path.join(root, "static/js/application/widgets/slice-chart-data-sources.js"), "utf8");
+  assert.match(queryContext, /registry\?\.sampledGridLayers\?\.\(\{ enabledOnly: true \}\)/);
+  assert.match(queryContext, /columns:\s*"render"/);
+  assert.match(queryContext, /row\?\.value/);
+  assert.match(charts, /this\.queryContext\.sampledGridLayers/);
+  assert.match(charts, /this\.queryContext\.selections/);
+  const horizontal = charts;
   assert.match(horizontal, /time_binding/);
   assert.doesNotMatch(horizontal, /\["Y1",\s*"Y2"/);
   assert.doesNotMatch(horizontal, /fish_sum|obs_date|grid_id/);
@@ -892,22 +899,16 @@ test("widget aggregation keeps canonical null distinct from zero", async () => {
 
   const horizontalContext = {
     console,
-    WidgetCore: { ChartWidget: class ChartWidget {} },
-    WidgetCapabilityShared: {
-      lineChartEscape: (value) => String(value),
-      WidgetQueryContext: {},
-      SampledGridWidgetLayerFilter: class SampledGridWidgetLayerFilter {},
-    },
-    WidgetCapabilities: {},
   };
   horizontalContext.window = horizontalContext;
   vm.createContext(horizontalContext);
   vm.runInContext(
-    fs.readFileSync(path.join(root, "static/js/ui/widgets/capabilities/horizontal-bar-chart.js"), "utf8"),
+    fs.readFileSync(path.join(root, "static/js/application/widgets/slice-chart-data-sources.js"), "utf8"),
     horizontalContext,
   );
-  const HorizontalDataSource = horizontalContext.WidgetCapabilities.HorizontalBarChartDataSource;
-  const horizontal = new HorizontalDataSource();
+  const horizontal = new horizontalContext.HorizontalBarChartDataSource({
+    queryContext: {},
+  });
   assert.equal(horizontal.comparableValue({ status: "missing", value: null }), null);
   assert.equal(horizontal.comparableValue({ status: "unavailable", value: 9 }), null);
   assert.equal(horizontal.comparableValue({ status: "zero", value: 0 }), 0);

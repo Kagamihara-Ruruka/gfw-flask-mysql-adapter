@@ -149,12 +149,13 @@ class RuntimeCompositionRoot {
         eventTarget: this.eventTarget,
       }));
     }
+    let renderIntentService = null;
     if (
       typeof createRenderIntentService !== "undefined"
       && typeof currentBbox === "function"
       && this.sampledGridContract
     ) {
-      this.own("RenderIntentService", createRenderIntentService({
+      renderIntentService = this.own("RenderIntentService", createRenderIntentService({
         targetState: this.state,
         bboxProvider: () => currentBbox(),
         viewportController,
@@ -162,6 +163,48 @@ class RuntimeCompositionRoot {
         targetMap: this.targetMap,
         sampledGridContract: this.sampledGridContract,
         selectedDateProvider: () => document.getElementById("date")?.value,
+      }));
+    }
+    if (typeof createWidgetApplicationRuntime !== "undefined" && this.sampledGridContract) {
+      const eventSink = (type, detail = {}) => {
+        this.eventTarget.dispatchEvent(new CustomEvent(type, { detail }));
+      };
+      this.own("WidgetApplicationRuntime", createWidgetApplicationRuntime({
+        stateProvider: () => this.state,
+        layerRegistryProvider: () => this.globalTarget.LayerRuntimeContractRegistry || null,
+        tileSelectionProvider: () => {
+          const layer = this.globalTarget.TileSelectionLayer;
+          const items = layer?.selections?.();
+          if (Array.isArray(items) && items.length) return items;
+          return [layer?.selected?.()].filter(Boolean);
+        },
+        selectedDateProvider: () => document.getElementById("date")?.value || "",
+        selectedRangeProvider: () => (
+          typeof this.globalTarget.datesInSelectedRange === "function"
+            ? this.globalTarget.datesInSelectedRange()
+            : null
+        ),
+        dateBoundsProvider: () => ({
+          start: document.getElementById("start-date")?.value || "",
+          end: document.getElementById("end-date")?.value || "",
+        }),
+        bboxProvider: () => (
+          typeof this.globalTarget.currentBbox === "function" ? this.globalTarget.currentBbox() : ""
+        ),
+        mapSnapshotProvider: () => ({
+          zoom: this.targetMap?.getZoom?.() ?? null,
+          latitude: this.targetMap?.getCenter?.().lat ?? null,
+        }),
+        sampledGridContract: this.sampledGridContract,
+        renderIntentService,
+        dataFrameStore,
+        frameDemandService,
+        queryCoordinator,
+        eventLog,
+        eventSink,
+        timingMetricsProvider: () => this.globalTarget.TimingMetrics || null,
+        schedule: (callback, delay) => this.globalTarget.setTimeout(callback, delay),
+        cancelSchedule: (timer) => this.globalTarget.clearTimeout(timer),
       }));
     }
     this.composed = true;

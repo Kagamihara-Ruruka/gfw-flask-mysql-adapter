@@ -122,9 +122,30 @@ flowchart LR
 - `PlaybackScheduler`、`PlaybackFrameBuffer`、`PlaybackDeliveryPolicy` 與 interpolation policy 是純 policy／計算物件，不擁有播放生命週期。
 - `RendererRegistry`、`WidgetAbilityRegistry`、`WidgetSizeAbleDict` 與 Mapping registry 仍負責決策；Runtime class 只接收決策結果或 registry interface。
 
-## 第三輪保留邊界
+## Widget UI／Application 邊界
 
-圖表 DataSource 現有的 `shared()` 與 Widget ViewModel／render 組合仍屬 UI／業務分離工作。本輪只讓 `WidgetRuntimeController` 擁有 page lifecycle，並確保 Widget instance 經 Registry factory 建立；不搬移圖表查詢、ViewModel 或 rendering business logic。後續不得新增新的 static singleton 或讓 Widget 直接繞過 `DataFrameStore`／`FrameDemandService`。
+Checkpoint B 已移除圖表 DataSource 的 `shared()` 與 UI service lookup。`RuntimeCompositionRoot` 建立唯一的 `WidgetApplicationRuntime`，其中的 `WidgetQueryContext` 統一解讀目前日期、啟用圖層、Tile 選取、BBOX、LOD 與 canonical frame key；各 DataSource 擁有自己的 cache、inflight 與生命週期。Registry factory 在建立 Widget instance 時注入 frozen `services`，Capability 只負責 View、ViewModel 與使用者命令。
+
+```mermaid
+flowchart LR
+  ROOT["RuntimeCompositionRoot"] --> WAR["WidgetApplicationRuntime"]
+  ROOT --> REG["WidgetAbilityRegistry"]
+  WAR --> WQC["WidgetQueryContext"]
+  WAR --> DS["Widget DataSources"]
+  DS --> DFS["DataFrameStore"]
+  DS --> FDS["FrameDemandService"]
+  REG --> FACTORY["Widget factory"]
+  WAR --> FACTORY
+  FACTORY --> WIDGET["Widget View / ViewModel"]
+```
+
+邊界規則：
+
+- Widget、View 與 Launchpad 不得直接取得 Store、Demand、Coordinator 或 Config。
+- 表格與事件檢視器只讀既有 Runtime 狀態，不會在 cache miss 時補查。
+- 折線圖、圓餅圖與橫條圖只透過注入的 Application DataSource 取資料；允許補查時也只能提交 widget lane demand。
+- Application service 不建立 DOM；Capability 不擁有 query cache。
+- DataSource 的建立與銷毀集中在 composition root，不保留 `.shared()`、wrapper 或雙軌 shim。
 
 ## 停止條件
 

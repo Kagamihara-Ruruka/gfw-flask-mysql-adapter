@@ -1,144 +1,14 @@
 (() => {
 const { ChartWidget, WidgetPlotlyLifecycle } = window.WidgetCore;
-const {
-  lineChartEscape,
-  WidgetQueryContext,
-  SampledGridWidgetLayerFilter,
-} = window.WidgetCapabilityShared;
-class PieChartDataSource {
-  static shared() {
-    if (!PieChartDataSource.instance) {
-      PieChartDataSource.instance = new PieChartDataSource();
-    }
-    return PieChartDataSource.instance;
-  }
-
-  constructor() {
-    this.cache = new Map();
-    this.inflight = new Map();
-    this.generation = 0;
-  }
-
-  clear() {
-    this.generation += 1;
-    this.cache.clear();
-    this.inflight.clear();
-  }
-
-  selectedCell() {
-    return state?.tileSelection?.selected || window.TileSelectionLayer?.selected?.() || null;
-  }
-
-  statusModel(stateName, title, detail, extra = {}) {
-    return {
-      state: stateName,
-      title,
-      detail,
-      date: extra.date || "",
-      metric: "value",
-      totalLabel: extra.totalLabel || "Y 總量",
-      valueRole: "y",
-      total: 0,
-      slices: [],
-      selection: extra.selection || null,
-      rowCount: 0,
-    };
-  }
-
-  requestForCurrentState({ excludedLayerIds = [] } = {}) {
-    const selected = this.selectedCell();
-    if (!selected) {
-      return { blocked: this.statusModel("waiting", "等待網格選取", "尚未點選取樣網格") };
-    }
-    if (!WidgetQueryContext.bbox(selected)) {
-      return { blocked: this.statusModel("waiting", "等待網格範圍", "選取結果沒有 canonical bbox", { selection: selected }) };
-    }
-    const date = WidgetQueryContext.currentDate(selected);
-    if (!date) {
-      return { blocked: this.statusModel("waiting", "等待時間切片", "尚未取得單日模式日期", { selection: selected }) };
-    }
-    const layers = WidgetQueryContext.sampledGridLayers({ excludedLayerIds });
-    if (!layers.length) {
-      return { blocked: this.statusModel("waiting", "等待資料合約", "沒有啟用的 sampled-grid 圖層", { date, selection: selected }) };
-    }
-    const key = [
-      selected.selection_id || selected.bbox_string,
-      date,
-      layers.map((layer) => layer.layerId).sort().join(","),
-      selected.selection_grid?.revision || 0,
-    ].join("|");
-    return { key, selected, date, layers };
-  }
-
-  async loadModel(request, generation) {
-    const results = await Promise.all(request.layers.map((layer) => (
-      WidgetQueryContext.fetchValue(layer, request.selected)
-    )));
-    const available = results.filter((result) => ["observed", "zero"].includes(result.status));
-    const slices = available.map((result) => ({
-      label: result.layer.label,
-      datasetId: result.layer.datasetId,
-      layerId: result.layer.layerId,
-      datasetLabel: result.layer.dataset?.label || result.layer.label,
-      yKey: "value",
-      aggregation: "sum",
-      value: Math.max(0, Number(result.value || 0)),
-      color: WidgetQueryContext.colorFor(result.layer.layerId, 0.96),
-      className: "legend-a",
-      status: result.status,
-    }));
-    const total = slices.reduce((sum, slice) => sum + slice.value, 0);
-    const unavailableCount = results.filter((result) => result.status === "unavailable").length;
-    const model = {
-      state: available.length ? (total > 0 ? "ready" : "zero") : (unavailableCount ? "error" : "zero"),
-      title: total > 0 ? "網格切片比例" : available.length ? "切片總量為 0" : "沒有可用切片",
-      detail: `${request.date} / ${request.selected.tile_key || request.selected.label || ""}`,
-      date: request.date,
-      metric: "value",
-      totalLabel: "Y 總量",
-      valueRole: "y",
-      total,
-      slices,
-      selection: request.selected,
-      rowCount: results.reduce((sum, result) => sum + Number(result.rowCount || 0), 0),
-      sourceCount: request.layers.length,
-      unavailableCount,
-    };
-    if (generation === this.generation) {
-      this.cache.set(request.key, model);
-      window.dispatchEvent(new CustomEvent("rrkal:pie-chart-data-changed", {
-        detail: { key: request.key, state: model.state },
-      }));
-    }
-    return model;
-  }
-
-  model(options = {}) {
-    const request = this.requestForCurrentState(options);
-    if (request.blocked) return request.blocked;
-    if (this.cache.has(request.key)) return this.cache.get(request.key);
-    if (!this.inflight.has(request.key)) {
-      const generation = this.generation;
-      const loader = this.loadModel(request, generation).finally(() => {
-        if (this.inflight.get(request.key) === loader) this.inflight.delete(request.key);
-      });
-      this.inflight.set(request.key, loader);
-    }
-    return this.statusModel("loading", "載入切片比例", `${request.date} / ${request.layers.length} 個圖層`, {
-      date: request.date,
-      selection: request.selected,
-    });
-  }
-}
-
+const { lineChartEscape, SampledGridWidgetLayerFilter } = window.WidgetCapabilityShared;
 class PieChartWidget extends ChartWidget {
   layerFilter() {
-    if (!this.sampledGridLayerFilter) this.sampledGridLayerFilter = new SampledGridWidgetLayerFilter();
+    if (!this.sampledGridLayerFilter) this.sampledGridLayerFilter = new SampledGridWidgetLayerFilter({ queryContext: this.services.queryContext });
     return this.sampledGridLayerFilter;
   }
 
   chartModel() {
-    return PieChartDataSource.shared().model({
+    return this.services.dataSource.model({
       excludedLayerIds: [...this.layerFilter().excludedLayerIds],
     });
   }
@@ -147,10 +17,8 @@ class PieChartWidget extends ChartWidget {
     pane?.append(this.layerFilter().render({
       title: "比例來源圖層",
       onChange: () => {
-        PieChartDataSource.shared().clear();
-        window.dispatchEvent(new CustomEvent("rrkal:pie-chart-data-changed", {
-          detail: { reason: "settings_changed", widgetId: this.id },
-        }));
+        this.services.dataSource.clear();
+        this.services.emit?.("rrkal:pie-chart-data-changed", { reason: "settings_changed", widgetId: this.id });
       },
     }));
   }
@@ -334,5 +202,5 @@ class PieChartWidget extends ChartWidget {
 }
 
 
-Object.assign(window.WidgetCapabilities ||= {}, { PieChartDataSource, PieChartWidget });
+Object.assign(window.WidgetCapabilities ||= {}, { PieChartWidget });
 })();

@@ -460,7 +460,16 @@ class WidgetCatalogItem {
 }
 
 class DashboardWidget {
-  constructor({ id, title, size = "1x1", status = "待設計", slotIndex = null, deletable = true, widgetType = "blank" }) {
+  constructor({
+    id,
+    title,
+    size = "1x1",
+    status = "待設計",
+    slotIndex = null,
+    deletable = true,
+    widgetType = "blank",
+    services = {},
+  }) {
     this.id = id;
     this.title = title;
     this.size = this.normalizeSize(size);
@@ -468,6 +477,7 @@ class DashboardWidget {
     this.slotIndex = Number.isInteger(slotIndex) ? slotIndex : null;
     this.deletable = deletable !== false;
     this.widgetType = widgetType;
+    this.services = Object.freeze({ ...services });
   }
 
   normalizeSize(size) {

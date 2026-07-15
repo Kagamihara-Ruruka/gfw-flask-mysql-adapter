@@ -17,6 +17,8 @@ The external Chrome Incognito full-year cold/warm playback acceptance report is
 available at [`benchmarks/playback_lifecycle_acceptance_2026-07-15.md`](benchmarks/playback_lifecycle_acceptance_2026-07-15.md).
 The follow-up Runtime OOP regression report is available at
 [`benchmarks/runtime_oop_acceptance_2026-07-15.md`](benchmarks/runtime_oop_acceptance_2026-07-15.md).
+The Widget UI/Application boundary regression report is available at
+[`benchmarks/widget_application_boundary_acceptance_2026-07-16.md`](benchmarks/widget_application_boundary_acceptance_2026-07-16.md).
 
 ## Upstream Handoff
 

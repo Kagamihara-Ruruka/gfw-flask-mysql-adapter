@@ -11,11 +11,6 @@ const {
   ChartWidget,
 } = window.WidgetCore;
 const {
-  LineChartDataSource,
-  PieChartDataSource,
-  HorizontalBarChartDataSource,
-  EezAttributionDataSource,
-  TableWidgetDataSource,
   WidgetTableView,
   LineChartWidget,
   PieChartWidget,
@@ -129,14 +124,16 @@ class WidgetPopoverController {
 let widgetRuntimeOwner = null;
 
 class WidgetsPanel {
-  constructor({ root, board, socketGrid, grid, widgets = [], popover }) {
+  constructor({ root, board, socketGrid, grid, widgets = [], popover, applicationRuntime }) {
     if (!popover) throw new TypeError("WidgetsPanel requires a popover controller");
+    if (!applicationRuntime) throw new TypeError("WidgetsPanel requires WidgetApplicationRuntime");
     this.root = root;
     this.board = board;
     this.socketGrid = socketGrid;
     this.grid = grid;
     this.widgets = widgets;
     this.popover = popover;
+    this.applicationRuntime = applicationRuntime;
     this.socketLayout = new WidgetSocketLayout({
       root,
       board,
@@ -147,6 +144,10 @@ class WidgetsPanel {
     this.draggedCatalogItem = null;
     this.dropPreview = null;
     this.nextWidgetSerial = 1;
+  }
+
+  servicesFor(widgetType) {
+    return this.applicationRuntime.servicesFor(widgetType);
   }
 
   mount() {
@@ -358,9 +359,13 @@ class WidgetsPanel {
   replaceWidgetWithRegisteredItem(targetWidget, catalogItem) {
     const index = this.widgets.findIndex((widget) => widget.id === targetWidget.id);
     if (index < 0) return false;
-    const nextWidget = createWidgetFromRegisteredItem(catalogItem, targetWidget);
+    const nextWidget = createWidgetFromRegisteredItem(
+      catalogItem,
+      targetWidget,
+      this.servicesFor(catalogItem.id),
+    );
     if (!nextWidget) return false;
-    currentWidget.dispose?.();
+    targetWidget.dispose?.();
     this.widgets[index] = nextWidget;
     this.renderWidgets();
     return true;
@@ -372,7 +377,7 @@ class WidgetsPanel {
     const widget = createWidgetFromCatalogItem(catalogItem, {
       id: `${this.scope()}-${catalogItem.id}-${serial}`,
       slotIndex,
-    });
+    }, this.servicesFor(catalogItem.kind === "size" ? "blank" : catalogItem.id));
     if (widget.placeAt(slotIndex, this.columns(), this.rows()) === null) return null;
     this.widgets.push(widget);
     this.grid?.append(widget.render(this));
@@ -515,7 +520,7 @@ class WidgetsPanel {
     if (!catalogItem) return null;
     const widget = createWidgetFromCatalogItem(catalogItem, {
       id: `${this.scope()}-launchpad-${catalogItem.id}`,
-    });
+    }, this.servicesFor(catalogItem.kind === "size" ? "blank" : catalogItem.id));
     widget.handlePrimaryAction(this);
     return widget;
   }
@@ -538,10 +543,10 @@ class WidgetsPanel {
     const currentWidget = this.widgets[index];
     let nextWidget = null;
     if (widgetType === "blank") {
-      nextWidget = createBlankWidgetFromWidget(currentWidget);
+      nextWidget = createBlankWidgetFromWidget(currentWidget, this.servicesFor("blank"));
     } else {
       const registeredItem = this.registeredCatalogItems().find((item) => item.id === widgetType);
-      nextWidget = createWidgetFromRegisteredItem(registeredItem, currentWidget);
+      nextWidget = createWidgetFromRegisteredItem(registeredItem, currentWidget, this.servicesFor(widgetType));
     }
     if (!nextWidget) return false;
     this.widgets[index] = nextWidget;
@@ -581,7 +586,7 @@ const DefaultDashboardWidgetLayout = Object.freeze([
   Object.freeze({ type: "metrics", id: "metrics-1x2", title: "測速工具", size: "1x2", status: "", slotIndex: 12 }),
 ]);
 
-function createDashboardWidgetFromDefault(item, scope) {
+function createDashboardWidgetFromDefault(item, scope, applicationRuntime) {
   const definition = WidgetAbilityRegistry[item.type];
   const params = {
     id: `${scope}-${item.id}`,
@@ -592,15 +597,18 @@ function createDashboardWidgetFromDefault(item, scope) {
     deletable: definition?.deletable,
     widgetType: item.type,
   };
-  if (definition?.WidgetClass) return createWidgetInstance(item.type, params);
-  return createWidgetInstance("blank", params);
+  if (definition?.WidgetClass) {
+    return createWidgetInstance(item.type, params, applicationRuntime.servicesFor(item.type));
+  }
+  return createWidgetInstance("blank", params, applicationRuntime.servicesFor("blank"));
 }
 
-function createDashboardWidgets(scope = "widgets") {
-  return DefaultDashboardWidgetLayout.map((item) => createDashboardWidgetFromDefault(item, scope));
+function createDashboardWidgets(scope = "widgets", applicationRuntime) {
+  if (!applicationRuntime) throw new TypeError("createDashboardWidgets requires WidgetApplicationRuntime");
+  return DefaultDashboardWidgetLayout.map((item) => createDashboardWidgetFromDefault(item, scope, applicationRuntime));
 }
 
-function initWidgetsPanels(popover) {
+function initWidgetsPanels(popover, applicationRuntime) {
   const panels = Array.from(document.querySelectorAll("[data-widgets-panel]")).map((root, index) => {
     const scope = root.dataset.widgetsScope || `widgets-${index + 1}`;
     const panel = new WidgetsPanel({
@@ -608,8 +616,9 @@ function initWidgetsPanels(popover) {
       board: root.querySelector("[data-widgets-board]"),
       socketGrid: root.querySelector("[data-widgets-socket-grid]"),
       grid: root.querySelector("[data-widgets-grid]"),
-      widgets: createDashboardWidgets(scope),
+      widgets: createDashboardWidgets(scope, applicationRuntime),
       popover,
+      applicationRuntime,
     });
     panel.mount();
     return panel;
@@ -620,7 +629,8 @@ function initWidgetsPanels(popover) {
 }
 
 function refreshLineChartWidgets() {
-  const source = LineChartDataSource.shared();
+  const source = widgetRuntimeOwner?.applicationRuntime.source("line-chart");
+  if (!source) return;
   source.clear();
   source.ensureCurrentWindow();
   renderLineChartWidgets();
@@ -634,7 +644,7 @@ function renderLineChartWidgets() {
 }
 
 function refreshPieChartWidgets() {
-  PieChartDataSource.shared().clear();
+  widgetRuntimeOwner?.applicationRuntime.clear("pie-chart");
   for (const panel of window.WidgetsPanelInstances || []) {
     panel.refreshWidgetsByType?.("pie-chart");
   }
@@ -642,7 +652,7 @@ function refreshPieChartWidgets() {
 }
 
 function refreshHorizontalBarWidgets() {
-  HorizontalBarChartDataSource.shared().clear();
+  widgetRuntimeOwner?.applicationRuntime.clear("horizontal-bar-chart");
   for (const panel of window.WidgetsPanelInstances || []) {
     panel.refreshWidgetsByType?.("horizontal-bar-chart");
   }
@@ -684,15 +694,16 @@ function tileSelectionChangeAffectsWidgets(event) {
   return ["selected", "disabled", "cleared", "mode_changed", "grid_changed"].includes(event?.detail?.reason);
 }
 
-function bindChartWidgetRefresh({ eventTarget, targetMap, signal } = {}) {
+function bindChartWidgetRefresh({ eventTarget, targetMap, signal, applicationRuntime } = {}) {
   if (!eventTarget?.addEventListener) throw new TypeError("Widget refresh binding requires an event target");
+  if (!applicationRuntime) throw new TypeError("Widget refresh binding requires WidgetApplicationRuntime");
   const listenerOptions = signal ? { signal } : undefined;
   eventTarget.addEventListener("rrkal:tile-selection-changed", (event) => {
     refreshLineChartWidgetsForTileSelection(event);
     refreshPieChartWidgetsForTileSelection(event);
     if (tileSelectionChangeAffectsWidgets(event)) {
       refreshHorizontalBarWidgets();
-      EezAttributionDataSource.shared().rememberTileSelection(event);
+      applicationRuntime.source("eez-attribution")?.rememberTileSelection(event);
       refreshEezAttributionWidgets();
       refreshTableWidgets();
     }
@@ -716,7 +727,7 @@ function bindChartWidgetRefresh({ eventTarget, targetMap, signal } = {}) {
     refreshTableWidgets();
   }, listenerOptions);
   eventTarget.addEventListener("rrkal:active-date-changed", () => {
-    LineChartDataSource.shared().ensureCurrentWindow();
+    applicationRuntime.source("line-chart")?.ensureCurrentWindow();
     renderLineChartWidgets();
     refreshHorizontalBarWidgets();
     refreshTableWidgets();
@@ -738,8 +749,8 @@ function bindChartWidgetRefresh({ eventTarget, targetMap, signal } = {}) {
   }, listenerOptions);
   eventTarget.addEventListener("rrkal:data-frame-store-changed", (event) => {
     if (event?.detail?.type !== "committed") return;
-    if (LineChartDataSource.shared().cacheEventAffectsCurrent(event)) renderLineChartWidgets();
-    if (TableWidgetDataSource.shared().cacheEventAffectsCurrent(event)) refreshTableWidgets();
+    if (applicationRuntime.source("line-chart")?.cacheEventAffectsCurrent(event)) renderLineChartWidgets();
+    if (applicationRuntime.source("table")?.cacheEventAffectsCurrent(event)) refreshTableWidgets();
   }, listenerOptions);
   for (const id of ["start-date", "end-date", "dataset-select"]) {
     $(id)?.addEventListener("change", () => {
@@ -774,15 +785,10 @@ window.bindWidgetPointerBehavior = bindWidgetPointerBehavior;
 window.bindWidgetDragBehavior = bindWidgetDragBehavior;
 window.DashboardWidget = DashboardWidget;
 window.ChartWidget = ChartWidget;
-window.LineChartDataSource = LineChartDataSource;
-window.PieChartDataSource = PieChartDataSource;
-window.EezAttributionDataSource = EezAttributionDataSource;
-window.TableWidgetDataSource = TableWidgetDataSource;
 window.WidgetTableView = WidgetTableView;
 window.LineChartWidget = LineChartWidget;
 window.PieChartWidget = PieChartWidget;
 window.HorizontalBarChartWidget = HorizontalBarChartWidget;
-window.HorizontalBarChartDataSource = HorizontalBarChartDataSource;
 window.EezAttributionWidget = EezAttributionWidget;
 window.TableWidget = TableWidget;
 window.MapJumpWidget = MapJumpWidget;
@@ -792,10 +798,12 @@ window.WidgetPopoverController = WidgetPopoverController;
 window.WidgetsPanel = WidgetsPanel;
 
 class WidgetRuntimeController {
-  constructor({ eventTarget, targetMap = null } = {}) {
+  constructor({ eventTarget, targetMap = null, applicationRuntime } = {}) {
     if (!eventTarget?.addEventListener) throw new TypeError("WidgetRuntimeController requires an event target");
+    if (!applicationRuntime) throw new TypeError("WidgetRuntimeController requires WidgetApplicationRuntime");
     this.eventTarget = eventTarget;
     this.targetMap = targetMap;
+    this.applicationRuntime = applicationRuntime;
     this.abortController = null;
     this.unbindMap = null;
     this.panels = [];
@@ -808,11 +816,12 @@ class WidgetRuntimeController {
     this.mounted = true;
     this.abortController = new AbortController();
     this.popover = new WidgetPopoverController();
-    this.panels = initWidgetsPanels(this.popover);
+    this.panels = initWidgetsPanels(this.popover, this.applicationRuntime);
     this.unbindMap = bindChartWidgetRefresh({
       eventTarget: this.eventTarget,
       targetMap: this.targetMap,
       signal: this.abortController.signal,
+      applicationRuntime: this.applicationRuntime,
     });
     widgetRuntimeOwner = this;
     return this;
@@ -837,15 +846,16 @@ class WidgetRuntimeController {
   }
 }
 
-function createWidgetRuntimeOwner({ eventTarget = window, targetMap = null } = {}) {
-  return new WidgetRuntimeController({ eventTarget, targetMap }).mount();
+function createWidgetRuntimeOwner({ eventTarget = window, targetMap = null, applicationRuntime } = {}) {
+  return new WidgetRuntimeController({ eventTarget, targetMap, applicationRuntime }).mount();
 }
 
 widgetRuntimeOwner = window.AppRuntime.install(
   "WidgetRuntimeOwner",
-  () => createWidgetRuntimeOwner({
-    eventTarget: window,
+  ({ services, eventTarget }) => createWidgetRuntimeOwner({
+    eventTarget,
     targetMap: typeof map === "undefined" ? null : map,
+    applicationRuntime: services.WidgetApplicationRuntime,
   }),
   { expose: false },
 );

@@ -11,7 +11,7 @@ class LifecycleEventViewerWidget extends DashboardWidget {
   }
 
   eventLog() {
-    return window.LifecycleEventLog || null;
+    return this.services.eventLog || null;
   }
 
   allEvents() {
@@ -214,7 +214,7 @@ class LifecycleEventViewerWidget extends DashboardWidget {
 
   removeBinding(binding) {
     if (!binding) return;
-    window.clearTimeout(binding.timer);
+    this.services.cancelSchedule?.(binding.timer);
     binding.timer = 0;
     binding.unsubscribe?.();
     this.bindings.delete(binding);
@@ -224,7 +224,7 @@ class LifecycleEventViewerWidget extends DashboardWidget {
   scheduleBindingRender(binding) {
     if (!binding || binding.timer) return;
     const delay = binding.expanded ? 500 : 750;
-    binding.timer = window.setTimeout(() => {
+    binding.timer = this.services.schedule?.(() => {
       binding.timer = 0;
       const { container } = binding;
       if (!container.isConnected) {
@@ -233,7 +233,7 @@ class LifecycleEventViewerWidget extends DashboardWidget {
       }
       binding.connectedOnce = true;
       this.renderInto(container, { expanded: binding.expanded });
-    }, delay);
+    }, delay) || 0;
   }
 
   bindLog(container, expanded) {

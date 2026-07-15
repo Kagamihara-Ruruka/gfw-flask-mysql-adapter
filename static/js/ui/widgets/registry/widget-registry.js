@@ -85,13 +85,13 @@ function widgetClassForType(widgetType) {
   return WidgetAbilityRegistry[widgetType]?.WidgetClass || DashboardWidget;
 }
 
-function createWidgetInstance(widgetType, params = {}) {
+function createWidgetInstance(widgetType, params = {}, services = {}) {
   const normalizedType = String(widgetType || "blank");
   if (normalizedType === "blank") {
-    return new BlankWidget({ ...params, widgetType: "blank" });
+    return new BlankWidget({ ...params, widgetType: "blank", services });
   }
   const WidgetClass = widgetClassForType(normalizedType);
-  return new WidgetClass({ ...params, widgetType: normalizedType });
+  return new WidgetClass({ ...params, widgetType: normalizedType, services });
 }
 
 function createWidgetCatalog() {
@@ -122,7 +122,7 @@ function createRegisteredWidgetCatalog() {
   return createWidgetCatalog().filter((item) => item.group === "registered");
 }
 
-function createWidgetFromCatalogItem(catalogItem, { id, slotIndex = null }) {
+function createWidgetFromCatalogItem(catalogItem, { id, slotIndex = null }, services = {}) {
   if (catalogItem.kind === "size") {
     return createWidgetInstance("blank", {
       id,
@@ -131,7 +131,7 @@ function createWidgetFromCatalogItem(catalogItem, { id, slotIndex = null }) {
       status: "",
       slotIndex,
       deletable: true,
-    });
+    }, services);
   }
   return createWidgetInstance(catalogItem.id, {
     id,
@@ -140,10 +140,10 @@ function createWidgetFromCatalogItem(catalogItem, { id, slotIndex = null }) {
     status: catalogItem.description,
     slotIndex,
     deletable: catalogItem.deletable,
-  });
+  }, services);
 }
 
-function createWidgetFromRegisteredItem(registeredItem, sourceWidget) {
+function createWidgetFromRegisteredItem(registeredItem, sourceWidget, services = {}) {
   if (!registeredItem || !registeredItem.supportsSize(sourceWidget.size)) return null;
   return createWidgetInstance(registeredItem.id, {
     id: sourceWidget.id,
@@ -152,10 +152,10 @@ function createWidgetFromRegisteredItem(registeredItem, sourceWidget) {
     status: registeredItem.description,
     slotIndex: sourceWidget.slotIndex,
     deletable: registeredItem.deletable,
-  });
+  }, services);
 }
 
-function createBlankWidgetFromWidget(sourceWidget) {
+function createBlankWidgetFromWidget(sourceWidget, services = {}) {
   return createWidgetInstance("blank", {
     id: sourceWidget.id,
     title: "空白版型",
@@ -163,7 +163,7 @@ function createBlankWidgetFromWidget(sourceWidget) {
     status: "",
     slotIndex: sourceWidget.slotIndex,
     deletable: true,
-  });
+  }, services);
 }
 
 
