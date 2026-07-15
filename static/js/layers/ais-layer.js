@@ -11,6 +11,21 @@ function aisDensityColor(count, maxCount) {
   };
 }
 
+const DEFAULT_AIS_DENSITY_CELLS_PER_TILE = 8;
+
+function aisDensityCellPixels(targetMap) {
+  const zoom = targetMap.getZoom();
+  const worldPixels = Number(targetMap.options?.crs?.scale?.(zoom));
+  const tilePixels = Number.isFinite(worldPixels) && worldPixels > 0
+    ? worldPixels / (2 ** zoom)
+    : 256;
+  const configuredCells = Number(state.aisSettings?.rendering?.density_cells_per_tile);
+  const cellsPerTile = Number.isFinite(configuredCells) && configuredCells > 0
+    ? Math.floor(configuredCells)
+    : DEFAULT_AIS_DENSITY_CELLS_PER_TILE;
+  return Math.max(1, tilePixels / cellsPerTile);
+}
+
 const AisDensityCanvasLayer = L.Layer.extend({
   initialize() {
     this._rows = [];
@@ -46,35 +61,33 @@ const AisDensityCanvasLayer = L.Layer.extend({
     const ctx = this._ctx;
     const size = this._map.getSize();
     ctx.clearRect(0, 0, size.x, size.y);
+    const cellPixels = aisDensityCellPixels(this._map);
     const buckets = new Map();
     for (const row of this._rows) {
       const lat = Number(row.lat);
       const lon = Number(row.lon);
       if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
-      const latCenter = gfwCellCenter(lat);
-      const lonCenter = gfwCellCenter(normalizeLongitude(lon));
-      const key = `${latCenter.toFixed(6)}:${lonCenter.toFixed(6)}`;
-      buckets.set(key, (buckets.get(key) || 0) + 1);
+      for (const wrappedLon of wrappedLongitudesForViewport(normalizeLongitude(lon))) {
+        const point = this._map.latLngToContainerPoint([lat, wrappedLon]);
+        if (point.x < 0 || point.y < 0 || point.x >= size.x || point.y >= size.y) continue;
+        const column = Math.floor(point.x / cellPixels);
+        const rowIndex = Math.floor(point.y / cellPixels);
+        const key = `${column}:${rowIndex}`;
+        buckets.set(key, (buckets.get(key) || 0) + 1);
+      }
     }
     const maxCount = Math.max(1, ...buckets.values());
     const alphaScale = state.layerAlpha.ais / 0.58;
     for (const [key, count] of buckets) {
-      const [latText, lonText] = key.split(":");
-      const lat = Number(latText);
-      const lon = Number(lonText);
-      for (const wrappedLon of wrappedLongitudesForViewport(lon)) {
-        const nw = this._map.latLngToContainerPoint([lat + GFW_CELL_HALF_DEGREES, wrappedLon - GFW_CELL_HALF_DEGREES]);
-        const se = this._map.latLngToContainerPoint([lat - GFW_CELL_HALF_DEGREES, wrappedLon + GFW_CELL_HALF_DEGREES]);
-        const x = Math.floor(Math.min(nw.x, se.x));
-        const y = Math.floor(Math.min(nw.y, se.y));
-        const w = Math.max(1, Math.ceil(Math.abs(se.x - nw.x)));
-        const h = Math.max(1, Math.ceil(Math.abs(se.y - nw.y)));
-        if (x > size.x || y > size.y || x + w < 0 || y + h < 0) continue;
-        const paint = aisDensityColor(count, maxCount);
-        ctx.globalAlpha = Math.max(0, Math.min(1, paint.alpha * alphaScale));
-        ctx.fillStyle = paint.color;
-        ctx.fillRect(x, y, w, h);
-      }
+      const [columnText, rowText] = key.split(":");
+      const x = Math.floor(Number(columnText) * cellPixels);
+      const y = Math.floor(Number(rowText) * cellPixels);
+      const width = Math.max(1, Math.ceil(cellPixels));
+      const height = Math.max(1, Math.ceil(cellPixels));
+      const paint = aisDensityColor(count, maxCount);
+      ctx.globalAlpha = Math.max(0, Math.min(1, paint.alpha * alphaScale));
+      ctx.fillStyle = paint.color;
+      ctx.fillRect(x, y, width, height);
     }
     ctx.globalAlpha = 1;
   },

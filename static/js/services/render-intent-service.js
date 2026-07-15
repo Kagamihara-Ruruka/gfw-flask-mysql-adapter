@@ -1,45 +1,69 @@
-const RenderIntentService = (() => {
+function createRenderIntentService({
+  targetState,
+  bboxProvider,
+  viewportController = null,
+  frameIdentity,
+  targetMap = null,
+  sampledGridContract,
+  selectedDateProvider,
+} = {}) {
+  if (
+    !targetState
+    || typeof bboxProvider !== "function"
+    || !frameIdentity
+    || !sampledGridContract
+    || typeof selectedDateProvider !== "function"
+  ) {
+    throw new TypeError("RenderIntentService requires state, bbox, identity, grid contract and date providers");
+  }
+
   const DEFAULT_COLUMNS = "render";
 
   function unlimitedLimit() {
-    return state.queryPolicy?.max_limit == null ? "max" : Number(state.queryPolicy.max_limit);
+    return targetState.queryPolicy?.max_limit == null
+      ? "max"
+      : Number(targetState.queryPolicy.max_limit);
   }
 
   function currentViewport() {
+    const rawBbox = bboxProvider();
+    const boundedBbox = viewportController?.queryBbox(rawBbox, targetState.datasetId) ?? rawBbox;
+    const bbox = boundedBbox ? frameIdentity.bboxSignature(boundedBbox) : "";
     const viewport = {
-      bbox: currentBbox(),
-      zoom: typeof map !== "undefined" && map ? map.getZoom() : null,
+      bbox,
+      outsideCoverage: !bbox,
+      zoom: targetMap?.getZoom?.() ?? null,
     };
-    if (typeof map !== "undefined" && map?.getCenter) {
-      viewport.center = map.getCenter();
-    }
+    if (targetMap?.getCenter) viewport.center = targetMap.getCenter();
     return viewport;
   }
 
-  function baseIntent({ layerId = state.dataLayer, renderProfile = "dashboard.snapshot" } = {}) {
+  function baseIntent({ layerId = targetState.dataLayer, renderProfile = "dashboard.snapshot" } = {}) {
     const viewport = currentViewport();
+    const dataset = targetState.datasets?.[targetState.datasetId] || {};
     return {
       kind: "render_intent",
       version: 1,
       layerId,
-      datasetId: state.datasetId,
+      datasetId: targetState.datasetId,
       viewport,
       query: {
         limit: unlimitedLimit(),
         columns: DEFAULT_COLUMNS,
-        requestedResolutionKm: SampledGridContract.requestResolution({
-          datasetId: state.datasetId,
+        requestedResolutionKm: sampledGridContract.queryResolution({
+          datasetId: targetState.datasetId,
           zoom: viewport.zoom,
           latitude: viewport.center?.lat,
         }),
+        mappingVersion: dataset.sampled_grid?.mapping_version || dataset.mapping_version || "",
       },
       renderProfile,
     };
   }
 
   function snapshot({
-    date = $("date")?.value,
-    layerId = state.dataLayer,
+    date = selectedDateProvider(),
+    layerId = targetState.dataLayer,
     renderProfile = "dashboard.snapshot",
   } = {}) {
     return {
@@ -55,8 +79,8 @@ const RenderIntentService = (() => {
     dates = [],
     start = dates[0],
     end = dates[dates.length - 1],
-    anchorDate = $("date")?.value,
-    layerId = state.dataLayer,
+    anchorDate = selectedDateProvider(),
+    layerId = targetState.dataLayer,
     renderProfile = "dashboard.playback",
   } = {}) {
     return {
@@ -72,7 +96,7 @@ const RenderIntentService = (() => {
   }
 
   function toSampledGridPacketRequest(intent) {
-    return {
+    const request = {
       datasetId: intent?.datasetId,
       date: intent?.time?.date,
       bbox: intent?.viewport?.bbox,
@@ -82,13 +106,22 @@ const RenderIntentService = (() => {
       zoom: intent?.viewport?.zoom,
       layerId: intent?.layerId,
       renderProfile: intent?.renderProfile,
+      outsideCoverage: Boolean(intent?.viewport?.outsideCoverage),
       resolution: intent?.query?.requestedResolutionKm,
       latitude: intent?.viewport?.center?.lat,
+      mappingVersion: intent?.query?.mappingVersion || "",
+    };
+    const normalized = frameIdentity.normalizeRequest(request);
+    return {
+      ...normalized,
+      center: request.center,
+      outsideCoverage: request.outsideCoverage,
+      renderProfile: request.renderProfile,
     };
   }
 
   function toSampledGridRangeRequest(intent) {
-    return {
+    const request = {
       dates: intent?.time?.dates || [],
       bbox: intent?.viewport?.bbox,
       datasetId: intent?.datasetId,
@@ -97,19 +130,32 @@ const RenderIntentService = (() => {
       anchorDate: intent?.time?.anchorDate,
       layerId: intent?.layerId,
       renderProfile: intent?.renderProfile,
+      outsideCoverage: Boolean(intent?.viewport?.outsideCoverage),
       resolution: intent?.query?.requestedResolutionKm,
       zoom: intent?.viewport?.zoom,
       latitude: intent?.viewport?.center?.lat,
+      mappingVersion: intent?.query?.mappingVersion || "",
+    };
+    const normalized = frameIdentity.normalizeRequest({
+      ...request,
+      date: request.anchorDate || request.dates[0] || "",
+    });
+    return {
+      ...normalized,
+      date: undefined,
+      dates: request.dates,
+      anchorDate: request.anchorDate,
+      center: intent?.viewport?.center,
+      outsideCoverage: request.outsideCoverage,
+      renderProfile: request.renderProfile,
     };
   }
 
-  return {
+  return Object.freeze({
     range,
     snapshot,
     toSampledGridPacketRequest,
     toSampledGridRangeRequest,
-    toGfwPacketRequest: toSampledGridPacketRequest,
-    toGfwRangeRequest: toSampledGridRangeRequest,
     unlimitedLimit,
-  };
-})();
+  });
+}

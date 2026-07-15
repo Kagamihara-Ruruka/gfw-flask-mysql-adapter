@@ -12,6 +12,11 @@
 - 地圖 UI：支援資料集選擇、圖層排序、圖層齒輪設定、暗色模式、底圖切換、經緯網格、比例尺、全螢幕、截圖、測速欄、渲染 ready 燈號、時間播放與播放快取預熱。
 - 設定頁：保留資料源、圖層與播放行為的設定入口，避免把所有控制塞在儀表板同一層。
 
+外部 Chrome 無痕模式的全年冷／暖快取驗收結果記錄在
+[`benchmarks/playback_lifecycle_acceptance_2026-07-15.md`](benchmarks/playback_lifecycle_acceptance_2026-07-15.md)。
+第二輪 Runtime OOP 收斂後的全年回歸結果記錄在
+[`benchmarks/runtime_oop_acceptance_2026-07-15.md`](benchmarks/runtime_oop_acceptance_2026-07-15.md)。
+
 ## 專案邊界
 
 這個 repo 的主要角色是「消費端」：
@@ -25,7 +30,7 @@
 - `core.py ingest-ais`
 - `common_adapter/ais/ingest.py`
 - `common_adapter/ais/stream.py`
-- `config/sources/websocket/ais_collector.local.json`
+- `config/runtime/ais_collector.local.json`
 
 這個 collector 是為了養出可被小可愛消費的 AIS SQL 資料庫。未來若上游同學用 Airflow、K8、Hive、Spark/Iceberg 或其他 sink 接手，只要維持 read model 與 config contract，小可愛就不需要直接碰 AISStream。
 
@@ -39,7 +44,7 @@
 不要把真實 API key、資料庫密碼或本機私有路徑 commit 進 repo。真實值應放在：
 
 - `config/runtime/adapter.local.json`
-- `config/sources/websocket/ais_collector.local.json`
+- `config/runtime/ais_collector.local.json`
 - 環境變數
 - 之後的 K8 Secret / Airflow Variable
 
@@ -52,7 +57,8 @@ core.py
   -> common_adapter/http/routes/*           system / dataset / overlay / live / developer routes
   -> common_adapter/db/connect.py           dataset read dispatch
   -> common_adapter/db/backends/*           MySQL 與未來 backend adapters
-  -> common_adapter/db/registry.py          @database_backend registry
+  -> common_adapter/query/registry.py       database / endpoint 共用 query-adapter registry
+  -> common_adapter/query/identity.py       mapping-aware cache namespace
   -> common_adapter/ais/live.py             AIS SQL consumer packet
   -> common_adapter/ais/ingest.py           AISStream upstream collector to SQL latest-state table
   -> common_adapter/spatial/overlay.py      EEZ fallback helpers
@@ -61,14 +67,16 @@ core.py
   -> static/js/*               前端 state、API、layer、rendering、UI 模組
 ```
 
-Root 層的 `Interface.py`、`DatabaseConnect.py` 等舊檔名目前只保留相容 wrapper；新的後端責任邊界以 `common_adapter/` package 為準。
+Runtime 只引用 `common_adapter/` 的正式模組。舊 root modules 與 `database/registry.py` 相容入口已刪除；新程式不得重新依賴這些路徑。
+
+前端 Runtime 的狀態所有權、DI composition root、class 判定與後續 Application Service 規範見 [`docs/architecture/runtime-oop.md`](docs/architecture/runtime-oop.md)。
 
 前端拆分：
 
 - `static/app.js`：啟動 app，綁定 UI 與事件。
 - `static/js/core`：共用 state、DOM、map、geo、render-state。
-- `static/js/services`：API client、GFW record cache、render intent 與共用 service helper。
-- `static/js/playback`：播放控制、純時間線 scheduler、frame readiness buffer、playback renderer handoff、playback interpolation policy、playback telemetry、progressive prefetch controller、播放預熱、worker policy 與 snapshot splitter。
+- `static/js/services`：render intent、中央 query coordinator、sampled-grid canonical cache、API client 與共用 service helper。
+- `static/js/playback`：播放控制、純時間線 scheduler、frame readiness buffer、playback renderer handoff、playback interpolation policy、telemetry、獨立水位預熱器與 snapshot splitter。
 - `static/js/layers`：GFW、AIS、EEZ、graticule 圖層行為，以及 GFW zoom blur / crossfade 視覺效果邊界。
 - `static/js/rendering`：WebGL/Canvas 能力檢查、renderer registry、GFW paint 設定。
 - `static/js/ui`：table、播放控制、圖層選單、地圖設定、圖層樣式設定。
@@ -80,7 +88,7 @@ flowchart TD
   UI["Browser UI / Leaflet / WebGL"]
   API["common_adapter/http/routes/* / Flask API"]
   READ["common_adapter/db/connect.py / read_backend"]
-  REG["database.registry"]
+  REG["common_adapter/query/registry.py"]
   MYSQL["MySQL backend"]
   HIVE["Hive backend stub"]
   SPARK["Spark/Iceberg backend stub"]
@@ -107,31 +115,32 @@ flowchart TD
 
 ## Database backend 模式
 
-資料庫讀取端以 config + registry 解耦：
+資料來源讀取端以 config + query-adapter registry 解耦：
 
-- `@database_backend("mysql")` 註冊 backend。
+- `@query_adapter("mysql")` 註冊 database 或 endpoint adapter。
 - `config/state/router_manifest.local.json` 決定目前啟用哪些 route fragments；DATABASE fragment 決定 dataset 使用哪個 backend、connection、table。
 - `common_adapter/http/interface.py` 只負責 Flask app 組裝；HTTP shape 由 `common_adapter/http/routes/*` 管理。兩者都不應知道 MySQL、Hive、Spark 或 Iceberg 的查詢細節。
-- `common_adapter/db/connect.py` 負責 config、共用查詢 helper 與 read dispatch；backend classes 位於 `common_adapter/db/backends/`。root 層 `DatabaseConnect.py` 只是相容 wrapper。
-- `database/registry.py` 負責 backend registration / instantiation。
+- `common_adapter/db/connect.py` 負責共用 database query helper 與 read dispatch；backend classes 位於 `common_adapter/db/backends/`。
+- `common_adapter/query/registry.py` 統一負責 database 與 endpoint adapter 的 registration / instantiation。
+- 外部欄位名稱只能留在 source adapter 與 mapping 邊界；runtime、cache、renderer 與 Widgets 只認 canonical roles。
 
 Hive 與 Spark 目前只是明確保留的 unsupported stub。這代表架構上有位置，不代表目前已經完成 Hive、Spark 或 Iceberg 連線。
 
 ## 圖層
 
-目前資料集選擇器支援：
+資料圖層選單由已導入的 Layer Contract 動態建立，不是前端寫死三個選項：
 
-- GFW 漁業網格
-- AIS 船舶位置
-- EEZ 經濟海域邊界
+- Mapping Controller 產生的 sampled-grid 資料集
+- active websocket/read-model route 提供的 AIS 船舶位置
+- active spatial route 提供的 EEZ 經濟海域邊界
 
-GFW 與 AIS 是互斥主圖層：可以都不開，但不能同時當主圖層。EEZ 是獨立 overlay，可以疊在 GFW 或 AIS 上。圖層可拖拉排序，齒輪可調整顏色、alpha、顯示模式等。
+主資料圖層由啟用狀態控制，可以全部關閉；未勾選的 imported layer 不得查詢也不得渲染。EEZ 是獨立 overlay。圖層可拖拉排序，齒輪會依 Layer Contract 暴露 metric、resolution、顏色、alpha 與顯示模式。
 
 ## 時間與播放
 
 時間控制只有在選中的資料層具備時間能力時啟用。EEZ-only 模式會把日期與播放控制灰掉。
 
-GFW 支援：
+具時間能力的 sampled-grid 圖層支援：
 
 - 單日模式
 - 跳到最後一日
@@ -140,7 +149,7 @@ GFW 支援：
 - 前一日 / 後一日
 - 播放 / 暫停
 - 播放速度
-- 播放前預熱快取
+- 播放期間的獨立水位預熱
 
 播放排程以時間線為主控：播放速度是時間軸倍率，不是舊的「上一格完成後再等待」迴圈。預設交付策略是分析模式：每一張選取範圍內的真實 snapshot 都會依序消耗，`playbackRate` 只改變下一張 snapshot 的目標節拍。設定頁已暴露流暢與嚴格模式端口，但兩者明確標示為尚未實作，因此現階段不會接管播放 clock。查詢與渲染工作不會在每格後再額外疊一個完整 interval。progressive 模式不會為了完整 prebuffer 阻塞開播；分析模式會進入 buffering 而不是跳過下一張，等待期間不推進播放進度，frame ready 後會先記錄 resumed，再顯示真實 snapshot。target request 失敗會成為明確的 frame-buffer failed 狀態，不會永遠停在 `fetching`；暫停、重播、切圖層與切資料集會讓舊背景預載進度失效。
 
@@ -148,7 +157,7 @@ GFW 支援：
 
 - 播放時間軸：播放交付策略與 `playbackRate` 決定播放器正在追哪一張真實 snapshot。分析模式已實作；流暢與嚴格模式是已暴露但未啟用的保留端口。
 - Frame buffer：分析模式會回報 `fetching/missing/ready/waiting/failed` 邊界；測速 box 會把 `buffering`、`resumed`、`顯示 snapshot` 與 SQL/API/render 分開觀測。
-- 資料快取 / 預熱：range 預熱、progressive 背景預載、並行數與容量上限只負責供應 records packet。
+- 資料快取 / 預熱：獨立生產者維持 ready-ahead 高低水位；scheduler 並行數與 RAM 容量限制其工作。
 - Frame 補間：播放可選用現有 layer crossfade 作為純視覺補間，也可在播放時直接切換真實 snapshot；真正資料 blend 仍保留給未來由 render artifact 支撐的 `requestAnimationFrame` 循環。
 - 視覺效果：淡入淡出只修飾 layer 替換；高斯模糊只限縮放 / LOD 重算時遮罩。
 - 渲染壓力與測速：renderer policy 與儀表板測速 box 只觀測或降級，不擁有播放 clock。
@@ -166,7 +175,7 @@ python scripts/playback_contract_smoke.py
 - progressive cold cache 會回報 `fetching 0 / 1`；target packet ready 後以 `1 / 1` resumed，然後才記錄 `顯示 snapshot`。
 - progressive request 失敗會回報 `failed`、在測速 box 留下錯誤事件；若 target frame 長時間等不到，會在等待逾時後停止播放，而不是無限等待。
 - 被取消或被取代的 progressive preheat，不得把 late progress、status 或 failure state 套到目前播放 generation。
-- `off` 與 `before_play` 不受 frame buffer gate 控制；它們可以讀既有快取，但不進入 analysis buffering contract。
+- 播放器不等待完整預熱批次。獨立預熱器逐張補足至高水位，播放器持續消費 ready frame；只有當下 target 缺少時才可進入 `BUFFERING`。
 - `fluid` 是唯一允許把 elapsed time 映射到未來日期的 step mode；目前仍保留在 disabled 的流暢交付端口後面。
 - prefetch、render、interpolation、blur 與測速觀測只供應或修飾 frame，不擁有播放日期 clock。
 
@@ -179,78 +188,90 @@ python scripts/playback_contract_smoke.py
 | `static/js/playback/playback-frame-buffer.js` | frame readiness 決策：missing/fetching/ready/waiting/failed 狀態 packet、target-frame buffering，以及最近 ready frame 選擇。 |
 | `static/js/playback/playback-renderer.js` | 播放器到渲染的 handoff：設定選取日期、同步控制狀態、呼叫既有 active-layer reload。 |
 | `static/js/playback/playback-interpolation-controller.js` | 播放補間 policy：播放時選擇 layer crossfade 或直接切換；資料 blend 尚未啟用。 |
-| `static/js/playback/playback-prefetch-controller.js` | progressive prefetch policy：決定是否排背景預熱窗口，以及 anchor date。 |
-| `static/js/playback/playback-cache-service.js` | 實際預熱 / 快取執行、進度狀態、request 級失敗追蹤、舊背景預載取消、並行數與容量統計。 |
+| `static/js/services/frame-identity.js` | canonical BBOX signature、request intent key、scope key 與回傳 frame key 的唯一建構器。 |
+| `static/js/services/data-frame-store.js` | Canonical RAM frame store：intent/frame alias、局部 coverage 合成、pin/release、LRU 淘汰與 failure state；不執行 transport。 |
+| `static/js/services/layer-query-coordinator.js` | QueryScheduler：相同 intent 單次執行、queued task 提升、consumer scope 取消與前景保留槽。 |
+| `static/js/services/frame-demand-service.js` | sampled-grid 唯一 transport 邊界；先查 `DataFrameStore`，miss 才排程，回傳後只提交一次 canonical packet。 |
+| `static/js/playback/playback-preheater.js` | 長時間存在的生產者，獨立維護 ready-ahead 高低水位，不擁有播放 clock。 |
+| `static/js/playback/playback-engine.js` | 純 frame 消費者與播放生命週期 owner；只要求缺少的 target、pin 可見 frame，並記錄 buffering/render 事件。 |
+| `static/js/playback/playback-cache-service.js` | 播放快取設定與狀態 facade；只暴露水位與 RAM 容量，不擁有 transport 或 batch pipeline。 |
+| `static/js/services/lifecycle-event-log.js` | 有界事件記錄、Run 匯出，以及 Queue/HTTP/cache/render/stall 體感指標。 |
+| `static/js/ui/widgets/capabilities/event-viewer.js` | 唯讀生命週期事件檢視器 Widget，支援 Run/資料集/事件篩選與 JSON 匯出。 |
 | `static/js/playback/playback-telemetry.js` | 播放控制事件送進測速 box，和 SQL/API/render timing 分開。 |
-| `static/js/layers/gfw-layer-effects.js` | 純視覺 GFW layer effects：zoom/LOD blur、reveal、retired-layer cleanup 與 crossfade。 |
+| `static/js/layers/gfw-layer-effects.js` | 純視覺 sampled-grid layer effects：zoom/LOD blur、reveal、retired-layer cleanup 與 crossfade。檔名是歷史名稱，只輸出 `SampledGridLayerEffects`。 |
 | `static/TimingMetrics.js` | 測速 box 狀態、dynamic/persistent/event lanes 與 snapshot timing history。 |
 
 ```mermaid
 flowchart LR
-  Clock["播放時間軸：倍率 + 步進策略"] --> Target["目標真實 snapshot date"]
-  Cache["資料快取 / 預熱時間軸"] --> Packet["Ready records packet"]
-  Target --> Packet
-  Packet --> Renderer["GFW renderer：aggregate rows + WebGL/Canvas draw"]
+  UI["地圖與播放命令"] --> Engine["PlaybackEngine"]
+  Engine -->|"frame demand"| Demand["FrameDemandService"]
+  Preheater["PlaybackPreheater"] -->|"水位補充 demand"| Demand
+  Demand --> Scheduler["QueryScheduler"]
+  Scheduler --> Adapter["Flask API + Mapping adapter"]
+  Adapter --> Store["DataFrameStore：canonical RAM frames"]
+  Store --> Renderer["Sampled-grid renderer：WebGL/Canvas draw"]
+  Store --> Widgets["Widgets：cache-first 消費者"]
+  Engine --> Renderer
   Interp["Frame 補間 policy：目前 layer crossfade，未來 data blend"] -.-> Renderer
   Effects["視覺效果：只修飾，不排程"] -.-> Renderer
   Renderer --> Map["可見 Leaflet 圖層"]
-  Metrics["儀表板測速 box：觀測 SQL/API/client/render"] -.-> Clock
-  Metrics -.-> Cache
-  Metrics -.-> Renderer
+  Events["LifecycleEventLog + 事件檢視器 Widget"] -.-> Engine
+  Events -.-> Scheduler
+  Events -.-> Store
+  Events -.-> Renderer
 ```
 
 AIS live 模式目前不走日期播放器。
 
 ## 播放快取與預熱
 
-播放快取是 v95 之後的重要行為：
+播放快取是 sampled-grid 查詢管線的一部分：
 
-- `static/js/playback/playback-cache-service.js` 負責播放前預熱、進度統計、快取容量顯示與預熱策略。
+- `static/js/playback/playback-cache-service.js` 提供水位、容量與狀態顯示；實際補充生命週期由 `PlaybackPreheater` 擁有。
 - `static/js/playback/playback-controls.js` 保留控制器事件、按鈕狀態、播放節奏與設定視窗。
-- 預熱模式可設定為關閉、播放前完整預熱、或漸進式背景預熱。
-- before_play 或明確預熱時，播放按鈕會被防呆；progressive 模式則讓時間線先跑，資料由背景預熱供應。
+- 預熱器在圖層、日期範圍與查詢 scope 確定後獨立運作；低於低水位時非同步補到高水位。
+- 預熱器 `FETCHING` 與播放器 `PLAYING` 可同時成立。只有 target frame miss 且前方已無 ready frame 時，播放器才進入 `BUFFERING`。
 - 快取有容量上限，預設 2 GB，可在播放設定中調整。
 - 快取生命週期以瀏覽器頁面為主；關閉頁面後可視為釋放。
+- HTTP sampled-grid adapter 另有 server-side canonical source snapshot cache；`query_policy.snapshot_cache_max_rows` 是跨 dataset namespace 的全域 row budget，不會讓每個資料集各自無上限常駐。
 
-設計原則：使用者看圖時，程式不要只是等使用者操作，而是預先準備時間序列播放可能用到的資料。
+設計原則：地圖擁有 source query 意圖與最高優先序；播放負責供應時間窗口，Widgets 優先消費已完成快照。取消預熱或 Widget 插隊只能取消未完成任務，不得清除 canonical cache。
 
-## GFW 播放 Frame 生命週期
+## Sampled-grid 查詢與快取生命週期
 
-GFW 播放的每一個 frame 不是從「每格一個檔案」讀出來。它是一個 records packet，主要由下面這組 key 決定：
+每一個 frame 是 canonical records packet，主要由下面這組 key 決定：
 
 ```text
-datasetId + date + bbox + limit + columns
+mapping-aware cache namespace + date + bbox + limit + columns + resolution/LOD context
 ```
 
-以本機 GFW route 來說，`datasetId = gfw_full` 會透過 config 與 layer mapping 指到 MySQL 的 `ocean_fishery.gold_grid`。mapping/config 是路由合約：它說明 backend、connection、table，以及 time/lat/lon 欄位角色；它不是 frame 資料本體。冷路徑會查 MySQL，熱路徑會先吃瀏覽器端 `GfwRecordCache` 或 Flask server-side records cache。
+cache namespace 由目前 mapping contract 推導，包含 source route、canonical 欄位角色、grid profile、resolution policy 與 query contract。只要 mapping 語意改變，就會使用新的 namespace；密碼與純視覺設定不影響資料快取身分。冷路徑由 `FrameDemandService` 要求 `QueryScheduler` 排入唯一 source request，再由 `DataFrameStore` 保存 canonical 結果；暖路徑讓地圖、播放、選取工具與 Widgets 共用同一份 packet。
 
-`columns=render` 只查渲染需要的欄位，例如 time/id/lat/lon，以及可用的 `fish_sum`、`fish_ratio`、`vessels`。它和完整表格顯示欄位是分開的。
+只有地圖/query layer 擁有 source transport。地圖 request 的 scheduler 優先序最高；Widget 先查 canonical cache，miss 時只能透過 coordinator 排入較低優先序的 fill。表格工具是嚴格唯讀的目前快照快取檢閱器，不能向 source 發 request。
+
+來源錯誤語意由 Mapping 翻譯。`snapshot.no_data` 把來源特有的缺 partition 錯誤轉成空的 canonical snapshot 並做負快取；`snapshot.retry` 只處理有限次的瞬時錯誤重試；`resolution_policy` 只在來源確實有較粗 LOD 時降級。三者不能混用。
 
 ```mermaid
 sequenceDiagram
   autonumber
   actor User as 使用者
   participant UI as 儀表板 UI
-  participant Playback as PlaybackControls
-  participant Preload as PlaybackCacheService
-  participant BrowserCache as GfwRecordCache 瀏覽器快取
+  participant Playback as PlaybackEngine
+  participant Preload as PlaybackPreheater
+  participant Demand as FrameDemandService
+  participant BrowserCache as DataFrameStore
+  participant Coordinator as QueryScheduler
   participant API as Flask Records API
   participant ServerCache as Flask Records Cache
-  participant DB as MySQL ocean_fishery.gold_grid
-  participant Renderer as GFW Renderer
+  participant Adapter as Query Adapter
+  participant Renderer as Sampled-grid Renderer
   participant Map as Leaflet Map
 
   User->>UI: 按下播放
   UI->>Playback: setPlayback(true)
   Playback->>Playback: 啟動時間線(交付策略 + display cadence + playback rate)
-  Playback->>Preload: progressive 背景預載
-  Preload->>BrowserCache: prefetchRequests(date + bbox + columns=render)
-
-  alt 只有 before_play 模式
-    Preload->>API: GET /api/datasets/{datasetId}/records/range
-    API->>DB: 依 start/end + bbox 做 range SELECT
-    API-->>BrowserCache: 將 range packet 拆成逐日期 packet
-  end
+  Preload->>Preload: 維持 ready-ahead 高低水位
+  Preload->>Demand: demand 缺少的窗口 frames
 
   loop 每一個播放 tick
     Playback->>Playback: dueFrame = elapsed / displayCadence
@@ -260,36 +281,29 @@ sequenceDiagram
       Playback->>Playback: targetDateIndex = baseDateIndex + dueFrame * playbackRate
     end
 
-    alt target 或前一個可用 frame 已 ready
-      Playback->>UI: date = selected frame date
-      Playback->>BrowserCache: fetchPacket(datasetId + date + bbox + columns)
-
-      alt 瀏覽器快取命中
-        BrowserCache-->>Playback: packet(rows)
-      else 瀏覽器快取未命中
-        BrowserCache->>API: GET /api/datasets/{datasetId}/records
-        API->>ServerCache: 查 server-side records cache
-        alt Server cache 命中
-          ServerCache-->>API: cached packet
-        else Server cache 未命中
-          API->>DB: SELECT render columns WHERE obs_date + bbox
-          DB-->>API: rows
-          API->>ServerCache: remember packet
-        end
-        API-->>BrowserCache: packet(rows + timing)
-        BrowserCache-->>Playback: packet(rows)
-      end
-
-      Playback->>Renderer: renderGfwMap(rows)
-      Renderer->>Renderer: aggregateGfwRowsForRender()
-      Renderer->>Renderer: 依 fish_sum 計算 cell 顏色
+    Playback->>BrowserCache: inspect target frame
+    alt target frame 已 ready
+      BrowserCache-->>Playback: canonical packet(rows)
+      Playback->>UI: date = target frame date
+      Playback->>Renderer: render canonical rows
+      Renderer->>Renderer: 套用 mapped metric 與 grid profile
       Renderer->>Map: WebGL 或 Canvas 畫到地圖
-    else 逐張模式 target frame 尚未 ready
-      Playback->>Preload: 以 target date 為 anchor 預熱窗口
-      Playback->>UI: buffering，保留下一張 snapshot
-    else 流暢模式 target frame 尚未 ready
-      Playback->>Preload: 以 target date 為 anchor 預熱窗口
-      Playback->>UI: 維持目前顯示 frame
+    else target frame 缺少
+      Playback->>Demand: 只提升缺少的 target
+      Demand->>Coordinator: promote 或排入 playback-target
+      Coordinator->>API: GET /api/datasets/{datasetId}/records
+      API->>ServerCache: 查 server-side records cache
+      alt Server cache 命中
+        ServerCache-->>API: cached packet
+      else Server cache 未命中
+        API->>Adapter: canonical date + bbox query
+        Adapter-->>API: rows
+        API->>ServerCache: remember packet
+      end
+      API-->>Demand: packet(rows + timing)
+      Demand->>BrowserCache: commit canonical frame
+      BrowserCache-->>Playback: shared frame result
+      Playback->>UI: 只有 target 不存在時 buffering
     end
   end
 ```
@@ -304,19 +318,19 @@ flowchart TD
 
   D --> E{"Flask records cache 有嗎？"}
   E -->|有| F["回 cached packet"]
-  E -->|沒有| G["查 MySQL ocean_fishery.gold_grid"]
+  E -->|沒有| G["解析已註冊 Query Adapter"]
 
-  G --> H["WHERE obs_date = date AND lon/lat inside bbox"]
+  G --> H["把 canonical date/bbox/resolution 翻譯為 source contract"]
   H --> I["回 rows"]
   I --> J["存入 server cache"]
   J --> K["回 packet 給瀏覽器"]
 
   F --> L["存入或沿用瀏覽器 packet"]
   K --> L
-  C --> M["renderGfwMap(rows)"]
+  C --> M["渲染 canonical sampled-grid rows"]
   L --> M
 
-  M --> N["aggregate rows into render cells"]
+  M --> N["套用 mapping 的 grid 與 metric 語意"]
   N --> O{"WebGL 可用且允許嗎？"}
   O -->|可用| P["WebGL canvas draw"]
   O -->|不可用| Q["2D Canvas draw"]
@@ -328,13 +342,12 @@ Config 與 layer mapping 的角色：
 
 ```mermaid
 flowchart LR
-  A["config / layer mapping"] --> B["datasetId = gfw_full"]
-  B --> C["backend = mysql"]
-  C --> D["connection = local_mysql"]
-  D --> E["database = ocean_fishery"]
-  E --> F["table = gold_grid"]
-  F --> G["time=obs_date, lat=lat, lon=lon"]
-  G --> H["每個 frame 用這份合約組 SQL 查詢"]
+  A["Active source config"] --> B["Schema / capability probe"]
+  B --> C["Mapping Controller artifact"]
+  C --> D["Imported Layer Contract"]
+  D --> E["Canonical time / lat / lon / resolution / metric roles"]
+  E --> F["Mapping-aware cache namespace"]
+  F --> G["Query Adapter 翻譯成 source contract"]
 ```
 
 ## 渲染與 LOD
@@ -362,7 +375,7 @@ AIS 拆成兩個進程：
 負責地圖與 API。
 
 ```powershell
-.\.venv\Scripts\python.exe core.py --config config\runtime\adapter.local.json ingest-ais --collector-config config\sources\websocket\ais_collector.local.json
+.\.venv\Scripts\python.exe core.py --config config\runtime\adapter.local.json ingest-ais --collector-config config\runtime\ais_collector.local.json
 ```
 
 負責長駐 AISStream collector，寫入 SQL。
@@ -462,6 +475,36 @@ Demo-critical smoke：
 python scripts\demo_smoke.py --base-url http://127.0.0.1:5081
 ```
 
+架構與生命週期合約：
+
+```powershell
+python -m unittest discover -s tests
+node --test tests/*.test.mjs
+```
+
+以 6 條冷查詢 worker、30 日暖窗、拖曳視窗、選格與 LOD probe 稽核資料集完整可用日期：
+
+```powershell
+python scripts\full_year_cache_benchmark.py `
+  --dataset pipeline_iceberg.fishing_hours `
+  --concurrency 6 `
+  --warm-window 30 `
+  --output "$env:TEMP\rrkal-full-year.json"
+```
+
+2026-07-15 本機 checkpoint，每套資料集均先重啟服務清空 server cache，並使用來源宣告的最細解析度：
+
+| 資料集 | 可用日期 | 冷跑完成 | 冷跑中位 / p95 | 暖窗命中 | 選格 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `pipeline_iceberg.fishing_hours` | 366 | 366 | 2.90 s / 4.05 s | 29 / 30 | 27 ms，cache hit |
+| `pipeline_iceberg.chlor_a` | 355 | 355 | 2.92 s / 4.21 s | 29 / 30 | 26 ms，cache hit |
+| `pipeline_iceberg.ocean_productivity_score` | 355 | 355 | 3.58 s / 4.67 s | 30 / 30 | 32 ms，cache hit |
+| `pipeline_iceberg.sea_temperature` | 356 | 356 | 3.65 s / 5.02 s | 30 / 30 | 30 ms，cache hit |
+| `pipeline_iceberg.sustainability_pressure` | 355 | 355 | 3.32 s / 4.33 s | 30 / 30 | 24 ms，cache hit |
+| `gfw_full` | 31 | 31 | 68 ms / 106 ms | 30 / 30 | 16 ms server probe |
+
+Pipeline Iceberg 的 server snapshot high-water 維持在 `800,000` canonical rows 以下；全年稽核時 Flask worker set 約由 1.53 GB 降到 0.89 GB。GFW 的 server probe 仍是 bbox MySQL 查詢，瀏覽器的 containment reuse 另由 `tests/playback_contracts.test.mjs` 保護：選取已快取 viewport 內的 Tile 不得再次發送 transport request。
+
 JavaScript syntax check：
 
 ```powershell
@@ -481,20 +524,21 @@ Git whitespace check：
 git diff --check -- static templates scripts *.py config requirements.txt docker-compose.yml README.md README.zh-TW.md
 ```
 
-## 文件漂移檢查結果
+## 架構不變式
 
-本次檢查時：
-
-- `README.md` 已涵蓋大多數 v94 架構，包括中文 UI、GFW/EEZ/AIS、SQL/Hive/Spark 邊界、upstream handoff 與資料不入 repo 的策略。
-- `README.md` 缺少 v95 新增的 `playback-cache-service.js` 模組說明，因此已補上。
-- `handoff/*.zh-TW.md` 與 `benchmarks/*.md` 可以用 UTF-8 嚴格解碼，沒有 U+FFFD 或 PUA；PowerShell 看到的亂碼是終端顯示問題，不是檔案本體壞掉。
-- 現在新增本中文 README，作為 repo 使用者的主要 zh-TW 入口。
+- Router Manifest 的 `active_configs` 是 source 啟用真相；資料夾與 JSON `role` 必須同步。
+- Mapping Controller artifact 是外部 schema 到 canonical roles 的唯一翻譯層。
+- `imported_layers` 決定哪些 mapping contracts 可進入 dashboard；未啟用圖層不得查詢。
+- 地圖/query layer 是 source transport 的 owner；Widgets 優先讀 canonical cache。
+- 表格 Widget 是目前快照的唯讀 cache inspector，不能發送 source query。
+- pending task cancellation、viewport change 與 completed-cache eviction 是三種不同操作，不能互相代替。
+- 舊 root wrappers、database registry alias、runtime config materializer 與 Widget 相容入口已刪除。
 
 ## 注意事項
 
 - 不要 commit `config/runtime/adapter.local.json`。
-- 不要 commit `config/sources/websocket/ais_collector.local.json`。
+- 不要 commit `config/runtime/ais_collector.local.json`。
 - 不要 commit runtime logs、PID、下載資料集、資料庫檔。
 - 真實 secret 應放環境變數、local config、K8 Secret 或 Airflow Variable。
 - AISHub polling 目前只是備援，不是 MVP 主線。
-- EEZ 國家/主權歸屬尚未完成，只畫幾何，不等於已能說明每一片海域屬於誰。
+- EEZ 海域管轄判定已註冊為 `1x1` Widget，會消費虛擬網格選取並區分管轄、爭議、共管與其他映射情況；它是探索性資料判讀，不是法律認定。

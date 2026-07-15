@@ -15,7 +15,7 @@ import sys
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from DatabaseConnect import load_config, mysql_connection, mysql_quote  # noqa: E402
+from common_adapter.db.connect import load_config, mysql_connection, mysql_quote  # noqa: E402
 
 
 PROXY_DATASETS = [
@@ -78,7 +78,7 @@ def summarize(samples: list[dict[str, Any]]) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Pressure test GFW + NASA-proxy SQL query shapes.")
-    parser.add_argument("--config", default="config/adapter.local.json")
+    parser.add_argument("--config", default="config/runtime/adapter.local.json")
     parser.add_argument("--date", default="2024-01-15")
     parser.add_argument("--rounds", type=int, default=5)
     parser.add_argument("--workers", type=int, default=5)

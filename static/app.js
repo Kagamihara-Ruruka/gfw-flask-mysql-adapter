@@ -4,8 +4,7 @@ async function init() {
     window.aerialBackdropController?.configure(renderCapability?.server?.aerial_backdrop);
     syncHardwareSettingsControls();
     await loadDatasets();
-    await loadSchema();
-    await reloadActiveLayer();
+    await window.LayerActivationController.reconcile({ reload: true, reason: "bootstrap" });
     state.isBootstrapping = false;
     if (state.importedLayers?.eez !== false && $("eez-toggle")?.checked) {
       reloadEezLayer().catch((err) => console.error("EEZ overlay failed", err));
@@ -26,7 +25,7 @@ function scheduleEezResizeReload(reason) {
   if (state.isBootstrapping || !$("eez-toggle")?.checked || typeof reloadEezLayer !== "function") return;
   clearTimeout(mapResizeEezTimer);
   mapResizeEezTimer = setTimeout(() => {
-    reloadEezLayer({ force: true }).catch((err) => console.error("EEZ overlay failed", err));
+    refreshEezTileReadiness(reason).catch((err) => console.error("EEZ overlay failed", err));
   }, 120);
 }
 
@@ -100,6 +99,13 @@ function setActivePage(pageId) {
     panel.hidden = !active;
     panel.classList.toggle("is-active", active);
   }
+  if (pageId === "developer") {
+    const frame = $("developer-control-frame");
+    const source = frame?.dataset.src;
+    if (frame && source && !frame.hasAttribute("src")) {
+      frame.src = source;
+    }
+  }
   if (pageId !== "dashboard") {
     stopPlayback();
     return;
@@ -164,9 +170,38 @@ function bindControls() {
   $("table-scroll").addEventListener("scroll", () => requestAnimationFrame(renderTableWindow));
 }
 
+let datasetRegistryRefresh = null;
+
+function datasetRegistrySignature() {
+  return JSON.stringify({
+    datasets: state.datasets || {},
+    layers: state.layerContracts || [],
+    importedLayerIds: [...(state.importedLayerIds || [])].sort(),
+  });
+}
+
+async function refreshDatasetRegistry() {
+  if (datasetRegistryRefresh || state.isBootstrapping) {
+    return datasetRegistryRefresh;
+  }
+  datasetRegistryRefresh = (async () => {
+    const before = datasetRegistrySignature();
+    await loadDatasets();
+    if (datasetRegistrySignature() === before) {
+      return;
+    }
+    await window.LayerActivationController.reconcile({ reload: true, reason: "registry_changed" });
+  })();
+  try {
+    await datasetRegistryRefresh;
+  } finally {
+    datasetRegistryRefresh = null;
+  }
+}
+
 function bindDeveloperBridge() {
   window.addEventListener("message", (event) => {
-    if (event.data?.type !== "rrkal:layer-imports-changed") {
+    if (!["rrkal:layer-imports-changed", "rrkal:source-registry-changed"].includes(event.data?.type)) {
       return;
     }
     try {
@@ -177,10 +212,20 @@ function bindDeveloperBridge() {
     } catch {
       return;
     }
-    loadDatasets()
-      .then(() => loadSchema())
-      .then(() => reloadActiveLayer())
-      .catch((err) => setStatus(err.message, true));
+    refreshDatasetRegistry().catch((err) => setStatus(err.message, true));
+  });
+  window.addEventListener("focus", () => {
+    if (!document.hidden) {
+      refreshDatasetRegistry().catch((err) => setStatus(err.message, true));
+    }
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      stopPlayback();
+      PlaybackPreheater?.stop?.("document_hidden");
+      return;
+    }
+    refreshDatasetRegistry().catch((err) => setStatus(err.message, true));
   });
 }
 

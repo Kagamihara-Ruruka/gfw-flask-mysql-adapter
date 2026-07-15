@@ -64,14 +64,30 @@ class SourceConfigStore:
             raise ValueError("target source group must be a routable folder name")
         current_group = self.infer_source_group(path)
         old_ref = self.normalize_config_ref(path)
+        data, error = self.read_config_json(path)
+        if error or data is None:
+            raise ValueError(f"config cannot be moved until its JSON is valid: {error}")
+        data["role"] = source_group
         if current_group == source_group:
-            return {"status": "ok", "moved": old_ref, "from_group": current_group, "group": source_group, "manifest": self.load_manifest()}
+            path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            return {
+                "status": "ok",
+                "moved": old_ref,
+                "old_path": old_ref,
+                "from_group": current_group,
+                "group": source_group,
+                "manifest": self.load_manifest(),
+                "source_groups": self.source_group_cards(),
+                "overwrote": False,
+            }
         destination = self.target_source_config_path(path.name, source_group)
+        destination.parent.mkdir(parents=True, exist_ok=True)
         destination_existed = destination.exists()
         target_ref = self.normalize_config_ref(destination)
         if destination_existed:
             destination.unlink()
         shutil.move(str(path), str(destination))
+        destination.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         new_ref = self.normalize_config_ref(destination)
         manifest = self.load_manifest()
         active_before = set(manifest["active_configs"])
@@ -89,16 +105,11 @@ class SourceConfigStore:
             notes[new_ref] = target_note
         elif old_note:
             notes[new_ref] = old_note
-        groups = dict(manifest.get("config_groups") or {})
-        groups.pop(old_ref, None)
-        groups.pop(target_ref, None)
-        groups[new_ref] = source_group
         self.save_manifest(
             {
                 "active_configs": sorted(active_refs),
                 "locked_configs": sorted(locked_refs),
                 "config_notes": notes,
-                "config_groups": groups,
                 "imported_layers": manifest.get("imported_layers") or [],
             }
         )
@@ -129,8 +140,13 @@ class SourceConfigStore:
         if runtime_current and not note:
             note = "目前服務啟動 config"
         data, error = self.read_config_json(path)
-        group = str((manifest.get("config_groups") or {}).get(ref) or self.infer_config_group(path, data))
         source_group = self.infer_source_group(path)
+        group = source_group or self.infer_config_group(path, data)
+        declared_role = str((data or {}).get("role") or "").strip().lower()
+        role_consistent = bool(source_group and declared_role == source_group)
+        role_error = None
+        if source_group and error is None and not role_consistent:
+            role_error = f'config role "{declared_role or "<missing>"}" must match source folder "{source_group}"'
         resolved_path = path.resolve()
         source_dir = self.source_config_dir.resolve()
         managed_dir = self.managed_config_dir.resolve()
@@ -164,7 +180,10 @@ class SourceConfigStore:
             "size_bytes": path.stat().st_size,
             "mtime": path.stat().st_mtime,
             "parse_ok": error is None,
-            "error": error,
+            "error": error or role_error,
+            "declared_role": declared_role,
+            "role_consistent": role_consistent,
+            "route_blocked": bool(error or role_error),
             "connections": [],
             "datasets": [],
         }
@@ -172,8 +191,6 @@ class SourceConfigStore:
             connections = data.get("connections") or {}
             if isinstance(connections, dict) and connections:
                 summary["connections"] = sorted(str(key) for key in connections.keys())
-            elif "mysql" in data:
-                summary["connections"] = ["local_mysql"]
             datasets = data.get("datasets") or {}
             if isinstance(datasets, dict):
                 summary["datasets"] = sorted(str(key) for key in datasets.keys())
@@ -202,9 +219,14 @@ class SourceConfigStore:
         locked_refs = {ref for ref in manifest["locked_configs"] if ref != normalized}
         notes = dict(manifest.get("config_notes") or {})
         notes.pop(normalized, None)
-        groups = dict(manifest.get("config_groups") or {})
-        groups.pop(normalized, None)
-        self.save_manifest({"active_configs": sorted(active_refs), "locked_configs": sorted(locked_refs), "config_notes": notes, "config_groups": groups})
+        self.save_manifest(
+            {
+                "active_configs": sorted(active_refs),
+                "locked_configs": sorted(locked_refs),
+                "config_notes": notes,
+                "imported_layers": manifest.get("imported_layers") or [],
+            }
+        )
         return {"deleted": normalized, "manifest": self.load_manifest(), "source_groups": self.source_group_cards()}
 
     def set_locked(self, config_ref: str, locked: bool) -> dict[str, Any]:
@@ -226,7 +248,7 @@ class SourceConfigStore:
                 "active_configs": sorted(active_refs),
                 "locked_configs": sorted(locked_refs),
                 "config_notes": dict(manifest.get("config_notes") or {}),
-                "config_groups": dict(manifest.get("config_groups") or {}),
+                "imported_layers": manifest.get("imported_layers") or [],
             }
         )
         return {"status": "ok", "manifest": self.load_manifest()}
@@ -248,7 +270,7 @@ class SourceConfigStore:
                 "active_configs": manifest["active_configs"],
                 "locked_configs": manifest["locked_configs"],
                 "config_notes": notes,
-                "config_groups": dict(manifest.get("config_groups") or {}),
+                "imported_layers": manifest.get("imported_layers") or [],
             }
         )
         active_refs = set(self.load_manifest()["active_configs"])
@@ -263,13 +285,18 @@ class SourceConfigStore:
             raise ValueError("example config is demo-only and cannot be edited")
         normalized = self.normalize_config_ref(path)
         manifest = self.load_manifest()
-        if (manifest.get("config_groups") or {}).get(normalized) == "demo":
-            raise ValueError("demo config is read-only")
         if normalized in set(manifest["locked_configs"]):
             raise ValueError("locked config cannot be edited")
         parsed = json.loads(content)
         if not isinstance(parsed, dict):
             raise ValueError("config root must be a JSON object")
+        source_group = self.infer_source_group(path)
+        declared_role = str(parsed.get("role") or "").strip().lower()
+        if source_group and declared_role != source_group:
+            raise ValueError(
+                f'config role "{declared_role or "<missing>"}" must match source folder "{source_group}"; '
+                "use the source-group selector to move this config"
+            )
         path.write_text(json.dumps(parsed, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         active_refs = set(self.load_manifest()["active_configs"])
         locked_refs = set(self.load_manifest()["locked_configs"])

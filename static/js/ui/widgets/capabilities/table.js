@@ -9,77 +9,35 @@ class TableWidgetDataSource {
     return TableWidgetDataSource.instance;
   }
 
-  constructor() {
-    this.cache = new Map();
-    this.inflight = new Map();
-  }
-
-  clear() {
-    this.cache.clear();
-  }
-
-  invalidateLayer(layerId) {
-    const normalized = this.layerIdOf(layerId);
-    if (!normalized) return;
-    for (const [key, model] of this.cache.entries()) {
-      if (model?.request?.layerId === normalized) this.cache.delete(key);
-    }
-  }
-
   layerIdOf(value) {
     return String(value || "").trim().toLowerCase();
   }
 
-  importedLayerIds() {
-    return new Set((state?.importedLayerIds || []).map((layerId) => this.layerIdOf(layerId)).filter(Boolean));
-  }
-
-  queryableContracts() {
-    const imported = this.importedLayerIds();
-    const contracts = new Map();
-    for (const contract of state?.layerContracts || []) {
-      const layerId = this.layerIdOf(contract?.layer_id);
-      if (!layerId || !imported.has(layerId)) continue;
-      if (contract?.capabilities?.relational_query !== true) continue;
-      if (!contracts.has(layerId)) contracts.set(layerId, contract);
-    }
-    return contracts;
+  contractFor(layerId) {
+    const normalized = this.layerIdOf(layerId);
+    return (state?.layerContracts || []).find((contract) => (
+      this.layerIdOf(contract?.layer_id) === normalized
+    )) || null;
   }
 
   tabs() {
-    const contracts = this.queryableContracts();
-    const datasetsByLayer = new Map();
-    for (const [datasetId, dataset] of Object.entries(state?.datasets || {})) {
-      const layerId = this.layerIdOf(dataset?.layer_id || dataset?.runtime?.layer_id);
-      if (!layerId || !contracts.has(layerId)) continue;
-      if (!datasetsByLayer.has(layerId)) datasetsByLayer.set(layerId, []);
-      datasetsByLayer.get(layerId).push({ datasetId, dataset });
+    const registered = window.LayerRuntimeContractRegistry?.sampledGridLayers?.({ enabledOnly: true }) || [];
+    if (registered.length) {
+      return registered.map((layer) => ({
+        id: layer.datasetId,
+        layerId: this.layerIdOf(layer.layerId),
+        label: layer.label,
+        datasetId: layer.datasetId,
+        dataset: layer.dataset,
+        contract: layer.contract,
+      }));
     }
-    const layerOrder = new Map((state?.layerOrder || []).map((layerId, index) => [this.layerIdOf(layerId), index]));
-    return Array.from(datasetsByLayer.entries())
-      .map(([layerId, datasets]) => {
-        const selected = datasets.find((entry) => entry.datasetId === state?.datasetId) || datasets[0];
-        const contract = contracts.get(layerId);
-        return {
-          id: layerId,
-          layerId,
-          label: contract?.label || selected.dataset?.label || layerId,
-          datasetId: selected.datasetId,
-          dataset: selected.dataset,
-          contract,
-        };
-      })
-      .sort((left, right) => {
-        const leftOrder = layerOrder.has(left.layerId) ? layerOrder.get(left.layerId) : Number.MAX_SAFE_INTEGER;
-        const rightOrder = layerOrder.has(right.layerId) ? layerOrder.get(right.layerId) : Number.MAX_SAFE_INTEGER;
-        return leftOrder - rightOrder || left.label.localeCompare(right.label, "zh-TW");
-      });
-  }
-
-  recordsEventAffectsTabs(event) {
-    const layerId = this.layerIdOf(event?.detail?.layer);
-    if (!layerId || layerId === "none") return false;
-    return this.tabs().some((tab) => tab.layerId === layerId);
+    const datasetId = String(state?.datasetId || "").trim();
+    const dataset = state?.datasets?.[datasetId] || null;
+    const layerId = this.layerIdOf(state?.dataLayer || dataset?.layer_id || dataset?.runtime?.layer_id);
+    if (!datasetId || !dataset || !layerId) return [];
+    const contract = this.contractFor(layerId);
+    return [{ id: datasetId, layerId, label: dataset.label || contract?.label || datasetId, datasetId, dataset, contract }];
   }
 
   selectedCell() {
@@ -93,25 +51,58 @@ class TableWidgetDataSource {
     return lockedCursor || $("date")?.value || selected?.date || state?.renderedSampledGridDate || "";
   }
 
-  bboxFor(selected) {
-    if (selected) {
-      const bbox = Array.isArray(selected.bbox) ? selected.bbox.map(Number) : [];
-      if (bbox.length !== 4 || bbox.some((value) => !Number.isFinite(value))) return "";
-      return selected.bbox_string || bbox.map((value) => value.toFixed(6)).join(",");
-    }
-    return typeof currentBbox === "function" ? currentBbox() : "";
+  selectedBbox(selected) {
+    const bbox = Array.isArray(selected?.bbox) ? selected.bbox.map(Number) : [];
+    if (bbox.length !== 4 || bbox.some((value) => !Number.isFinite(value))) return "";
+    return selected.bbox_string || bbox.map((value) => value.toFixed(6)).join(",");
   }
 
   requestFor(tab) {
     const selected = this.selectedCell();
     const date = this.currentDate(selected);
-    const bbox = this.bboxFor(selected);
+    const intent = typeof RenderIntentService !== "undefined"
+      ? RenderIntentService.snapshot({ date, layerId: tab.layerId, renderProfile: "widget.table.snapshot" })
+      : null;
+    const packetRequest = intent && typeof RenderIntentService.toSampledGridPacketRequest === "function"
+      ? RenderIntentService.toSampledGridPacketRequest(intent)
+      : {
+          datasetId: tab.datasetId,
+          layerId: tab.layerId,
+          date,
+          bbox: typeof currentBbox === "function" ? currentBbox() : "",
+          limit: "max",
+          columns: "render",
+          resolution: typeof SampledGridContract !== "undefined"
+            ? SampledGridContract.queryResolution({ datasetId: tab.datasetId })
+            : null,
+        };
+    packetRequest.datasetId = tab.datasetId;
+    packetRequest.layerId = tab.layerId;
+    packetRequest.date = date;
+    packetRequest.resolution = SampledGridContract.queryResolution({
+      datasetId: tab.datasetId,
+      zoom: packetRequest.zoom,
+      latitude: packetRequest.latitude,
+    });
+    const selectedBbox = this.selectedBbox(selected);
+    if (selectedBbox) packetRequest.bbox = selectedBbox;
     const scope = selected ? "tile" : "viewport";
     const scopeLabel = selected
       ? selected.tile_key || selected.label || "選取 Tile"
       : "目前視窗";
-    const key = [tab.datasetId, date, bbox, scope].join("|");
-    return { ...tab, selected, date, bbox, scope, scopeLabel, key };
+    const key = typeof DataFrameStore !== "undefined" && typeof DataFrameStore.keyFor === "function"
+      ? DataFrameStore.keyFor(packetRequest)
+      : [tab.datasetId, date, packetRequest.bbox, packetRequest.resolution ?? "auto"].join("|");
+    return {
+      ...tab,
+      selected,
+      date,
+      bbox: packetRequest.bbox,
+      scope,
+      scopeLabel,
+      key,
+      packetRequest,
+    };
   }
 
   statusModel(request, status, detail, extra = {}) {
@@ -119,42 +110,69 @@ class TableWidgetDataSource {
       status,
       detail,
       rows: extra.rows || [],
-      columns: extra.columns || request?.dataset?.display_columns || [],
+      columns: extra.columns || [],
       rowCount: Number(extra.rowCount || 0),
       timing: extra.timing || {},
       request,
     };
   }
 
-  currentRecordsModel(request) {
-    if (request.scope !== "viewport" || request.datasetId !== state?.datasetId) return null;
-    const context = state?.recordsContext || {};
-    if (this.layerIdOf(context.layer) !== request.layerId) return null;
-    if (String(context.date || "") !== String(request.date || "")) return null;
-    if (context.loading) {
-      return this.statusModel(request, "loading", "正在更新目前視窗");
+  columnsFor(packet, request) {
+    const rows = Array.isArray(packet?.rows) ? packet.rows : [];
+    const rowColumns = [];
+    const seen = new Set();
+    for (const row of rows.slice(0, 50)) {
+      for (const column of Object.keys(row || {})) {
+        if (seen.has(column)) continue;
+        seen.add(column);
+        rowColumns.push(column);
+      }
     }
-    const rows = Array.isArray(state?.rows) ? state.rows : [];
-    const columns = request.dataset?.display_columns || [];
-    const hasDisplayColumns = !rows.length || columns.every((column) => Object.hasOwn(rows[0], column));
-    if (!hasDisplayColumns) return null;
-    return this.statusModel(request, "ready", "已使用目前視窗資料", {
-      rows,
-      columns,
-      rowCount: rows.length,
+    const declared = [
+      ...(Array.isArray(packet?.columns) ? packet.columns : []),
+      ...(Array.isArray(request?.dataset?.display_columns) ? request.dataset.display_columns : []),
+    ];
+    const declaredPresent = declared.filter((column, index) => (
+      declared.indexOf(column) === index && (!rows.length || rows.some((row) => Object.hasOwn(row || {}, column)))
+    ));
+    return [...declaredPresent, ...rowColumns.filter((column) => !declaredPresent.includes(column))];
+  }
+
+  cacheEventAffectsCurrent(event) {
+    const detail = event?.detail || {};
+    return this.tabs().some((tab) => {
+      const request = this.requestFor(tab);
+      return String(detail.datasetId || "") === request.datasetId
+        && String(detail.date || "") === String(request.date || "");
     });
   }
 
   activeModel(request) {
     if (!request.bbox) {
-      return this.statusModel(request, "error", "查詢範圍沒有可用的 bbox");
+      return this.statusModel(request, "uncached", "目前快照位於資料範圍外");
     }
-    const current = this.currentRecordsModel(request);
-    if (current) return current;
-    const cached = this.cache.get(request.key);
-    if (cached) return cached;
-    this.fetch(request);
-    return this.statusModel(request, "loading", "正在查詢圖層資料");
+    if (typeof DataFrameStore === "undefined" || typeof DataFrameStore.inspect !== "function") {
+      return this.statusModel(request, "error", "目前快照快取尚未就緒");
+    }
+    const cached = DataFrameStore.inspect(request.packetRequest);
+    if (cached.status !== "ready" || !cached.packet) {
+      const context = state?.recordsContext || {};
+      const isLoadingCurrentSnapshot = Boolean(context.loading)
+        && this.layerIdOf(context.layer) === request.layerId
+        && String(context.date || "") === String(request.date || "");
+      return this.statusModel(
+        request,
+        isLoadingCurrentSnapshot ? "loading" : "uncached",
+        isLoadingCurrentSnapshot ? "地圖正在取得目前快照" : "目前快照尚無快取資料",
+      );
+    }
+    const rows = Array.isArray(cached.packet.rows) ? cached.packet.rows : [];
+    return this.statusModel(request, "ready", "目前快照快取", {
+      rows,
+      columns: this.columnsFor(cached.packet, request),
+      rowCount: Number(cached.packet.row_count ?? rows.length),
+      timing: cached.packet.timing || {},
+    });
   }
 
   model(activeTabId = "") {
@@ -165,7 +183,7 @@ class TableWidgetDataSource {
         activeTabId: "",
         active: null,
         status: "empty",
-        detail: "目前沒有已導入且可查表的圖層",
+        detail: "目前沒有正在渲染的資料集",
       };
     }
     const activeTab = tabs.find((tab) => tab.id === activeTabId) || tabs[0];
@@ -175,39 +193,6 @@ class TableWidgetDataSource {
       activeTabId: activeTab.id,
       active: this.activeModel(request),
     };
-  }
-
-  fetch(request) {
-    if (this.inflight.has(request.key)) return this.inflight.get(request.key);
-    const params = new URLSearchParams({
-      bbox: request.bbox,
-      limit: typeof RenderIntentService !== "undefined"
-        ? String(RenderIntentService.unlimitedLimit())
-        : "max",
-      columns: "display",
-    });
-    if (request.date) params.set("date", request.date);
-    const url = `/api/datasets/${encodeURIComponent(request.datasetId)}/records?${params.toString()}`;
-    const loader = fetchJson(url)
-      .then((packet) => {
-        this.cache.set(request.key, this.statusModel(request, "ready", "查詢完成", {
-          rows: Array.isArray(packet?.rows) ? packet.rows : [],
-          columns: packet?.columns || request.dataset?.display_columns || [],
-          rowCount: Number(packet?.row_count || 0),
-          timing: packet?.timing || {},
-        }));
-      })
-      .catch((err) => {
-        this.cache.set(request.key, this.statusModel(request, "error", err.message || "table query failed"));
-      })
-      .finally(() => {
-        this.inflight.delete(request.key);
-        window.dispatchEvent(new CustomEvent("rrkal:table-widget-data-changed", {
-          detail: { key: request.key, layerId: request.layerId },
-        }));
-      });
-    this.inflight.set(request.key, loader);
-    return loader;
   }
 }
 
@@ -243,13 +228,16 @@ class WidgetTableView {
     const previewLimit = Math.max(1, Number(state?.queryPolicy?.table_preview_limit || 300));
     const rows = (active?.rows || []).slice(0, previewLimit);
     if (active?.status === "loading") {
-      return `<tr><td colspan="${Math.max(1, columns.length)}" class="widget-table-message">載入中</td></tr>`;
+      return `<tr><td colspan="${Math.max(1, columns.length)}" class="widget-table-message">${lineChartEscape(active.detail)}</td></tr>`;
     }
     if (active?.status === "error") {
       return `<tr><td colspan="${Math.max(1, columns.length)}" class="widget-table-message is-error">${lineChartEscape(active.detail)}</td></tr>`;
     }
+    if (active?.status === "uncached") {
+      return `<tr><td colspan="${Math.max(1, columns.length)}" class="widget-table-message">${lineChartEscape(active.detail)}</td></tr>`;
+    }
     if (!rows.length) {
-      return `<tr><td colspan="${Math.max(1, columns.length)}" class="widget-table-message">此範圍沒有資料</td></tr>`;
+      return `<tr><td colspan="${Math.max(1, columns.length)}" class="widget-table-message">目前快照的快取沒有資料</td></tr>`;
     }
     return rows.map((row) => `
       <tr>${columns.map((column) => `<td title="${lineChartEscape(this.cellValue(row?.[column]))}">${lineChartEscape(this.cellValue(row?.[column]))}</td>`).join("")}</tr>
@@ -262,6 +250,7 @@ class WidgetTableView {
     const scope = request.scope === "tile" ? request.scopeLabel : "目前視窗";
     const date = request.date || "全時段";
     if (active.status === "loading") return `${scope} / ${date} / 載入中`;
+    if (active.status === "uncached") return `${scope} / ${date} / 尚無快取`;
     if (active.status === "error") return `${scope} / ${date} / 查詢失敗`;
     const previewLimit = Math.max(1, Number(state?.queryPolicy?.table_preview_limit || 300));
     const visibleCount = Math.min(active.rowCount, previewLimit);
@@ -297,12 +286,12 @@ class WidgetTableView {
     const columns = active?.columns || [];
     this.container.innerHTML = `
       <div class="widget-table-shell">
-        <div class="widget-table-tabs" role="tablist" aria-label="圖層查詢結果" data-widget-interactive="1">
+        <div class="widget-table-tabs" role="tablist" aria-label="目前快照資料集" data-widget-interactive="1">
           ${this.renderTabs()}
         </div>
         <div class="widget-table-summary">${lineChartEscape(this.summary(active))}</div>
         <div class="widget-table-scroll" data-widget-interactive="1">
-          <table class="widget-table-template" aria-label="${lineChartEscape(active?.request?.label || "圖層查詢結果")}">
+          <table class="widget-table-template" aria-label="${lineChartEscape(active?.request?.label || "目前快照快取")}">
             <thead>
               <tr>${columns.map((column) => `<th title="${lineChartEscape(column)}">${lineChartEscape(column)}</th>`).join("")}</tr>
             </thead>

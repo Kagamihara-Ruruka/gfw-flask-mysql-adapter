@@ -210,9 +210,12 @@ function sampledGridCellOpacity(row) {
 }
 
 function sampledGridRowsForRender(rows) {
-  const model = SampledGridContract.model();
-  const renderRows = (rows || []).filter((row) => model.bounds(row) && model.value(row) != null);
-  SampledGridColorScale.prepare(renderRows);
+  const targetProfile = SampledGridColorScale.profile();
+  const model = SampledGridContract.model(targetProfile.datasetId);
+  const renderRows = (rows || []).filter((row) => (
+    model.renderable(row) && SampledGridColorScale.opacity(row, targetProfile) > 0
+  ));
+  SampledGridColorScale.prepare(renderRows, targetProfile);
   return renderRows;
 }
 

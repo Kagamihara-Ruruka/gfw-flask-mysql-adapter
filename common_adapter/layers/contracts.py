@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 from common_adapter.developer.config_service import load_layer_mappings, spatial_status_from_config
+from common_adapter.query.grid_registry import grid_profile_contract
 from common_adapter.query.sampled_grid import sampled_grid_available_resolutions
 
 
@@ -27,9 +29,11 @@ def _mapping_contracts(database_routes: list[tuple[str, Any, dict[str, Any]]]) -
             continue
         if str(mapping.get("config_path") or "") not in active_config_refs:
             continue
-        sampled_grid = mapping.get("sampled_grid") if isinstance(mapping.get("sampled_grid"), dict) else None
+        sampled_grid = deepcopy(mapping.get("sampled_grid")) if isinstance(mapping.get("sampled_grid"), dict) else None
         if sampled_grid and isinstance(sampled_grid.get("catalog"), dict):
             continue
+        if sampled_grid:
+            sampled_grid["grid_profile"] = grid_profile_contract(sampled_grid)
         layer_id = _text(mapping.get("layer_id")).lower()
         roles = mapping.get("roles") if isinstance(mapping.get("roles"), dict) else {}
         table_ref = _text(mapping.get("table"))

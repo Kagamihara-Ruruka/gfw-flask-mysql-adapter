@@ -13,6 +13,7 @@ const {
 const {
   LineChartDataSource,
   PieChartDataSource,
+  HorizontalBarChartDataSource,
   EezAttributionDataSource,
   TableWidgetDataSource,
   WidgetTableView,
@@ -29,36 +30,32 @@ const {
   WidgetAbilityRegistry,
   createWidgetCatalog,
   createRegisteredWidgetCatalog,
+  createWidgetInstance,
   createWidgetFromCatalogItem,
   createWidgetFromRegisteredItem,
   createBlankWidgetFromWidget,
 } = window.WidgetRegistry;
 class WidgetPopoverController {
-  static shared() {
-    if (!WidgetPopoverController.instance) {
-      WidgetPopoverController.instance = new WidgetPopoverController();
-    }
-    return WidgetPopoverController.instance;
-  }
-
   constructor() {
     this.layer = document.createElement("div");
     this.layer.className = "widget-popover-layer";
     this.layer.hidden = true;
     this.layer.style.display = "none";
     this.layer.style.pointerEvents = "none";
-    this.layer.addEventListener("click", (event) => {
+    this.boundLayerClick = (event) => {
       if (event.target === this.layer) {
         this.close();
       }
-    });
+    };
+    this.layer.addEventListener("click", this.boundLayerClick);
     document.body.append(this.layer);
     this.openWidget = null;
-    document.addEventListener("keydown", (event) => {
+    this.boundKeydown = (event) => {
       if (event.key === "Escape") {
         this.close();
       }
-    });
+    };
+    document.addEventListener("keydown", this.boundKeydown);
   }
 
   openExpanded(widget, { onSettings } = {}) {
@@ -120,11 +117,20 @@ class WidgetPopoverController {
       cinema: pane.dataset.widgetView === "cinema",
     });
   }
+
+  dispose() {
+    document.removeEventListener("keydown", this.boundKeydown);
+    this.layer.removeEventListener("click", this.boundLayerClick);
+    this.layer.remove();
+    this.openWidget = null;
+  }
 }
 
+let widgetRuntimeOwner = null;
 
 class WidgetsPanel {
-  constructor({ root, board, socketGrid, grid, widgets = [], popover = WidgetPopoverController.shared() }) {
+  constructor({ root, board, socketGrid, grid, widgets = [], popover }) {
+    if (!popover) throw new TypeError("WidgetsPanel requires a popover controller");
     this.root = root;
     this.board = board;
     this.socketGrid = socketGrid;
@@ -164,6 +170,13 @@ class WidgetsPanel {
       this.applyWidgetPlacements();
     });
     this.resizeObserver.observe(this.board);
+  }
+
+  dispose() {
+    this.resizeObserver?.disconnect?.();
+    this.popover?.close?.();
+    for (const widget of this.widgets) widget.dispose?.();
+    this.clearDropState();
   }
 
   columns() {
@@ -347,6 +360,7 @@ class WidgetsPanel {
     if (index < 0) return false;
     const nextWidget = createWidgetFromRegisteredItem(catalogItem, targetWidget);
     if (!nextWidget) return false;
+    currentWidget.dispose?.();
     this.widgets[index] = nextWidget;
     this.renderWidgets();
     return true;
@@ -540,7 +554,8 @@ class WidgetsPanel {
     const index = this.widgets.findIndex((item) => item.id === widget.id);
     if (index < 0) return false;
     if (this.widgets[index].deletable === false) return false;
-    this.widgets.splice(index, 1);
+    const [removedWidget] = this.widgets.splice(index, 1);
+    removedWidget?.dispose?.();
     this.clearDropState();
     this.renderWidgets();
     this.popover.close();
@@ -577,15 +592,15 @@ function createDashboardWidgetFromDefault(item, scope) {
     deletable: definition?.deletable,
     widgetType: item.type,
   };
-  if (definition?.WidgetClass) return new definition.WidgetClass(params);
-  return new BlankWidget({ ...params, widgetType: "blank" });
+  if (definition?.WidgetClass) return createWidgetInstance(item.type, params);
+  return createWidgetInstance("blank", params);
 }
 
 function createDashboardWidgets(scope = "widgets") {
   return DefaultDashboardWidgetLayout.map((item) => createDashboardWidgetFromDefault(item, scope));
 }
 
-function initWidgetsPanels() {
+function initWidgetsPanels(popover) {
   const panels = Array.from(document.querySelectorAll("[data-widgets-panel]")).map((root, index) => {
     const scope = root.dataset.widgetsScope || `widgets-${index + 1}`;
     const panel = new WidgetsPanel({
@@ -594,20 +609,28 @@ function initWidgetsPanels() {
       socketGrid: root.querySelector("[data-widgets-socket-grid]"),
       grid: root.querySelector("[data-widgets-grid]"),
       widgets: createDashboardWidgets(scope),
+      popover,
     });
     panel.mount();
     return panel;
   });
   window.WidgetsPanelInstances = panels;
   window.WidgetsPanelInstance = panels[0] || null;
+  return panels;
 }
 
 function refreshLineChartWidgets() {
-  LineChartDataSource.shared().clear();
+  const source = LineChartDataSource.shared();
+  source.clear();
+  source.ensureCurrentWindow();
+  renderLineChartWidgets();
+}
+
+function renderLineChartWidgets() {
   for (const panel of window.WidgetsPanelInstances || []) {
     panel.refreshWidgetsByType?.("line-chart");
   }
-  WidgetPopoverController.shared().refreshOpenWidgetType("line-chart");
+  widgetRuntimeOwner?.popover.refreshOpenWidgetType("line-chart");
 }
 
 function refreshPieChartWidgets() {
@@ -615,24 +638,36 @@ function refreshPieChartWidgets() {
   for (const panel of window.WidgetsPanelInstances || []) {
     panel.refreshWidgetsByType?.("pie-chart");
   }
-  WidgetPopoverController.shared().refreshOpenWidgetType("pie-chart");
+  widgetRuntimeOwner?.popover.refreshOpenWidgetType("pie-chart");
+}
+
+function refreshHorizontalBarWidgets() {
+  HorizontalBarChartDataSource.shared().clear();
+  for (const panel of window.WidgetsPanelInstances || []) {
+    panel.refreshWidgetsByType?.("horizontal-bar-chart");
+  }
+  widgetRuntimeOwner?.popover.refreshOpenWidgetType("horizontal-bar-chart");
+}
+
+function renderWidgetType(widgetType) {
+  for (const panel of window.WidgetsPanelInstances || []) {
+    panel.refreshWidgetsByType?.(widgetType);
+  }
+  widgetRuntimeOwner?.popover.refreshOpenWidgetType(widgetType);
 }
 
 function refreshEezAttributionWidgets() {
   for (const panel of window.WidgetsPanelInstances || []) {
     panel.refreshWidgetsByType?.("eez-attribution");
   }
-  WidgetPopoverController.shared().refreshOpenWidgetType("eez-attribution");
+  widgetRuntimeOwner?.popover.refreshOpenWidgetType("eez-attribution");
 }
 
-function refreshTableWidgets({ clear = false, layerId = "" } = {}) {
-  const source = TableWidgetDataSource.shared();
-  if (clear) source.clear();
-  else if (layerId) source.invalidateLayer(layerId);
+function refreshTableWidgets() {
   for (const panel of window.WidgetsPanelInstances || []) {
     panel.refreshWidgetsByType?.("table");
   }
-  WidgetPopoverController.shared().refreshOpenWidgetType("table");
+  widgetRuntimeOwner?.popover.refreshOpenWidgetType("table");
 }
 
 function refreshLineChartWidgetsForTileSelection(event) {
@@ -646,59 +681,83 @@ function refreshPieChartWidgetsForTileSelection(event) {
 }
 
 function tileSelectionChangeAffectsWidgets(event) {
-  return ["selected", "disabled", "cleared", "mode_changed"].includes(event?.detail?.reason);
+  return ["selected", "disabled", "cleared", "mode_changed", "grid_changed"].includes(event?.detail?.reason);
 }
 
-function bindChartWidgetRefresh() {
-  window.addEventListener("rrkal:tile-selection-changed", (event) => {
+function bindChartWidgetRefresh({ eventTarget, targetMap, signal } = {}) {
+  if (!eventTarget?.addEventListener) throw new TypeError("Widget refresh binding requires an event target");
+  const listenerOptions = signal ? { signal } : undefined;
+  eventTarget.addEventListener("rrkal:tile-selection-changed", (event) => {
     refreshLineChartWidgetsForTileSelection(event);
     refreshPieChartWidgetsForTileSelection(event);
     if (tileSelectionChangeAffectsWidgets(event)) {
+      refreshHorizontalBarWidgets();
       EezAttributionDataSource.shared().rememberTileSelection(event);
       refreshEezAttributionWidgets();
-      refreshTableWidgets({ clear: true });
+      refreshTableWidgets();
     }
-  });
-  window.addEventListener("rrkal:schema-loaded", () => {
+  }, listenerOptions);
+  eventTarget.addEventListener("rrkal:schema-loaded", () => {
+    if (!state.dataLayer) return;
     refreshLineChartWidgets();
     refreshPieChartWidgets();
-    refreshTableWidgets({ clear: true });
-  });
-  window.addEventListener("rrkal:records-updated", (event) => {
+    refreshTableWidgets();
+    refreshHorizontalBarWidgets();
+  }, listenerOptions);
+  eventTarget.addEventListener("rrkal:layer-activation-changed", (event) => {
+    if (event?.detail?.reason === "activation_failed") return;
+    refreshLineChartWidgets();
     refreshPieChartWidgets();
-    if (TableWidgetDataSource.shared().recordsEventAffectsTabs(event)) {
-      refreshTableWidgets({ layerId: event?.detail?.layer });
-    }
-  });
-  window.addEventListener("rrkal:line-chart-data-changed", () => {
+    refreshTableWidgets();
+    refreshHorizontalBarWidgets();
+  }, listenerOptions);
+  eventTarget.addEventListener("rrkal:records-updated", () => {
+    refreshPieChartWidgets();
+    refreshTableWidgets();
+  }, listenerOptions);
+  eventTarget.addEventListener("rrkal:active-date-changed", () => {
+    LineChartDataSource.shared().ensureCurrentWindow();
+    renderLineChartWidgets();
+    refreshHorizontalBarWidgets();
+    refreshTableWidgets();
+  }, listenerOptions);
+  eventTarget.addEventListener("rrkal:line-chart-data-changed", () => {
     for (const panel of window.WidgetsPanelInstances || []) {
       panel.refreshWidgetsByType?.("line-chart");
     }
-    WidgetPopoverController.shared().refreshOpenWidgetType("line-chart");
-  });
-  window.addEventListener("rrkal:eez-attribution-data-changed", () => {
+    widgetRuntimeOwner?.popover.refreshOpenWidgetType("line-chart");
+  }, listenerOptions);
+  eventTarget.addEventListener("rrkal:pie-chart-data-changed", () => {
+    renderWidgetType("pie-chart");
+  }, listenerOptions);
+  eventTarget.addEventListener("rrkal:horizontal-bar-data-changed", () => {
+    renderWidgetType("horizontal-bar-chart");
+  }, listenerOptions);
+  eventTarget.addEventListener("rrkal:eez-attribution-data-changed", () => {
     refreshEezAttributionWidgets();
-  });
-  window.addEventListener("rrkal:table-widget-data-changed", () => {
-    refreshTableWidgets();
-  });
+  }, listenerOptions);
+  eventTarget.addEventListener("rrkal:data-frame-store-changed", (event) => {
+    if (event?.detail?.type !== "committed") return;
+    if (LineChartDataSource.shared().cacheEventAffectsCurrent(event)) renderLineChartWidgets();
+    if (TableWidgetDataSource.shared().cacheEventAffectsCurrent(event)) refreshTableWidgets();
+  }, listenerOptions);
   for (const id of ["start-date", "end-date", "dataset-select"]) {
     $(id)?.addEventListener("change", () => {
       window.setTimeout(refreshLineChartWidgets, 0);
-    });
+    }, listenerOptions);
   }
   for (const id of ["date", "dataset-select"]) {
     $(id)?.addEventListener("change", () => {
       window.setTimeout(refreshPieChartWidgets, 0);
-      window.setTimeout(() => refreshTableWidgets({ clear: true }), 0);
-    });
+      if (id === "dataset-select") window.setTimeout(refreshHorizontalBarWidgets, 0);
+      window.setTimeout(refreshTableWidgets, 0);
+    }, listenerOptions);
   }
-  if (typeof map !== "undefined" && map?.on) {
-    map.on("moveend", () => {
-      const activeLayerIsRelational = typeof isRelationalLayer === "function" && isRelationalLayer(state?.dataLayer);
-      if (!activeLayerIsRelational) refreshTableWidgets({ clear: true });
-    });
+  const mapMoveHandler = () => refreshTableWidgets();
+  if (targetMap?.on) {
+    targetMap.on("moveend", mapMoveHandler);
   }
+  return () => targetMap?.off?.("moveend", mapMoveHandler);
 }
 
 
@@ -723,6 +782,7 @@ window.WidgetTableView = WidgetTableView;
 window.LineChartWidget = LineChartWidget;
 window.PieChartWidget = PieChartWidget;
 window.HorizontalBarChartWidget = HorizontalBarChartWidget;
+window.HorizontalBarChartDataSource = HorizontalBarChartDataSource;
 window.EezAttributionWidget = EezAttributionWidget;
 window.TableWidget = TableWidget;
 window.MapJumpWidget = MapJumpWidget;
@@ -731,15 +791,74 @@ window.BlankWidget = BlankWidget;
 window.WidgetPopoverController = WidgetPopoverController;
 window.WidgetsPanel = WidgetsPanel;
 
-initWidgetsPanels();
-bindChartWidgetRefresh();
+class WidgetRuntimeController {
+  constructor({ eventTarget, targetMap = null } = {}) {
+    if (!eventTarget?.addEventListener) throw new TypeError("WidgetRuntimeController requires an event target");
+    this.eventTarget = eventTarget;
+    this.targetMap = targetMap;
+    this.abortController = null;
+    this.unbindMap = null;
+    this.panels = [];
+    this.popover = null;
+    this.mounted = false;
+  }
+
+  mount() {
+    if (this.mounted) return this;
+    this.mounted = true;
+    this.abortController = new AbortController();
+    this.popover = new WidgetPopoverController();
+    this.panels = initWidgetsPanels(this.popover);
+    this.unbindMap = bindChartWidgetRefresh({
+      eventTarget: this.eventTarget,
+      targetMap: this.targetMap,
+      signal: this.abortController.signal,
+    });
+    widgetRuntimeOwner = this;
+    return this;
+  }
+
+  dispose() {
+    if (!this.mounted) return;
+    this.mounted = false;
+    this.abortController?.abort();
+    this.unbindMap?.();
+    this.panels.forEach((panel) => panel.dispose());
+    this.popover?.dispose();
+    if (window.WidgetsPanelInstances === this.panels) {
+      window.WidgetsPanelInstances = [];
+      window.WidgetsPanelInstance = null;
+    }
+    if (widgetRuntimeOwner === this) widgetRuntimeOwner = null;
+    this.abortController = null;
+    this.unbindMap = null;
+    this.panels = [];
+    this.popover = null;
+  }
+}
+
+function createWidgetRuntimeOwner({ eventTarget = window, targetMap = null } = {}) {
+  return new WidgetRuntimeController({ eventTarget, targetMap }).mount();
+}
+
+widgetRuntimeOwner = window.AppRuntime.install(
+  "WidgetRuntimeOwner",
+  () => createWidgetRuntimeOwner({
+    eventTarget: window,
+    targetMap: typeof map === "undefined" ? null : map,
+  }),
+  { expose: false },
+);
 
 window.WidgetRuntime = Object.freeze({
   WidgetPopoverController,
+  WidgetRuntimeController,
   WidgetsPanel,
+  createWidgetRuntimeOwner,
   createDashboardWidgets,
   refreshLineChartWidgets,
   refreshPieChartWidgets,
+  refreshHorizontalBarWidgets,
   refreshEezAttributionWidgets,
   refreshTableWidgets,
 });

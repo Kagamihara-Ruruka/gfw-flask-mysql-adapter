@@ -1,2 +1,0 @@
-"""Database backend registry package."""
-

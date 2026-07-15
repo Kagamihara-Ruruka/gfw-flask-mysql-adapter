@@ -25,6 +25,13 @@ def _freeze(value: Any) -> Hashable:
     return value
 
 
+def _payload_row_weight(payload: Any) -> int:
+    rows = _mapping(payload).get("rows")
+    if isinstance(rows, (list, tuple)):
+        return max(1, len(rows))
+    return 1
+
+
 @dataclass(frozen=True)
 class SnapshotCachePolicy:
     enabled: bool
@@ -84,6 +91,7 @@ class _CacheEntry:
     identity: dict[str, Any]
     payload: Any
     created_at: float
+    row_weight: int
 
 
 @dataclass
@@ -101,6 +109,16 @@ class CanonicalSnapshotCache:
         self._entries: dict[str, OrderedDict[tuple, _CacheEntry]] = {}
         self._aliases: dict[str, dict[tuple, tuple]] = {}
         self._inflight: dict[tuple[str, tuple], _InflightLoad] = {}
+        self._global_lru: OrderedDict[tuple[str, tuple], None] = OrderedDict()
+        self._max_total_rows: int | None = None
+        self._total_rows = 0
+
+    def configure(self, *, max_total_rows: int | None) -> None:
+        if max_total_rows is not None and max_total_rows < 1:
+            raise ValueError("snapshot cache max_total_rows must be positive or null")
+        with self._lock:
+            self._max_total_rows = max_total_rows
+            self._trim_global_locked()
 
     def _expired(self, entry: _CacheEntry, policy: SnapshotCachePolicy) -> bool:
         return policy.ttl_seconds is not None and time.monotonic() - entry.created_at > policy.ttl_seconds
@@ -108,12 +126,31 @@ class CanonicalSnapshotCache:
     def _remove_locked(self, namespace: str, key: tuple) -> None:
         entries = self._entries.get(namespace)
         if entries is not None:
-            entries.pop(key, None)
+            entry = entries.pop(key, None)
+            if entry is not None:
+                self._total_rows = max(0, self._total_rows - entry.row_weight)
+            if not entries:
+                self._entries.pop(namespace, None)
+        self._global_lru.pop((namespace, key), None)
         aliases = self._aliases.get(namespace)
         if aliases is not None:
             for alias, target in list(aliases.items()):
                 if alias == key or target == key:
                     aliases.pop(alias, None)
+            if not aliases:
+                self._aliases.pop(namespace, None)
+
+    def _touch_global_locked(self, namespace: str, key: tuple) -> None:
+        global_key = (namespace, key)
+        self._global_lru[global_key] = None
+        self._global_lru.move_to_end(global_key)
+
+    def _trim_global_locked(self) -> None:
+        if self._max_total_rows is None:
+            return
+        while self._total_rows > self._max_total_rows and len(self._global_lru) > 1:
+            namespace, key = next(iter(self._global_lru))
+            self._remove_locked(namespace, key)
 
     def _resolve_locked(
         self,
@@ -134,6 +171,7 @@ class CanonicalSnapshotCache:
             self._remove_locked(namespace, actual_key)
             return None
         entries.move_to_end(actual_key)
+        self._touch_global_locked(namespace, actual_key)
         return SnapshotLoad(dict(entry.identity), entry.payload, cache_hit=True)
 
     def get(
@@ -156,19 +194,26 @@ class CanonicalSnapshotCache:
         loaded: SnapshotLoad,
     ) -> SnapshotLoad:
         actual_key = policy.key(loaded.actual_identity)
+        if actual_key in self._entries.get(namespace, {}):
+            self._remove_locked(namespace, actual_key)
         entries = self._entries.setdefault(namespace, OrderedDict())
+        row_weight = _payload_row_weight(loaded.payload)
         entries[actual_key] = _CacheEntry(
             identity=dict(loaded.actual_identity),
             payload=loaded.payload,
             created_at=time.monotonic(),
+            row_weight=row_weight,
         )
+        self._total_rows += row_weight
         entries.move_to_end(actual_key)
+        self._touch_global_locked(namespace, actual_key)
         aliases = self._aliases.setdefault(namespace, {})
         if requested_key != actual_key:
             aliases[requested_key] = actual_key
         while len(entries) > policy.max_entries:
-            stale_key, _entry = entries.popitem(last=False)
+            stale_key = next(iter(entries))
             self._remove_locked(namespace, stale_key)
+        self._trim_global_locked()
         return SnapshotLoad(
             dict(loaded.actual_identity),
             loaded.payload,
@@ -224,13 +269,24 @@ class CanonicalSnapshotCache:
             if namespace is None:
                 self._entries.clear()
                 self._aliases.clear()
+                self._global_lru.clear()
+                self._total_rows = 0
                 return
-            self._entries.pop(namespace, None)
-            self._aliases.pop(namespace, None)
+            for key in list(self._entries.get(namespace, {})):
+                self._remove_locked(namespace, key)
 
     def entry_count(self, namespace: str) -> int:
         with self._lock:
             return len(self._entries.get(namespace, ()))
+
+    def stats(self, namespace: str | None = None) -> dict[str, int | None]:
+        with self._lock:
+            return {
+                "namespace_entries": len(self._entries.get(namespace, ())) if namespace else 0,
+                "total_entries": len(self._global_lru),
+                "total_rows": self._total_rows,
+                "max_total_rows": self._max_total_rows,
+            }
 
 
 CANONICAL_SNAPSHOT_CACHE = CanonicalSnapshotCache()

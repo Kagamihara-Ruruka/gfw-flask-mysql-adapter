@@ -57,13 +57,13 @@ python core.py serve --port 5057
   - Plotly hover label 已改成深色模式。
 
 - 播放器：
-  - 播放前預熱改成具備 buffer 門檻的模型。
+  - `PlaybackPreheater` 以低／高水位獨立補充 canonical RAM frames，不阻塞播放器。
   - 不允許誰先完成就誰先播放，快照必須依時間順序。
-  - 播放速度越快，越需要保留更多安全緩衝。
+  - 只有 target frame 缺少時才進入 `BUFFERING`；預熱器 `FETCHING` 不等於播放停頓。
 
 - Config / route：
   - manifest 逐步成為路由真相來源。
-  - 舊合約與新合約要並存，避免上游或後端被迫一次切換。
+  - Runtime 只接受目前 canonical 合約；已淘汰 wrapper 與永久相容 shim 不再並存。
   - Schema Inspector 是後端能力；Mapping Controller 是前後端共同能力；Layer Contract 是後端輸出給儀表板的圖層合約。
 
 ## 目前已知問題

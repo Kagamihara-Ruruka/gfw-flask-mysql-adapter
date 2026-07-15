@@ -17,12 +17,13 @@ from websocket import WebSocketTimeoutException
 
 from common_adapter.ais.live import _ais_mysql_connection, ais_live_settings, ais_mysql_connection_info
 from common_adapter.ais.stream import ais_stream_settings, normalize_aisstream_message, open_aisstream_socket
-from common_adapter.db.connect import json_ready, mysql_connection, mysql_quote, validate_identifier
+from common_adapter.db.connect import mysql_connection, mysql_quote, validate_identifier
+from common_adapter.query.serialization import json_ready
 
 _WORKER: "AisIngestWorker | None" = None
 _WORKER_LOCK = threading.Lock()
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_COLLECTOR_CONFIG_PATH = "config/sources/websocket/ais_collector.local.json"
+DEFAULT_COLLECTOR_CONFIG_PATH = "config/runtime/ais_collector.local.json"
 COLLECTOR_PID_FILE = ROOT / "ais_ingest_pid.json"
 
 

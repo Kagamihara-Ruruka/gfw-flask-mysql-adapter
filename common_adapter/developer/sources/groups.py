@@ -57,7 +57,7 @@ class ConfigGroupClassifier:
         try:
             relative_source = path.resolve().relative_to(SOURCE_CONFIG_DIR.resolve())
             if len(relative_source.parts) >= 2:
-                group = self.normalize_config_group(relative_source.parts[0])
+                group = self.normalize_source_group_name(relative_source.parts[0])
                 if group:
                     return group
         except ValueError:
@@ -86,7 +86,7 @@ class ConfigGroupClassifier:
                 return "endpoint"
             if "route" in schema or role.startswith(("route", "source")):
                 return "route"
-            if isinstance(data.get("datasets"), dict) or isinstance(data.get("connections"), dict) or isinstance(data.get("mysql"), dict):
+            if isinstance(data.get("datasets"), dict) or isinstance(data.get("connections"), dict):
                 return "database"
             if any(key in data for key in ("provider", "stream_url", "ingest", "collector")) and not data.get("connections"):
                 return "websocket"

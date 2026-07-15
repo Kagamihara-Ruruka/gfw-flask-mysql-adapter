@@ -118,7 +118,7 @@
       profileCard.innerHTML = `
         <header class="developer-schema-profile-header">
           <div>
-            <strong>${escapeHtml(profile.connection_ref || "-")}</strong>
+            <strong>${escapeHtml(profile.route_ref || profile.connection_ref || "-")}</strong>
             <small>${escapeHtml(profile.config_path || "-")} / ${escapeHtml(profile.database || "-")}</small>
           </div>
           <span class="developer-status-badge ${profile.status === "ok" ? "is-ok" : "is-error"}">${escapeHtml(statusText)}</span>
@@ -163,7 +163,9 @@
           </span>
           <span class="developer-schema-candidates">${escapeHtml(this.candidateSummary(columns))}</span>
         </summary>
-        ${this.renderMappingToolbar(profile, table, mapping)}
+        ${profile.mapping_readonly || table.mapping_readonly
+          ? this.renderGeneratedMappingInfo(profile, table)
+          : this.renderMappingToolbar(profile, table, mapping)}
         <div class="developer-status-table-wrap is-schema-columns-wrap">
           <table class="developer-status-table is-schema-columns">
             <thead>
@@ -182,6 +184,16 @@
         </div>
       `;
       return tableDetails;
+    }
+
+    renderGeneratedMappingInfo(profile, table) {
+      return `
+        <div class="developer-mapping-toolbar is-generated-mapping">
+          <span><strong>${escapeHtml(table.label || table.name || "-")}</strong></span>
+          <span class="developer-status-badge is-ok">Catalog Mapping</span>
+        </div>
+        <p class="developer-status-hint">此表由 ${escapeHtml(profile.route_ref || profile.connection_ref || "route")} 的 Catalog Mapping 動態產生。</p>
+      `;
     }
 
     renderColumnRow(mapping, column) {

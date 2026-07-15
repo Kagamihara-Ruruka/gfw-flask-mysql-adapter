@@ -11,11 +11,11 @@
     return jsonOrError(response, "config 內容讀取失敗");
   }
 
-  async function saveConfigContent(configPath, content) {
+  async function saveConfigContent(configPath, content, group = "") {
     const response = await fetch("/api/developer/configs/content", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: configPath, content }),
+      body: JSON.stringify({ path: configPath, content, group }),
     });
     return jsonOrError(response, "config 儲存失敗");
   }

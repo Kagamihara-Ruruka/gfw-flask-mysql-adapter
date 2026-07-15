@@ -6,6 +6,7 @@ from typing import Any
 
 from common_adapter.developer.config_service import load_layer_mappings
 from common_adapter.endpoint.client import EndpointHttpClient, EndpointRequestError
+from common_adapter.query.grid_registry import GridRegistry
 
 
 SAMPLED_GRID_MAPPING_VERSION = "rrkal.mapping.sampled_grid.v1"
@@ -120,6 +121,8 @@ def _dataset_from_catalog_item(
     sampled_grid: dict[str, Any],
     catalog_body: Any,
     item: dict[str, Any],
+    source_route_group: str,
+    grid_registry: GridRegistry,
 ) -> tuple[str, dict[str, Any]] | None:
     catalog = _mapping(sampled_grid.get("catalog"))
     fields = _mapping(catalog.get("layer_fields"))
@@ -139,13 +142,21 @@ def _dataset_from_catalog_item(
         for role, path in _mapping(sampled_grid.get("row_fields")).items()
         if _text(role) and _text(path)
     }
+    request_fields = {
+        str(role): str(path)
+        for role, path in _mapping(sampled_grid.get("request_fields")).items()
+        if _text(role) and _text(path)
+    }
     query = deepcopy(_mapping(sampled_grid.get("query")))
     source_parameters = deepcopy(_mapping(query.get("static_parameters")))
     source_parameters.update({"product": product_value, "metric": metric_value})
+    higher_is_better = _field(item, fields, "higher_is_better")
     value_domain = {
         "min": _number(_field(item, fields, "min")),
         "max": _number(_field(item, fields, "max")),
         "unit": _text(_field(item, fields, "unit")),
+        "higher_is_better": higher_is_better if isinstance(higher_is_better, bool) else None,
+        "interpretation": _text(_field(item, fields, "interpretation")),
     }
     descriptor = {
         "contract_version": SAMPLED_GRID_CONTRACT_VERSION,
@@ -153,6 +164,7 @@ def _dataset_from_catalog_item(
         "available_resolutions_km": resolutions,
         "coverage_areas": coverages,
         "source_fields": row_fields,
+        "request_fields": request_fields,
         "geometry": deepcopy(_mapping(sampled_grid.get("geometry"))),
         "alignment": deepcopy(_mapping(sampled_grid.get("alignment"))),
         "query": query,
@@ -163,11 +175,15 @@ def _dataset_from_catalog_item(
         "visualization": deepcopy(_mapping(sampled_grid.get("visualization"))),
         "zero_is_data": bool(sampled_grid.get("zero_is_data", True)),
     }
+    grid_profile = grid_registry.register(descriptor)
+    descriptor["grid_profile"] = grid_profile.as_contract()
     display_columns = ["date", "cell_id", "lat", "lon", "value", "resolution_km", "coverage_ratio", "data_status"]
+    backend = _mapping(route_config.get("backend"))
     dataset = {
         "dataset_id": dataset_id,
         "label": label,
         "backend": "sampled_grid_http",
+        "source_backend": _text(backend.get("kind"), "endpoint"),
         "connection_ref": _text(mapping.get("connection_ref"), _text(route_config.get("name"), "endpoint")),
         "data_layer": layer_id,
         "time_column": "date",
@@ -178,10 +194,11 @@ def _dataset_from_catalog_item(
         "metric_columns": ["value"],
         "category_columns": ["data_status"],
         "sampled_grid": descriptor,
+        "grid_profile_id": grid_profile.profile_id,
         "endpoint_source": deepcopy(route_config),
         "__runtime_source": "mapping_controller_contract",
         "__runtime_contract_group": "mapping",
-        "__runtime_source_route_group": "endpoint",
+        "__runtime_source_route_group": source_route_group,
         "__runtime_mapping_id": mapping.get("mapping_id"),
         "__runtime_config_path": LAYER_MAPPINGS_CONFIG_REF,
         "__runtime_source_config_path": config_ref,
@@ -191,9 +208,12 @@ def _dataset_from_catalog_item(
 
 def endpoint_datasets_from_routes(
     active_routes: list[tuple[str, Any, dict[str, Any]]],
+    *,
+    source_route_group: str = "endpoint",
 ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
     datasets: dict[str, dict[str, Any]] = {}
     errors: list[dict[str, Any]] = []
+    grid_registry = GridRegistry()
     for config_ref, _path, route_config in active_routes:
         for mapping in sampled_grid_catalog_mappings(config_ref):
             sampled_grid = _catalog_mapping(mapping)
@@ -220,6 +240,8 @@ def endpoint_datasets_from_routes(
                         sampled_grid=sampled_grid,
                         catalog_body=catalog_body,
                         item=item,
+                        source_route_group=source_route_group,
+                        grid_registry=grid_registry,
                     )
                     if generated is not None:
                         dataset_id, dataset = generated
@@ -239,6 +261,7 @@ def endpoint_layer_contracts(datasets: dict[str, dict[str, Any]]) -> list[dict[s
     contracts: list[dict[str, Any]] = []
     for dataset_id, dataset in datasets.items():
         descriptor = _mapping(dataset.get("sampled_grid"))
+        source_route_group = _text(dataset.get("__runtime_source_route_group"), "endpoint")
         contracts.append(
             {
                 "contract_version": "rrkal.layer_contract.v1",
@@ -246,7 +269,7 @@ def endpoint_layer_contracts(datasets: dict[str, dict[str, Any]]) -> list[dict[s
                 "contract_group": "mapping",
                 "contract_status": "active",
                 "config_path": LAYER_MAPPINGS_CONFIG_REF,
-                "source_route_group": "endpoint",
+                "source_route_group": source_route_group,
                 "source_config_path": dataset.get("__runtime_source_config_path"),
                 "source_ref": dataset_id,
                 "source_label": dataset.get("label") or dataset_id,
@@ -255,7 +278,7 @@ def endpoint_layer_contracts(datasets: dict[str, dict[str, Any]]) -> list[dict[s
                 "label": dataset.get("label") or dataset_id,
                 "backend": dataset.get("backend"),
                 "connection_ref": dataset.get("connection_ref"),
-                "detail": f"ENDPOINT {dataset.get('connection_ref') or '-'}",
+                "detail": f"{source_route_group.upper()} {dataset.get('connection_ref') or '-'}",
                 "mapping": {
                     "canonical_roles": {
                         "time": "date",
@@ -268,9 +291,11 @@ def endpoint_layer_contracts(datasets: dict[str, dict[str, Any]]) -> list[dict[s
                     },
                     "sampled_grid": {
                         "contract_version": descriptor.get("contract_version"),
+                        "grid_profile": descriptor.get("grid_profile") or {},
                         "available_resolutions_km": descriptor.get("available_resolutions_km") or [],
                         "coverage_areas": descriptor.get("coverage_areas") or [],
                         "alignment": descriptor.get("alignment") or {},
+                        "geometry": descriptor.get("geometry") or {},
                         "value_domain": descriptor.get("value_domain") or {},
                         "snapshot_cache": descriptor.get("snapshot_cache") or {},
                         "visualization": descriptor.get("visualization") or {},
@@ -282,7 +307,7 @@ def endpoint_layer_contracts(datasets: dict[str, dict[str, Any]]) -> list[dict[s
                     "mapping_controller": True,
                     "sampled_grid": True,
                     "viewport_lod": True,
-                    "time_series": False,
+                    "time_series": bool(_mapping(descriptor.get("query")).get("time_series")),
                 },
             }
         )

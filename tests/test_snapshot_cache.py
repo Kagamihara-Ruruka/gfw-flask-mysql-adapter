@@ -7,15 +7,19 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from common_adapter.endpoint.client import EndpointRequestError
-from common_adapter.endpoint.sampled_grid import SampledGridHttpQueryAdapter
+from common_adapter.endpoint.sampled_grid import SampledGridHttpQueryAdapter, _bounds_intersect
 from common_adapter.query.snapshot_cache import (
     CANONICAL_SNAPSHOT_CACHE,
     SnapshotCachePolicy,
+    SnapshotLoad,
 )
 from common_adapter.query.sampled_grid import (
+    SAMPLED_GRID_CONTRACT_VERSION,
+    canonicalize_sampled_grid_packet,
     canonicalize_sampled_grid_row,
     sampled_grid_public_fields,
 )
+from common_adapter.query.identity import dataset_cache_namespace
 
 
 def _dataset(*, resolutions: list[int]) -> dict[str, Any]:
@@ -48,6 +52,8 @@ def _dataset(*, resolutions: list[int]) -> dict[str, Any]:
             },
             "query": {
                 "snapshot": {"path": "/snapshot", "rows_path": "rows"},
+                "availability": {"path": "/availability", "dates_path": "dates"},
+                "time_series": {"mode": "snapshot_fold", "max_workers": 2},
                 "parameters": {
                     "date": "external_date",
                     "aoi": "external_aoi",
@@ -123,6 +129,75 @@ class _ConcurrentClient:
         return {"rows": _source_rows(int(params["external_resolution"]))}
 
 
+class _NoDataClient:
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    def get_json(self, _path: str, *, params: dict[str, Any]) -> dict[str, Any]:
+        self.call_count += 1
+        raise EndpointRequestError(
+            "no matching grid partition",
+            url="http://example.invalid/snapshot",
+            status_code=400,
+            reachable=True,
+            body={"error": "no matching grid partition"},
+        )
+
+
+class _TransientClient:
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    def get_json(self, _path: str, *, params: dict[str, Any]) -> dict[str, Any]:
+        self.call_count += 1
+        if self.call_count == 1:
+            raise EndpointRequestError(
+                "timed out",
+                url="http://example.invalid/snapshot",
+                status_code=400,
+                reachable=True,
+                body={"error": "timed out"},
+            )
+        return {"rows": _source_rows(int(params["external_resolution"]))}
+
+
+class _TimeSeriesClient:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self._lock = threading.Lock()
+        self.values = {
+            "2024-01-01": 0,
+            "2024-01-02": None,
+            "2024-01-03": 4,
+        }
+
+    def get_json(self, path: str, *, params: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            self.calls.append((path, dict(params)))
+        if path == "/availability":
+            return {"dates": ["2023-12-31", *self.values, "2024-01-04"]}
+        date_value = str(params["external_date"])
+        resolution = int(params["external_resolution"])
+        return {
+            "rows": [
+                {
+                    "source_id": "west-cell",
+                    "source_lat": 0,
+                    "source_lon": 0,
+                    "source_value": self.values[date_value],
+                    "source_resolution": resolution,
+                },
+                {
+                    "source_id": "east-cell",
+                    "source_lat": 5,
+                    "source_lon": 5,
+                    "source_value": 99,
+                    "source_resolution": resolution,
+                },
+            ],
+        }
+
+
 def _records(
     adapter: SampledGridHttpQueryAdapter,
     bbox: tuple[float, float, float, float],
@@ -140,9 +215,52 @@ def _records(
 class SnapshotCacheContractTests(unittest.TestCase):
     def setUp(self) -> None:
         CANONICAL_SNAPSHOT_CACHE.clear()
+        CANONICAL_SNAPSHOT_CACHE.configure(max_total_rows=None)
 
     def tearDown(self) -> None:
         CANONICAL_SNAPSHOT_CACHE.clear()
+        CANONICAL_SNAPSHOT_CACHE.configure(max_total_rows=None)
+
+    def test_global_row_budget_evicts_lru_across_namespaces(self) -> None:
+        policy = SnapshotCachePolicy.from_contract(_dataset(resolutions=[16])["sampled_grid"])
+        CANONICAL_SNAPSHOT_CACHE.configure(max_total_rows=3)
+        first_identity = {
+            "dataset_id": "first",
+            "date": "2024-01-01",
+            "coverage_id": "coverage-a",
+            "resolution_km": 16,
+        }
+        second_identity = {
+            "dataset_id": "second",
+            "date": "2024-01-01",
+            "coverage_id": "coverage-a",
+            "resolution_km": 16,
+        }
+
+        CANONICAL_SNAPSHOT_CACHE.get_or_load(
+            "namespace-a",
+            policy,
+            first_identity,
+            lambda: SnapshotLoad(first_identity, {"rows": [{}, {}]}),
+        )
+        CANONICAL_SNAPSHOT_CACHE.get_or_load(
+            "namespace-b",
+            policy,
+            second_identity,
+            lambda: SnapshotLoad(second_identity, {"rows": [{}, {}]}),
+        )
+
+        self.assertIsNone(CANONICAL_SNAPSHOT_CACHE.get("namespace-a", policy, first_identity))
+        self.assertIsNotNone(CANONICAL_SNAPSHOT_CACHE.get("namespace-b", policy, second_identity))
+        self.assertEqual(
+            {
+                "namespace_entries": 1,
+                "total_entries": 1,
+                "total_rows": 2,
+                "max_total_rows": 3,
+            },
+            CANONICAL_SNAPSHOT_CACHE.stats("namespace-b"),
+        )
 
     def test_identity_uses_only_mapping_declared_canonical_roles(self) -> None:
         policy = SnapshotCachePolicy.from_contract(_dataset(resolutions=[16])["sampled_grid"])
@@ -160,6 +278,32 @@ class SnapshotCacheContractTests(unittest.TestCase):
         self.assertNotIn("bbox", dict(first))
         self.assertNotIn("product", dict(first))
 
+    def test_dataset_namespace_changes_with_mapping_semantics(self) -> None:
+        first = _dataset(resolutions=[16])
+        second = _dataset(resolutions=[16])
+        second["sampled_grid"]["source_fields"] = {
+            **second["sampled_grid"]["source_fields"],
+            "value": "replacement_value",
+        }
+
+        self.assertNotEqual(
+            dataset_cache_namespace(first),
+            dataset_cache_namespace(second),
+        )
+
+    def test_dataset_namespace_excludes_credentials_and_visualization(self) -> None:
+        first = _dataset(resolutions=[16])
+        second = _dataset(resolutions=[16])
+        first["endpoint_source"]["auth"] = {"type": "bearer", "token": "first-secret"}
+        second["endpoint_source"]["auth"] = {"type": "bearer", "token": "second-secret"}
+        first["sampled_grid"]["visualization"] = {"palette": "warm"}
+        second["sampled_grid"]["visualization"] = {"palette": "cool"}
+
+        self.assertEqual(
+            dataset_cache_namespace(first),
+            dataset_cache_namespace(second),
+        )
+
     def test_mapping_projection_does_not_leak_source_fields(self) -> None:
         dataset = _dataset(resolutions=[16])
         source = _source_rows(16)[0]
@@ -174,6 +318,55 @@ class SnapshotCacheContractTests(unittest.TestCase):
         self.assertEqual("date", public_fields["time_column"])
         self.assertEqual(["value"], public_fields["metric_columns"])
         self.assertTrue(set(public_fields["display_columns"]).isdisjoint(source))
+
+    def test_canonical_mapping_is_idempotent(self) -> None:
+        dataset = _dataset(resolutions=[16])
+        dataset["sampled_grid"]["source_fields"].update(
+            {
+                "coverage": "source_coverage",
+                "status": "source_status",
+            }
+        )
+        source = {
+            **_source_rows(16)[0],
+            "source_coverage": 0.75,
+            "source_status": "observed",
+        }
+
+        first = canonicalize_sampled_grid_packet({"rows": [source]}, dataset)
+        first["rows"][0]["date"] = "2024-01-01"
+        second = canonicalize_sampled_grid_packet(first, dataset)
+
+        self.assertEqual(first, second)
+        self.assertEqual(SAMPLED_GRID_CONTRACT_VERSION, second["row_contract_version"])
+        self.assertEqual("west-cell", second["rows"][0]["cell_id"])
+        self.assertEqual(0.75, second["rows"][0]["coverage_ratio"])
+        self.assertEqual("observed", second["rows"][0]["data_status"])
+
+    def test_request_field_mapping_supplies_snapshot_time(self) -> None:
+        dataset = _dataset(resolutions=[16])
+        dataset["sampled_grid"]["request_fields"] = {"time": "snapshot.date"}
+
+        row = canonicalize_sampled_grid_row(
+            _source_rows(16)[0],
+            dataset,
+            context={"snapshot": {"date": "2024-01-02"}},
+        )
+
+        self.assertEqual("2024-01-02", row["date"])
+
+    def test_float_rounding_does_not_include_a_boundary_neighbor(self) -> None:
+        selected_bbox = {"west": 120.666667, "south": 24.666667, "east": 121.0, "north": 25.0}
+        boundary_neighbor = {
+            "bounds": {
+                "west": 120.66666666666669,
+                "south": 24.999999999999996,
+                "east": 121.00000000000001,
+                "north": 25.33333333333333,
+            },
+        }
+
+        self.assertFalse(_bounds_intersect(boundary_neighbor, selected_bbox))
 
     def test_fallback_snapshot_is_reused_across_internal_bboxes(self) -> None:
         dataset = _dataset(resolutions=[4, 16])
@@ -217,6 +410,83 @@ class SnapshotCacheContractTests(unittest.TestCase):
         self.assertEqual({"west-cell", "east-cell"}, {packet["rows"][0]["cell_id"] for packet in results})
         self.assertEqual([False, True], sorted(packet["timing"]["cache_hit"] for packet in results))
         self.assertTrue(any(packet["timing"]["cache_waited"] for packet in results))
+
+    def test_mapping_declared_missing_partition_becomes_negative_cache(self) -> None:
+        dataset = _dataset(resolutions=[16])
+        dataset["sampled_grid"]["query"]["snapshot"]["no_data"] = {
+            "status_codes": [400],
+            "error_contains": ["no matching grid partition"],
+            "reason": "source_partition_missing",
+        }
+        client = _NoDataClient()
+        adapter = SampledGridHttpQueryAdapter({}, dataset)
+        adapter.client = client
+
+        first = _records(adapter, (-1, -1, 1, 1), 16)
+        second = _records(adapter, (-1, -1, 1, 1), 16)
+
+        self.assertEqual(1, client.call_count)
+        self.assertEqual([], first["rows"])
+        self.assertEqual("source_partition_missing", first["grid"]["empty_reason"])
+        self.assertFalse(first["timing"]["cache_hit"])
+        self.assertTrue(second["timing"]["cache_hit"])
+
+    def test_mapping_declared_transient_error_retries_without_lod_degrade(self) -> None:
+        dataset = _dataset(resolutions=[16])
+        dataset["sampled_grid"]["query"]["snapshot"]["retry"] = {
+            "max_attempts": 2,
+            "status_codes": [400],
+            "error_contains": ["timed out"],
+            "backoff_seconds": 0,
+        }
+        client = _TransientClient()
+        adapter = SampledGridHttpQueryAdapter({}, dataset)
+        adapter.client = client
+
+        packet = _records(adapter, (-1, -1, 1, 1), 16)
+
+        self.assertEqual(2, client.call_count)
+        self.assertEqual(["west-cell"], [row["cell_id"] for row in packet["rows"]])
+        self.assertFalse(packet["grid"]["lod_degraded"])
+
+    def test_time_series_folds_available_snapshots_into_canonical_points(self) -> None:
+        dataset = _dataset(resolutions=[16])
+        client = _TimeSeriesClient()
+        adapter = SampledGridHttpQueryAdapter({}, dataset)
+        adapter.client = client
+
+        first = adapter.time_series_packet(
+            start_date="2024-01-01",
+            end_date="2024-01-03",
+            bbox=(-1, -1, 1, 1),
+            metric="value",
+            aggregation="sum",
+            query_context={"requested_resolution_km": 16},
+        )
+        second = adapter.time_series_packet(
+            start_date="2024-01-01",
+            end_date="2024-01-03",
+            bbox=(-1, -1, 1, 1),
+            metric="value",
+            aggregation="sum",
+            query_context={"requested_resolution_km": 16},
+        )
+
+        self.assertEqual([0, None, 4], [point["value"] for point in first["points"]])
+        self.assertEqual(3, first["point_count"])
+        self.assertEqual(3, first["row_count"])
+        self.assertEqual(16, first["grid"]["requested_resolution_km"])
+        self.assertEqual(2, first["timing"]["worker_count"])
+        self.assertEqual(3, first["timing"]["source_request_count"])
+        self.assertTrue(second["timing"]["cache_hit"])
+        self.assertEqual(0, second["timing"]["source_request_count"])
+        snapshot_calls = [params for path, params in client.calls if path == "/snapshot"]
+        self.assertEqual(3, len(snapshot_calls))
+        self.assertEqual(
+            ["2024-01-01", "2024-01-02", "2024-01-03"],
+            sorted(params["external_date"] for params in snapshot_calls),
+        )
+        self.assertTrue(all(params["external_resolution"] == 16 for params in snapshot_calls))
 
 
 if __name__ == "__main__":

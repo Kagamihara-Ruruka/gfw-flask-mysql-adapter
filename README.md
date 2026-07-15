@@ -13,6 +13,11 @@ It is an experimental local tool. It is not a production GIS system.
 
 Traditional Chinese documentation is available in [`README.zh-TW.md`](README.zh-TW.md).
 
+The external Chrome Incognito full-year cold/warm playback acceptance report is
+available at [`benchmarks/playback_lifecycle_acceptance_2026-07-15.md`](benchmarks/playback_lifecycle_acceptance_2026-07-15.md).
+The follow-up Runtime OOP regression report is available at
+[`benchmarks/runtime_oop_acceptance_2026-07-15.md`](benchmarks/runtime_oop_acceptance_2026-07-15.md).
+
 ## Upstream Handoff
 
 Use `handoff/` when sharing this repo with upstream owners:
@@ -20,7 +25,7 @@ Use `handoff/` when sharing this repo with upstream owners:
 - `handoff/airflow_ais_crawler/` is for the Airflow/crawler owner. It explains the AISStream to SQL collector, the handoff JSON, SQL sink, timing, and health checks.
 - `handoff/backend_config_contract/` is for the backend/system owner. It explains database config JSON, MySQL/Hive/Spark boundary planning, dataset fields, and the capability matrix for disabled future skin/display settings.
 
-Do not send real API keys through tracked files. `config/runtime/adapter.local.json` and `config/sources/websocket/ais_collector.local.json` are local ignored files.
+Do not send real API keys through tracked files. `config/runtime/adapter.local.json` and `config/runtime/ais_collector.local.json` are local ignored files.
 
 ## Architecture
 
@@ -31,7 +36,8 @@ core.py
   -> common_adapter/http/routes/*           system, dataset, overlay, live, and developer routes
   -> common_adapter/db/connect.py           Dataset read backend dispatch
   -> common_adapter/db/backends/*           MySQL and future backend adapters
-  -> common_adapter/db/registry.py          @database_backend registry
+  -> common_adapter/query/registry.py       shared database/endpoint query-adapter registry
+  -> common_adapter/query/identity.py       mapping-aware cache namespace
   -> common_adapter/ais/live.py             AIS live query packet
   -> common_adapter/ais/ingest.py           AISStream collector to SQL latest-state table
   -> common_adapter/spatial/overlay.py      EEZ overlay fallback helpers
@@ -40,16 +46,18 @@ core.py
   -> static/js/*               Frontend state, API, layer, and UI modules
 ```
 
-Legacy root module names such as `Interface.py` and `DatabaseConnect.py` remain as compatibility wrappers while the backend is moved into `common_adapter/`.
+The runtime imports the canonical `common_adapter/` modules directly. The former root-module and `database/registry.py` compatibility paths have been removed; new code must not recreate dependencies on them.
+
+Frontend Runtime ownership, the DI composition root, class-selection rules, and the Application Service template are documented in [`docs/architecture/runtime-oop.md`](docs/architecture/runtime-oop.md).
 
 The frontend is deliberately split by responsibility:
 
 - `static/app.js`: bootstraps the app and wires UI events.
 - `static/js/core`: shared state, DOM, map, and geographic helpers.
-- `static/js/services`: API client calls, GFW record cache/prewarm behavior, render intent, and shared service helpers.
-- `static/js/layers`: GFW, AIS, and EEZ rendering behavior, plus GFW layer visual effects such as zoom blur and crossfade handoff.
-- `static/js/rendering`: renderer capability checks, renderer selection, WebGL/canvas paint helpers, and GFW paint configuration.
-- `static/js/playback`: playback controls, delivery policy, pure timeline scheduler, frame readiness buffer, playback renderer handoff, playback interpolation policy, playback telemetry, progressive prefetch controller, preheat service, worker policy, and snapshot splitting helpers.
+- `static/js/services`: render intent, the central query coordinator, canonical sampled-grid cache, API calls, and shared service helpers.
+- `static/js/layers`: sampled-grid, AIS, and EEZ rendering behavior, plus layer visual effects such as zoom blur and crossfade handoff.
+- `static/js/rendering`: renderer capability checks, renderer selection, WebGL/canvas paint helpers, virtual-grid contracts, and data-driven paint configuration.
+- `static/js/playback`: playback controls, delivery policy, pure timeline scheduler, frame readiness buffer, playback renderer handoff, playback interpolation policy, telemetry, the independent watermark preheater, and snapshot splitting helpers.
 - `static/js/ui`: table, playback, layer selector, map settings, and shared layer style controls.
 
 Runtime pipeline:
@@ -59,7 +67,7 @@ flowchart TD
   UI["Browser UI / Leaflet / WebGL"]
   API["common_adapter/http/routes/* / Flask API"]
   READ["common_adapter/db/connect.py / read_backend"]
-  REG["database.registry / backend registry"]
+  REG["common_adapter/query/registry.py"]
   MYSQL["MySQL read backend"]
   HIVE["Hive read backend stub"]
   SPARK["Spark/Iceberg read backend stub"]
@@ -84,11 +92,11 @@ flowchart TD
   AISCOLLECT --> SQLAIS
 ```
 
-The database read path is also split by responsibility:
+The source read path is split by responsibility:
 
-- Decorators register available backend implementations, such as `@database_backend("mysql")`.
+- Decorators register available query-adapter implementations, such as `@query_adapter("mysql")`.
 - JSON config selects the backend and connection per dataset.
-- Route handlers call `schema_packet()` and `records_packet()` without knowing whether a dataset is backed by MySQL or a future Hive/Trino/Spark/Iceberg read model.
+- Route handlers call canonical schema/records operations without knowing whether a dataset is backed by MySQL, a serving endpoint, or a future Hive/Trino/Spark/Iceberg read model.
 
 Example dataset routing:
 
@@ -130,9 +138,9 @@ Hive and Spark are intentionally registered only as explicit unsupported stubs i
 Backend contract:
 
 - `common_adapter/http/interface.py` owns Flask app assembly only; route modules own HTTP shape. Neither layer should know vendor-specific SQL, Hive, Spark, or Iceberg query details.
-- `common_adapter/db/connect.py` owns config, shared query helpers, and dataset read dispatch. Backend classes live under `common_adapter/db/backends/`. The root `DatabaseConnect.py` file is only a compatibility wrapper.
-- `common_adapter/db/registry.py` owns backend registration and backend instantiation. The root `database/registry.py` path is a compatibility wrapper.
-- `config/*.json` owns backend selection, connection refs, and table/read-model names.
+- `common_adapter/db/connect.py` owns shared database query helpers and dataset read dispatch. Backend classes live under `common_adapter/db/backends/`.
+- `common_adapter/query/registry.py` owns registration and instantiation for database and endpoint query adapters.
+- Active source configs own external names. Mapping artifacts translate them into canonical time, latitude, longitude, resolution, metric, and identity roles.
 - Collector jobs own source-specific ingestion and sink-specific writes.
 - Frontend layer code must consume API packets, not raw database credentials, raw source files, or collector paths.
 
@@ -140,17 +148,17 @@ Backend contract:
 
 ### Data layers
 
-The dataset selector supports these layers:
+The layer selector is built from imported layer contracts. It is not a hard-coded three-item dataset list:
 
-- `GFW fishery grid`
-- `AIS vessel positions`
-- `EEZ boundary overlay`
+- imported sampled-grid datasets produced by the Mapping Controller
+- AIS vessel positions when an active websocket/read-model route is available
+- EEZ boundary overlays when an active spatial route is available
 
-GFW and AIS are mutually exclusive primary data layers, but both can also be turned off. EEZ is an independent overlay and can be stacked with either primary layer.
+Primary data layers are activation-controlled and may all be off; disabled imported layers do not query or render. EEZ is an independent overlay.
 
 Layer rows can be drag-reordered in the selector. The order controls map stacking by Leaflet pane z-index. Each layer has a gear panel:
 
-- GFW exposes low/high gradient colors, max intensity, and alpha.
+- Sampled-grid layers expose mapping-driven metric, resolution, color scale, intensity, and alpha controls.
 - AIS exposes collector key handoff plus density-grid or point-dot rendering.
 - EEZ exposes fill color, boundary color, fill opacity, boundary opacity, and alpha.
 
@@ -170,7 +178,7 @@ The alpha and color controls are centralized in shared UI helpers so future laye
 
 Time controls are enabled only when at least one selected layer exposes time capability. EEZ-only mode disables the single-day and time-sequence controls.
 
-GFW currently supports:
+Time-capable sampled-grid layers currently support:
 
 - single-day mode
 - latest available date jump
@@ -186,7 +194,7 @@ The settings page exposes playback as separate responsibility boxes instead of o
 
 - Playback timeline: delivery policy and `playbackRate` decide which real snapshot date the player is trying to show. Analysis mode is implemented; smooth and strict modes are reserved ports.
 - Frame buffer: analysis mode reports `fetching/missing/ready/waiting/failed` state boundaries. The timing box records `buffering`, `resumed`, and `shown` events separately from SQL/API/render work.
-- Data cache / preheat: range preheat, progressive prefetch, concurrency, and memory budget supply records packets.
+- Data cache / preheat: an independent producer maintains low/high ready-ahead watermarks; scheduler concurrency and the RAM budget bound its work.
 - Frame interpolation: playback can use the existing layer crossfade as a visual-only interpolation policy or switch directly between real snapshots; data blending remains reserved for a future `requestAnimationFrame` loop backed by render artifacts.
 - Visual effects: crossfade decorates layer replacement; Gaussian blur is limited to zoom / LOD reload masking.
 - Render pressure and timing: renderer policy and the dashboard timing box observe performance without owning the playback clock.
@@ -204,7 +212,7 @@ The guarded contracts are:
 - Progressive cold cache reports `fetching 0 / 1`; when the target packet is ready it resumes as `1 / 1` and then records `shown`.
 - Progressive request failures report `failed`, emit an error event in the timing box, and stop playback after the wait timeout instead of retrying forever.
 - Cancelled or replaced progressive preheats cannot apply late progress, status, or failure state to the current playback generation.
-- `off` and `before_play` are not frame-buffer gated; they may still use existing cache, but they do not enter the analysis buffering contract.
+- Playback never waits for a complete preheat batch. The independent preheater fills individual missing frames to the high watermark while playback consumes ready frames; only a missing target can enter `BUFFERING`.
 - `fluid` is the only step mode allowed to map elapsed time to future dates. It remains reserved behind the disabled smooth delivery port.
 - Prefetch, render, interpolation, blur, and timing observations supply or decorate frames; none of them owns the playback date clock.
 
@@ -217,24 +225,37 @@ Current frontend module boundaries:
 | `static/js/playback/playback-frame-buffer.js` | Frame readiness decisions: missing/fetching/ready/waiting/failed state packets, target-frame buffering, and nearest ready frame selection. |
 | `static/js/playback/playback-renderer.js` | Playback-to-render handoff: set selected date, sync controls, call the existing active-layer reload. |
 | `static/js/playback/playback-interpolation-controller.js` | Playback interpolation policy: choose layer crossfade or direct switching during playback; data blending is not enabled yet. |
-| `static/js/playback/playback-prefetch-controller.js` | Progressive prefetch policy: decide whether to queue a background preheat window and which date anchors it. |
-| `static/js/playback/playback-cache-service.js` | Actual preheat/cache execution, progress state, request-level failure tracking, stale background cancellation, concurrency, and cache capacity accounting. |
+| `static/js/services/frame-identity.js` | The only builder for canonical BBOX signatures, request intent keys, scope keys, and returned frame keys. |
+| `static/js/services/data-frame-store.js` | Canonical RAM frame store, intent-to-frame aliases, partial coverage materialization, pin/release ownership, LRU eviction, and failure state. It never performs transport. |
+| `static/js/services/layer-query-coordinator.js` | Priority scheduler with one execution per intent key, queued-task promotion, consumer-scoped cancellation, and a reserved foreground slot. |
+| `static/js/services/frame-demand-service.js` | The only sampled-grid transport boundary. It checks `DataFrameStore`, schedules a miss, normalizes the returned packet, and commits it once. |
+| `static/js/playback/playback-preheater.js` | Long-lived producer that independently maintains low/high ready-ahead watermarks. It does not own the playback clock. |
+| `static/js/playback/playback-engine.js` | Pure frame consumer and playback lifecycle owner. It requests only a missing target, pins the visible frame, and records buffering/render events. |
+| `static/js/playback/playback-cache-service.js` | Playback cache settings/status facade. It exposes watermarks and RAM capacity but owns neither transport nor a batch pipeline. |
+| `static/js/services/lifecycle-event-log.js` | Bounded event log, run export, and user-perceived Queue/HTTP/cache/render/stall metrics. |
+| `static/js/ui/widgets/capabilities/event-viewer.js` | Read-only lifecycle Event Viewer Widget with run/dataset/event filters and JSON export. |
 | `static/js/playback/playback-telemetry.js` | Playback control events sent to the timing panel, separate from SQL/API/render timings. |
-| `static/js/layers/gfw-layer-effects.js` | Visual-only GFW layer effects: zoom/LOD blur, reveal, retired-layer cleanup, and crossfade. |
+| `static/js/layers/gfw-layer-effects.js` | Visual-only sampled-grid layer effects: zoom/LOD blur, reveal, retired-layer cleanup, and crossfade. The filename is historical; only `SampledGridLayerEffects` is exported. |
 | `static/TimingMetrics.js` | Timing panel state, dynamic/persistent/event lanes, and snapshot timing history. |
 
 ```mermaid
 flowchart LR
-  Clock["Playback timeline: rate + step mode"] --> Target["Target real snapshot date"]
-  Cache["Data cache / preheat timeline"] --> Packet["Ready records packet"]
-  Target --> Packet
-  Packet --> Renderer["GFW renderer: aggregate rows + WebGL/Canvas draw"]
+  UI["Map and playback commands"] --> Engine["PlaybackEngine"]
+  Engine -->|"frame demand"| Demand["FrameDemandService"]
+  Preheater["PlaybackPreheater"] -->|"watermark demand"| Demand
+  Demand --> Scheduler["QueryScheduler"]
+  Scheduler --> Adapter["Flask API + Mapping adapter"]
+  Adapter --> Store["DataFrameStore: canonical RAM frames"]
+  Store --> Renderer["Sampled-grid renderer: WebGL/Canvas draw"]
+  Store --> Widgets["Widgets: cache-first consumers"]
+  Engine --> Renderer
   Interp["Frame interpolation policy: layer crossfade now, future data blend"] -.-> Renderer
   Effects["Visual effects: decorate only, no scheduling"] -.-> Renderer
   Renderer --> Map["Visible Leaflet layer"]
-  Metrics["Dashboard timing box: observes SQL/API/client/render"] -.-> Clock
-  Metrics -.-> Cache
-  Metrics -.-> Renderer
+  Events["LifecycleEventLog + Event Viewer Widget"] -.-> Engine
+  Events -.-> Scheduler
+  Events -.-> Store
+  Events -.-> Renderer
 ```
 
 AIS is live viewport mode and does not use the date player.
@@ -256,55 +277,54 @@ The timing drawer reports:
 
 ### Rendering and cache behavior
 
-The app asks `/api/render/capability` for backend policy and inspects browser WebGL support. GFW rendering prefers WebGL when available and falls back to the canvas layer when not.
+The app asks `/api/render/capability` for backend policy and inspects browser WebGL support. Sampled-grid rendering prefers WebGL when available and falls back to the canvas layer when not.
 
-GFW records use a viewport/zoom-aware cache:
+Sampled-grid records use a mapping-, viewport-, resolution-, and date-aware cache:
 
-- Panning at the same zoom level keeps the current LOD packet when the cache key still matches.
-- Zoom changes mark GFW as loading, apply the optional zoom blur mask, clear the stale LOD key, and fetch the new LOD packet.
+- Panning can reuse a complete packet whose bounds contain the requested viewport.
+- Zoom or resolution changes request the matching grid packet without evicting completed packets at other LODs.
 - Date-to-date playback frame changes do not use Gaussian blur; they rely on cache readiness, renderer work, and layer crossfade.
-- After a successful render, the client prewarms the other configured zoom/LOD packets in the background.
-- Prewarm is opportunistic. It must not change the visible map until the requested render state is ready.
+- After a successful render, the client prewarms the configured time window in the background.
+- Prewarm is opportunistic. It must not change the visible map, clear completed snapshots, or outrank a map request.
+- HTTP sampled-grid adapters also cache canonical source snapshots by mapping namespace, date, coverage, and resolution. `query_policy.snapshot_cache_max_rows` is a global cross-namespace row budget, so enabling several datasets cannot multiply an independent unbounded cache for each dataset.
 
 EEZ is treated closer to a basemap overlay: local vector data and PostGIS vector tiles are reused as much as possible, and pan-only movement should not force a full EEZ reload.
 
-### GFW playback frame lifecycle
+### Sampled-grid query and cache lifecycle
 
-GFW playback frames are not read from a per-frame file. A frame is a records packet identified by:
+A playback frame is a canonical records packet identified by:
 
 ```text
-datasetId + date + bbox + limit + columns
+mapping-aware cache namespace + date + bbox + limit + columns + resolution/LOD context
 ```
 
-For the local GFW route, `datasetId = gfw_full` resolves through config and layer mapping to the MySQL table `ocean_fishery.gold_grid`. The mapping/config layer is a route contract: it says which backend, connection, table, and time/lat/lon columns to use. It is not the frame data itself. On a cold miss, the frame rows come from MySQL; on a warm path, they come from the browser `GfwRecordCache` or the Flask-side records cache.
+The cache namespace is derived from the active mapping contract, including source route, canonical field roles, grid profile, resolution policy, and query contract. Changing those semantics creates a new namespace; credentials and visualization-only settings do not. On a cold miss, `FrameDemandService` asks `QueryScheduler` for one source request and commits the canonical result to `DataFrameStore`. On a warm path, the map, playback, selection tools, and Widgets reuse the same packet.
 
-`columns=render` intentionally requests only the columns needed by the renderer, such as time/id/lat/lon and available render metrics like `fish_sum`, `fish_ratio`, and `vessels`. It is separate from the full display-table column set.
+Only the map/query layer owns source transport. Map requests have the highest scheduler priority. Widgets first inspect the canonical cache; a cache miss may enqueue a lower-priority fill through the coordinator. The table Widget is strictly read-only and never sends a source request. Cancelling queued prewarm or Widget work never evicts completed packets.
+
+Source error semantics belong to Mapping. A mapping may declare `snapshot.no_data` to translate a source-specific missing partition into an empty, negatively cached canonical snapshot; `snapshot.retry` handles finite retries for transient source failures; `resolution_policy` is reserved for a real coarser-LOD fallback. These outcomes are not interchangeable.
 
 ```mermaid
 sequenceDiagram
   autonumber
   actor User
   participant UI as Dashboard UI
-  participant Playback as PlaybackControls
-  participant Preload as PlaybackCacheService
-  participant BrowserCache as GfwRecordCache browser cache
+  participant Playback as PlaybackEngine
+  participant Preload as PlaybackPreheater
+  participant Demand as FrameDemandService
+  participant BrowserCache as DataFrameStore
+  participant Coordinator as QueryScheduler
   participant API as Flask records API
   participant ServerCache as Flask records cache
-  participant DB as MySQL ocean_fishery.gold_grid
-  participant Renderer as GFW renderer
+  participant Adapter as Query adapter
+  participant Renderer as Sampled-grid renderer
   participant Map as Leaflet map
 
   User->>UI: Press Play
   UI->>Playback: setPlayback(true)
   Playback->>Playback: start timeline(delivery policy + display cadence + playback rate)
-  Playback->>Preload: progressive background preload
-  Preload->>BrowserCache: prefetchRequests(date + bbox + columns=render)
-
-  alt before_play mode only
-    Preload->>API: GET /api/datasets/{datasetId}/records/range
-    API->>DB: range SELECT for start/end + bbox
-    API-->>BrowserCache: split range packet into date packets
-  end
+  Preload->>Preload: maintain low/high ready-ahead watermarks
+  Preload->>Demand: demand missing window frames
 
   loop Each playback tick
     Playback->>Playback: dueFrame = elapsed / displayCadence
@@ -314,36 +334,29 @@ sequenceDiagram
       Playback->>Playback: targetDateIndex = baseDateIndex + dueFrame * playbackRate
     end
 
-    alt Target or nearest prior frame is ready
-      Playback->>UI: date = selected frame date
-      Playback->>BrowserCache: fetchPacket(datasetId + date + bbox + columns)
-
-      alt Browser cache hit
-        BrowserCache-->>Playback: packet(rows)
-      else Browser cache miss
-        BrowserCache->>API: GET /api/datasets/{datasetId}/records
-        API->>ServerCache: lookup records cache
-        alt Server cache hit
-          ServerCache-->>API: cached packet
-        else Server cache miss
-          API->>DB: SELECT render columns WHERE obs_date + bbox
-          DB-->>API: rows
-          API->>ServerCache: remember packet
-        end
-        API-->>BrowserCache: packet(rows + timing)
-        BrowserCache-->>Playback: packet(rows)
-      end
-
-      Playback->>Renderer: renderGfwMap(rows)
-      Renderer->>Renderer: aggregateGfwRowsForRender()
-      Renderer->>Renderer: compute cell colors from fish_sum
+    Playback->>BrowserCache: inspect target frame
+    alt Target frame is ready
+      BrowserCache-->>Playback: canonical packet(rows)
+      Playback->>UI: date = target frame date
+      Playback->>Renderer: render canonical rows
+      Renderer->>Renderer: apply mapped metric and grid profile
       Renderer->>Map: draw via WebGL or Canvas
-    else sequential target frame is not ready
-      Playback->>Preload: preheat window anchored at target date
-      Playback->>UI: buffer and preserve next snapshot
-    else fluid target frame is not ready
-      Playback->>Preload: preheat window anchored at target date
-      Playback->>UI: hold current displayed frame
+    else Target frame is missing
+      Playback->>Demand: promote only the missing target
+      Demand->>Coordinator: promote or enqueue playback-target
+      Coordinator->>API: GET /api/datasets/{datasetId}/records
+      API->>ServerCache: lookup records cache
+      alt Server cache hit
+        ServerCache-->>API: cached packet
+      else Server cache miss
+        API->>Adapter: canonical date + bbox query
+        Adapter-->>API: rows
+        API->>ServerCache: remember packet
+      end
+      API-->>Demand: packet(rows + timing)
+      Demand->>BrowserCache: commit canonical frame
+      BrowserCache-->>Playback: shared frame result
+      Playback->>UI: buffer only while no ready target exists
     end
   end
 ```
@@ -358,19 +371,19 @@ flowchart TD
 
   D --> E{"Flask records cache hit?"}
   E -->|yes| F["Return cached packet"]
-  E -->|no| G["Query MySQL ocean_fishery.gold_grid"]
+  E -->|no| G["Resolve registered query adapter"]
 
-  G --> H["WHERE obs_date = date AND lon/lat inside bbox"]
+  G --> H["Translate canonical date/bbox/resolution into source contract"]
   H --> I["Return rows"]
   I --> J["Remember server cache packet"]
   J --> K["Return packet to browser"]
 
   F --> L["Store or reuse browser packet"]
   K --> L
-  C --> M["renderGfwMap(rows)"]
+  C --> M["Render canonical sampled-grid rows"]
   L --> M
 
-  M --> N["Aggregate rows into render cells"]
+  M --> N["Apply mapped grid and metric semantics"]
   N --> O{"WebGL allowed and available?"}
   O -->|yes| P["WebGL canvas draw"]
   O -->|no| Q["2D Canvas draw"]
@@ -382,13 +395,12 @@ Config and layer mapping role:
 
 ```mermaid
 flowchart LR
-  A["config / layer mapping"] --> B["datasetId = gfw_full"]
-  B --> C["backend = mysql"]
-  C --> D["connection = local_mysql"]
-  D --> E["database = ocean_fishery"]
-  E --> F["table = gold_grid"]
-  F --> G["time=obs_date, lat=lat, lon=lon"]
-  G --> H["Frame requests use this contract to build SQL"]
+  A["Active source config"] --> B["Schema / capability probe"]
+  B --> C["Mapping Controller artifact"]
+  C --> D["Imported layer contract"]
+  D --> E["Canonical time / lat / lon / resolution / metric roles"]
+  E --> F["Mapping-aware cache namespace"]
+  F --> G["Query adapter translates canonical request to source contract"]
 ```
 
 ### EEZ bootstrap and spatial route injection
@@ -467,13 +479,13 @@ This is a strict boundary:
 - The collector writes SQL rows and a collector heartbeat row into `live.ais.ingest_meta_table`.
 - The map reads SQL only after its locally configured collector key matches the collector key fingerprint in SQL metadata.
 
-That internal key check is not a public auth system. It is a local boundary marker for this prototype: a normal user configures the AIS key once in the UI, the UI writes only a key fingerprint into the active WEBSOCKET route config, writes the raw key into the crawler handoff file at `config/sources/websocket/ais_collector.local.json`, and the map verifies that the SQL table is being maintained by the matching collector before it reads from it. Do not return the raw key from HTTP APIs, and do not use this key check as permission to blur the consumer/upstream boundary.
+That internal key check is not a public auth system. It is a local boundary marker for this prototype: a normal user configures the AIS key once in the UI, the UI writes only a key fingerprint into the active WEBSOCKET route config, writes the raw key into the crawler runtime handoff file at `config/runtime/ais_collector.local.json`, and the map verifies that the SQL table is being maintained by the matching collector before it reads from it. Do not return the raw key from HTTP APIs, and do not use this key check as permission to blur the consumer/upstream boundary.
 
 Future public setup can replace the local handoff file with a K8 Secret, Airflow variable, or upstream service registration. That handoff belongs to the crawler/upstream side, not to the map rendering path.
 
 For the upstream owner, the handoff JSON should stay simple: upstream key, crawler timing, and destination sink. Changing polling/reconnect timing or changing the destination from local MySQL to another SQL/Hive-facing sink is crawler configuration work, not map UI work.
 
-AIS SQL reads and writes may use `live.ais.connection_ref` to point at a shared entry in `connections`. The older inline `live.ais.connection` object remains supported for local overrides, but new deployments should prefer `connection_ref` so the SQL destination can move without changing AIS query/write code.
+AIS SQL reads and writes use `live.ais.connection_ref` or the registered default MySQL connection. Inline `live.ais.connection` credentials are not a runtime path; the SQL destination remains owned by the connection registry.
 
 Minimal crawler handoff shape:
 
@@ -578,10 +590,10 @@ Start only the AIS upstream collector:
 Or pass an explicit crawler handoff JSON for an Airflow/K8 worker:
 
 ```powershell
-.\.venv\Scripts\python.exe core.py --config config\runtime\adapter.local.json ingest-ais --collector-config config\sources\websocket\ais_collector.local.json
+.\.venv\Scripts\python.exe core.py --config config\runtime\adapter.local.json ingest-ais --collector-config config\runtime\ais_collector.local.json
 ```
 
-`ingest-ais` reads `config/sources/websocket/ais_collector.local.json` when it exists, then writes the latest-state table and the `ais_ingest_meta` heartbeat table. The handoff file is gitignored because it contains the upstream AIS key. The active WEBSOCKET route config should keep only the key fingerprint for the consumer-side SQL read gate.
+`ingest-ais` reads `config/runtime/ais_collector.local.json` when it exists, then writes the latest-state table and the `ais_ingest_meta` heartbeat table. The handoff file is gitignored because it contains the upstream AIS key. The active WEBSOCKET route config should keep only the key fingerprint for the consumer-side SQL read gate.
 
 For Airflow, Windows Task Scheduler, NSSM, Docker, or K8, run the same command as the collector task and provide the same SQL connection plus the crawler handoff/secret. The Flask UI does not need to be running for the collector to keep warming SQL.
 
@@ -671,6 +683,36 @@ Demo-critical smoke:
 python scripts\demo_smoke.py --base-url http://127.0.0.1:5081
 ```
 
+Architecture and lifecycle contracts:
+
+```powershell
+python -m unittest discover -s tests
+node --test tests/*.test.mjs
+```
+
+Audit a complete advertised date range with six cold-query workers, a 30-date warm window, viewport drag, selected-tile, and LOD probes:
+
+```powershell
+python scripts\full_year_cache_benchmark.py `
+  --dataset pipeline_iceberg.fishing_hours `
+  --concurrency 6 `
+  --warm-window 30 `
+  --output "$env:TEMP\rrkal-full-year.json"
+```
+
+Local checkpoint on 2026-07-15, using the finest advertised resolution and a cold server restart per dataset:
+
+| Dataset | Advertised dates | Cold completed | Cold median / p95 | Warm hits | Selected tile |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `pipeline_iceberg.fishing_hours` | 366 | 366 | 2.90 s / 4.05 s | 29 / 30 | 27 ms, cache hit |
+| `pipeline_iceberg.chlor_a` | 355 | 355 | 2.92 s / 4.21 s | 29 / 30 | 26 ms, cache hit |
+| `pipeline_iceberg.ocean_productivity_score` | 355 | 355 | 3.58 s / 4.67 s | 30 / 30 | 32 ms, cache hit |
+| `pipeline_iceberg.sea_temperature` | 356 | 356 | 3.65 s / 5.02 s | 30 / 30 | 30 ms, cache hit |
+| `pipeline_iceberg.sustainability_pressure` | 355 | 355 | 3.32 s / 4.33 s | 30 / 30 | 24 ms, cache hit |
+| `gfw_full` | 31 | 31 | 68 ms / 106 ms | 30 / 30 | 16 ms server probe |
+
+The Pipeline Iceberg source snapshot high-water stayed below `800,000` canonical rows. The Flask worker set dropped from about 1.53 GB to about 0.89 GB in the full-year audit. The GFW server probe is bbox-backed MySQL; browser containment reuse is separately protected by `tests/playback_contracts.test.mjs` and prevents a selected tile inside a cached viewport from issuing another transport request.
+
 JavaScript syntax check:
 
 ```powershell
@@ -690,5 +732,5 @@ git diff --check -- static templates scripts *.py config requirements.txt docker
 - Do not commit runtime logs, PID files, database files, or downloaded datasets.
 - Use environment variables for local secrets.
 - This app is designed as a small local exploratory adapter. Keep data access, rendering, and UI behavior separated as the feature set grows.
-- EEZ country/claim attribution is not implemented yet. The current EEZ layer draws geometry only; identifying which country or claim owns a maritime zone requires a separate attribution field, tooltip/pick query, and UI treatment.
+- EEZ country/claim attribution is available through the registered `1x1` maritime jurisdiction Widget. It consumes saved virtual-grid selections and distinguishes jurisdiction, disputed, joint-regime, and other mapped cases; it is an exploratory dataset interpretation, not a legal determination.
 - AISHub polling remains a reserved fallback path. The MVP path is AISStream collector to SQL, then map consumption from SQL.

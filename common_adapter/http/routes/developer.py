@@ -19,6 +19,7 @@ from common_adapter.developer.config_service import (
     is_routable_config_group,
     load_layer_mappings,
     load_router_manifest,
+    migrate_layer_mapping_config_ref,
     move_config_to_source_group,
     normalize_config_ref,
     read_config_json,
@@ -204,7 +205,11 @@ def database_router_status_rows(runtime_config: dict[str, Any] | None = None) ->
             continue
         for row in connection_status_from_config(ref, data, ref in active_refs):
             backend = str(row.get("backend") or "").lower()
-            row["schema_inspectable"] = bool(row.get("enabled") and row.get("connected") and backend == "mysql")
+            row["schema_inspectable"] = bool(
+                row.get("enabled")
+                and row.get("connected")
+                and (backend == "mysql" or row.get("contract_detected"))
+            )
             rows.append(row)
     return rows
 
@@ -327,7 +332,40 @@ def register_developer_routes(app: Flask, runtime_config: dict[str, Any] | None 
             payload = request.get_json(silent=True) or {}
             config_ref = str(payload.get("path") or "")
             content = str(payload.get("content") or "")
-            return jsonify(write_config_json_content(config_ref, content))
+            requested_group = str(payload.get("group") or "").strip().lower()
+            parsed = json.loads(content)
+            if not isinstance(parsed, dict):
+                raise ValueError("config root must be a JSON object")
+
+            current_path = resolve_config_ref(config_ref)
+            current_summary = summarize_config_file(
+                current_path,
+                active_refs_with_runtime(runtime_config),
+                locked_refs_with_runtime(runtime_config),
+                runtime_config_refs(runtime_config),
+            )
+            if not current_summary.get("edit_allowed"):
+                raise ValueError("this config is read-only")
+
+            move_result = None
+            mapping_migration = None
+            if requested_group:
+                parsed["role"] = requested_group
+                move_result = move_config_to_source_group(config_ref, requested_group)
+                next_ref = str(move_result.get("moved") or config_ref)
+                mapping_migration = migrate_layer_mapping_config_ref(config_ref, next_ref)
+                config_ref = next_ref
+            normalized_content = json.dumps(parsed, ensure_ascii=False, indent=2) + "\n"
+            saved = write_config_json_content(config_ref, normalized_content)
+            return jsonify(
+                {
+                    **saved,
+                    "path": config_ref,
+                    "move": move_result,
+                    "mapping_migration": mapping_migration,
+                    "manifest": response_manifest(runtime_config),
+                }
+            )
         except json.JSONDecodeError as exc:
             return jsonify({"error": f"invalid JSON: {exc}"}), 400
         except Exception as exc:
@@ -352,6 +390,10 @@ def register_developer_routes(app: Flask, runtime_config: dict[str, Any] | None 
             group = str(payload.get("group") or "")
             result = move_config_to_source_group(config_ref, group)
             moved = str(result.get("moved") or "")
+            old_path = str(result.get("old_path") or config_ref)
+            mapping_migration = None
+            if moved:
+                mapping_migration = migrate_layer_mapping_config_ref(old_path, moved)
             config_summary = None
             if moved:
                 path = resolve_config_ref(moved)
@@ -361,7 +403,14 @@ def register_developer_routes(app: Flask, runtime_config: dict[str, Any] | None 
                     locked_refs_with_runtime(runtime_config),
                     runtime_config_refs(runtime_config),
                 )
-            return jsonify({**result, "config": config_summary, "manifest": response_manifest(runtime_config)})
+            return jsonify(
+                {
+                    **result,
+                    "config": config_summary,
+                    "mapping_migration": mapping_migration,
+                    "manifest": response_manifest(runtime_config),
+                }
+            )
         except Exception as exc:
             return jsonify({"error": str(exc)}), 400
 
@@ -423,6 +472,8 @@ def register_developer_routes(app: Flask, runtime_config: dict[str, Any] | None 
             data, error = read_config_json(path)
             if active and (error or data is None):
                 return jsonify({"error": f"invalid config JSON: {error}"}), 400
+            if active and not bool(summary.get("role_consistent")):
+                return jsonify({"error": summary.get("error") or "config role does not match its source folder"}), 400
             manifest = load_router_manifest()
             active_refs = set(manifest["active_configs"])
             if active:
@@ -434,7 +485,7 @@ def register_developer_routes(app: Flask, runtime_config: dict[str, Any] | None 
                     "active_configs": sorted(active_refs),
                     "locked_configs": manifest["locked_configs"],
                     "config_notes": manifest.get("config_notes") or {},
-                    "config_groups": manifest.get("config_groups") or {},
+                    "imported_layers": manifest.get("imported_layers") or [],
                 }
             )
             updated_manifest = response_manifest(runtime_config)
@@ -590,6 +641,13 @@ def register_developer_routes(app: Flask, runtime_config: dict[str, Any] | None 
             payload = request.get_json(silent=True) or {}
             layer_id = str(payload.get("layer_id") or "")
             imported = bool(payload.get("imported"))
+            if imported:
+                available_layers = {
+                    str(row.get("layer_id") or "").strip().lower()
+                    for row in route_provided_layer_rows(runtime_config)
+                }
+                if layer_id.strip().lower() not in available_layers:
+                    raise ValueError("data layer is not provided by an active route contract")
             result = set_layer_import(layer_id, imported)
             return jsonify({"rows": route_provided_layer_rows(runtime_config), **result})
         except Exception as exc:

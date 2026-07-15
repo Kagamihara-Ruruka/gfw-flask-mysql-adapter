@@ -242,7 +242,7 @@
                         <thead>
                           <tr>
                             <th>Config</th>
-                            <th>Connection</th>
+                            <th>Route</th>
                             <th>Backend</th>
                             <th>啟用</th>
                             <th>連線</th>
@@ -276,30 +276,6 @@
                         <tbody id="developer-websocket-status-body">
                           <tr>
                             <td colspan="7">等待 WebSocket 狀態資料。</td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-                  </section>
-                  <section class="developer-status-machine" aria-label="Endpoint 狀態機">
-                    <h4>ENDPOINT</h4>
-                    <div class="developer-status-table-wrap">
-                      <table class="developer-status-table is-endpoint">
-                        <thead>
-                          <tr>
-                            <th>Config</th>
-                            <th>Endpoint</th>
-                            <th>Base URL</th>
-                            <th>啟用</th>
-                            <th>設定</th>
-                            <th>連線</th>
-                            <th>Contract</th>
-                            <th>細節</th>
-                          </tr>
-                        </thead>
-                        <tbody id="developer-endpoint-status-body">
-                          <tr>
-                            <td colspan="8">等待 Endpoint 狀態資料。</td>
                           </tr>
                         </tbody>
                       </table>
@@ -384,17 +360,17 @@
   </main>
 
   <script src="/static/js/ui/developer/developer-utils.js?v=config-drawer-centered-v34"></script>
-  <script src="/static/js/ui/developer/developer-api.js?v=config-drawer-centered-v34"></script>
-  <script src="/static/js/ui/developer/developer-config-list.js?v=endpoint-source-v79"></script>
+  <script src="/static/js/ui/developer/developer-api.js?v=route-registry-v1"></script>
+  <script src="/static/js/ui/developer/developer-config-list.js?v=route-registry-v1"></script>
   <script src="/static/js/ui/developer/developer-status-table.js?v=config-drawer-centered-v34"></script>
-  <script src="/static/js/ui/developer/developer-mapping-controller.js?v=config-drawer-centered-v34"></script>
-  <script src="/static/js/ui/developer/developer-status-machines.js?v=ais-pipeline-state-v80"></script>
+  <script src="/static/js/ui/developer/developer-mapping-controller.js?v=route-registry-v1"></script>
+  <script src="/static/js/ui/developer/developer-status-machines.js?v=route-registry-v1"></script>
   <script src="/static/js/ui/developer/developer-import.js?v=config-drawer-centered-v34"></script>
   <script src="/static/js/ui/developer/developer-wizard.js?v=config-drawer-centered-v34"></script>
   <script src="/static/js/ui/developer/developer-source-group-selector.js?v=config-source-selector-v35"></script>
   <script src="/static/js/ui/developer/developer-config-editor.js?v=config-controller-split-v36"></script>
   <script src="/static/js/ui/developer/developer-config-note-modal.js?v=config-controller-split-v36"></script>
-  <script src="/static/js/ui/developer/developer-configs.js?v=config-controller-split-v36"></script>
+  <script src="/static/js/ui/developer/developer-configs.js?v=route-registry-v1"></script>
   <script>
     window.addEventListener("DOMContentLoaded", () => {
       if (typeof bindDeveloperConfigControls === "function") {

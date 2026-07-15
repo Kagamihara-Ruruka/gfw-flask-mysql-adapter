@@ -79,6 +79,14 @@
   background: #0b1521;
 }
 
+.developer-config-item.is-route-blocked {
+  border-color: rgba(248, 113, 113, 0.72);
+}
+
+.developer-config-item.is-route-blocked .developer-config-main > em:first-of-type {
+  color: #fca5a5;
+}
+
 .developer-staging-config-item {
   border-color: #315c85;
   background: #0a1420;

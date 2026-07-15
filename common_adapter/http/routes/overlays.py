@@ -22,6 +22,7 @@ class OverlayRoutes:
         response.headers["X-EEZ-Tile-MS"] = str(meta["timing"]["tile_ms"])
         response.headers["X-EEZ-LOD"] = str(meta["lod"])
         response.headers["X-EEZ-Cache"] = str(meta["cache"])
+        response.headers["X-EEZ-Cache-Tier"] = str(meta.get("cache_tier", "none"))
         response.headers["X-EEZ-Source-Table"] = str(meta["table"])
         return response
 

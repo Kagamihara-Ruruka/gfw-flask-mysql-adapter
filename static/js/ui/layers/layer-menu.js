@@ -121,7 +121,7 @@ function renderDataLayerMenu() {
     input.dataset.layerToggle = layerId;
     input.dataset.layerToggleKind = hasOverlayHandler(layerId) ? "overlay" : "primary";
     input.disabled = !hasLayerHandler(layerId);
-    input.checked = hasOverlayHandler(layerId) ? state.overlayLayers?.[layerId] !== false : state.dataLayer === layerId;
+    input.checked = hasOverlayHandler(layerId) ? state.overlayLayers?.[layerId] === true : state.dataLayer === layerId;
 
     const title = document.createElement("span");
     title.textContent = layerLabel(layerId);
@@ -187,28 +187,19 @@ function applyLayerAlpha(layerId) {
   }
 }
 
-function enforceImportedLayerState() {
-  if (state.dataLayer && (!isImportedLayer(state.dataLayer) || !isPrimaryDataLayer(state.dataLayer))) {
-    const removedLayer = state.dataLayer;
-    state.dataLayer = null;
-    if (isSampledGridLayer(removedLayer)) {
-      removeSampledGridLayer();
-    }
-    if (removedLayer === "ais") {
-      removeAisLayer();
-    }
-  }
+function enforceImportedOverlayState() {
   if (!isImportedLayer("eez") && typeof syncEezLayer === "function") {
+    state.overlayLayers.eez = false;
     syncEezLayer();
   }
 }
 
 function updateDataLayerMenu() {
-  enforceImportedLayerState();
+  enforceImportedOverlayState();
   for (const input of document.querySelectorAll("[data-layer-toggle]")) {
     const layerId = input.dataset.layerToggle;
     input.checked = hasOverlayHandler(layerId)
-      ? state.overlayLayers?.[layerId] !== false
+      ? state.overlayLayers?.[layerId] === true
       : state.dataLayer === layerId;
     input.disabled = !hasLayerHandler(layerId);
   }
@@ -220,7 +211,7 @@ function updateDataLayerMenu() {
       labels.push(layerLabel(layerId));
     }
   }
-  $("data-layer-summary").textContent = labels.length ? labels.join(" + ") : "No layer";
+  $("data-layer-summary").textContent = labels.length ? labels.join(" + ") : "沒有圖層";
   updatePlaybackControls();
   applyLayerOrder();
 }
@@ -342,37 +333,8 @@ function bindLayerSettingsModalControls() {
   });
 }
 
-async function selectDatasetForLayer(layerId) {
-  const id = String(layerId || "").trim().toLowerCase();
-  const match = Object.entries(state.datasets || {}).find(([, dataset]) => (
-    String(dataset.layer_id || "").trim().toLowerCase() === id
-  ));
-  if (!match || match[0] === state.datasetId) return;
-  await selectDataset(match[0], { reload: false });
-}
-
 async function selectDataLayer(layerId) {
-  const id = String(layerId || "").trim().toLowerCase();
-  if (!isImportedLayer(id) || !isPrimaryDataLayer(id)) {
-    updateDataLayerMenu();
-    return;
-  }
-  stopPlayback();
-  if (state.dataLayer === id) {
-    state.dataLayer = null;
-  } else {
-    await selectDatasetForLayer(id);
-    state.dataLayer = id;
-  }
-  updateDataLayerMenu();
-  $("data-layer-menu").open = false;
-  if (state.dataLayer !== "ais") {
-    removeAisLayer();
-  }
-  if (!isSampledGridLayer(state.dataLayer)) {
-    removeSampledGridLayer();
-  }
-  await reloadActiveLayer();
+  return window.LayerActivationController.toggle(layerId);
 }
 
 function syncLayerOrderFromDom() {

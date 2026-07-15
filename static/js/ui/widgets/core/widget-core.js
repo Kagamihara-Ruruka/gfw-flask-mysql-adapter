@@ -23,6 +23,7 @@ const WidgetSizeAbleDict = Object.freeze({
   "pie-chart": Object.freeze(["1x1", "2x2", "2x3"]),
   "horizontal-bar-chart": Object.freeze(["1x3"]),
   metrics: Object.freeze(["1x2", "2x2"]),
+  "event-viewer": Object.freeze(["1x2", "2x2", "2x3"]),
   table: Object.freeze(["2x2"]),
   "map-jump": Object.freeze(["1x1", "1x2"]),
   "eez-attribution": Object.freeze(["1x1"]),
@@ -571,6 +572,8 @@ class DashboardWidget {
     container.textContent = this.status;
   }
 
+  dispose() {}
+
   handlePrimaryAction(controller) {
     controller.expandWidget(this);
   }
@@ -642,7 +645,52 @@ class DashboardWidget {
       pane.append(typeField);
     }
 
+    this.renderCapabilitySettings?.({ pane, onConfigure });
+
     return pane;
+  }
+}
+
+const widgetPlotlyResizeWarnings = new WeakSet();
+
+class WidgetPlotlyLifecycle {
+  static isDisplayed(chart) {
+    if (!chart?.isConnected || typeof chart.getBoundingClientRect !== "function") return false;
+    if (typeof chart.getClientRects === "function" && chart.getClientRects().length === 0) return false;
+    const rect = chart.getBoundingClientRect();
+    return Number.isFinite(rect.width) && Number.isFinite(rect.height) && rect.width > 0 && rect.height > 0;
+  }
+
+  static waitUntilDisplayed(chart, retry, { attempt = 0, maxAttempts = 6, delayMs = 60 } = {}) {
+    if (this.isDisplayed(chart)) return true;
+    if (attempt < maxAttempts && typeof retry === "function") {
+      window.setTimeout(retry, delayMs);
+    }
+    return false;
+  }
+
+  static resize(chart) {
+    if (!this.isDisplayed(chart) || typeof window.Plotly?.Plots?.resize !== "function") return false;
+    try {
+      window.Plotly.Plots.resize(chart);
+      return true;
+    } catch (error) {
+      const hiddenElementError = /displayed plot div element/i.test(String(error?.message || error));
+      if (!hiddenElementError && !widgetPlotlyResizeWarnings.has(chart)) {
+        widgetPlotlyResizeWarnings.add(chart);
+        console.warn("Widget Plotly resize failed", error);
+      }
+      return false;
+    }
+  }
+
+  static scheduleResize(chart, { delayMs = 120 } = {}) {
+    const resize = () => this.resize(chart);
+    window.requestAnimationFrame(() => {
+      resize();
+      window.requestAnimationFrame(resize);
+    });
+    window.setTimeout(resize, delayMs);
   }
 }
 
@@ -724,6 +772,7 @@ window.WidgetCore = Object.freeze({
   WidgetSocketLayout,
   WidgetCatalogItem,
   DashboardWidget,
+  WidgetPlotlyLifecycle,
   ChartWidget,
 });
 })();

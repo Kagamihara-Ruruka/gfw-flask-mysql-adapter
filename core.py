@@ -5,7 +5,6 @@ import json
 from pathlib import Path
 
 from common_adapter.ais.ingest import run_ais_ingest_forever
-from common_adapter.config.materialize import materialize_route_fragments
 from common_adapter.config.paths import runtime_config_path as resolve_runtime_config_path
 from common_adapter.db.connect import import_duckdb_to_mysql, load_config, server_settings
 from common_adapter.http.server import run_server, run_server_pair
@@ -17,20 +16,12 @@ def runtime_config_path(value: str | None) -> Path | None:
     return resolve_runtime_config_path(value)
 
 
-def prepare_runtime_config(value: str | None) -> Path | None:
-    config_path = runtime_config_path(value)
-    if config_path is not None:
-        materialize_route_fragments(config_path)
-    return config_path
-
-
 def command_import(args: argparse.Namespace) -> int:
-    config_path = prepare_runtime_config(args.config)
+    config_path = runtime_config_path(args.config)
     config = load_config(config_path)
-    dataset_id = args.dataset or config.get("default_dataset")
     result = import_duckdb_to_mysql(
         config,
-        dataset_id=dataset_id,
+        dataset_id=args.dataset,
         source=Path(args.source),
         replace=args.replace,
         row_limit=args.row_limit,
@@ -41,7 +32,7 @@ def command_import(args: argparse.Namespace) -> int:
 
 
 def command_serve(args: argparse.Namespace) -> int:
-    selected_config_path = prepare_runtime_config(args.config)
+    selected_config_path = runtime_config_path(args.config)
     config = load_config(selected_config_path)
     config_path = str(selected_config_path.resolve()) if selected_config_path else str(Path(config["__config_path"]).resolve())
     config["__config_path"] = config_path
@@ -69,7 +60,7 @@ def command_serve(args: argparse.Namespace) -> int:
 
 
 def command_bootstrap_eez(args: argparse.Namespace) -> int:
-    selected_config_path = prepare_runtime_config(args.config)
+    selected_config_path = runtime_config_path(args.config)
     config = load_config(selected_config_path)
     config_path = str(selected_config_path.resolve()) if selected_config_path else str(Path(config["__config_path"]).resolve())
     config["__config_path"] = config_path
@@ -79,7 +70,7 @@ def command_bootstrap_eez(args: argparse.Namespace) -> int:
 
 
 def command_check_dependencies(args: argparse.Namespace) -> int:
-    selected_config_path = prepare_runtime_config(args.config)
+    selected_config_path = runtime_config_path(args.config)
     config = load_config(selected_config_path)
     config["__config_path"] = str(selected_config_path.resolve()) if selected_config_path else str(Path(config["__config_path"]).resolve())
     status = check_runtime_dependencies(config)
@@ -88,7 +79,7 @@ def command_check_dependencies(args: argparse.Namespace) -> int:
 
 
 def command_ingest_ais(args: argparse.Namespace) -> int:
-    config_path = prepare_runtime_config(args.config)
+    config_path = runtime_config_path(args.config)
     config = load_config(config_path)
     if args.collector_config:
         config.setdefault("live", {}).setdefault("ais", {})["collector_config_path"] = args.collector_config
@@ -103,7 +94,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     import_parser = subparsers.add_parser("import", help="Import DuckDB table into MySQL.")
     import_parser.add_argument("--source", required=True, help="Path to source DuckDB file.")
-    import_parser.add_argument("--dataset", default=None)
+    import_parser.add_argument("--dataset", required=True)
     import_parser.add_argument("--replace", action="store_true")
     import_parser.add_argument("--row-limit", type=int, default=None)
     import_parser.add_argument("--chunk-size", type=int, default=5000)

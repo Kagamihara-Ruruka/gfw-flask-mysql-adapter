@@ -1,4 +1,8 @@
-const RenderState = (() => {
+class RenderStateController {
+  constructor({ elementById, labelForLayer, primaryLayerPredicate } = {}) {
+  if (typeof elementById !== "function" || typeof primaryLayerPredicate !== "function") {
+    throw new TypeError("RenderState requires DOM and primary-layer adapters");
+  }
   const layers = {
     ais: { label: "AIS", bit: 0, status: "off", detail: "關閉" },
     eez: { label: "EEZ", bit: 0, status: "off", detail: "關閉" },
@@ -9,19 +13,14 @@ const RenderState = (() => {
     const id = String(layerId || "").trim().toLowerCase();
     if (!id) return null;
     if (!layers[id]) {
-      const label = typeof layerLabel === "function" ? layerLabel(id) : id.toUpperCase();
+      const label = typeof labelForLayer === "function" ? labelForLayer(id) : id.toUpperCase();
       layers[id] = { label, bit: 0, status: "off", detail: "關閉" };
     }
     return id;
   }
 
-  function isPrimaryLayer(layerId) {
-    if (layerId === "ais") return true;
-    return typeof isSampledGridLayer === "function" && isSampledGridLayer(layerId);
-  }
-
   function element(id) {
-    return document.getElementById(id);
+    return elementById(id);
   }
 
   function setText(id, value) {
@@ -61,9 +60,9 @@ const RenderState = (() => {
   }
 
   function enforcePrimaryExclusion(layerId, bit) {
-    if (!bit || !isPrimaryLayer(layerId)) return;
+    if (!bit || !primaryLayerPredicate(layerId)) return;
     for (const [otherLayerId, layer] of Object.entries(layers)) {
-      if (otherLayerId === layerId || !isPrimaryLayer(otherLayerId)) continue;
+      if (otherLayerId === layerId || !primaryLayerPredicate(otherLayerId)) continue;
       layer.bit = 0;
       layer.status = "off";
       layer.detail = "互斥關閉";
@@ -134,7 +133,11 @@ const RenderState = (() => {
     updateSummary();
   }
 
-  return {
+  function dispose() {
+    scopes.clear();
+  }
+
+  Object.assign(this, {
     begin,
     isCurrent,
     finish,
@@ -144,5 +147,10 @@ const RenderState = (() => {
     off,
     error,
     sync,
-  };
-})();
+    dispose,
+  });
+  Object.freeze(this);
+  }
+}
+
+if (typeof globalThis !== "undefined") globalThis.RenderStateController = RenderStateController;

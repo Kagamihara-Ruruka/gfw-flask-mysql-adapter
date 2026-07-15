@@ -144,7 +144,6 @@ function crossfadeGfwLayer(previousLayer, nextLayer) {
 
 function removeSampledGridLayer() {
   removeRetiredGfwLayers();
-  SampledGridCoverageMask.remove(map);
   if (state.gridLayer && map.hasLayer(state.gridLayer)) {
     map.removeLayer(state.gridLayer);
   }
@@ -154,6 +153,11 @@ function removeSampledGridLayer() {
   state.renderedGfwDate = null;
   state.sampledGridMeta = null;
   clearRenderedLodZoom(state.dataLayer || "sampled-grid");
+}
+
+function sampledGridRowsWithinCoverage(rows, datasetId = state.datasetId) {
+  const values = Array.isArray(rows) ? rows : [];
+  return window.LayerViewportController?.filterRows(values, datasetId) || values;
 }
 
 function clearSampledGridLayerForLodReload() {
@@ -171,21 +175,21 @@ function createSampledGridLayer(layerClass) {
 }
 
 function renderSampledGridMap(rows) {
+  const visibleRows = sampledGridRowsWithinCoverage(rows);
   syncGfwTransitionStyle();
   map.invalidateSize();
   removeAisLayer();
   const previousLayer = state.gridLayer && map.hasLayer(state.gridLayer) ? state.gridLayer : null;
-  let choice = RendererRegistry.chooseSampledGridLayer(rows, SampledGridCanvasLayer);
+  let choice = RendererRegistry.chooseSampledGridLayer(visibleRows, SampledGridCanvasLayer);
   let nextLayer = createSampledGridLayer(choice.LayerClass);
-  let drawMs = nextLayer.setRows(rows);
+  let drawMs = nextLayer.setRows(visibleRows);
   if (choice.backend === "webgl" && nextLayer._failed) {
     if (map.hasLayer(nextLayer)) map.removeLayer(nextLayer);
     choice = { backend: "canvas", LayerClass: SampledGridCanvasLayer };
     nextLayer = createSampledGridLayer(choice.LayerClass);
-    drawMs = nextLayer.setRows(rows);
+    drawMs = nextLayer.setRows(visibleRows);
   }
   state.gridLayer = nextLayer;
-  SampledGridCoverageMask.sync(map, state.datasets[state.datasetId]);
   state.renderedSampledGridDate = $("date")?.value || state.renderedSampledGridDate;
   state.renderedGfwDate = state.renderedSampledGridDate;
   setRenderedLodZoom(state.dataLayer || "sampled-grid");
@@ -194,6 +198,7 @@ function renderSampledGridMap(rows) {
   return {
     backend: choice.backend,
     drawMs,
+    rowCount: visibleRows.length,
     detail: RendererRegistry.recordSampledGridRender(choice.backend, drawMs),
   };
 }

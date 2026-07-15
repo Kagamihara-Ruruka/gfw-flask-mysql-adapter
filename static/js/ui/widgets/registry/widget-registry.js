@@ -8,6 +8,7 @@ const {
   TableWidget,
   MapJumpWidget,
   MetricsWidget,
+  LifecycleEventViewerWidget,
 } = window.WidgetCapabilities;
 class BlankWidget extends DashboardWidget {}
 
@@ -61,6 +62,15 @@ const WidgetAbilityRegistry = Object.freeze({
     icon: "gauge",
     tone: "rose",
   }),
+  "event-viewer": Object.freeze({
+    WidgetClass: LifecycleEventViewerWidget,
+    title: "生命週期事件檢視器",
+    size: "2x2",
+    description: "播放、查詢、快取與 Renderer 事件。",
+    deletable: true,
+    icon: "activity",
+    tone: "cyan",
+  }),
   "eez-attribution": Object.freeze({
     WidgetClass: EezAttributionWidget,
     title: "海域管轄判定工具",
@@ -73,6 +83,15 @@ const WidgetAbilityRegistry = Object.freeze({
 
 function widgetClassForType(widgetType) {
   return WidgetAbilityRegistry[widgetType]?.WidgetClass || DashboardWidget;
+}
+
+function createWidgetInstance(widgetType, params = {}) {
+  const normalizedType = String(widgetType || "blank");
+  if (normalizedType === "blank") {
+    return new BlankWidget({ ...params, widgetType: "blank" });
+  }
+  const WidgetClass = widgetClassForType(normalizedType);
+  return new WidgetClass({ ...params, widgetType: normalizedType });
 }
 
 function createWidgetCatalog() {
@@ -105,51 +124,45 @@ function createRegisteredWidgetCatalog() {
 
 function createWidgetFromCatalogItem(catalogItem, { id, slotIndex = null }) {
   if (catalogItem.kind === "size") {
-    return new BlankWidget({
+    return createWidgetInstance("blank", {
       id,
       size: catalogItem.size,
       title: "空白版型",
       status: "",
       slotIndex,
-      widgetType: "blank",
       deletable: true,
     });
   }
-  const WidgetClass = widgetClassForType(catalogItem.id);
-  return new WidgetClass({
+  return createWidgetInstance(catalogItem.id, {
     id,
     title: catalogItem.title,
     size: catalogItem.size,
     status: catalogItem.description,
     slotIndex,
     deletable: catalogItem.deletable,
-    widgetType: catalogItem.id,
   });
 }
 
 function createWidgetFromRegisteredItem(registeredItem, sourceWidget) {
   if (!registeredItem || !registeredItem.supportsSize(sourceWidget.size)) return null;
-  const WidgetClass = widgetClassForType(registeredItem.id);
-  return new WidgetClass({
+  return createWidgetInstance(registeredItem.id, {
     id: sourceWidget.id,
     title: registeredItem.title,
     size: sourceWidget.size,
     status: registeredItem.description,
     slotIndex: sourceWidget.slotIndex,
     deletable: registeredItem.deletable,
-    widgetType: registeredItem.id,
   });
 }
 
 function createBlankWidgetFromWidget(sourceWidget) {
-  return new BlankWidget({
+  return createWidgetInstance("blank", {
     id: sourceWidget.id,
     title: "空白版型",
     size: sourceWidget.size,
     status: "",
     slotIndex: sourceWidget.slotIndex,
     deletable: true,
-    widgetType: "blank",
   });
 }
 
@@ -159,6 +172,7 @@ window.WidgetRegistry = Object.freeze({
   BlankWidget,
   WidgetAbilityRegistry,
   widgetClassForType,
+  createWidgetInstance,
   createWidgetCatalog,
   createRegisteredWidgetCatalog,
   createWidgetFromCatalogItem,

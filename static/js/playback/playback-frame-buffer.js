@@ -37,7 +37,6 @@ const PlaybackFrameBuffer = (() => {
     dates,
     currentIndex,
     targetIndex,
-    mode,
     hasCacheLayer,
     requestContext,
     cacheService,
@@ -47,7 +46,7 @@ const PlaybackFrameBuffer = (() => {
       return emptyDecision(targetIndex);
     }
     const targetDate = allDates[targetIndex] || "";
-    if (mode !== "progressive" || !hasCacheLayer) {
+    if (!hasCacheLayer) {
       return {
         ...emptyDecision(targetIndex),
         state: FRAME_STATES.ready,
@@ -98,32 +97,12 @@ const PlaybackFrameBuffer = (() => {
 
     return {
       ...emptyDecision(targetIndex),
-      state: cacheService.options?.().mode === "progressive" ? FRAME_STATES.fetching : FRAME_STATES.missing,
+      state: FRAME_STATES.fetching,
       targetDate,
       readyCount: cacheService.countReadyPrefix?.(allDates, targetIndex, requestContext) || 0,
       requiredCount: 1,
       resumeCount: 1,
     };
-  }
-
-  function readyTargetIndex({
-    dates,
-    currentIndex,
-    targetIndex,
-    mode,
-    hasCacheLayer,
-    requestContext,
-    cacheService,
-  }) {
-    if (mode !== "progressive" || !hasCacheLayer) {
-      return targetIndex;
-    }
-    for (let index = targetIndex; index > currentIndex; index -= 1) {
-      if (cacheService.hasDate(dates[index], requestContext)) {
-        return index;
-      }
-    }
-    return -1;
   }
 
   function markWaiting({
@@ -181,7 +160,6 @@ const PlaybackFrameBuffer = (() => {
     inspectTarget,
     markFailed,
     markWaiting,
-    readyTargetIndex,
   };
 })();
 

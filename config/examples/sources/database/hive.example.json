@@ -1,0 +1,22 @@
+{
+  "schema": "rrkal.adapter.database.v1",
+  "role": "database",
+  "name": "class_hive",
+  "description": "Disabled Hive source-route example. Copy it into config/sources/database/ before configuring it.",
+  "sql_backend": {
+    "kind": "hive",
+    "driver": "placeholder"
+  },
+  "default_connection_ref": "class_hive",
+  "connections": {
+    "class_hive": {
+      "kind": "hive",
+      "driver": "placeholder",
+      "host": "hive-server.local",
+      "port": 10000,
+      "user": "hive",
+      "password": "env:HIVE_PASSWORD",
+      "database": "ocean_warehouse"
+    }
+  }
+}

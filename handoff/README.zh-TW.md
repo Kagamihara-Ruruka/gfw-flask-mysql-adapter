@@ -58,7 +58,7 @@
 - AIS crawler 是 upstream feeder，負責連外部 AISStream 並寫入 SQL。
 - 後端/系統負責資料庫連線、欄位契約、read model 與未來 Hive/skin 能力矩陣。
 - `config/examples/runtime/adapter.example.json` 是模板，不放真密碼。
-- `config/runtime/adapter.local.json` 與 `config/sources/websocket/ais_collector.local.json` 是本機 secrets/override，已被 `.gitignore` 忽略。
+- `config/runtime/adapter.local.json` 與 `config/runtime/ais_collector.local.json` 是本機 secrets/override，已被 `.gitignore` 忽略。
 - `backend_sink.local.json` 類型的後端交付檔是穩定 sink 契約。後端/系統填好後，我們後續改小可愛 UI、LOD、快取或 crawler 內部實作，都不應改既有 sink 欄位語意。
 - `ais_collector.handoff.example.json` 不放真 key。
 - `ais_collector.handoff.json` 是授權後產生的實交接檔，可以放真 key；不要公開推到公共 repo。

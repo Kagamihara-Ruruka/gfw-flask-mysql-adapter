@@ -50,12 +50,12 @@ static/js/
   layers/                     # map layer controllers
   services/                   # API/cache/render intent services
   playback/                   # playback state machine/controllers
-  probe/                      # future ProbeContext + API client
-  widgets/                    # future macOS-style BI widgets
+  probe/                      # developer probe context + API client
+  widgets/                    # registered dashboard Widget capabilities
   ui/                         # page panels and controls
 ```
 
-目前 playback controller、playback cache service、worker policy 與 snapshot splitter 已搬到 `static/js/playback/`。`static/js/services/gfw-record-cache.js` 先保留在 services，因為它同時服務一般地圖查詢與播放預熱。
+播放控制、獨立 `PlaybackPreheater` 與 snapshot splitter 位於 `static/js/playback/`。所有 sampled-grid 查詢統一經過 `FrameDemandService` 與 `QueryScheduler`，完成的 canonical packet 只存入 `DataFrameStore`；不存在第二套圖層專用快取。
 
 ## 已完成拆分
 

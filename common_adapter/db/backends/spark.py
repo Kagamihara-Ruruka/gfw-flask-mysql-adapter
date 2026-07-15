@@ -3,10 +3,10 @@ from __future__ import annotations
 from typing import Any
 
 from common_adapter.db.connect import dataset_backend_info
-from common_adapter.db.registry import UnsupportedBackendOperation, database_backend
+from common_adapter.query.registry import UnsupportedQueryOperation, query_adapter
 
 
-@database_backend("spark")
+@query_adapter("spark")
 class SparkReadBackend:
     def __init__(self, config: dict[str, Any], dataset: dict[str, Any]) -> None:
         self.config = config
@@ -14,7 +14,7 @@ class SparkReadBackend:
         self.kind, self.connection_ref, self.connection = dataset_backend_info(config, dataset)
 
     def schema_packet(self) -> dict[str, Any]:
-        raise UnsupportedBackendOperation(
+        raise UnsupportedQueryOperation(
             "spark",
             "schema_packet",
             "define the Spark/Iceberg read-model contract before enabling this dataset",
@@ -30,7 +30,7 @@ class SparkReadBackend:
         column_profile: str | None = None,
         query_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        raise UnsupportedBackendOperation(
+        raise UnsupportedQueryOperation(
             "spark",
             "records_packet",
             "define the Spark/Iceberg viewport query contract before enabling this dataset",
@@ -46,7 +46,7 @@ class SparkReadBackend:
         column_profile: str | None = None,
         query_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        raise UnsupportedBackendOperation(
+        raise UnsupportedQueryOperation(
             "spark",
             "records_range_packet",
             "define the Spark/Iceberg range query contract before enabling this dataset",
@@ -62,8 +62,9 @@ class SparkReadBackend:
         aggregation: str | None = None,
         identity_column: str | None = None,
         identity_value: str | None = None,
+        query_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        raise UnsupportedBackendOperation(
+        raise UnsupportedQueryOperation(
             "spark",
             "time_series_packet",
             "define the Spark/Iceberg time-series aggregation contract before enabling this dataset",

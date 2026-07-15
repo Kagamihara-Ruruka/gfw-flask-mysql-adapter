@@ -147,7 +147,7 @@ async function refreshEezTileReadiness(reason = "瓦片快取") {
 
 function createEezVectorTileLayer(paneName) {
   const rendererFactory = L.canvas?.tile || L.svg.tile;
-  const fillLayer = createEezVectorGrid("/api/overlays/eez/tiles/{z}/{x}/{y}.pbf?v=eez-fill-table-v1", {
+  const fillLayer = createEezVectorGrid("/api/overlays/eez/tiles/{z}/{x}/{y}.pbf?v=eez-lod-pixel-v2", {
     pane: paneName,
     rendererFactory,
     maxNativeZoom: 14,
@@ -156,7 +156,7 @@ function createEezVectorTileLayer(paneName) {
       eez: eezVectorTileStyle,
     },
   });
-  const boundaryLayer = createEezVectorGrid("/api/overlays/eez/boundary/tiles/{z}/{x}/{y}.pbf?v=eez-poltype-boundary-v1", {
+  const boundaryLayer = createEezVectorGrid("/api/overlays/eez/boundary/tiles/{z}/{x}/{y}.pbf?v=eez-lod-pixel-v2", {
     pane: paneName,
     rendererFactory,
     maxNativeZoom: 14,
@@ -193,6 +193,13 @@ async function reloadEezLayer(options = {}) {
     setEezPaneVisibility(paneName, false);
     const staged = createEezVectorTileLayer(paneName);
     staged.layer.addTo(map);
+    state.eezActivePane = paneName;
+    state.eezStagePane = otherEezPaneName(paneName);
+    state.eezMode = "mvt";
+    state.eezLayer = staged.layer;
+    state.eezTileLayers = staged.tileLayers;
+    setRenderedLodZoom("eez");
+    setEezPaneVisibility(state.eezActivePane, true);
     applyLayerOrder();
     let tileWaitTimedOut = false;
     try {
@@ -204,15 +211,14 @@ async function reloadEezLayer(options = {}) {
       if (map.hasLayer(staged.layer)) {
         map.removeLayer(staged.layer);
       }
+      if (state.eezLayer === staged.layer) {
+        state.eezLayer = null;
+        state.eezTileLayers = [];
+        state.eezMode = null;
+        setEezPaneVisibility(paneName, false);
+      }
       return;
     }
-    state.eezActivePane = paneName;
-    state.eezStagePane = otherEezPaneName(paneName);
-    state.eezMode = "mvt";
-    state.eezLayer = staged.layer;
-    state.eezTileLayers = staged.tileLayers;
-    setRenderedLodZoom("eez");
-    setEezPaneVisibility(state.eezActivePane, true);
     TimingMetrics.setMs("eez-ms", timing.elapsed());
     TimingMetrics.updateSummary();
     RenderState.finish(transaction, { eez: tileWaitTimedOut ? "瓦片載入中" : "瓦片就緒" });

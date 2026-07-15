@@ -26,4 +26,4 @@ if (-not (Test-Path -LiteralPath (Join-Path $repo $adapterConfig))) {
   $adapterConfig = "config\runtime\adapter.local.json"
 }
 
-& $python core.py --config $adapterConfig ingest-ais --collector-config config\sources\websocket\ais_collector.local.json 1>> $stdout 2>> $stderr
+& $python core.py --config $adapterConfig ingest-ais --collector-config config\runtime\ais_collector.local.json 1>> $stdout 2>> $stderr

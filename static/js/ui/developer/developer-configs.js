@@ -7,6 +7,10 @@
   const NoteModal = window.DeveloperConfigNoteModal;
 
   const configDrawerOpen = {};
+
+  function notifySourceRegistryChanged(reason) {
+    window.parent?.postMessage({ type: "rrkal:source-registry-changed", reason }, "*");
+  }
   const sourceGroupSelector = new SourceGroupSelector({
     Utils,
     Api,
@@ -100,17 +104,14 @@
     if (!editor.path()) {
       return;
     }
-    await Api.saveConfigContent(editor.path(), editor.content());
     const requestedGroup = editor.requestedGroup();
-    const selectedConfig = editor.config();
-    let currentPath = editor.path();
-    if (requestedGroup && selectedConfig?.source_group && requestedGroup !== selectedConfig.source_group) {
-      const moved = await Api.moveConfigSourceGroup(editor.path(), requestedGroup);
-      currentPath = editor.applyMove(moved);
-    }
+    const packet = await Api.saveConfigContent(editor.path(), editor.content(), requestedGroup);
+    const currentPath = packet.path || packet.config?.path || editor.path();
+    editor.applyMove({ moved: currentPath, config: packet.config });
     Utils.setMessage("config 已儲存");
     await loadDeveloperConfig(currentPath);
     await loadDeveloperStatusMachines();
+    notifySourceRegistryChanged("config-saved");
   }
 
   async function setDeveloperConfigLocked(configPath, locked) {
@@ -137,6 +138,7 @@
     Utils.setMessage("config 已刪除");
     await loadDeveloperConfigs();
     await loadDeveloperStatusMachines();
+    notifySourceRegistryChanged("config-deleted");
   }
 
   async function importDeveloperConfig(file, group = "auto") {
@@ -171,6 +173,7 @@
       Utils.setMessage(packet.message || "暫存 config 已導入");
       await loadDeveloperConfigs();
       await loadDeveloperStatusMachines();
+      notifySourceRegistryChanged("config-promoted");
       return packet;
     } finally {
       if (control) {
@@ -206,6 +209,7 @@
     Utils.setMessage(active ? "config 已啟用" : "config 已停用");
     await loadDeveloperConfigs();
     await loadDeveloperStatusMachines();
+    notifySourceRegistryChanged(active ? "config-enabled" : "config-disabled");
   }
 
   function bindDeveloperConfigControls() {

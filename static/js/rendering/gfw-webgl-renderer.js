@@ -10,7 +10,7 @@ const SampledGridWebglLayer = L.Layer.extend({
     this._gl = this._canvas.getContext("webgl2", {
       alpha: true,
       antialias: false,
-      premultipliedAlpha: false,
+      premultipliedAlpha: true,
       preserveDrawingBuffer: true,
       powerPreference: "high-performance",
     });
@@ -198,7 +198,12 @@ const SampledGridWebglLayer = L.Layer.extend({
       gl.enableVertexAttribArray(this._colorLocation);
       gl.vertexAttribPointer(this._colorLocation, 4, gl.FLOAT, false, stride, 2 * Float32Array.BYTES_PER_ELEMENT);
       gl.enable(gl.BLEND);
-      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.blendFuncSeparate(
+        gl.SRC_ALPHA,
+        gl.ONE_MINUS_SRC_ALPHA,
+        gl.ONE,
+        gl.ONE_MINUS_SRC_ALPHA
+      );
       gl.drawArrays(gl.TRIANGLES, 0, vertices.length / 6);
       gl.disable(gl.BLEND);
       this._drawMs = performance.now() - started;
@@ -229,4 +234,3 @@ SampledGridWebglLayer.isSupported = function isSupported() {
 };
 
 window.SampledGridWebglLayer = SampledGridWebglLayer;
-window.GfwWebglLayer = SampledGridWebglLayer;

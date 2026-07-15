@@ -17,6 +17,8 @@ from common_adapter.developer.config_service import (
     summarize_config_file,
 )
 from common_adapter.layers.contracts import build_layer_contracts
+from common_adapter.query.grid_registry import grid_profile_contract
+from common_adapter.registry import unique_by
 
 
 LAYER_MAPPINGS_CONFIG_REF = "config/artifacts/layer_mappings.local.json"
@@ -104,17 +106,27 @@ def active_layer_contract_rows(
     from common_adapter.endpoint.runtime import endpoint_datasets_from_routes, endpoint_layer_contracts
 
     if endpoint_datasets is None:
-        endpoint_datasets, _endpoint_errors = endpoint_datasets_from_routes(
-            active_config_files_by_group("endpoint", runtime_config)
+        endpoint_datasets, _database_catalog_errors = endpoint_datasets_from_routes(
+            active_config_files_by_group("database", runtime_config),
+            source_route_group="database",
         )
+        endpoint_route_datasets, _endpoint_errors = endpoint_datasets_from_routes(
+            active_config_files_by_group("endpoint", runtime_config),
+            source_route_group="endpoint",
+        )
+        endpoint_datasets.update(endpoint_route_datasets)
     contracts.extend(endpoint_layer_contracts(endpoint_datasets))
-    seen: set[str] = set()
     rows: list[dict[str, Any]] = []
-    for contract in contracts:
+    valid_contracts = [
+        contract
+        for contract in contracts
+        if str(contract.get("layer_id") or "").strip()
+    ]
+    for contract in unique_by(
+        valid_contracts,
+        key=lambda item: str(item.get("layer_id") or "").strip().lower(),
+    ):
         layer_id = str(contract.get("layer_id") or "").strip().lower()
-        if not layer_id or layer_id in seen:
-            continue
-        seen.add(layer_id)
         rows.append({**contract, "imported": layer_id in imported_layers})
     return rows
 
@@ -176,6 +188,7 @@ def _dataset_from_mapping(mapping: dict[str, Any], fallback_dataset: dict[str, A
         if not source_fields.get("value") and len(metrics) == 1:
             source_fields["value"] = metrics[0]
         sampled_grid["source_fields"] = source_fields
+        sampled_grid["grid_profile"] = grid_profile_contract(sampled_grid)
 
     runtime = dict(fallback_dataset)
     runtime.update(
@@ -204,6 +217,7 @@ def _dataset_from_mapping(mapping: dict[str, Any], fallback_dataset: dict[str, A
     )
     if sampled_grid is not None:
         runtime["sampled_grid"] = sampled_grid
+        runtime["grid_profile_id"] = sampled_grid["grid_profile"]["profile_id"]
     return runtime
 
 

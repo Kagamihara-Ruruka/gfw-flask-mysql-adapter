@@ -158,3 +158,45 @@
 .widget-horizontal-bar-panel.is-cinema .widget-horizontal-bar-plotly-chart {
   min-height: 0;
 }
+
+.widget-comparison-label-list {
+  display: grid;
+  gap: 7px;
+  max-height: 150px;
+  overflow: auto;
+}
+
+.widget-comparison-label-row {
+  display: grid;
+  grid-template-columns: auto 20px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+}
+
+.widget-comparison-label-row strong {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 50%;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 9px;
+}
+
+.widget-comparison-label-row input[type="text"],
+.widget-comparison-settings + .widget-settings-field select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.72);
+  color: var(--text);
+}
+
+.widget-comparison-label-list p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+}

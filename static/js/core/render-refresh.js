@@ -2,7 +2,9 @@ function schedulePrimaryReload(delayMs = 0) {
   clearTimeout(state.primaryReloadTimer);
   state.primaryReloadTimer = setTimeout(() => {
     state.primaryReloadTimer = null;
-    reloadActiveLayer();
+    reloadActiveLayer().catch((error) => {
+      if (error?.name !== "AbortError") setStatus(error?.message || "圖層重新載入失敗", true);
+    });
   }, delayMs);
 }
 

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -17,9 +17,9 @@ const jsModules = [
   "static/js/ui/widgets/capabilities/table.js",
   "static/js/ui/widgets/capabilities/map-jump.js",
   "static/js/ui/widgets/capabilities/metrics.js",
+  "static/js/ui/widgets/capabilities/event-viewer.js",
   "static/js/ui/widgets/registry/widget-registry.js",
   "static/js/ui/widgets/runtime/widgets-runtime.js",
-  "static/js/ui/widgets/widgets-panel.js",
   "static/js/ui/widgets/widget-launchpad.js",
 ];
 
@@ -34,6 +34,7 @@ const cssModules = [
   "static/css/widgets/capabilities/map-jump.css",
   "static/css/widgets/capabilities/eez-attribution.css",
   "static/css/widgets/capabilities/metrics.css",
+  "static/css/widgets/capabilities/event-viewer.css",
   "static/css/widgets/core/size-adaptations.css",
   "static/css/widgets/runtime/popover.css",
 ];
@@ -70,11 +71,25 @@ test("launchpad SVG size is owned by a module-scoped selector", () => {
   assert.match(rule[1], /height:\s*46%;/);
 });
 
-test("legacy widget entrypoint remains a compatibility shim", () => {
-  const shim = read("static/js/ui/widgets/widgets-panel.js");
-  assert.match(shim, /WidgetRuntimeReady/);
-  assert.doesNotMatch(shim, /\bclass\s+/);
-  assert.ok(shim.split(/\r?\n/).length <= 8, "compatibility entrypoint must not regain implementation code");
+test("widget boot path has no compatibility entrypoint", () => {
+  const template = read("templates/index.html");
+  assert.equal(existsSync(path.join(root, "static/js/ui/widgets/widgets-panel.js")), false);
+  assert.doesNotMatch(template, /widgets-panel\.js/);
+});
+
+test("sampled-grid selection exposes no GFW compatibility global", () => {
+  const source = read("static/js/ui/map/tile-selection-layer.js");
+  assert.doesNotMatch(source, /window\.GfwCellHitTester/);
+  assert.match(source, /window\.SampledGridCellHitTester/);
+});
+
+test("sampled-grid rendering exposes no GFW compatibility globals", () => {
+  const effects = read("static/js/layers/gfw-layer-effects.js");
+  const renderer = read("static/js/rendering/gfw-webgl-renderer.js");
+  assert.doesNotMatch(effects, /window\.GfwLayerEffects/);
+  assert.match(effects, /window\.SampledGridLayerEffects/);
+  assert.doesNotMatch(renderer, /window\.GfwWebglLayer/);
+  assert.match(renderer, /window\.SampledGridWebglLayer/);
 });
 
 test("widget dependency direction stays one-way", () => {
@@ -90,15 +105,70 @@ test("widget dependency direction stays one-way", () => {
   assert.doesNotMatch(registry, /addEventListener\(|map\.on\(|fetchJson\(/);
 });
 
+test("widget capabilities do not own server transport", () => {
+  for (const relativePath of jsModules.filter((item) => item.includes("/capabilities/"))) {
+    const capability = read(relativePath);
+    assert.doesNotMatch(capability, /\bfetchJson\s*\(/, `${relativePath} must not call the server directly`);
+    assert.doesNotMatch(capability, /["'`]\/api\//, `${relativePath} must not own API routes`);
+  }
+});
+
+test("table widget is a read-only current-snapshot cache inspector", () => {
+  const table = read("static/js/ui/widgets/capabilities/table.js");
+  const runtime = read("static/js/ui/widgets/runtime/widgets-runtime.js");
+
+  assert.match(table, /DataFrameStore\.inspect/);
+  assert.match(table, /目前快照尚無快取資料/);
+  assert.doesNotMatch(table, /\bfetch\s*\(|\binflight\b|\/records\?/);
+  assert.doesNotMatch(runtime, /refreshTableWidgets[\s\S]{0,180}source\.clear\(\)/);
+});
+
+test("event viewer is a registered read-only lifecycle widget", () => {
+  const eventViewer = read("static/js/ui/widgets/capabilities/event-viewer.js");
+  const registry = read("static/js/ui/widgets/registry/widget-registry.js");
+  assert.match(eventViewer, /LifecycleEventLog/);
+  assert.match(eventViewer, /exportRun/);
+  assert.match(eventViewer, /renderExpandedContent\(container, model\)/);
+  assert.match(eventViewer, /scheduleBindingRender\(binding\)/);
+  assert.match(eventViewer, /window\.setTimeout\(\(\) =>/);
+  assert.match(eventViewer, /bindingByContainer = new WeakMap\(\)/);
+  assert.doesNotMatch(eventViewer, /\n\s*renderExpanded\s*\(/);
+  assert.doesNotMatch(eventViewer, /FrameDemandService|LayerQueryCoordinator|fetchJson|["'`]\/api\//);
+  assert.match(registry, /"event-viewer"/);
+  assert.match(registry, /LifecycleEventViewerWidget/);
+});
+
 test("widget page lifecycle is owned by runtime only", () => {
   for (const relativePath of jsModules) {
     const source = read(relativePath);
     if (relativePath.endsWith("runtime/widgets-runtime.js")) {
-      assert.match(source, /initWidgetsPanels\(\)/);
-      assert.match(source, /bindChartWidgetRefresh\(\)/);
+      assert.match(source, /AppRuntime\.install\(/);
+      assert.match(source, /class WidgetRuntimeController/);
+      assert.match(source, /createWidgetRuntimeOwner\(\{/);
+      assert.match(source, /bindChartWidgetRefresh\(\{/);
+      assert.match(source, /this\.abortController\?\.abort\(\)/);
+      assert.doesNotMatch(source, /WidgetPopoverController\.shared\(\)/);
       continue;
     }
     assert.doesNotMatch(source, /initWidgetsPanels\(\)|bindChartWidgetRefresh\(\)/);
+  }
+});
+
+test("Plotly widgets share one visibility-aware resize lifecycle", () => {
+  const core = read("static/js/ui/widgets/core/widget-core.js");
+  assert.match(core, /class WidgetPlotlyLifecycle/);
+  assert.match(core, /!chart\?\.isConnected/);
+  assert.match(core, /chart\.getClientRects\(\)\.length === 0/);
+
+  for (const relativePath of [
+    "static/js/ui/widgets/capabilities/line-chart.js",
+    "static/js/ui/widgets/capabilities/horizontal-bar-chart.js",
+    "static/js/ui/widgets/capabilities/pie-chart.js",
+  ]) {
+    const capability = read(relativePath);
+    assert.match(capability, /WidgetPlotlyLifecycle\.waitUntilDisplayed/);
+    assert.match(capability, /WidgetPlotlyLifecycle\.scheduleResize/);
+    assert.doesNotMatch(capability, /Plotly\?*\.Plots\?*\.resize/);
   }
 });
 

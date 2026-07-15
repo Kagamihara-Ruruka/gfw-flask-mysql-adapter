@@ -9,10 +9,10 @@ from common_adapter.db.connect import (
     _mysql_time_series_packet,
     dataset_backend_info,
 )
-from common_adapter.db.registry import database_backend
+from common_adapter.query.registry import query_adapter
 
 
-@database_backend("mysql")
+@query_adapter("mysql")
 class MySqlReadBackend:
     def __init__(self, config: dict[str, Any], dataset: dict[str, Any]) -> None:
         self.config = config
@@ -87,6 +87,7 @@ class MySqlReadBackend:
         aggregation: str | None = None,
         identity_column: str | None = None,
         identity_value: str | None = None,
+        query_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         packet = _mysql_time_series_packet(
             self.config,

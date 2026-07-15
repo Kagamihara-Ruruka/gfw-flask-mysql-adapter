@@ -51,7 +51,9 @@ function renderTable(rows, columns = state.datasets[state.datasetId].display_col
     : "";
   $("table-note").textContent = `${tableContextLabel(context)} - 已載入 ${rows.length.toLocaleString()} 筆`;
   renderTableWindow();
-  window.dispatchEvent(new CustomEvent("rrkal:records-updated", {
-    detail: { ...state.recordsContext },
-  }));
+  if (!context.loading && context.notify !== false) {
+    window.dispatchEvent(new CustomEvent("rrkal:records-updated", {
+      detail: { ...state.recordsContext },
+    }));
+  }
 }

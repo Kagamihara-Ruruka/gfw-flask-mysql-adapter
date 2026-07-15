@@ -8,12 +8,12 @@ from common_adapter.db.connect import (
     connection_configs,
     default_connection_ref,
     elapsed_ms,
-    json_ready,
     mysql_connection,
     mysql_quote,
     query_policy,
     validate_identifier,
 )
+from common_adapter.query.serialization import json_ready
 
 
 def ais_live_settings(config: dict[str, Any]) -> dict[str, Any]:
@@ -24,11 +24,10 @@ def ais_live_settings(config: dict[str, Any]) -> dict[str, Any]:
     configured_limit = settings.get("limit", policy["default_limit"])
     limit = None if configured_limit in {None, "max", "all", "unbounded"} else int(configured_limit)
     connection_ref = str(settings.get("connection_ref") or "")
-    database = settings.get("database") or _default_ais_database(config, settings, connection_ref)
+    database = settings.get("database") or _default_ais_database(config, connection_ref)
     return {
         "enabled": bool(settings.get("enabled", False)),
         "connection_ref": connection_ref,
-        "connection": settings.get("connection", {}),
         "database": database,
         "table": settings.get("table", ""),
         "time_column": settings.get("time_column", "timestamp"),
@@ -46,17 +45,14 @@ def ais_live_settings(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _default_ais_database(config: dict[str, Any], settings: dict[str, Any], connection_ref: str) -> str:
+def _default_ais_database(config: dict[str, Any], connection_ref: str) -> str:
     connections = connection_configs(config)
     if connection_ref and connection_ref in connections:
         return str(connections[connection_ref].get("database") or "")
-    inline_database = (settings.get("connection") or {}).get("database")
-    if inline_database:
-        return str(inline_database)
     ref = default_connection_ref(config, "mysql")
     if ref and ref in connections:
         return str(connections[ref].get("database") or "")
-    return str((config.get("mysql") or {}).get("database") or "")
+    return ""
 
 
 def ais_mysql_connection_info(
@@ -72,19 +68,6 @@ def ais_mysql_connection_info(
         if str(connection.get("kind", "mysql")).lower() != "mysql":
             raise ValueError(f"live.ais.connection_ref must point to mysql: {connection_ref}")
         return connection_ref, connection
-
-    inline = settings.get("connection") or {}
-    if inline:
-        connection = {
-            "kind": "mysql",
-            "driver": "pymysql",
-            "host": inline.get("host", "127.0.0.1"),
-            "port": int(inline.get("port", 3306)),
-            "user": inline.get("user", "root"),
-            "password": inline.get("password", ""),
-            "database": settings.get("database") or inline.get("database") or _default_ais_database(config, settings, ""),
-        }
-        return "live.ais.connection", connection
 
     ref = default_connection_ref(config, "mysql")
     connections = connection_configs(config)

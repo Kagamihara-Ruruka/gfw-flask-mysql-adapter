@@ -38,7 +38,7 @@ Airflow/K8 若不跑整個 UI，仍至少需要安裝：
 ## 啟動命令
 
 ```bash
-python core.py --config config/runtime/adapter.ais_collector.local.json ingest-ais --collector-config config/sources/websocket/ais_collector.local.json
+python core.py --config config/runtime/adapter.ais_collector.local.json ingest-ais --collector-config config/runtime/ais_collector.local.json
 ```
 
 ## 邊界

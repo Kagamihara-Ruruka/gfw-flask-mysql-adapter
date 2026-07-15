@@ -34,6 +34,8 @@
       "gpkg_geometry_column": "geom",
       "force_full": false,
       "tile_cache_max": 2048,
+      "tile_cache_path": "data/eez/mvt-cache",
+      "tile_query_concurrency": 6,
       "postgis": {
         "host": "127.0.0.1",
         "port": 5433,

@@ -75,9 +75,15 @@ function bindAisStreamControls() {
   const modal = $("ais-config-modal");
   const keyInput = $("ais-api-key");
   if (openButton) {
-    openButton.addEventListener("click", (event) => {
+    openButton.addEventListener("click", async (event) => {
       event.stopPropagation();
-      setAisConfigModal(true);
+      try {
+        await loadAisSettings();
+        setAisConfigModal(true);
+      } catch (err) {
+        console.error(err);
+        setStatus(err.message, true);
+      }
     });
   }
   if (closeButton) {
@@ -258,8 +264,4 @@ function bindAisHubControls() {
 function bindAisSettingsControls() {
   bindAisStreamControls();
   bindAisHubControls();
-  loadAisSettings().catch((err) => {
-    console.error(err);
-    setStatus(err.message, true);
-  });
 }

@@ -140,8 +140,6 @@ map.getPane("sampledGridPane").style.transition = `opacity ${state.sampledGridTr
 
 createOverlayPane("aisPane", 610);
 
-createOverlayPane("sampledGridMaskPane", 780);
-
 setBasemap(state.mapSettings.basemapId);
 
 const mapScaleControl = L.control.scale({

@@ -9,16 +9,17 @@
   <link rel="stylesheet" href="/static/css/widgets/core/panel.css?v=widgets-modules-v1">
   <link rel="stylesheet" href="/static/css/widgets/core/launchpad.css?v=widgets-launchpad-svg-v2">
   <link rel="stylesheet" href="/static/css/widgets/core/widget-core.css?v=widgets-modules-v1">
-  <link rel="stylesheet" href="/static/css/widgets/capabilities/line-chart.css?v=widgets-modules-v1">
-  <link rel="stylesheet" href="/static/css/widgets/capabilities/horizontal-bar-chart.css?v=widgets-modules-v1">
+  <link rel="stylesheet" href="/static/css/widgets/capabilities/line-chart.css?v=line-chart-active-slice-v1">
+  <link rel="stylesheet" href="/static/css/widgets/capabilities/horizontal-bar-chart.css?v=widget-contract-stitch-v2">
   <link rel="stylesheet" href="/static/css/widgets/capabilities/pie-chart.css?v=widgets-modules-v1">
   <link rel="stylesheet" href="/static/css/widgets/capabilities/table.css?v=widgets-modules-v1">
   <link rel="stylesheet" href="/static/css/widgets/capabilities/map-jump.css?v=widgets-modules-v1">
   <link rel="stylesheet" href="/static/css/widgets/capabilities/eez-attribution.css?v=widgets-modules-v1">
   <link rel="stylesheet" href="/static/css/widgets/capabilities/metrics.css?v=widgets-modules-v1">
+  <link rel="stylesheet" href="/static/css/widgets/capabilities/event-viewer.css?v=lifecycle-widget-v3">
   <link rel="stylesheet" href="/static/css/widgets/core/size-adaptations.css?v=widgets-modules-v1">
-  <link rel="stylesheet" href="/static/css/widgets/runtime/popover.css?v=widgets-modules-v1">
-  <link rel="stylesheet" href="/static/styles.css?v=sampled-grid-nonzero-v2">
+  <link rel="stylesheet" href="/static/css/widgets/runtime/popover.css?v=widget-contract-stitch-v2">
+  <link rel="stylesheet" href="/static/styles.css?v=map-settings-gear-hover-v1">
 </head>
 <body>
   <div id="aerial-backdrop" class="aerial-backdrop" data-state="idle" aria-hidden="true">
@@ -47,7 +48,7 @@
         <details id="data-layer-menu" class="data-layer-menu">
           <summary>
             <span>資料圖層</span>
-                <strong id="data-layer-summary">EEZ</strong>
+                <strong id="data-layer-summary">沒有圖層</strong>
             <span class="dropdown-caret" aria-hidden="true"></span>
           </summary>
           <div class="data-layer-options" role="group" aria-label="資料圖層選擇" data-layer-options></div>
@@ -132,7 +133,10 @@
             </select>
           </label>
         </div>
-        <button id="map-settings-open" class="map-settings-button" type="button" title="地圖設定" aria-label="地圖設定">⚙</button>
+        <button id="map-settings-open" class="map-settings-button" type="button" title="地圖設定" aria-label="地圖設定">
+          <span class="control-icon-fallback map-settings-icon" aria-hidden="true">⚙</span>
+          <i class="control-icon map-settings-icon" data-lucide="settings" aria-hidden="true"></i>
+        </button>
       </div>
       <section class="widget-launchpad" aria-label="Widgets 啟動台" data-widget-launchpad>
         <div class="widget-launchpad-viewport" data-widget-launchpad-viewport>
@@ -258,38 +262,29 @@
             <section class="settings-section playback-settings-section">
               <h3>資料快取 / 預熱</h3>
               <label>
-                預熱模式
-                <select id="playback-cache-mode">
-                  <option value="progressive" selected>自適應短緩衝（建議）</option>
-                  <option value="before_play">完整 Range 預熱（短區間）</option>
-                </select>
-              </label>
-              <label>
-                並行預熱數
-                <select id="playback-cache-concurrency">
-                  <option value="auto">Auto</option>
+                網路查詢並行數
+                <select id="query-network-concurrency">
                   <option value="1">1</option>
                   <option value="2">2</option>
                   <option value="4">4</option>
-                  <option value="6">6</option>
+                  <option value="6" selected>6</option>
                   <option value="8">8</option>
                   <option value="12">12</option>
                 </select>
               </label>
               <label>
-                日期上限
-                <span class="setting-control-with-note">
-                  <input id="playback-cache-max-dates" type="number" min="0" max="366" step="1" value="0">
-                  <span class="inline-setting-note">0 = 無上限</span>
-                </span>
+                低水位（張）
+                <input id="playback-cache-low-watermark" type="number" min="1" max="59" step="1" value="5">
+              </label>
+              <label>
+                高水位（張）
+                <input id="playback-cache-high-watermark" type="number" min="2" max="60" step="1" value="10">
               </label>
               <label>
                 快取上限 (GB)
-                <input id="playback-cache-window-behind" type="number" min="0" max="30" step="1" value="1" hidden>
-                <input id="playback-cache-window-ahead" type="number" min="1" max="60" step="1" value="8" hidden>
                 <input id="playback-cache-max-gb" type="number" min="0.25" max="16" step="0.25" value="2">
               </label>
-              <p class="setting-note">自適應短緩衝會立即回應播放；下一幀尚未就緒時維持目前畫面並在背景補貨，低水位負責觸發、單一預取佇列再補到高水位。完整 Range 預熱適合短日期區間，且會在播放前等待。日期上限為 0 時不限制；並行數套用滾動預熱；快取上限控制記憶體壓力。</p>
+              <p class="setting-note">預熱器與播放器獨立運作；下一幀尚未就緒時維持目前畫面，低水位觸發補貨至高水位。網路查詢並行數同時約束地圖、播放與 Widget 的共用排程器；快取上限控制記憶體壓力。</p>
               <div class="playback-cache-meter" aria-label="播放快取容量">
                 <div class="playback-cache-meter-label">
                   <span id="playback-cache-capacity-text">快取容量：0 B / 2.00 GB</span>
@@ -339,6 +334,46 @@
             </section>
           </div>
         </details>
+        <details class="settings-toggle-card" open>
+          <summary class="settings-toggle-summary">
+            <span class="settings-toggle-caret" aria-hidden="true"></span>
+            <span>
+              <span class="settings-toggle-title">虛擬網格 / LOD</span>
+              <span class="settings-toggle-description">依已導入 sampled-grid 圖層合約建立跨圖層選取格網。</span>
+            </span>
+          </summary>
+          <div class="settings-toggle-content">
+            <section class="settings-section virtual-grid-settings-section">
+              <h3>共同網格策略</h3>
+              <div class="hardware-radio-list" role="radiogroup" aria-label="虛擬網格策略">
+                <label class="radio-setting-row">
+                  <input id="virtual-grid-strategy-lcm" name="virtual-grid-strategy" type="radio" value="least_common_multiple" checked>
+                  <span>精確共同格網（最小公倍數）</span>
+                </label>
+                <label class="radio-setting-row is-pending">
+                  <input id="virtual-grid-strategy-cohorts" name="virtual-grid-strategy" type="radio" value="resolution_cohorts" disabled>
+                  <span>依解析度分群</span>
+                  <small>待實作</small>
+                </label>
+                <label class="radio-setting-row is-pending">
+                  <input id="virtual-grid-strategy-resampling" name="virtual-grid-strategy" type="radio" value="visual_resampling" disabled>
+                  <span>視覺重採樣</span>
+                  <small>待實作</small>
+                </label>
+              </div>
+              <p class="setting-note">單一圖層使用其設定粒度；兩個以上圖層以成功查詢的有效格網幾何求共同格距。來源若降級，選取窗格會同步採用實際粒度。EEZ 等向量圖層不參與。</p>
+            </section>
+            <section class="settings-section virtual-grid-settings-section" aria-live="polite">
+              <div class="virtual-grid-status-heading">
+                <h3>執行狀態</h3>
+                <span id="virtual-grid-status-chip" class="virtual-grid-status-chip">等待合約</span>
+              </div>
+              <p id="virtual-grid-status-detail" class="setting-note">等待已導入圖層。</p>
+              <dl id="virtual-grid-status-metrics" class="virtual-grid-status-metrics"></dl>
+              <ul id="virtual-grid-participants" class="virtual-grid-participants"></ul>
+            </section>
+          </div>
+        </details>
       </div>
     </div>
   </section>
@@ -352,7 +387,8 @@
         id="developer-control-frame"
         class="developer-control-frame"
         title="開發者路由器控制面"
-        src="{{ developer_url }}/?embedded=1"
+        data-src="{{ developer_url }}/?embedded=1"
+        loading="lazy"
       ></iframe>
       {% else %}
       <p>這個頁籤只是控制面入口；目前未啟用開發者服務，未來註銷這個頁籤即可與消費端分離。</p>
@@ -373,6 +409,11 @@
       <div class="modal-body">
         <section class="layer-settings-panel" data-layer-settings-panel="sampled-grid" hidden>
           <span class="setting-note">以 Mapping 合約、日期與視窗範圍驅動的取樣網格。</span>
+          <label>
+            網格解析度
+            <select id="sampled-grid-resolution"></select>
+          </label>
+          <p id="sampled-grid-resolution-status" class="setting-note"></p>
           <label>
             色域策略
             <select id="sampled-grid-scale-mode">
@@ -625,64 +666,73 @@
   <script src="/static/vendor/plotly-basic-3.6.0.min.js?v=3.6.0"></script>
   <script src="/static/js/ui/telemetry/snapshot-performance-chart.js?v=plotly-detail-source-v8"></script>
   <script src="/static/TimingMetrics.js?v=timingmetrics-detail-source-v3"></script>
-  <script src="/static/js/core/state.js?v=playback-settings-v2"></script>
+  <script src="/static/js/core/state.js?v=playback-watermark-v1"></script>
+  <script src="/static/js/services/lifecycle-event-log.js?v=lifecycle-core-v2"></script>
+  <script src="/static/js/services/frame-identity.js?v=lifecycle-core-v1"></script>
   <script src="/static/js/core/dom.js?v=zh-tw-v99"></script>
   <script src="/static/js/core/render-state.js?v=zh-tw-v99"></script>
-  <script src="/static/js/core/map.js?v=coverage-mask-pane-v1"></script>
+  <script src="/static/js/core/map.js?v=layer-viewport-v1"></script>
   <script src="/static/js/core/geo.js?v=zh-tw-v99"></script>
   <script src="/static/js/rendering/render-capability.js?v=zh-tw-v99"></script>
-  <script src="/static/js/rendering/sampled-grid-contract.js?v=sampled-grid-contract-v2"></script>
+  <script src="/static/js/rendering/sampled-grid-contract.js?v=resolution-route-v2"></script>
+  <script src="/static/js/rendering/virtual-grid-contract.js?v=resolution-contract-v1"></script>
+  <script src="/static/js/ui/map/layer-viewport-controller.js?v=layer-viewport-v1"></script>
   <script src="/static/js/rendering/gfw-paint.js?v=zero-paint-opacity-v2"></script>
-  <script src="/static/js/rendering/gfw-webgl-renderer.js?v=zero-paint-opacity-v1"></script>
+  <script src="/static/js/rendering/gfw-webgl-renderer.js?v=alpha-composite-v2"></script>
   <script src="/static/js/rendering/renderer-registry.js?v=zh-tw-v99"></script>
   <script src="/static/js/core/render-refresh.js?v=dynamic-layer-menu-v1"></script>
-  <script src="/static/js/layers/eez-layer.js?v=dynamic-layer-menu-v1"></script>
+  <script src="/static/js/layers/eez-layer.js?v=eez-lod-pixel-v2"></script>
   <script src="/static/js/layers/graticule-layer.js?v=zh-tw-v99"></script>
   <script src="/static/js/layers/ais-layer.js?v=zh-tw-v99"></script>
   <script src="/static/js/layers/gfw-layer-effects.js?v=gfw-layer-effects-v1"></script>
-  <script src="/static/js/layers/sampled-grid-coverage-mask.js?v=sampled-grid-coverage-mask-v1"></script>
-  <script src="/static/js/layers/gfw-layer.js?v=zero-paint-opacity-v1"></script>
+  <script src="/static/js/layers/gfw-layer.js?v=layer-viewport-v1"></script>
   <script src="/static/js/ui/map/table-view.js?v=records-updated-v1"></script>
   <script src="/static/js/ui/map/control-buttons.js?v=map-fullscreen-icon-v1"></script>
   <script src="/static/js/ui/map/map-settings.js?v=widgets-map-jump-v70"></script>
   <script src="/static/js/ui/map/map-export.js?v=zh-tw-v99"></script>
   <script src="/static/js/ui/layers/layer-style-controls.js?v=zh-tw-v99"></script>
   <script src="/static/js/ui/layers/eez-settings.js?v=eez-color-controls-v1"></script>
-  <script src="/static/js/ui/layers/gfw-settings.js?v=sampled-grid-nonzero-v2"></script>
-  <script src="/static/js/ui/layers/ais-settings.js?v=zh-tw-v99"></script>
-  <script src="/static/js/ui/layers/layer-menu.js?v=sampled-grid-nonzero-v2"></script>
-  <script src="/static/js/ui/map/tile-selection-layer.js?v=tile-selection-entrypoints-v3"></script>
+  <script src="/static/js/ui/layers/gfw-settings.js?v=resolution-contract-v1"></script>
+  <script src="/static/js/ui/layers/ais-settings.js?v=lazy-ais-settings-v1"></script>
+  <script src="/static/js/ui/layers/layer-menu.js?v=layer-activation-controller-v2"></script>
   <script src="/static/js/ui/background/aerial-backdrop.js?v=aerial-backdrop-v6"></script>
   <script src="/static/js/playback/playback-worker-policy.js?v=playback-worker-policy-v1"></script>
   <script src="/static/js/playback/playback-snapshot-splitter.js?v=playback-snapshot-splitter-v1"></script>
   <script src="/static/js/services/gfw-render-artifact-cache.js?v=gfw-render-artifact-cache-v1"></script>
-  <script src="/static/js/services/render-intent-service.js?v=render-intent-v1"></script>
-  <script src="/static/js/services/gfw-record-cache.js?v=playback-idle-prewarm-v2"></script>
-  <script src="/static/js/playback/playback-cache-service.js?v=playback-bootstrap-gate-v2"></script>
+  <script src="/static/js/services/render-intent-service.js?v=resolution-route-v2"></script>
+  <script src="/static/js/services/layer-query-coordinator.js?v=query-ownership-v1"></script>
+  <script src="/static/js/services/data-frame-store.js?v=lifecycle-core-v5"></script>
+  <script src="/static/js/services/frame-demand-service.js?v=lifecycle-core-v2"></script>
+  <script src="/static/js/playback/playback-cache-service.js?v=runtime-oop-v1"></script>
+  <script src="/static/js/playback/playback-preheater.js?v=runtime-oop-v1"></script>
+  <script src="/static/js/playback/playback-engine.js?v=runtime-oop-v1"></script>
+  <script src="/static/js/playback/playback-renderer.js?v=runtime-oop-v1"></script>
+  <script src="/static/js/services/api-client.js?v=runtime-oop-v1"></script>
+  <script src="/static/js/runtime/runtime-composition-root.js?v=runtime-oop-v1"></script>
+  <script src="/static/js/ui/map/tile-selection-layer.js?v=runtime-oop-v1"></script>
   <script src="/static/js/playback/playback-delivery-policy.js?v=playback-delivery-policy-v2"></script>
   <script src="/static/js/ui/settings/hardware-settings.js?v=dynamic-layer-menu-v1"></script>
+  <script src="/static/js/ui/settings/virtual-grid-settings.js?v=virtual-grid-settings-v1"></script>
   <script src="/static/js/playback/playback-scheduler.js?v=playback-scheduler-v1"></script>
-  <script src="/static/js/playback/playback-frame-buffer.js?v=playback-lifecycle-v2"></script>
-  <script src="/static/js/playback/playback-renderer.js?v=playback-renderer-v1"></script>
+  <script src="/static/js/playback/playback-frame-buffer.js?v=playback-watermark-v1"></script>
   <script src="/static/js/playback/playback-telemetry.js?v=playback-telemetry-events-v1"></script>
   <script src="/static/js/playback/playback-interpolation-controller.js?v=playback-interpolation-v2"></script>
-  <script src="/static/js/playback/playback-prefetch-controller.js?v=playback-watermarks-v2"></script>
-  <script src="/static/js/playback/playback-controls.js?v=playback-nonblocking-bootstrap-v3"></script>
+  <script src="/static/js/playback/playback-controls.js?v=playback-watermark-v1"></script>
   <script src="/static/js/playback/fullscreen-playback-controls.js?v=fullscreen-svg-v1"></script>
-  <script src="/static/js/services/api-client.js?v=dynamic-layer-menu-v1"></script>
-  <script src="/static/js/ui/widgets/core/widget-core.js?v=widgets-modules-v1"></script>
-  <script src="/static/js/ui/widgets/capabilities/shared.js?v=widgets-modules-v1"></script>
-  <script src="/static/js/ui/widgets/capabilities/line-chart.js?v=widgets-modules-v1"></script>
-  <script src="/static/js/ui/widgets/capabilities/horizontal-bar-chart.js?v=widgets-modules-v1"></script>
-  <script src="/static/js/ui/widgets/capabilities/pie-chart.js?v=widgets-modules-v1"></script>
+  <script src="/static/js/ui/layers/layer-activation-controller.js?v=layer-activation-controller-v1"></script>
+  <script src="/static/js/ui/widgets/core/widget-core.js?v=widget-plotly-lifecycle-v1"></script>
+  <script src="/static/js/ui/widgets/capabilities/shared.js?v=resolution-route-v2"></script>
+  <script src="/static/js/ui/widgets/capabilities/line-chart.js?v=line-chart-active-slice-v3"></script>
+  <script src="/static/js/ui/widgets/capabilities/horizontal-bar-chart.js?v=widget-plotly-lifecycle-v1"></script>
+  <script src="/static/js/ui/widgets/capabilities/pie-chart.js?v=widget-plotly-lifecycle-v1"></script>
   <script src="/static/js/ui/widgets/capabilities/eez-attribution.js?v=widgets-modules-v1"></script>
   <script src="/static/js/ui/widgets/capabilities/table.js?v=widgets-modules-v1"></script>
   <script src="/static/js/ui/widgets/capabilities/map-jump.js?v=widgets-modules-v1"></script>
   <script src="/static/js/ui/widgets/capabilities/metrics.js?v=widgets-modules-v1"></script>
+  <script src="/static/js/ui/widgets/capabilities/event-viewer.js?v=lifecycle-widget-v3"></script>
   <script src="/static/js/ui/widgets/registry/widget-registry.js?v=widgets-launchpad-registered-v3"></script>
-  <script src="/static/js/ui/widgets/runtime/widgets-runtime.js?v=widgets-launchpad-registered-v3"></script>
-  <script src="/static/js/ui/widgets/widgets-panel.js?v=widgets-modules-v1"></script>
+  <script src="/static/js/ui/widgets/runtime/widgets-runtime.js?v=line-chart-active-slice-v2"></script>
   <script src="/static/js/ui/widgets/widget-launchpad.js?v=widgets-launchpad-registered-v3"></script>
-  <script src="/static/app.js?v=sampled-grid-nonzero-v2"></script>
+  <script src="/static/app.js?v=layer-activation-controller-v1"></script>
 </body>
 </html>

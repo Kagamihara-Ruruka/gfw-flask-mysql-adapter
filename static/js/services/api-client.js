@@ -1,5 +1,5 @@
-async function fetchJson(url) {
-  const res = await fetch(url);
+async function fetchJson(url, options = {}) {
+  const res = await fetch(url, options);
   const payload = await res.json();
   if (!res.ok) {
     throw new Error(payload.error || res.statusText);
@@ -53,15 +53,18 @@ async function loadDatasets() {
   state.overlayLayers = state.overlayLayers || {};
   // Keep frontend limits aligned with the Flask adapter config.
   state.queryPolicy = packet.query_policy || state.queryPolicy;
-  const datasetIds = Object.keys(state.datasets);
-  state.datasetId = packet.default_dataset && state.datasets[packet.default_dataset]
-    ? packet.default_dataset
-    : (datasetIds[0] || null);
   renderDatasetSelect();
   if (typeof renderDataLayerMenu === "function") {
     renderDataLayerMenu();
   }
   updateDataLayerMenu();
+  window.dispatchEvent(new CustomEvent("rrkal:datasets-loaded", {
+    detail: {
+      datasetIds: Object.keys(state.datasets),
+      importedLayerIds: [...state.importedLayerIds],
+    },
+  }));
+  return packet;
 }
 
 function renderDatasetSelect() {
@@ -78,7 +81,7 @@ function renderDatasetSelect() {
     select.disabled = true;
     return;
   }
-  select.disabled = false;
+  select.disabled = !state.dataLayer;
   for (const [datasetId, dataset] of entries) {
     const option = document.createElement("option");
     option.value = datasetId;
@@ -98,12 +101,8 @@ async function selectDataset(datasetId, { reload = true } = {}) {
   state.columns = [];
   state.renderedSampledGridDate = null;
   state.renderedGfwDate = null;
-  if (typeof SampledGridRecordCache !== "undefined") {
-    SampledGridRecordCache.clear();
-  }
-  if (typeof PlaybackCacheService !== "undefined") {
-    PlaybackCacheService.clear();
-  }
+  PlaybackPreheater?.stop?.("dataset_changed");
+  PlaybackEngine?.stop?.("dataset_changed");
   await loadSchema();
   if (reload && typeof isSampledGridLayer === "function" && isSampledGridLayer(state.dataLayer)) {
     await reloadSampledGridRecords();
@@ -128,18 +127,11 @@ async function loadSchema() {
   window.dispatchEvent(new CustomEvent("rrkal:schema-loaded", {
     detail: { datasetId: state.datasetId, dates: packet.dates || [] },
   }));
-  if (packet.bounds) {
-    map.fitBounds(
-      L.latLngBounds(
-        [Number(packet.bounds.min_lat), Number(packet.bounds.min_lon)],
-        [Number(packet.bounds.max_lat), Number(packet.bounds.max_lon)]
-      ),
-      { padding: [20, 20], maxZoom: 3, animate: false }
-    );
-  }
+  return packet;
 }
 
 async function reloadAisRecords() {
+  await loadAisSettings();
   return startAisWebSocket();
 }
 
@@ -427,13 +419,25 @@ async function reloadSampledGridRecords() {
     setStatus("尚未導入可查詢的取樣網格圖層");
     return;
   }
-  // Drop stale responses after pan/zoom/date changes.
+  const requestedDate = $("date")?.value || "";
+  state.primaryFetchController?.abort();
+  state.primaryFetchController = null;
   const seq = ++state.fetchSeq;
+  if (!requestedDate) {
+    renderSampledGridMap([]);
+    renderTable([], state.datasets[state.datasetId].display_columns, {
+      layer: requestedLayer,
+      date: "",
+      notify: false,
+    });
+    RenderState.off(requestedLayer, "等待日期");
+    setStatus(`${requestedLayerLabel} 尚未取得可查詢日期`);
+    return;
+  }
   const timing = TimingMetrics.stopwatch();
   TimingMetrics.resetSnapshotPersistent?.({ render: false });
   RenderState.loading(requestedLayer, "查詢中");
   setStatus(`正在載入 ${requestedLayerLabel}`);
-  const requestedDate = $("date").value;
   const renderIntent = RenderIntentService.snapshot({
     date: requestedDate,
     layerId: requestedLayer,
@@ -441,50 +445,86 @@ async function reloadSampledGridRecords() {
   });
   const requestContext = RenderIntentService.toSampledGridPacketRequest(renderIntent);
   renderTable([], state.datasets[state.datasetId].display_columns, { layer: requestedLayer, date: requestedDate, loading: true });
-  const { packet, cacheHit } = await SampledGridRecordCache.fetchPacket(requestContext);
-  if (state.dataLayer !== requestedLayer || state.datasetId !== requestedDataset) return;
-  if (typeof isSampledGridLayer !== "function" || !isSampledGridLayer(state.dataLayer)) return;
-  if (seq !== state.fetchSeq) {
-    RenderState.loading(requestedLayer, "重新整理");
-    schedulePrimaryReload(80);
+  if (requestContext.outsideCoverage || !requestContext.bbox) {
+    renderSampledGridMap([]);
+    renderTable([], state.datasets[state.datasetId].display_columns, { layer: requestedLayer, date: requestedDate });
+    RenderState.ready(requestedLayer, "0 rows / outside coverage");
+    setStatus(`${requestedLayerLabel} 視窗位於資料範圍外`);
     return;
   }
-  const metricsSource = currentDatasetBackendDetail(packet);
-  TimingMetrics.markRenderStart?.(metricsSource ? `${requestedLayerLabel} ${metricsSource}` : requestedLayerLabel);
-  state.sampledGridMeta = packet.grid || null;
-  const renderResult = renderSampledGridMap(packet.rows);
-  renderTable(packet.rows, state.datasets[state.datasetId].display_columns, { layer: requestedLayer, date: requestedDate });
-  const serverCacheHit = Boolean(packet.timing?.cache_hit);
-  if (cacheHit || serverCacheHit) {
-    TimingMetrics.setText("query-ms", "快取命中", { source: metricsSource });
-    TimingMetrics.setText("serialize-ms", "快取命中", { source: metricsSource });
-    TimingMetrics.setMs("api-ms", timing.elapsed(), { source: metricsSource });
-  } else {
-    TimingMetrics.setMs("query-ms", packet.timing.query_ms, { source: metricsSource });
-    TimingMetrics.setMs("serialize-ms", packet.timing.serialize_ms, { source: metricsSource });
-    TimingMetrics.setMs("api-ms", packet.timing.api_total_ms, { source: metricsSource });
+  const controller = new AbortController();
+  state.primaryFetchController = controller;
+  try {
+    const { packet, cacheHit } = await FrameDemandService.demand(requestContext, {
+      lane: "map-current",
+      signal: controller.signal,
+      scopeId: `map-current:${requestedDataset}:${seq}`,
+      consumerId: `map:${requestedDate}`,
+    });
+    if (state.dataLayer !== requestedLayer || state.datasetId !== requestedDataset) return;
+    if (typeof isSampledGridLayer !== "function" || !isSampledGridLayer(state.dataLayer)) return;
+    if (seq !== state.fetchSeq) return;
+    const metricsSource = currentDatasetBackendDetail(packet);
+    TimingMetrics.markRenderStart?.(metricsSource ? `${requestedLayerLabel} ${metricsSource}` : requestedLayerLabel);
+    SampledGridContract.recordResolvedResolution(requestedDataset, packet.grid || null);
+    const visibleRows = sampledGridRowsWithinCoverage(packet.rows, requestedDataset);
+    const renderResult = renderSampledGridMap(visibleRows);
+    renderTable(visibleRows, state.datasets[state.datasetId].display_columns, { layer: requestedLayer, date: requestedDate });
+    const serverCacheHit = Boolean(packet.timing?.cache_hit);
+    if (cacheHit || serverCacheHit) {
+      TimingMetrics.setText("query-ms", "快取命中", { source: metricsSource });
+      TimingMetrics.setText("serialize-ms", "快取命中", { source: metricsSource });
+      TimingMetrics.setMs("api-ms", timing.elapsed(), { source: metricsSource });
+    } else {
+      TimingMetrics.setMs("query-ms", packet.timing.query_ms, { source: metricsSource });
+      TimingMetrics.setMs("serialize-ms", packet.timing.serialize_ms, { source: metricsSource });
+      TimingMetrics.setMs("api-ms", packet.timing.api_total_ms, { source: metricsSource });
+    }
+    TimingMetrics.setCount("row-count", visibleRows.length);
+    TimingMetrics.setMs("client-ms", timing.elapsed(), { source: metricsSource });
+    TimingMetrics.updateSummary();
+    const sourceDetail = cacheHit
+      ? "瀏覽器快取"
+      : serverCacheHit
+        ? "伺服器快取"
+        : (metricsSource || "來源查詢");
+    const requestedResolution = Number(packet.grid?.requested_resolution_km);
+    const actualResolution = Number(packet.grid?.actual_resolution_km);
+    const resolutionDetail = Number.isFinite(actualResolution)
+      ? (packet.grid?.lod_degraded && Number.isFinite(requestedResolution)
+        ? `${requestedResolution} -> ${actualResolution} km`
+        : `${actualResolution} km`)
+      : "無有效資料粒度";
+    RenderState.ready(
+      requestedLayer,
+      `${Number(packet.row_count || 0).toLocaleString()} 筆，z${currentLodZoom()}，${resolutionDetail}，${sourceDetail}，${renderResult.detail}`
+    );
+    setStatus(`${requestedLayerLabel} 就緒，${requestedDate}，z${currentLodZoom()}，${resolutionDetail}，${sourceDetail}，${renderResult.detail}`);
+    if (Array.isArray(state.availableDates) && state.availableDates.length > 0) {
+      PlaybackEngine.configure({
+        dates: typeof datesInSelectedRange === "function" ? datesInSelectedRange() : state.availableDates,
+        requestContext,
+        currentDate: requestedDate,
+      });
+    }
+  } catch (error) {
+    const stale = seq !== state.fetchSeq
+      || state.dataLayer !== requestedLayer
+      || state.datasetId !== requestedDataset;
+    if (error?.name === "AbortError" || stale) return;
+    RenderState.error(requestedLayer, error?.message || "查詢失敗");
+    renderTable([], state.datasets[requestedDataset]?.display_columns || [], {
+      layer: requestedLayer,
+      date: requestedDate,
+      notify: false,
+    });
+    setStatus(`${requestedLayerLabel} 查詢失敗：${error?.message || "未知錯誤"}`, true);
+    throw error;
+  } finally {
+    if (state.primaryFetchController === controller) {
+      state.primaryFetchController = null;
+    }
   }
-  TimingMetrics.setCount("row-count", packet.row_count);
-  TimingMetrics.setMs("client-ms", timing.elapsed(), { source: metricsSource });
-  TimingMetrics.updateSummary();
-  const sourceDetail = cacheHit
-    ? "瀏覽器快取"
-    : serverCacheHit
-      ? "伺服器快取"
-      : (metricsSource || "來源查詢");
-  const requestedResolution = Number(packet.grid?.requested_resolution_km);
-  const actualResolution = Number(packet.grid?.actual_resolution_km);
-  const resolutionDetail = Number.isFinite(actualResolution)
-    ? (packet.grid?.lod_degraded && Number.isFinite(requestedResolution)
-      ? `${requestedResolution} -> ${actualResolution} km`
-      : `${actualResolution} km`)
-    : "無有效資料粒度";
-  RenderState.ready(
-    requestedLayer,
-    `${Number(packet.row_count || 0).toLocaleString()} 筆，z${currentLodZoom()}，${resolutionDetail}，${sourceDetail}，${renderResult.detail}`
-  );
-  setStatus(`${requestedLayerLabel} 就緒，${requestedDate}，z${currentLodZoom()}，${resolutionDetail}，${sourceDetail}，${renderResult.detail}`);
-  SampledGridRecordCache.schedulePrewarm(requestContext);
 }
 
 function reloadGfwRecords() {
@@ -494,9 +534,10 @@ function reloadGfwRecords() {
 function clearPrimaryLayerRecords() {
   clearTimeout(state.primaryReloadTimer);
   state.primaryReloadTimer = null;
-  if (typeof SampledGridRecordCache !== "undefined") {
-    SampledGridRecordCache.cancelPrewarm();
-  }
+  state.primaryFetchController?.abort();
+  state.primaryFetchController = null;
+  PlaybackPreheater?.stop?.("primary_layer_cleared");
+  PlaybackEngine?.releaseDisplayedFrame?.();
   state.fetchSeq += 1;
   state.aisLiveSeq += 1;
   closeAisSocket();

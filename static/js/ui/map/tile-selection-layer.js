@@ -1,3 +1,5 @@
+const TILE_SELECTION_BREATHE_PERIOD_MS = 1800;
+
 class SampledGridCellHitTester {
   constructor({ targetMap } = {}) {
     this.map = targetMap;
@@ -67,20 +69,15 @@ class SampledGridCellHitTester {
     };
   }
 
-  virtualCellForEvent(event) {
+  virtualCellForEvent(event, { refreshGrid = true } = {}) {
     if (!event?.latlng) return null;
-    const model = this.model();
-    if (!model.enabled) return null;
-    const resolutionKm = model.resolutionKm()
-      || SampledGridContract.requestResolution({
-        datasetId: state.datasetId,
-        zoom: this.map?.getZoom?.(),
-        latitude: event.latlng.lat,
-      });
-    const virtualCell = model.cellAt(
+    const gridSnapshot = refreshGrid
+      ? window.VirtualGridController?.refresh?.("selection") || state.virtualGrid
+      : state.virtualGrid;
+    const virtualCell = window.VirtualGridContract?.cellAt?.(
       event.latlng.lat,
       normalizeLongitude(event.latlng.lng),
-      resolutionKm,
+      gridSnapshot,
     );
     const bounds = this.cellBounds(virtualCell?.bounds);
     if (!bounds) return null;
@@ -103,14 +100,85 @@ class SampledGridCellHitTester {
       bbox_string: bboxString,
       granularity: "sampled_grid_cell",
       resolution_km: virtualCell.resolution_km,
+      selection_grid: virtualCell.grid_contract,
       data_status: "no_data",
       source_rows: 0,
     };
   }
 
-  cellForEvent(event) {
+  cellForEvent(event, options = {}) {
+    const virtualCell = this.virtualCellForEvent(event, options);
+    if (virtualCell) return virtualCell;
     const hit = state?.gridLayer?.hitTest?.(event.containerPoint);
-    return this.cellForHit(hit) || this.virtualCellForEvent(event);
+    return this.cellForHit(hit);
+  }
+}
+
+class VirtualGridCursorPolicy {
+  constructor({ targetMap, hitTester } = {}) {
+    this.map = targetMap;
+    this.hitTester = hitTester;
+    this.container = this.map?.getContainer?.() || null;
+    this.enabled = false;
+    this.selectable = false;
+    this.boundPointerEnter = (event) => this.handlePointerMove(event);
+    this.boundPointerMove = (event) => this.handlePointerMove(event);
+    this.boundPointerLeave = () => this.clear({ forceRefresh: true });
+  }
+
+  setEnabled(enabled) {
+    const next = Boolean(enabled);
+    if (next === this.enabled) return;
+    this.enabled = next;
+    document.body?.classList.toggle("is-tile-selection-mode-active", next);
+    this.container?.classList.toggle("is-tile-selection-enabled", next);
+    if (next) {
+      this.container?.addEventListener("pointerenter", this.boundPointerEnter, true);
+      this.container?.addEventListener("pointermove", this.boundPointerMove, true);
+      this.container?.addEventListener("pointerleave", this.boundPointerLeave, true);
+      this.apply(false, { forceRefresh: true });
+    } else {
+      this.container?.removeEventListener("pointerenter", this.boundPointerEnter, true);
+      this.container?.removeEventListener("pointermove", this.boundPointerMove, true);
+      this.container?.removeEventListener("pointerleave", this.boundPointerLeave, true);
+      this.clear({ forceRefresh: true, resetCursor: true });
+    }
+  }
+
+  selectionEvent(pointerEvent) {
+    if (!pointerEvent || pointerEvent.target?.closest?.(".leaflet-control")) return null;
+    const latlng = this.map?.mouseEventToLatLng?.(pointerEvent);
+    const containerPoint = this.map?.mouseEventToContainerPoint?.(pointerEvent);
+    if (!latlng || !containerPoint) return null;
+    return { latlng, containerPoint };
+  }
+
+  handlePointerMove(pointerEvent) {
+    if (!this.enabled) return this.clear();
+    const selectionEvent = this.selectionEvent(pointerEvent);
+    const selectable = Boolean(
+      selectionEvent
+      && this.hitTester?.cellForEvent?.(selectionEvent, { refreshGrid: false }),
+    );
+    this.apply(selectable);
+  }
+
+  apply(selectable, { forceRefresh = false, resetCursor = false } = {}) {
+    const next = Boolean(this.enabled && selectable);
+    if (!forceRefresh && next === this.selectable) return;
+    this.selectable = next;
+    this.container?.classList.toggle("is-virtual-grid-clickable", next);
+    if (resetCursor) {
+      this.container?.style.removeProperty("cursor");
+    } else {
+      this.container?.style.setProperty("cursor", next ? "crosshair" : "default", "important");
+    }
+    if (this.container) void this.container.offsetWidth;
+    this.map?.invalidateSize?.({ animate: false, pan: false, debounceMoveend: true });
+  }
+
+  clear(options = {}) {
+    this.apply(false, options);
   }
 }
 
@@ -306,25 +374,89 @@ class ContinuousTileSelectionDrawer {
   }
 }
 
+class SelectionSession {
+  constructor({ targetState, modeRegistry } = {}) {
+    if (!targetState || !modeRegistry) {
+      throw new TypeError("SelectionSession requires state and a mode registry");
+    }
+    this.targetState = targetState;
+    this.modeRegistry = modeRegistry;
+    this.externalState = this.ensureExternalState();
+    this.enabled = false;
+    this.mode = this.modeRegistry[this.externalState.mode] ? this.externalState.mode : "single";
+    this.selectedCell = null;
+    this.selectedCells = [];
+    this.lastContinuousMode = this.modeRegistry[this.mode]?.multiple
+      ? this.mode
+      : "same_time_multi_location";
+  }
+
+  ensureExternalState() {
+    this.targetState.tileSelection ||= {
+      enabled: false,
+      mode: "single",
+      hover: null,
+      selected: null,
+      items: [],
+    };
+    if (!this.modeRegistry[this.targetState.tileSelection.mode]) {
+      this.targetState.tileSelection.mode = "single";
+    }
+    if (!Array.isArray(this.targetState.tileSelection.items)) {
+      this.targetState.tileSelection.items = [];
+    }
+    return this.targetState.tileSelection;
+  }
+
+  syncExternal(projectCell) {
+    Object.assign(this.externalState, {
+      enabled: this.enabled,
+      mode: this.mode,
+      hover: null,
+      selected: projectCell(this.selectedCell),
+      items: this.selectedCells.map((cell) => projectCell(cell)),
+    });
+    return this.externalState;
+  }
+
+  snapshot(projectCell) {
+    return Object.freeze({
+      enabled: this.enabled,
+      mode: this.mode,
+      hover: null,
+      selected: projectCell(this.selectedCell),
+      items: this.selectedCells.map((cell) => projectCell(cell)),
+    });
+  }
+
+  dispose() {
+    this.enabled = false;
+    this.selectedCell = null;
+    this.selectedCells = [];
+    this.syncExternal(() => null);
+  }
+}
+
 class TileSelectionLayer {
-  constructor({ targetMap, singleButton, continuousButton, hitTester = null } = {}) {
+  constructor({ targetMap, singleButton, continuousButton, session, hitTester = null } = {}) {
+    if (!(session instanceof SelectionSession)) {
+      throw new TypeError("TileSelectionLayer requires a SelectionSession");
+    }
     this.map = targetMap;
     this.singleButton = singleButton;
     this.continuousButton = continuousButton;
+    this.session = session;
     this.hitTester = hitTester || new SampledGridCellHitTester({ targetMap });
-    this.enabled = false;
-    this.mode = "single";
-    this.selectedCell = null;
-    this.selectedCells = [];
+    this.cursorPolicy = new VirtualGridCursorPolicy({
+      targetMap,
+      hitTester: this.hitTester,
+    });
     this.selectionRectangles = new Map();
     this.selectionLabels = new Map();
+    this.selectionRenderer = L.svg({ pane: "tileSelectionPane", padding: 0.25 });
     this.boundClick = (event) => this.handleClick(event);
     this.boundRefresh = () => this.refreshSelectedCell();
-    const initialState = this.ensureState();
-    this.mode = initialState?.mode || "single";
-    this.lastContinuousMode = TileSelectionModeRegistry[this.mode]?.multiple
-      ? this.mode
-      : "same_time_multi_location";
+    this.boundVirtualGridChange = (event) => this.handleVirtualGridChange(event);
     this.ensurePane();
     this.continuousDrawer = new ContinuousTileSelectionDrawer({
       button: this.continuousButton,
@@ -333,25 +465,23 @@ class TileSelectionLayer {
       onClear: () => this.clearAllSelections(),
     });
     this.bindEntrypoints();
+    window.addEventListener("rrkal:virtual-grid-changed", this.boundVirtualGridChange);
     this.syncButton();
   }
 
+  get enabled() { return this.session.enabled; }
+  set enabled(value) { this.session.enabled = Boolean(value); }
+  get mode() { return this.session.mode; }
+  set mode(value) { this.session.mode = value; }
+  get selectedCell() { return this.session.selectedCell; }
+  set selectedCell(value) { this.session.selectedCell = value; }
+  get selectedCells() { return this.session.selectedCells; }
+  set selectedCells(value) { this.session.selectedCells = Array.isArray(value) ? value : []; }
+  get lastContinuousMode() { return this.session.lastContinuousMode; }
+  set lastContinuousMode(value) { this.session.lastContinuousMode = value; }
+
   ensureState() {
-    if (typeof state === "undefined") return null;
-    state.tileSelection = state.tileSelection || {
-      enabled: false,
-      mode: "single",
-      hover: null,
-      selected: null,
-      items: [],
-    };
-    if (!TileSelectionModeRegistry[state.tileSelection.mode]) {
-      state.tileSelection.mode = "single";
-    }
-    if (!Array.isArray(state.tileSelection.items)) {
-      state.tileSelection.items = [];
-    }
-    return state.tileSelection;
+    return this.session.ensureExternalState();
   }
 
   status(message, isError = false) {
@@ -411,6 +541,11 @@ class TileSelectionLayer {
       bbox_string: cell.bbox_string,
       granularity: cell.granularity,
       resolution_km: cell.resolution_km,
+      selection_grid: cell.selection_grid ? {
+        ...cell.selection_grid,
+        geometry: cell.selection_grid.geometry ? { ...cell.selection_grid.geometry } : null,
+        participants: (cell.selection_grid.participants || []).map((item) => ({ ...item })),
+      } : null,
       data_status: cell.data_status,
       source_rows: cell.source_rows,
       time_binding: cell.time_binding ? {
@@ -466,13 +601,7 @@ class TileSelectionLayer {
   }
 
   snapshot() {
-    return {
-      enabled: this.enabled,
-      mode: this.mode,
-      hover: null,
-      selected: this.publicCell(this.selectedCell),
-      items: this.selectedCells.map((cell) => this.publicCell(cell)),
-    };
+    return this.session.snapshot((cell) => this.publicCell(cell));
   }
 
   selected() {
@@ -484,14 +613,7 @@ class TileSelectionLayer {
   }
 
   emitChange(reason) {
-    this.ensureState();
-    if (typeof state !== "undefined") {
-      state.tileSelection.enabled = this.enabled;
-      state.tileSelection.mode = this.mode;
-      state.tileSelection.hover = null;
-      state.tileSelection.selected = this.publicCell(this.selectedCell);
-      state.tileSelection.items = this.selectedCells.map((cell) => this.publicCell(cell));
-    }
+    this.session.syncExternal((cell) => this.publicCell(cell));
     window.dispatchEvent(new CustomEvent("rrkal:tile-selection-changed", {
       detail: { reason, ...this.snapshot() },
     }));
@@ -517,6 +639,14 @@ class TileSelectionLayer {
     this.emitChange("cleared");
   }
 
+  handleVirtualGridChange(event) {
+    this.cursorPolicy.clear();
+    if (!this.selectedCells.length) return;
+    this.clearSelection();
+    this.status(`共同網格已更新：${event?.detail?.detail || "LOD 或圖層集合改變"}`);
+    this.emitChange("grid_changed");
+  }
+
   setEnabled(enabled) {
     const next = Boolean(enabled);
     if (next === this.enabled) return;
@@ -531,7 +661,7 @@ class TileSelectionLayer {
       this.clearSelection();
       this.status("網格選取模式已關閉");
     }
-    document.getElementById("map-shell")?.classList.toggle("is-tile-selection-enabled", this.enabled);
+    this.cursorPolicy.setEnabled(this.enabled);
     this.syncButton();
     this.emitChange(this.enabled ? "enabled" : "disabled");
   }
@@ -614,8 +744,10 @@ class TileSelectionLayer {
   }
 
   createSelectionRectangle(cell) {
-    return L.rectangle(cell.bounds.leaflet, {
+    const rectangle = L.rectangle(cell.bounds.leaflet, {
         pane: "tileSelectionPane",
+        renderer: this.selectionRenderer,
+        className: "tile-selection-rectangle",
         interactive: false,
         color: "#f8fafc",
         weight: 2.2,
@@ -623,6 +755,13 @@ class TileSelectionLayer {
         fillColor: "#ffffff",
         fillOpacity: 0,
       }).addTo(this.map);
+    const path = rectangle.getElement?.();
+    if (path) {
+      const phaseMs = performance.now() % TILE_SELECTION_BREATHE_PERIOD_MS;
+      path.style.setProperty("--tile-selection-breathe-period", `${TILE_SELECTION_BREATHE_PERIOD_MS}ms`);
+      path.style.setProperty("--tile-selection-breathe-delay", `${-phaseMs}ms`);
+    }
+    return rectangle;
   }
 
   syncSelectionLabels() {
@@ -723,24 +862,54 @@ class TileSelectionLayer {
     }
     this.setSelectedCell(cell);
   }
+
+  dispose() {
+    this.map?.off("click", this.boundClick);
+    this.map?.off("zoomend moveend", this.boundRefresh);
+    window.removeEventListener("rrkal:virtual-grid-changed", this.boundVirtualGridChange);
+    this.cursorPolicy.setEnabled(false);
+    this.clearSelection();
+    this.session.dispose();
+  }
 }
 
-function initTileSelectionLayer() {
+function createTileSelectionLayer({ targetMap, targetState, singleButton, continuousButton } = {}) {
+  if (!singleButton || !continuousButton || !targetMap || !targetState) return null;
+  const session = new SelectionSession({
+    targetState,
+    modeRegistry: TileSelectionModeRegistry,
+  });
+  const hitTester = new SampledGridCellHitTester({ targetMap });
+  return new TileSelectionLayer({
+    targetMap,
+    singleButton,
+    continuousButton,
+    session,
+    hitTester,
+  });
+}
+
+function initTileSelectionLayer(runtime = window.AppRuntime) {
   const singleButton = document.getElementById("grid-select-toggle");
   const continuousButton = document.getElementById("grid-multi-select-toggle");
   const targetMap = window.__rrkalMap || (typeof map !== "undefined" ? map : null);
   window.SampledGridCellHitTester = SampledGridCellHitTester;
-  window.GfwCellHitTester = SampledGridCellHitTester;
-  if (!singleButton || !continuousButton || !targetMap) return null;
-  const layer = new TileSelectionLayer({ targetMap, singleButton, continuousButton });
-  window.TileSelectionLayer = layer;
-  return layer;
+  if (!runtime || !singleButton || !continuousButton || !targetMap) return null;
+  return runtime.install("TileSelectionLayer", () => createTileSelectionLayer({
+    targetMap,
+    targetState: state,
+    singleButton,
+    continuousButton,
+  }));
 }
 
 window.TileSelectionModeRegistry = TileSelectionModeRegistry;
 window.TileSelectionLabelStrategies = TileSelectionLabelStrategies;
+window.VirtualGridCursorPolicy = VirtualGridCursorPolicy;
 window.SameTimeLocationLabel = SameTimeLocationLabel;
 window.LockedTimeLocationLabel = LockedTimeLocationLabel;
 window.ContinuousTileSelectionDrawer = ContinuousTileSelectionDrawer;
+window.SelectionSession = SelectionSession;
 window.TileSelectionLayerClass = TileSelectionLayer;
+window.createTileSelectionLayer = createTileSelectionLayer;
 initTileSelectionLayer();

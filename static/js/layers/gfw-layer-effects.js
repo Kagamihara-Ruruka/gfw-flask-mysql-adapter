@@ -143,4 +143,3 @@ const SampledGridLayerEffects = (() => {
 })();
 
 window.SampledGridLayerEffects = SampledGridLayerEffects;
-window.GfwLayerEffects = SampledGridLayerEffects;

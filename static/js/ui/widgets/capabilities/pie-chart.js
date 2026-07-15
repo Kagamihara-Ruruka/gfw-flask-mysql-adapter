@@ -1,6 +1,10 @@
 (() => {
-const { ChartWidget } = window.WidgetCore;
-const { lineChartEscape, widgetMetricForDataset } = window.WidgetCapabilityShared;
+const { ChartWidget, WidgetPlotlyLifecycle } = window.WidgetCore;
+const {
+  lineChartEscape,
+  WidgetQueryContext,
+  SampledGridWidgetLayerFilter,
+} = window.WidgetCapabilityShared;
 class PieChartDataSource {
   static shared() {
     if (!PieChartDataSource.instance) {
@@ -9,32 +13,20 @@ class PieChartDataSource {
     return PieChartDataSource.instance;
   }
 
-  clear() {}
+  constructor() {
+    this.cache = new Map();
+    this.inflight = new Map();
+    this.generation = 0;
+  }
+
+  clear() {
+    this.generation += 1;
+    this.cache.clear();
+    this.inflight.clear();
+  }
 
   selectedCell() {
     return state?.tileSelection?.selected || window.TileSelectionLayer?.selected?.() || null;
-  }
-
-  currentDate(selected) {
-    const lockedCursor = selected?.time_binding?.kind === "locked_axis"
-      ? selected.time_binding.axis?.cursor
-      : null;
-    return lockedCursor || $("date")?.value || selected?.date || state?.renderedSampledGridDate || "";
-  }
-
-  metricForDataset(dataset, selected) {
-    const selectedMetric = selected?.metric?.column;
-    const declared = new Set([
-      "value",
-      ...(dataset?.metric_columns || []),
-      ...(dataset?.display_columns || []),
-    ]);
-    if (selectedMetric && declared.has(selectedMetric)) return selectedMetric;
-    return widgetMetricForDataset(dataset);
-  }
-
-  selectedBbox(selected) {
-    return Array.isArray(selected?.bbox) && selected.bbox.length === 4 ? selected.bbox : null;
   }
 
   statusModel(stateName, title, detail, extra = {}) {
@@ -43,7 +35,7 @@ class PieChartDataSource {
       title,
       detail,
       date: extra.date || "",
-      metric: extra.metric || "指標值",
+      metric: "value",
       totalLabel: extra.totalLabel || "Y 總量",
       valueRole: "y",
       total: 0,
@@ -53,125 +45,114 @@ class PieChartDataSource {
     };
   }
 
-  requestForCurrentState() {
-    const datasetId = state?.datasetId;
-    const dataset = state?.datasets?.[datasetId] || null;
+  requestForCurrentState({ excludedLayerIds = [] } = {}) {
     const selected = this.selectedCell();
     if (!selected) {
       return { blocked: this.statusModel("waiting", "等待網格選取", "尚未點選取樣網格") };
     }
-    if (selected.dataset_id && datasetId && selected.dataset_id !== datasetId) {
-      return { blocked: this.statusModel("waiting", "等待重新選取", "目前資料集已切換", { selection: selected }) };
+    if (!WidgetQueryContext.bbox(selected)) {
+      return { blocked: this.statusModel("waiting", "等待網格範圍", "選取結果沒有 canonical bbox", { selection: selected }) };
     }
-    const hasBbox = Boolean(this.selectedBbox(selected));
-    const hasIdentity = Boolean(selected.identity?.column && selected.identity?.value !== undefined && selected.identity?.value !== null);
-    if (!hasBbox && !hasIdentity) {
-      return { blocked: this.statusModel("waiting", "等待網格範圍", "選取結果沒有 bbox 或 identity", { selection: selected }) };
-    }
-    const date = this.currentDate(selected);
+    const date = WidgetQueryContext.currentDate(selected);
     if (!date) {
       return { blocked: this.statusModel("waiting", "等待時間切片", "尚未取得單日模式日期", { selection: selected }) };
     }
-    const metric = this.metricForDataset(dataset, selected);
-    if (!datasetId || !dataset || !metric) {
-      return { blocked: this.statusModel("waiting", "等待資料合約", "目前圖層沒有可查詢指標", { date, selection: selected }) };
+    const layers = WidgetQueryContext.sampledGridLayers({ excludedLayerIds });
+    if (!layers.length) {
+      return { blocked: this.statusModel("waiting", "等待資料合約", "沒有啟用的 sampled-grid 圖層", { date, selection: selected }) };
     }
-    const recordsContext = state?.recordsContext || {};
-    if (typeof isSampledGridLayer !== "function" || !isSampledGridLayer(state?.dataLayer)) {
-      return { blocked: this.statusModel("waiting", "等待取樣網格圖層", "圓餅圖需要單日取樣網格資料", { date, metric, selection: selected }) };
-    }
-    if (
-      recordsContext.loading ||
-      recordsContext.layer !== state?.dataLayer ||
-      recordsContext.date !== date ||
-      (state?.renderedSampledGridDate && state.renderedSampledGridDate !== date)
-    ) {
-      return { blocked: this.statusModel("loading", "載入切片比例", `${date} / ${selected.tile_key || selected.label || ""}`, { date, metric, selection: selected }) };
-    }
-    return { datasetId, dataset, selected, date, metric };
+    const key = [
+      selected.selection_id || selected.bbox_string,
+      date,
+      layers.map((layer) => layer.layerId).sort().join(","),
+      selected.selection_grid?.revision || 0,
+    ].join("|");
+    return { key, selected, date, layers };
   }
 
-  rowMatchesIdentity(row, identity) {
-    if (!row || !identity?.column) return false;
-    return String(row[identity.column]) === String(identity.value);
-  }
-
-  rowMatchesBbox(row, bbox) {
-    if (!row || !Array.isArray(bbox) || bbox.length !== 4) return false;
-    const lat = Number(row.lat);
-    const lon = normalizeLongitude(Number(row.lon));
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false;
-    const [west, south, east, north] = bbox.map(Number);
-    return lon >= west && lon <= east && lat >= south && lat <= north;
-  }
-
-  valueForSelection(rows, selected, metric) {
-    const bbox = this.selectedBbox(selected);
-    if (bbox) {
-      const matchedRows = (rows || []).filter((row) => this.rowMatchesBbox(row, bbox));
-      const value = matchedRows.reduce((sum, row) => {
-        const next = Number(row?.[metric] ?? 0);
-        return sum + (Number.isFinite(next) ? next : 0);
-      }, 0);
-      return {
-        row: matchedRows[0] || null,
-        value,
-        rowCount: matchedRows.length,
-      };
-    }
-    const row = (rows || []).find((item) => this.rowMatchesIdentity(item, selected.identity));
-    const value = Number(row?.[metric] ?? 0);
-    return {
-      row,
-      value: Number.isFinite(value) ? value : 0,
-      rowCount: row ? Number(row.source_rows || 1) : 0,
-    };
-  }
-
-  layerLabel(datasetId, dataset) {
-    const layerId = dataset?.layer_id || dataset?.runtime?.layer_id || datasetId;
-    return String(layerId || datasetId || "layer").toUpperCase();
-  }
-
-  model() {
-    const request = this.requestForCurrentState();
-    if (request.blocked) return request.blocked;
-
-    const rows = Array.isArray(state?.rows) ? state.rows : [];
-    const { value, rowCount } = this.valueForSelection(rows, request.selected, request.metric);
-    const total = Math.max(0, value);
-    const label = this.layerLabel(request.datasetId, request.dataset);
-    const detail = `${request.date} / ${request.selected.tile_key || request.selected.label || ""}`;
-    return {
-      state: total > 0 ? "ready" : "zero",
-      title: total > 0 ? "網格切片比例" : "切片總量為 0",
-      detail,
+  async loadModel(request, generation) {
+    const results = await Promise.all(request.layers.map((layer) => (
+      WidgetQueryContext.fetchValue(layer, request.selected)
+    )));
+    const available = results.filter((result) => ["observed", "zero"].includes(result.status));
+    const slices = available.map((result) => ({
+      label: result.layer.label,
+      datasetId: result.layer.datasetId,
+      layerId: result.layer.layerId,
+      datasetLabel: result.layer.dataset?.label || result.layer.label,
+      yKey: "value",
+      aggregation: "sum",
+      value: Math.max(0, Number(result.value || 0)),
+      color: WidgetQueryContext.colorFor(result.layer.layerId, 0.96),
+      className: "legend-a",
+      status: result.status,
+    }));
+    const total = slices.reduce((sum, slice) => sum + slice.value, 0);
+    const unavailableCount = results.filter((result) => result.status === "unavailable").length;
+    const model = {
+      state: available.length ? (total > 0 ? "ready" : "zero") : (unavailableCount ? "error" : "zero"),
+      title: total > 0 ? "網格切片比例" : available.length ? "切片總量為 0" : "沒有可用切片",
+      detail: `${request.date} / ${request.selected.tile_key || request.selected.label || ""}`,
       date: request.date,
-      metric: request.metric,
-      totalLabel: request.metric,
+      metric: "value",
+      totalLabel: "Y 總量",
       valueRole: "y",
       total,
-      slices: [{
-        label,
-        datasetId: request.datasetId,
-        layerId: request.dataset?.layer_id || request.datasetId,
-        datasetLabel: request.dataset?.label || request.datasetId,
-        yKey: request.metric,
-        aggregation: "sum",
-        value: total,
-        color: "rgba(63, 191, 131, 0.96)",
-        className: "legend-a",
-      }],
+      slices,
       selection: request.selected,
-      rowCount,
-      recordsRowCount: rows.length,
+      rowCount: results.reduce((sum, result) => sum + Number(result.rowCount || 0), 0),
+      sourceCount: request.layers.length,
+      unavailableCount,
     };
+    if (generation === this.generation) {
+      this.cache.set(request.key, model);
+      window.dispatchEvent(new CustomEvent("rrkal:pie-chart-data-changed", {
+        detail: { key: request.key, state: model.state },
+      }));
+    }
+    return model;
+  }
+
+  model(options = {}) {
+    const request = this.requestForCurrentState(options);
+    if (request.blocked) return request.blocked;
+    if (this.cache.has(request.key)) return this.cache.get(request.key);
+    if (!this.inflight.has(request.key)) {
+      const generation = this.generation;
+      const loader = this.loadModel(request, generation).finally(() => {
+        if (this.inflight.get(request.key) === loader) this.inflight.delete(request.key);
+      });
+      this.inflight.set(request.key, loader);
+    }
+    return this.statusModel("loading", "載入切片比例", `${request.date} / ${request.layers.length} 個圖層`, {
+      date: request.date,
+      selection: request.selected,
+    });
   }
 }
 
 class PieChartWidget extends ChartWidget {
+  layerFilter() {
+    if (!this.sampledGridLayerFilter) this.sampledGridLayerFilter = new SampledGridWidgetLayerFilter();
+    return this.sampledGridLayerFilter;
+  }
+
   chartModel() {
-    return PieChartDataSource.shared().model();
+    return PieChartDataSource.shared().model({
+      excludedLayerIds: [...this.layerFilter().excludedLayerIds],
+    });
+  }
+
+  renderCapabilitySettings({ pane } = {}) {
+    pane?.append(this.layerFilter().render({
+      title: "比例來源圖層",
+      onChange: () => {
+        PieChartDataSource.shared().clear();
+        window.dispatchEvent(new CustomEvent("rrkal:pie-chart-data-changed", {
+          detail: { reason: "settings_changed", widgetId: this.id },
+        }));
+      },
+    }));
   }
 
   rows() {
@@ -264,10 +245,11 @@ class PieChartWidget extends ChartWidget {
   renderPiePlotlyWhenReady(container, model, segments, options = {}, attempt = 0) {
     const chart = container.querySelector("[data-widget-pie-plotly]");
     if (!chart) return;
-    const rect = chart.getBoundingClientRect();
-    const measurable = rect.width > 0 && rect.height > 0;
-    if (!measurable && attempt < 6) {
-      window.setTimeout(() => this.renderPiePlotlyWhenReady(container, model, segments, options, attempt + 1), 60);
+    if (!WidgetPlotlyLifecycle.waitUntilDisplayed(
+      chart,
+      () => this.renderPiePlotlyWhenReady(container, model, segments, options, attempt + 1),
+      { attempt },
+    )) {
       return;
     }
     if (!window.Plotly?.react) {
@@ -281,12 +263,7 @@ class PieChartWidget extends ChartWidget {
     const layout = this.pieChartLayout(model, options);
     const config = { responsive: true, displayModeBar: false, scrollZoom: false };
     Promise.resolve(window.Plotly.react(chart, data, layout, config)).then(() => {
-      const resize = () => window.Plotly?.Plots?.resize?.(chart);
-      window.requestAnimationFrame(() => {
-        resize();
-        window.requestAnimationFrame(resize);
-      });
-      window.setTimeout(resize, 120);
+      WidgetPlotlyLifecycle.scheduleResize(chart);
     }).catch((err) => {
       chart.textContent = err.message || "Plotly render failed";
       chart.classList.add("pipeline-chart-empty");

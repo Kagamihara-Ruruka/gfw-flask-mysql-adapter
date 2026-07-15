@@ -104,9 +104,7 @@ class EezAttributionDataSource {
       this.eventSelections,
     ];
     const selected = sources.find((items) => Array.isArray(items) && items.length);
-    if (selected) return selected;
-    const fallback = this.selectedFromStatusText();
-    return fallback ? [fallback] : [];
+    return selected || [];
   }
 
   selectedFromState() {
@@ -129,22 +127,6 @@ class EezAttributionDataSource {
     } catch (err) {
       return [];
     }
-  }
-
-  selectedFromStatusText() {
-    const text = document.getElementById("status")?.textContent || "";
-    const match = text.match(/cell\s+(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/i);
-    if (!match) return null;
-    const bbox = match.slice(1).map(Number);
-    if (!bbox.every(Number.isFinite)) return null;
-    const bboxString = bbox.map((value) => value.toFixed(6)).join(",");
-    return {
-      selection_type: "status_cell",
-      tile_key: bboxString,
-      label: `cell ${bboxString}`,
-      bbox,
-      bbox_string: bboxString,
-    };
   }
 
   rememberTileSelection(event) {
@@ -236,7 +218,7 @@ class EezAttributionDataSource {
       bbox: request.bboxString,
       limit: "6",
     });
-    const loader = fetchJson(`/api/overlays/eez/attribution?${params.toString()}`)
+    const loader = LayerQueryCoordinator.fetchEezAttribution(params, { lane: "overlay" })
       .then((packet) => {
         this.cache.set(request.key, this.packetToModel(request, packet));
       })

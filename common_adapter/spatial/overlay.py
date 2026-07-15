@@ -37,6 +37,8 @@ def overlay_settings(config: dict[str, Any]) -> dict[str, Any]:
         "gpkg_geometry_column": eez.get("gpkg_geometry_column", "geom"),
         "postgis": eez.get("postgis", {}),
         "tile_cache_max": eez.get("tile_cache_max"),
+        "tile_cache_path": eez.get("tile_cache_path"),
+        "tile_query_concurrency": eez.get("tile_query_concurrency"),
         "force_full": bool(eez.get("force_full", False)),
         "enabled": bool(eez.get("enabled", True)),
     }

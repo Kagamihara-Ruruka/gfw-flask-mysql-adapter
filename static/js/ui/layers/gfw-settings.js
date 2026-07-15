@@ -3,6 +3,91 @@ function repaintSampledGridLayer() {
   state.gridLayer.setRows(state.gridLayer._rows || state.rows || []);
 }
 
+class SampledGridResolutionController {
+  constructor() {
+    this.bound = false;
+    this.layerId = null;
+    this.datasetId = null;
+  }
+
+  layer(layerId = this.layerId) {
+    const id = String(layerId || "").trim().toLowerCase();
+    return (window.LayerRuntimeContractRegistry?.sampledGridLayers?.() || [])
+      .find((item) => item.layerId === id) || null;
+  }
+
+  bind() {
+    if (this.bound) return;
+    this.bound = true;
+    const select = $("sampled-grid-resolution");
+    if (select) stopStyleControlPropagation(select);
+    select?.addEventListener("change", () => {
+      this.apply(Number(select.value)).catch((error) => {
+        setStatus(error?.message || "網格解析度切換失敗", true);
+        this.sync(this.layerId);
+      });
+    });
+    window.addEventListener("rrkal:sampled-grid-resolution-changed", (event) => {
+      if (event.detail?.datasetId === this.datasetId) this.renderStatus();
+    });
+  }
+
+  async apply(resolutionKm) {
+    if (!this.datasetId) return;
+    const isActive = this.layerId === state.dataLayer && this.datasetId === state.datasetId;
+    if (isActive) {
+      stopPlayback();
+      removeSampledGridLayer();
+      RenderState.loading(this.layerId, "切換解析度");
+    }
+    const selected = SampledGridContract.setRequestedResolution(this.datasetId, resolutionKm);
+    if (!Number.isFinite(selected)) throw new Error("所選解析度不在 Mapping 合約中");
+    PlaybackPreheater?.stop?.("resolution_changed");
+    this.sync(this.layerId);
+    if (isActive) await reloadActiveLayer();
+  }
+
+  sync(layerId = state.dataLayer) {
+    this.layerId = String(layerId || "").trim().toLowerCase();
+    const layer = this.layer(this.layerId);
+    this.datasetId = layer?.datasetId || null;
+    const select = $("sampled-grid-resolution");
+    if (!select) return;
+    const available = this.datasetId
+      ? SampledGridContract.model(this.datasetId).availableResolutionsKm
+      : [];
+    select.replaceChildren(...available.map((resolutionKm, index) => {
+      const option = document.createElement("option");
+      option.value = String(resolutionKm);
+      option.textContent = `${resolutionKm} km${index === 0 ? "（最細）" : ""}`;
+      return option;
+    }));
+    const requested = this.datasetId
+      ? SampledGridContract.requestResolution({ datasetId: this.datasetId })
+      : null;
+    if (Number.isFinite(requested)) select.value = String(requested);
+    select.disabled = available.length <= 1;
+    this.renderStatus();
+  }
+
+  renderStatus() {
+    const status = $("sampled-grid-resolution-status");
+    if (!status) return;
+    if (!this.datasetId) {
+      status.textContent = "此圖層沒有可用的 sampled-grid 解析度合約。";
+      return;
+    }
+    const resolution = SampledGridContract.resolutionState(this.datasetId);
+    if (!resolution.resolved) {
+      status.textContent = `將以 ${resolution.requestedResolutionKm} km 查詢；實際粒度等待資料回應。`;
+      return;
+    }
+    status.textContent = resolution.degraded
+      ? `已選 ${resolution.requestedResolutionKm} km；來源實際回傳 ${resolution.actualResolutionKm} km。`
+      : `目前渲染與選取網格均為 ${resolution.effectiveResolutionKm} km。`;
+  }
+}
+
 class SampledGridPaintController {
   constructor() {
     this.bound = false;
@@ -103,13 +188,16 @@ class SampledGridPaintController {
 }
 
 const sampledGridPaintController = new SampledGridPaintController();
+const sampledGridResolutionController = new SampledGridResolutionController();
 
 function bindSampledGridPaintControls() {
   sampledGridPaintController.bind();
+  sampledGridResolutionController.bind();
 }
 
 function syncSampledGridPaintControls(layerId) {
   sampledGridPaintController.sync(layerId);
+  sampledGridResolutionController.sync(layerId);
 }
 
 function repaintGfwLayer() {

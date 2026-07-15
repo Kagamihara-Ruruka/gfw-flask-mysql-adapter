@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import datetime as dt
-import decimal
 import os
 import re
 import time
@@ -15,8 +13,10 @@ from pymysql.cursors import DictCursor
 
 from common_adapter.config.contracts import load_assembled_config
 from common_adapter.config.paths import runtime_config_path
-from common_adapter.db.registry import UnsupportedBackendOperation, instantiate_backend
 from common_adapter.query.builtins import register_builtin_query_adapters
+from common_adapter.query.registry import UnsupportedQueryOperation, instantiate_query_adapter
+from common_adapter.query.serialization import json_ready, rows_json_ready
+from common_adapter.query.identity import dataset_cache_namespace
 from common_adapter.query.sampled_grid import (
     canonicalize_sampled_grid_packet,
     canonicalize_sampled_grid_range_packet,
@@ -53,9 +53,9 @@ def validate_config(config: dict[str, Any]) -> None:
     datasets = config.setdefault("datasets", {})
     if not isinstance(datasets, dict):
         raise ValueError("config datasets must be an object")
-    has_connections = "mysql" in config or bool(config.get("connections"))
+    has_connections = bool(config.get("connections"))
     if datasets and not has_connections:
-        raise ValueError("database datasets require mysql or connections")
+        raise ValueError("database datasets require connections")
     backend = config.get("sql_backend", {})
     if datasets and backend.get("kind", "mysql") not in SUPPORTED_SQL_BACKENDS:
         raise ValueError(f"sql_backend.kind must be one of: {', '.join(sorted(SUPPORTED_SQL_BACKENDS))}")
@@ -98,18 +98,9 @@ def setting_secret(value: Any) -> str:
 
 
 def connection_configs(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    connections: dict[str, dict[str, Any]] = {
+    return {
         key: dict(value) for key, value in (config.get("connections") or {}).items()
     }
-    if "mysql" in config:
-        legacy_mysql = {
-            "kind": "mysql",
-            "driver": "pymysql",
-            **dict(config["mysql"]),
-        }
-        connections.setdefault(DEFAULT_MYSQL_CONNECTION_REF, legacy_mysql)
-        connections.setdefault("default_mysql", legacy_mysql)
-    return connections
 
 
 def default_connection_ref(config: dict[str, Any], backend_kind: str) -> str:
@@ -179,19 +170,6 @@ def duckdb_table_sql(value: str) -> str:
     return ".".join(duckdb_quote(part) for part in parts)
 
 
-def json_ready(value: Any) -> Any:
-    if isinstance(value, (dt.date, dt.datetime)):
-        return value.isoformat()
-    if isinstance(value, decimal.Decimal):
-        as_int = int(value)
-        return as_int if value == as_int else float(value)
-    return value
-
-
-def rows_json_ready(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [{key: json_ready(value) for key, value in row.items()} for row in rows]
-
-
 def dataset_render_columns(dataset: dict[str, Any]) -> list[str]:
     columns: list[str] = []
     for key in ["time_column", "id_column", "lat_column", "lon_column"]:
@@ -231,11 +209,16 @@ def elapsed_ms(start: float) -> float:
 
 def query_policy(config: dict[str, Any]) -> dict[str, Any]:
     policy = config.get("query_policy", {})
+    snapshot_cache_max_rows = policy.get("snapshot_cache_max_rows", 800000)
+    if snapshot_cache_max_rows is not None:
+        snapshot_cache_max_rows = max(1, int(snapshot_cache_max_rows))
     return {
         "default_limit": optional_query_limit(policy.get("default_limit", 1000)),
         "max_limit": optional_query_limit(policy.get("max_limit")),
         "table_preview_limit": int(policy.get("table_preview_limit", 300)),
         "require_time_or_bbox_filter": bool(policy.get("require_time_or_bbox_filter", True)),
+        "network_concurrency": max(1, min(16, int(policy.get("network_concurrency", 6)))),
+        "snapshot_cache_max_rows": snapshot_cache_max_rows,
     }
 
 
@@ -276,6 +259,7 @@ _RECORDS_CACHE_MAX_ENTRIES = 96
 
 def _records_cache_key(
     *,
+    cache_namespace: str,
     connection: dict[str, Any],
     database: str,
     table: str,
@@ -288,6 +272,7 @@ def _records_cache_key(
 ) -> str:
     return "|".join(
         [
+            cache_namespace,
             str(connection.get("host", "")),
             str(connection.get("port", "")),
             database,
@@ -304,6 +289,7 @@ def _records_cache_key(
 
 def _range_records_cache_key(
     *,
+    cache_namespace: str,
     connection: dict[str, Any],
     database: str,
     table: str,
@@ -317,6 +303,7 @@ def _range_records_cache_key(
     return "|".join(
         [
             "range",
+            cache_namespace,
             str(connection.get("host", "")),
             str(connection.get("port", "")),
             database,
@@ -333,6 +320,7 @@ def _range_records_cache_key(
 
 def _time_series_cache_key(
     *,
+    cache_namespace: str,
     connection: dict[str, Any],
     database: str,
     table: str,
@@ -347,6 +335,7 @@ def _time_series_cache_key(
     return "|".join(
         [
             "time-series",
+            cache_namespace,
             str(connection.get("host", "")),
             str(connection.get("port", "")),
             database,
@@ -566,7 +555,7 @@ def import_duckdb_to_mysql(
     dataset = config["datasets"][dataset_id]
     kind, connection_ref, connection = dataset_backend_info(config, dataset)
     if kind != "mysql":
-        raise UnsupportedBackendOperation(kind, "DuckDB import", "DuckDB import currently writes only MySQL read models")
+        raise UnsupportedQueryOperation(kind, "DuckDB import", "DuckDB import currently writes only MySQL read models")
     source_table = dataset["duckdb_source_table"]
     target_table = mysql_dataset_table(dataset)
     database = validate_identifier(dataset.get("database") or connection["database"], "database")
@@ -621,7 +610,7 @@ def _mysql_schema_packet(
 ) -> dict[str, Any]:
     table = mysql_dataset_table(dataset)
     database = validate_identifier(dataset.get("database") or connection["database"], "database")
-    cache_key = f"{connection_ref}.{database}.{table}"
+    cache_key = f"{dataset_cache_namespace(dataset)}|{connection_ref}.{database}.{table}"
     cached = _SCHEMA_CACHE.get(cache_key)
     if cached and time.time() - cached["created_at"] < 300:
         packet = dict(cached["packet"])
@@ -694,6 +683,7 @@ def _mysql_records_packet(
         where_parts.append(f"{mysql_quote(lat_column)} BETWEEN %s AND %s")
         params.extend([south, north])
     cache_key = _records_cache_key(
+        cache_namespace=dataset_cache_namespace(dataset),
         connection=connection,
         database=database,
         table=table,
@@ -774,6 +764,7 @@ def _mysql_records_range_packet(
         start_date, end_date = end_date, start_date
 
     cache_key = _range_records_cache_key(
+        cache_namespace=dataset_cache_namespace(dataset),
         connection=connection,
         database=database,
         table=table,
@@ -891,6 +882,7 @@ def _mysql_time_series_packet(
         start_date, end_date = end_date, start_date
 
     cache_key = _time_series_cache_key(
+        cache_namespace=dataset_cache_namespace(dataset),
         connection=connection,
         database=database,
         table=table,
@@ -989,7 +981,7 @@ def _mysql_time_series_packet(
 def read_backend(config: dict[str, Any], dataset: dict[str, Any]):
     register_builtin_query_adapters()
     kind = dataset_backend_kind(config, dataset)
-    return instantiate_backend(kind, config, dataset)
+    return instantiate_query_adapter(kind, config, dataset)
 
 
 def schema_packet(config: dict[str, Any], dataset: dict[str, Any]) -> dict[str, Any]:
@@ -1032,7 +1024,7 @@ def records_range_packet(
 ) -> dict[str, Any]:
     backend = read_backend(config, dataset)
     if not hasattr(backend, "records_range_packet"):
-        raise UnsupportedBackendOperation(
+        raise UnsupportedQueryOperation(
             dataset_backend_kind(config, dataset),
             "records_range_packet",
             "range preheat is not supported by this backend",
@@ -1059,10 +1051,11 @@ def time_series_packet(
     aggregation: str | None = None,
     identity_column: str | None = None,
     identity_value: str | None = None,
+    query_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     backend = read_backend(config, dataset)
     if not hasattr(backend, "time_series_packet"):
-        raise UnsupportedBackendOperation(
+        raise UnsupportedQueryOperation(
             dataset_backend_kind(config, dataset),
             "time_series_packet",
             "time-series aggregation is not supported by this backend",
@@ -1075,6 +1068,7 @@ def time_series_packet(
         aggregation=aggregation,
         identity_column=identity_column,
         identity_value=identity_value,
+        query_context=query_context,
     )
     return canonicalize_sampled_grid_time_series_packet(packet, dataset)
 

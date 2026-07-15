@@ -5,7 +5,7 @@ import time
 from collections import defaultdict
 from typing import Any, Iterable
 
-from common_adapter.db.connect import json_ready, rows_json_ready
+from common_adapter.query.serialization import json_ready, rows_json_ready
 
 try:
     import pandas as pd

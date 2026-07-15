@@ -1,60 +1,19 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.local/common-adapter/config.schema.json",
-  "title": "Common adapter config",
+  "$id": "https://example.local/common-adapter/runtime-config.schema.json",
+  "title": "RRKAL runtime config",
   "type": "object",
-  "required": ["sql_backend", "query_policy", "server", "default_dataset", "datasets"],
+  "required": ["schema", "role", "query_policy", "server"],
   "additionalProperties": false,
   "properties": {
-    "sql_backend": {
-      "type": "object",
-      "required": ["kind", "driver"],
-      "additionalProperties": false,
-      "properties": {
-        "kind": {
-          "type": "string",
-          "enum": ["mysql", "hive", "spark", "postgresql", "mongodb", "duckdb", "custom"]
-        },
-        "driver": {
-          "type": "string",
-          "minLength": 1
-        }
-      }
+    "schema": {
+      "const": "rrkal.adapter.runtime_json.v1"
     },
-    "mysql": {
-      "type": "object",
-      "required": ["host", "port", "user", "password", "database"],
-      "additionalProperties": false,
-      "properties": {
-        "host": { "type": "string", "minLength": 1 },
-        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-        "user": { "type": "string", "minLength": 1 },
-        "password": { "type": "string" },
-        "database": { "$ref": "#/$defs/sqlIdentifier" }
-      }
+    "role": {
+      "const": "runtime_json"
     },
-    "default_connection_ref": {
-      "$ref": "#/$defs/sqlIdentifier"
-    },
-    "connections": {
-      "type": "object",
-      "additionalProperties": {
-        "type": "object",
-        "required": ["kind", "driver", "host", "port", "user", "password", "database"],
-        "additionalProperties": false,
-        "properties": {
-          "kind": {
-            "type": "string",
-            "enum": ["mysql", "hive", "spark", "postgresql", "mongodb", "duckdb", "custom"]
-          },
-          "driver": { "type": "string", "minLength": 1 },
-          "host": { "type": "string", "minLength": 1 },
-          "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-          "user": { "type": "string", "minLength": 1 },
-          "password": { "type": "string" },
-          "database": { "$ref": "#/$defs/sqlIdentifier" }
-        }
-      }
+    "description": {
+      "type": "string"
     },
     "query_policy": {
       "type": "object",
@@ -78,8 +37,26 @@
             { "type": "null" }
           ]
         },
-        "table_preview_limit": { "type": "integer", "minimum": 1 },
-        "require_time_or_bbox_filter": { "type": "boolean" }
+        "table_preview_limit": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "require_time_or_bbox_filter": {
+          "type": "boolean"
+        },
+        "network_concurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16,
+          "default": 6
+        },
+        "snapshot_cache_max_rows": {
+          "anyOf": [
+            { "type": "integer", "minimum": 1 },
+            { "type": "null" }
+          ],
+          "default": 800000
+        }
       }
     },
     "server": {
@@ -87,10 +64,7 @@
       "required": ["default_command", "host", "port", "debug", "kill_port_if_busy"],
       "additionalProperties": false,
       "properties": {
-        "default_command": {
-          "type": "string",
-          "enum": ["serve"]
-        },
+        "default_command": { "const": "serve" },
         "host": { "type": "string", "minLength": 1 },
         "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
         "debug": { "type": "boolean" },
@@ -99,204 +73,16 @@
     },
     "rendering": {
       "type": "object",
-      "required": ["hardware_acceleration", "allow_webgl", "allow_webgpu", "min_webgl_rows"],
-      "additionalProperties": false,
+      "additionalProperties": true,
       "properties": {
         "hardware_acceleration": {
           "type": "string",
-          "enum": ["auto", "off", "force"]
+          "enum": ["auto", "webgl", "canvas"]
         },
         "allow_webgl": { "type": "boolean" },
         "allow_webgpu": { "type": "boolean" },
-        "min_webgl_rows": { "type": "integer", "minimum": 1 },
-        "aerial_backdrop": {
-          "type": "object",
-          "required": [
-            "enabled",
-            "provider",
-            "endpoint",
-            "layer",
-            "fallback_layer",
-            "date_policy",
-            "lookback_days",
-            "minimum_image_bytes",
-            "image_format",
-            "output_width",
-            "output_height",
-            "context_scale",
-            "timeout_seconds",
-            "max_response_bytes",
-            "cache_max_entries",
-            "browser_cache_seconds",
-            "background_opacity",
-            "scrim_opacity",
-            "attribution"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "enabled": { "type": "boolean" },
-            "provider": { "type": "string", "enum": ["nasa_gibs_wms"] },
-            "endpoint": { "type": "string", "format": "uri", "pattern": "^https://" },
-            "layer": { "type": "string", "minLength": 1 },
-            "fallback_layer": { "type": "string", "minLength": 1 },
-            "date_policy": { "type": "string", "enum": ["latest_available"] },
-            "lookback_days": { "type": "integer", "minimum": 0, "maximum": 30 },
-            "minimum_image_bytes": { "type": "integer", "minimum": 1, "maximum": 33554432 },
-            "image_format": { "type": "string", "enum": ["image/jpeg", "image/png"] },
-            "output_width": { "type": "integer", "minimum": 320, "maximum": 1920 },
-            "output_height": { "type": "integer", "minimum": 180, "maximum": 1080 },
-            "context_scale": { "type": "number", "minimum": 1, "maximum": 80 },
-            "timeout_seconds": { "type": "number", "minimum": 1, "maximum": 60 },
-            "max_response_bytes": { "type": "integer", "minimum": 1048576, "maximum": 33554432 },
-            "cache_max_entries": { "type": "integer", "minimum": 1, "maximum": 256 },
-            "browser_cache_seconds": { "type": "integer", "minimum": 0, "maximum": 604800 },
-            "background_opacity": { "type": "number", "minimum": 0, "maximum": 1 },
-            "scrim_opacity": { "type": "number", "minimum": 0, "maximum": 1 },
-            "attribution": { "type": "string", "minLength": 1 }
-          }
-        }
+        "min_webgl_rows": { "type": "integer", "minimum": 1 }
       }
-    },
-    "default_dataset": {
-      "$ref": "#/$defs/sqlIdentifier"
-    },
-    "live": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "ais": {
-          "type": "object",
-          "required": [
-            "enabled",
-            "connection",
-            "database",
-            "table",
-            "time_column",
-            "lat_column",
-            "lon_column",
-            "mmsi_column",
-            "max_age_minutes",
-            "limit"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "enabled": { "type": "boolean" },
-            "provider": {
-              "type": "string",
-              "enum": ["mysql", "aisstream", "aishub_polling"]
-            },
-            "api_key": { "type": "string" },
-            "api_key_fingerprint": { "type": "string" },
-            "stream_url": { "type": "string", "minLength": 1 },
-            "aishub_username": { "type": "string" },
-            "aishub_url": { "type": "string", "minLength": 1 },
-            "filter_message_types": {
-              "type": "array",
-              "minItems": 1,
-              "items": { "type": "string", "minLength": 1 }
-            },
-            "snapshot_interval_ms": { "type": "integer", "minimum": 250 },
-            "stream_cache_limit": { "type": "integer", "minimum": 1 },
-            "ingest_enabled": { "type": "boolean" },
-            "ingest_reconnect_seconds": { "type": "integer", "minimum": 3 },
-            "ingest_status_report_seconds": { "type": "integer", "minimum": 3 },
-            "ingest_flush_seconds": { "type": "number", "minimum": 0.25 },
-            "ingest_batch_size": { "type": "integer", "minimum": 1 },
-            "ingest_auto_create_table": { "type": "boolean" },
-            "ingest_meta_table": { "$ref": "#/$defs/sqlIdentifier" },
-            "collector_config_path": { "type": "string", "minLength": 1 },
-            "connection_ref": { "$ref": "#/$defs/sqlIdentifier" },
-            "connection": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "host": { "type": "string", "minLength": 1 },
-                "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-                "user": { "type": "string", "minLength": 1 },
-                "password": { "type": "string" }
-              }
-            },
-            "database": { "$ref": "#/$defs/sqlIdentifier" },
-            "table": { "$ref": "#/$defs/sqlIdentifier" },
-            "time_column": { "$ref": "#/$defs/sqlIdentifier" },
-            "lat_column": { "$ref": "#/$defs/sqlIdentifier" },
-            "lon_column": { "$ref": "#/$defs/sqlIdentifier" },
-            "mmsi_column": { "$ref": "#/$defs/sqlIdentifier" },
-            "speed_column": { "$ref": "#/$defs/sqlIdentifier" },
-            "course_column": { "$ref": "#/$defs/sqlIdentifier" },
-            "heading_column": { "$ref": "#/$defs/sqlIdentifier" },
-            "name_column": { "$ref": "#/$defs/sqlIdentifier" },
-            "source_column": { "$ref": "#/$defs/sqlIdentifier" },
-            "include_sources": {
-              "type": "array",
-              "items": { "type": "string", "minLength": 1 }
-            },
-            "max_age_minutes": { "type": "integer", "minimum": 1 },
-            "limit": {
-              "oneOf": [
-                { "type": "integer", "minimum": 1 },
-                { "type": "string", "enum": ["max", "all", "unbounded"] }
-              ]
-            }
-          }
-        }
-      }
-    },
-    "datasets": {
-      "type": "object",
-      "minProperties": 1,
-      "additionalProperties": {
-        "type": "object",
-        "required": [
-          "label",
-          "table",
-          "time_column",
-          "lat_column",
-          "lon_column",
-          "id_column",
-          "display_columns",
-          "metric_columns",
-          "category_columns"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "label": { "type": "string", "minLength": 1 },
-          "backend": {
-            "type": "string",
-            "enum": ["mysql", "hive", "spark", "postgresql", "mongodb", "duckdb", "custom"]
-          },
-          "connection_ref": { "$ref": "#/$defs/sqlIdentifier" },
-          "duckdb_source_table": {
-            "type": "string",
-            "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)?$"
-          },
-          "mysql_table": { "$ref": "#/$defs/sqlIdentifier" },
-          "table": { "$ref": "#/$defs/sqlIdentifier" },
-          "time_column": { "$ref": "#/$defs/sqlIdentifier" },
-          "lat_column": { "$ref": "#/$defs/sqlIdentifier" },
-          "lon_column": { "$ref": "#/$defs/sqlIdentifier" },
-          "id_column": { "$ref": "#/$defs/sqlIdentifier" },
-          "display_columns": {
-            "type": "array",
-            "minItems": 1,
-            "items": { "$ref": "#/$defs/sqlIdentifier" }
-          },
-          "metric_columns": {
-            "type": "array",
-            "items": { "$ref": "#/$defs/sqlIdentifier" }
-          },
-          "category_columns": {
-            "type": "array",
-            "items": { "$ref": "#/$defs/sqlIdentifier" }
-          }
-        }
-      }
-    }
-  },
-  "$defs": {
-    "sqlIdentifier": {
-      "type": "string",
-      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
     }
   }
 }

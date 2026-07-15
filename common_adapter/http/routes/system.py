@@ -33,17 +33,16 @@ class SystemRoutes:
             started = time.perf_counter()
             try:
                 datasets, mapping_errors = database_datasets_from_mappings(config)
-                configured_default = str(config.get("default_dataset") or "")
-                default_dataset_id = configured_default if configured_default in datasets else next(iter(datasets), None)
+                sampled_dataset_id = next(iter(sorted(datasets)), None)
                 ok = True
                 db_ping_ms = None
                 backend_packet = None
-                if default_dataset_id is not None:
-                    default_dataset = datasets[default_dataset_id]
-                    backend_kind, connection_ref, connection = dataset_backend_info(config, default_dataset)
+                if sampled_dataset_id is not None:
+                    sampled_dataset = datasets[sampled_dataset_id]
+                    backend_kind, connection_ref, connection = dataset_backend_info(config, sampled_dataset)
                     backend_packet = {"kind": backend_kind, "connection_ref": connection_ref}
                     if backend_kind == "mysql":
-                        database = default_dataset.get("database") or connection["database"]
+                        database = sampled_dataset.get("database") or connection["database"]
                         with mysql_connection(config, database, dict_cursor=True, connection=connection) as conn, conn.cursor() as cur:
                             cur.execute("SELECT 1 AS ok")
                             ok = cur.fetchone()["ok"] == 1
@@ -52,7 +51,7 @@ class SystemRoutes:
                     {
                         "status": "ok" if ok else "degraded",
                         "backend": config.get("sql_backend", {"kind": "mysql", "driver": "pymysql"}),
-                        "default_dataset_backend": backend_packet,
+                        "sampled_dataset_backend": backend_packet,
                         "datasets": sorted(datasets.keys()),
                         "mapping_errors": mapping_errors,
                         "timing": {"db_ping_ms": db_ping_ms},

@@ -11,8 +11,6 @@ from common_adapter.developer.sources.configs import normalize_config_ref
 from common_adapter.developer.state.manifest import (
     DATA_LAYER_ID_PATTERN,
     load_router_manifest,
-    normalize_imported_layers,
-    save_router_manifest,
 )
 from common_adapter.spatial.overlay import validate_identifier
 
@@ -176,12 +174,6 @@ class LayerMappingStore:
         rows = [row for row in packet["mappings"] if row["mapping_id"] != normalized["mapping_id"]]
         rows.append(normalized)
         self.save({"mappings": rows})
-        manifest = load_router_manifest()
-        layers = set(normalize_imported_layers(manifest.get("imported_layers")))
-        if not isinstance(normalized.get("sampled_grid", {}).get("catalog"), dict):
-            layers.add(normalized["layer_id"])
-        manifest["imported_layers"] = sorted(layers)
-        save_router_manifest(manifest)
         return {"status": "ok", "mapping": normalized, "mappings": self.load()["mappings"], "manifest": load_router_manifest()}
 
     def set_enabled(self, mapping_id: str, enabled: bool) -> dict[str, Any]:
@@ -196,6 +188,25 @@ class LayerMappingStore:
             raise ValueError("unknown mapping_id")
         self.save(packet)
         return {"status": "ok", "mappings": self.load()["mappings"]}
+
+    def migrate_config_ref(self, old_config_ref: str, new_config_ref: str) -> dict[str, Any]:
+        old_ref = normalize_config_ref(old_config_ref)
+        new_ref = normalize_config_ref(new_config_ref)
+        packet = self.load()
+        changed = 0
+        for row in packet["mappings"]:
+            if row.get("config_path") != old_ref:
+                continue
+            row["config_path"] = new_ref
+            changed += 1
+        if changed:
+            self.save(packet)
+        return {
+            "status": "ok",
+            "old_config_path": old_ref,
+            "new_config_path": new_ref,
+            "updated_mappings": changed,
+        }
 
 
 DEFAULT_LAYER_MAPPING_STORE = LayerMappingStore()
@@ -231,3 +242,7 @@ def upsert_layer_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
 
 def set_layer_mapping_enabled(mapping_id: str, enabled: bool) -> dict[str, Any]:
     return DEFAULT_LAYER_MAPPING_STORE.set_enabled(mapping_id, enabled)
+
+
+def migrate_layer_mapping_config_ref(old_config_ref: str, new_config_ref: str) -> dict[str, Any]:
+    return DEFAULT_LAYER_MAPPING_STORE.migrate_config_ref(old_config_ref, new_config_ref)

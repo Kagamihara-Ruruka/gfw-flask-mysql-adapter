@@ -16,6 +16,7 @@ CANONICAL_ROLE_COLUMNS = (
     ("coverage", "coverage_ratio"),
     ("status", "data_status"),
 )
+CANONICAL_COLUMN_BY_ROLE = dict(CANONICAL_ROLE_COLUMNS)
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -75,6 +76,15 @@ def sampled_grid_source_fields(dataset: dict[str, Any]) -> dict[str, str]:
     return normalized
 
 
+def sampled_grid_request_fields(dataset: dict[str, Any]) -> dict[str, str]:
+    contract = sampled_grid_contract(dataset) or {}
+    return {
+        str(role): str(path)
+        for role, path in _mapping(contract.get("request_fields")).items()
+        if str(role).strip() and str(path).strip()
+    }
+
+
 def sampled_grid_render_columns(dataset: dict[str, Any]) -> list[str]:
     columns: list[str] = []
     for column in sampled_grid_source_fields(dataset).values():
@@ -123,6 +133,7 @@ def sampled_grid_public_contract(dataset: dict[str, Any]) -> dict[str, Any] | No
     return {
         "contract_version": contract.get("contract_version"),
         "available_resolutions_km": sampled_grid_available_resolutions(dataset),
+        "grid_profile": deepcopy(contract.get("grid_profile") or {}),
         "coverage_areas": deepcopy(contract.get("coverage_areas") or []),
         "alignment": deepcopy(contract.get("alignment") or {}),
         "geometry": deepcopy(contract.get("geometry") or {}),
@@ -134,10 +145,38 @@ def sampled_grid_public_contract(dataset: dict[str, Any]) -> dict[str, Any] | No
 
 
 def _row_value(row: dict[str, Any], fields: dict[str, str], role: str) -> Any:
-    if role in row:
-        return row.get(role)
     column = fields.get(role)
-    return row.get(column) if column else None
+    if column and column in row:
+        return row.get(column)
+    canonical_column = CANONICAL_COLUMN_BY_ROLE.get(role)
+    if canonical_column and canonical_column in row:
+        return row.get(canonical_column)
+    return row.get(role) if role in row else None
+
+
+def _context_value(context: dict[str, Any], path: str | None) -> Any:
+    current: Any = context
+    for part in str(path or "").split("."):
+        if not part:
+            continue
+        if not isinstance(current, dict) or part not in current:
+            return None
+        current = current[part]
+    return current
+
+
+def _canonical_role_value(
+    row: dict[str, Any],
+    fields: dict[str, str],
+    request_fields: dict[str, str],
+    context: dict[str, Any],
+    role: str,
+) -> Any:
+    source_column = fields.get(role)
+    canonical_column = CANONICAL_COLUMN_BY_ROLE.get(role)
+    if (source_column and source_column in row) or (canonical_column and canonical_column in row) or role in row:
+        return _row_value(row, fields, role)
+    return _context_value(context, request_fields.get(role))
 
 
 def _explicit_bounds(row: dict[str, Any], fields: dict[str, str]) -> dict[str, float] | None:
@@ -216,8 +255,15 @@ def sampled_grid_row_bounds(row: dict[str, Any], dataset: dict[str, Any]) -> dic
     return None
 
 
-def canonicalize_sampled_grid_row(row: dict[str, Any], dataset: dict[str, Any]) -> dict[str, Any]:
+def canonicalize_sampled_grid_row(
+    row: dict[str, Any],
+    dataset: dict[str, Any],
+    *,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     fields = sampled_grid_source_fields(dataset)
+    request_fields = sampled_grid_request_fields(dataset)
+    request_context = _mapping(context)
     bounds = sampled_grid_row_bounds(row, dataset)
     lat = _number(_row_value(row, fields, "lat"))
     lon = _number(_row_value(row, fields, "lon"))
@@ -228,14 +274,18 @@ def canonicalize_sampled_grid_row(row: dict[str, Any], dataset: dict[str, Any]) 
         canonical["bounds"] = bounds
     canonical.update(
         {
-            "cell_id": _row_value(row, fields, "id"),
-            "date": _row_value(row, fields, "time"),
+            "cell_id": _canonical_role_value(row, fields, request_fields, request_context, "id"),
+            "date": _canonical_role_value(row, fields, request_fields, request_context, "time"),
             "lat": lat,
             "lon": lon,
-            "value": _row_value(row, fields, "value"),
-            "resolution_km": _number(_row_value(row, fields, "resolution")),
-            "coverage_ratio": _number(_row_value(row, fields, "coverage")),
-            "data_status": _row_value(row, fields, "status"),
+            "value": _canonical_role_value(row, fields, request_fields, request_context, "value"),
+            "resolution_km": _number(
+                _canonical_role_value(row, fields, request_fields, request_context, "resolution")
+            ),
+            "coverage_ratio": _number(
+                _canonical_role_value(row, fields, request_fields, request_context, "coverage")
+            ),
+            "data_status": _canonical_role_value(row, fields, request_fields, request_context, "status"),
         }
     )
     available = sampled_grid_available_resolutions(dataset)
@@ -259,6 +309,8 @@ def canonicalize_sampled_grid_packet(
     contract = sampled_grid_contract(dataset)
     if contract is None:
         return packet
+    if packet.get("row_contract_version") == SAMPLED_GRID_CONTRACT_VERSION:
+        return deepcopy(packet)
     normalized = deepcopy(packet)
     rows = [
         canonicalize_sampled_grid_row(row, dataset)
@@ -279,9 +331,11 @@ def canonicalize_sampled_grid_packet(
         requested = available[0]
     normalized["rows"] = rows
     normalized["row_count"] = len(rows)
+    normalized["row_contract_version"] = SAMPLED_GRID_CONTRACT_VERSION
     normalized["columns"] = sampled_grid_canonical_columns(dataset)
     normalized["grid"] = {
         "contract_version": SAMPLED_GRID_CONTRACT_VERSION,
+        "grid_profile": deepcopy(existing_grid.get("grid_profile") or contract.get("grid_profile") or {}),
         "available_resolutions_km": available,
         "requested_resolution_km": requested,
         "actual_resolution_km": actual,

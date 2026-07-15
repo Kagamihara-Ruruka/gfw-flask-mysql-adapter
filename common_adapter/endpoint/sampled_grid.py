@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import time
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from typing import Any
 
@@ -17,9 +18,12 @@ from common_adapter.query.snapshot_cache import (
     SnapshotCachePolicy,
     SnapshotLoad,
 )
+from common_adapter.query.identity import dataset_cache_namespace
 
 
 WEB_MERCATOR_KM_PER_CSS_PIXEL_AT_ZOOM_ZERO = 156.54303392804097
+GEOGRAPHIC_INTERSECTION_EPSILON = 1e-9
+TIME_SERIES_AGGREGATIONS = {"sum", "avg", "min", "max", "count"}
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -56,7 +60,10 @@ def _intersection(
         "east": min(left["east"], right["east"]),
         "north": min(left["north"], right["north"]),
     }
-    return result if result["west"] < result["east"] and result["south"] < result["north"] else None
+    return result if (
+        result["west"] + GEOGRAPHIC_INTERSECTION_EPSILON < result["east"]
+        and result["south"] + GEOGRAPHIC_INTERSECTION_EPSILON < result["north"]
+    ) else None
 
 
 def _contains(outer: dict[str, float], inner: dict[str, float]) -> bool:
@@ -177,17 +184,71 @@ def _effective_limit(value: Any) -> int | None:
     return limit
 
 
-def _retryable_resolution_error(exc: EndpointRequestError, policy: dict[str, Any]) -> bool:
+def _time_series_aggregation(value: Any) -> str:
+    aggregation = str(value or "sum").strip().lower()
+    if aggregation not in TIME_SERIES_AGGREGATIONS:
+        allowed = ", ".join(sorted(TIME_SERIES_AGGREGATIONS))
+        raise ValueError(f"unsupported time-series aggregation: {aggregation}; expected one of {allowed}")
+    return aggregation
+
+
+def _aggregate_rows(rows: list[dict[str, Any]], aggregation: str) -> float | int | None:
+    if aggregation == "count":
+        return len(rows)
+    values = []
+    for row in rows:
+        value = _number(row.get("value"))
+        if value is not None and math.isfinite(value):
+            values.append(value)
+    if not values:
+        return None
+    if aggregation == "avg":
+        return sum(values) / len(values)
+    if aggregation == "min":
+        return min(values)
+    if aggregation == "max":
+        return max(values)
+    return sum(values)
+
+
+def _time_series_workers(config: dict[str, Any], date_count: int) -> int:
+    try:
+        workers = int(config.get("max_workers", 1))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("sampled-grid query.time_series.max_workers must be a positive integer") from exc
+    if workers < 1:
+        raise ValueError("sampled-grid query.time_series.max_workers must be a positive integer")
+    return min(workers, max(1, date_count))
+
+
+def _endpoint_error_matches(
+    exc: EndpointRequestError,
+    policy: dict[str, Any],
+    *,
+    status_key: str = "status_codes",
+    text_key: str = "error_contains",
+) -> bool:
     status_codes = {
         int(value)
-        for value in _list(policy.get("retry_status_codes"))
+        for value in _list(policy.get(status_key))
         if str(value).isdigit()
     }
-    fragments = [str(value).lower() for value in _list(policy.get("retry_error_contains")) if str(value)]
+    fragments = [str(value).lower() for value in _list(policy.get(text_key)) if str(value)]
+    if not status_codes and not fragments:
+        return False
     body_text = str(exc.body or exc).lower()
     status_match = not status_codes or exc.status_code in status_codes
     text_match = not fragments or any(fragment in body_text for fragment in fragments)
     return status_match and text_match
+
+
+def _retryable_resolution_error(exc: EndpointRequestError, policy: dict[str, Any]) -> bool:
+    return _endpoint_error_matches(
+        exc,
+        policy,
+        status_key="retry_status_codes",
+        text_key="retry_error_contains",
+    )
 
 
 def _union_bounds(coverages: list[dict[str, Any]]) -> dict[str, float] | None:
@@ -216,7 +277,33 @@ class SampledGridHttpQueryAdapter:
         if not self.dataset_id:
             raise ValueError("sampled-grid dataset is missing its canonical dataset_id")
         self.snapshot_cache_policy = SnapshotCachePolicy.from_contract(self.descriptor)
-        self.snapshot_cache_namespace = f"{SAMPLED_GRID_CONTRACT_VERSION}:{self.dataset_id}"
+        self.snapshot_cache_namespace = dataset_cache_namespace(dataset)
+        self.grid_profile = deepcopy(_mapping(self.descriptor.get("grid_profile")))
+
+    def _availability_dates(
+        self,
+        *,
+        coverage: dict[str, Any] | None,
+        resolution: float | None,
+    ) -> list[str]:
+        availability = _mapping(self.query.get("availability"))
+        path = str(availability.get("path") or "").strip()
+        if not path:
+            return []
+        params = _query_parameters(
+            self.query,
+            self.descriptor,
+            {
+                "aoi": coverage.get("id") if coverage else None,
+                "resolution": resolution,
+            },
+        )
+        body = self.client.get_json(path, params=params)
+        return sorted({
+            str(value).strip()
+            for value in _list(value_at(body, availability.get("dates_path", "dates")))
+            if str(value).strip()
+        })
 
     def _snapshot_identity(
         self,
@@ -281,29 +368,69 @@ class SampledGridHttpQueryAdapter:
                         "resolution": resolution,
                     },
                 )
-                query_started = time.perf_counter()
+                no_data_policy = _mapping(snapshot.get("no_data"))
+                retry_policy = _mapping(snapshot.get("retry"))
                 try:
-                    body = self.client.get_json(path, params=params)
-                except EndpointRequestError as exc:
-                    source_query_ms += (time.perf_counter() - query_started) * 1000
-                    has_coarser = index + 1 < len(candidates)
-                    if (
-                        not allow_fallback
-                        or not has_coarser
-                        or not _retryable_resolution_error(exc, resolution_policy)
-                    ):
-                        raise
-                    degrade_reason = "source_resolution_limit"
+                    max_attempts = max(1, int(retry_policy.get("max_attempts", 1)))
+                    backoff_seconds = max(0.0, float(retry_policy.get("backoff_seconds", 0)))
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("sampled-grid snapshot retry policy is invalid") from exc
+                attempt = 0
+                fallback_to_next = False
+                while True:
+                    attempt += 1
+                    query_started = time.perf_counter()
+                    try:
+                        body = self.client.get_json(path, params=params)
+                        source_query_ms += (time.perf_counter() - query_started) * 1000
+                        break
+                    except EndpointRequestError as exc:
+                        source_query_ms += (time.perf_counter() - query_started) * 1000
+                        if no_data_policy and _endpoint_error_matches(exc, no_data_policy):
+                            return SnapshotLoad(
+                                candidate_identity,
+                                {
+                                    "rows": [],
+                                    "actual_resolution_km": resolution,
+                                    "source_query_ms": round(source_query_ms, 3),
+                                    "normalize_ms": 0.0,
+                                    "degrade_reason": None,
+                                    "empty_reason": str(
+                                        no_data_policy.get("reason") or "source_snapshot_unavailable"
+                                    ),
+                                },
+                            )
+                        if (
+                            retry_policy
+                            and attempt < max_attempts
+                            and _endpoint_error_matches(exc, retry_policy)
+                        ):
+                            if backoff_seconds:
+                                time.sleep(backoff_seconds * attempt)
+                            continue
+                        has_coarser = index + 1 < len(candidates)
+                        if (
+                            not allow_fallback
+                            or not has_coarser
+                            or not _retryable_resolution_error(exc, resolution_policy)
+                        ):
+                            raise
+                        degrade_reason = "source_resolution_limit"
+                        fallback_to_next = True
+                        break
+                if fallback_to_next:
                     continue
-                source_query_ms += (time.perf_counter() - query_started) * 1000
 
                 normalize_started = time.perf_counter()
                 canonical_rows = []
                 for row in _list(value_at(body, snapshot.get("rows_path", "rows"))):
                     if not isinstance(row, dict):
                         continue
-                    canonical = canonicalize_sampled_grid_row(row, self.dataset)
-                    canonical["date"] = date_value
+                    canonical = canonicalize_sampled_grid_row(
+                        row,
+                        self.dataset,
+                        context={"date": date_value},
+                    )
                     canonical_rows.append(canonical)
                 normalize_ms = (time.perf_counter() - normalize_started) * 1000
                 return SnapshotLoad(
@@ -327,21 +454,9 @@ class SampledGridHttpQueryAdapter:
 
     def schema_packet(self) -> dict[str, Any]:
         started = time.perf_counter()
-        availability = _mapping(self.query.get("availability"))
-        dates: list[Any] = []
-        if availability.get("path"):
-            coverage, _status = _coverage_choice(self.coverages, None)
-            resolution = self.available_resolutions[-1] if self.available_resolutions else None
-            params = _query_parameters(
-                self.query,
-                self.descriptor,
-                {
-                    "aoi": coverage.get("id") if coverage else None,
-                    "resolution": resolution,
-                },
-            )
-            body = self.client.get_json(str(availability["path"]), params=params)
-            dates = _list(value_at(body, availability.get("dates_path", "dates")))
+        coverage, _status = _coverage_choice(self.coverages, None)
+        resolution = self.available_resolutions[-1] if self.available_resolutions else None
+        dates = self._availability_dates(coverage=coverage, resolution=resolution)
         return {
             "columns": [
                 {"Field": column, "Type": "canonical"}
@@ -352,6 +467,7 @@ class SampledGridHttpQueryAdapter:
             "dates": dates,
             "sampled_grid": {
                 "contract_version": SAMPLED_GRID_CONTRACT_VERSION,
+                "grid_profile": deepcopy(self.grid_profile),
                 "available_resolutions_km": self.available_resolutions,
                 "coverage_areas": deepcopy(self.coverages),
                 "alignment": deepcopy(_mapping(self.descriptor.get("alignment"))),
@@ -360,6 +476,128 @@ class SampledGridHttpQueryAdapter:
             "timing": {
                 "query_ms": round((time.perf_counter() - started) * 1000, 3),
                 "cache_hit": False,
+            },
+            "backend": {
+                "kind": "sampled_grid_http",
+                "connection_ref": self.dataset.get("connection_ref"),
+            },
+        }
+
+    def time_series_packet(
+        self,
+        *,
+        start_date: str,
+        end_date: str,
+        bbox: tuple[float, float, float, float] | None,
+        metric: str | None = None,
+        aggregation: str | None = None,
+        identity_column: str | None = None,
+        identity_value: str | None = None,
+        query_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        total_started = time.perf_counter()
+        if not start_date or not end_date:
+            raise ValueError("sampled-grid time series requires start and end")
+        if start_date > end_date:
+            start_date, end_date = end_date, start_date
+        canonical_metric = str(metric or "value").strip()
+        if canonical_metric != "value":
+            raise ValueError("sampled-grid time series only exposes the canonical value metric")
+        if bbox is None:
+            detail = "identity filters are not a source query contract" if identity_column or identity_value else "bbox is required"
+            raise ValueError(f"sampled-grid time series requires a canonical bbox; {detail}")
+
+        series_config = _mapping(self.query.get("time_series"))
+        mode = str(series_config.get("mode") or "").strip().lower()
+        if mode != "snapshot_fold":
+            raise ValueError("sampled-grid mapping must declare query.time_series.mode=snapshot_fold")
+        aggregate = _time_series_aggregation(aggregation)
+        context = _mapping(query_context)
+        requested_bbox = _bbox_mapping(bbox)
+        requested_resolution = _resolution_for_request(self.available_resolutions, requested_bbox, context)
+        coverage, coverage_status = _coverage_choice(self.coverages, requested_bbox)
+
+        availability_started = time.perf_counter()
+        available_dates = self._availability_dates(coverage=coverage, resolution=requested_resolution)
+        availability_ms = round((time.perf_counter() - availability_started) * 1000, 3)
+        dates = [date for date in available_dates if start_date <= date <= end_date]
+        if coverage is None:
+            dates = []
+
+        worker_context = {**context, "requested_resolution_km": requested_resolution}
+
+        def fold_date(date_value: str) -> tuple[dict[str, Any], dict[str, Any]]:
+            packet = self.records_packet(
+                date_value=date_value,
+                bbox=bbox,
+                limit="max",
+                offset=0,
+                column_profile="render",
+                query_context=worker_context,
+            )
+            rows = [row for row in _list(packet.get("rows")) if isinstance(row, dict)]
+            return {
+                "date": date_value,
+                "value": _aggregate_rows(rows, aggregate),
+                "row_count": len(rows),
+            }, packet
+
+        folded: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        if dates:
+            workers = _time_series_workers(series_config, len(dates))
+            if workers == 1:
+                folded = [fold_date(date) for date in dates]
+            else:
+                with ThreadPoolExecutor(max_workers=workers) as executor:
+                    folded = list(executor.map(fold_date, dates))
+        else:
+            workers = 0
+
+        points = [point for point, _packet in folded]
+        packets = [packet for _point, packet in folded]
+        actual_resolutions = sorted({
+            float(actual)
+            for packet in packets
+            if (actual := _number(_mapping(packet.get("grid")).get("actual_resolution_km"))) is not None
+        })
+        grids = [_mapping(packet.get("grid")) for packet in packets]
+        timings = [_mapping(packet.get("timing")) for packet in packets]
+        actual_resolution = max(actual_resolutions) if actual_resolutions else None
+        return {
+            "start": start_date,
+            "end": end_date,
+            "metric": canonical_metric,
+            "aggregation": aggregate,
+            "points": points,
+            "point_count": len(points),
+            "row_count": sum(point["row_count"] for point in points),
+            "bbox": requested_bbox,
+            "identity": None,
+            "grid": {
+                "contract_version": SAMPLED_GRID_CONTRACT_VERSION,
+                "grid_profile": deepcopy(self.grid_profile),
+                "requested_resolution_km": requested_resolution,
+                "actual_resolution_km": actual_resolution,
+                "actual_resolutions_km": actual_resolutions,
+                "available_resolutions_km": self.available_resolutions,
+                "lod_degraded": any(bool(grid.get("lod_degraded")) for grid in grids),
+                "degrade_reason": next((grid.get("degrade_reason") for grid in grids if grid.get("degrade_reason")), None),
+                "coverage_status": coverage_status,
+                "coverage_id": coverage.get("id") if coverage else None,
+                "zero_is_data": bool(self.descriptor.get("zero_is_data", True)),
+                "alignment": deepcopy(_mapping(self.descriptor.get("alignment"))),
+            },
+            "query_mode": mode,
+            "timing": {
+                "cache_hit": bool(timings) and all(bool(timing.get("cache_hit")) for timing in timings),
+                "availability_ms": availability_ms,
+                "query_ms": round(sum(float(timing.get("query_ms") or 0) for timing in timings), 3),
+                "normalize_ms": round(sum(float(timing.get("normalize_ms") or 0) for timing in timings), 3),
+                "filter_ms": round(sum(float(timing.get("filter_ms") or 0) for timing in timings), 3),
+                "serialize_ms": round(sum(float(timing.get("serialize_ms") or 0) for timing in timings), 3),
+                "source_request_count": sum(not bool(timing.get("cache_hit")) for timing in timings),
+                "worker_count": workers,
+                "server_total_ms": round((time.perf_counter() - total_started) * 1000, 3),
             },
             "backend": {
                 "kind": "sampled_grid_http",
@@ -431,12 +669,14 @@ class SampledGridHttpQueryAdapter:
         if effective_limit is not None:
             rows = rows[:effective_limit]
         filter_ms = round((time.perf_counter() - filter_started) * 1000, 3)
+        cache_stats = CANONICAL_SNAPSHOT_CACHE.stats(self.snapshot_cache_namespace)
         source_query_ms = 0.0 if loaded.cache_hit else float(source_slice.get("source_query_ms") or 0)
         normalize_ms = 0.0 if loaded.cache_hit else float(source_slice.get("normalize_ms") or 0)
         serialize_ms = round(normalize_ms + filter_ms, 3)
         degrade_reason = source_slice.get("degrade_reason") if actual_resolution > requested_resolution else None
         bounds = requested_bbox or coverage.get("bounds")
         return {
+            "row_contract_version": SAMPLED_GRID_CONTRACT_VERSION,
             "rows": rows,
             "row_count": len(rows),
             "source_row_count": source_row_count,
@@ -453,11 +693,13 @@ class SampledGridHttpQueryAdapter:
             },
             "grid": {
                 "contract_version": SAMPLED_GRID_CONTRACT_VERSION,
+                "grid_profile": deepcopy(self.grid_profile),
                 "requested_resolution_km": requested_resolution,
                 "actual_resolution_km": actual_resolution,
                 "available_resolutions_km": self.available_resolutions,
                 "lod_degraded": actual_resolution > requested_resolution,
                 "degrade_reason": degrade_reason,
+                "empty_reason": source_slice.get("empty_reason"),
                 "coverage_status": coverage_status,
                 "coverage_id": coverage.get("id"),
                 "zero_is_data": bool(self.descriptor.get("zero_is_data", True)),
@@ -466,6 +708,10 @@ class SampledGridHttpQueryAdapter:
             "timing": {
                 "cache_hit": loaded.cache_hit,
                 "cache_waited": loaded.waited,
+                "cache_namespace_entries": cache_stats["namespace_entries"],
+                "cache_total_entries": cache_stats["total_entries"],
+                "cache_total_rows": cache_stats["total_rows"],
+                "cache_max_rows": cache_stats["max_total_rows"],
                 "cache_lookup_ms": cache_lookup_ms,
                 "query_ms": round(source_query_ms, 3),
                 "normalize_ms": round(normalize_ms, 3),
@@ -487,6 +733,7 @@ class SampledGridHttpQueryAdapter:
         coverage_status: str,
     ) -> dict[str, Any]:
         return {
+            "row_contract_version": SAMPLED_GRID_CONTRACT_VERSION,
             "rows": [],
             "row_count": 0,
             "source_row_count": 0,
@@ -499,6 +746,7 @@ class SampledGridHttpQueryAdapter:
             },
             "grid": {
                 "contract_version": SAMPLED_GRID_CONTRACT_VERSION,
+                "grid_profile": deepcopy(self.grid_profile),
                 "requested_resolution_km": requested_resolution,
                 "actual_resolution_km": None,
                 "available_resolutions_km": self.available_resolutions,

@@ -18,6 +18,7 @@
     onSaved: async () => {
       schemaProfilesLoadedAt = 0;
       await Promise.all([loadDeveloperSchemaProfiles({ force: true }), loadDeveloperLayerImports()]);
+      window.parent?.postMessage({ type: "rrkal:source-registry-changed", reason: "mapping-saved" }, "*");
     },
   });
 
@@ -27,7 +28,7 @@
       emptyText: "沒有啟用中的 DATABASE 路由。",
       columns: [
         { key: "config_path", width: "24%", render: (row) => escapeHtml(row.config_path) },
-        { key: "connection_ref", width: "12%", render: (row) => escapeHtml(row.connection_ref) },
+        { key: "route_ref", width: "12%", render: (row) => escapeHtml(row.route_ref || row.connection_ref) },
         { key: "backend", width: "10%", render: (row) => escapeHtml(row.backend) },
         { key: "enabled", width: "5rem", className: "developer-status-bit-cell", render: (row) => bitCell(row.enabled) },
         { key: "connected", width: "5rem", className: "developer-status-bit-cell", render: (row) => bitCell(row.connected) },
@@ -48,23 +49,6 @@
         { key: "configured", width: "5rem", className: "developer-status-bit-cell", render: (row) => bitCell(row.configured) },
         { key: "pipeline_ready", width: "5rem", className: "developer-status-bit-cell", render: (row) => bitCell(row.pipeline_ready) },
         { key: "enabled", width: "5rem", className: "developer-status-bit-cell", render: (row) => bitCell(row.enabled) },
-        { key: "detail", className: "developer-long-value", render: (row) => escapeHtml(row.detail || "") },
-      ],
-    }).render(rows);
-  }
-
-  function renderDeveloperEndpointStatus(rows) {
-    new DeveloperStatusTable({
-      bodyId: "developer-endpoint-status-body",
-      emptyText: "沒有啟用中的 Endpoint config。",
-      columns: [
-        { key: "config_path", width: "22%", render: (row) => escapeHtml(row.config_path) },
-        { key: "endpoint_ref", width: "10rem", render: (row) => escapeHtml(row.endpoint_ref || "-") },
-        { key: "base_url", width: "28%", className: "developer-long-value", render: (row) => escapeHtml(row.base_url || "-") },
-        { key: "enabled", width: "5rem", className: "developer-status-bit-cell", render: (row) => bitCell(row.enabled) },
-        { key: "configured", width: "5rem", className: "developer-status-bit-cell", render: (row) => bitCell(row.configured) },
-        { key: "reachable", width: "5rem", className: "developer-status-bit-cell", render: (row) => bitCell(row.reachable) },
-        { key: "contract_detected", width: "5rem", className: "developer-status-bit-cell", render: (row) => bitCell(row.contract_detected) },
         { key: "detail", className: "developer-long-value", render: (row) => escapeHtml(row.detail || "") },
       ],
     }).render(rows);
@@ -183,15 +167,6 @@
     renderDeveloperWebsocketStatus(packet.rows || []);
   }
 
-  async function loadDeveloperEndpointStatus() {
-    const response = await fetch("/api/developer/endpoint-status");
-    const packet = await response.json();
-    if (!response.ok) {
-      throw new Error(packet.error || "Endpoint 狀態讀取失敗。");
-    }
-    renderDeveloperEndpointStatus(packet.rows || []);
-  }
-
   async function loadDeveloperSpatialStatus() {
     const response = await fetch("/api/developer/spatial-status");
     const packet = await response.json();
@@ -230,7 +205,6 @@
       await Promise.all([
         loadDeveloperRouterStatus(),
         loadDeveloperWebsocketStatus(),
-        loadDeveloperEndpointStatus(),
         loadDeveloperSpatialStatus(),
         loadDeveloperSchemaProfiles(),
         loadDeveloperLayerImports(),

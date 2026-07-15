@@ -142,6 +142,7 @@ class StagingConfigStore:
         data, error = self.read_config_json(path)
         if error or data is None:
             raise ValueError(f"staging config is not valid JSON: {error}")
+        data["role"] = source_group
         destination = self.target_source_config_path(path.name, source_group)
         destination.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         path.unlink()

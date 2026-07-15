@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import psycopg
 
 from common_adapter.db.connect import mysql_connection
+from common_adapter.developer.probes.endpoint import endpoint_status_from_config
 from common_adapter.spatial.overlay import overlay_settings, postgis_dsn, validate_identifier
 
 POSTGIS_CONNECT_TIMEOUT_SECONDS = 5
@@ -14,12 +16,33 @@ class RouteProbe:
     """Runtime status probes for source routes."""
 
     def connection_status_from_config(self, config_ref: str, data: dict[str, Any], active: bool) -> list[dict[str, Any]]:
+        route_ref = str(data.get("name") or data.get("id") or Path(config_ref).stem).strip()
+        adapter = data.get("adapter") if isinstance(data.get("adapter"), dict) else {}
+        adapter_kind = str(adapter.get("kind") or "").strip().lower()
+        if adapter_kind in {"http", "http_endpoint", "rest"}:
+            backend = data.get("backend") if isinstance(data.get("backend"), dict) else {}
+            backend_kind = str(backend.get("kind") or "database").strip().lower()
+            endpoint_rows = endpoint_status_from_config(config_ref, data, active)
+            return [
+                {
+                    "config_path": config_ref,
+                    "route_ref": route_ref,
+                    "connection_ref": route_ref,
+                    "backend": backend_kind,
+                    "adapter_kind": adapter_kind,
+                    "enabled": active,
+                    "configured": bool(row.get("configured")),
+                    "connected": bool(row.get("reachable")),
+                    "contract_detected": bool(row.get("contract_detected")),
+                    "detail": str(row.get("detail") or ""),
+                }
+                for row in endpoint_rows
+            ]
+
         rows: list[dict[str, Any]] = []
         connections = data.get("connections")
         if isinstance(connections, dict) and connections:
             connection_items = [(str(ref), conn) for ref, conn in connections.items() if isinstance(conn, dict)]
-        elif isinstance(data.get("mysql"), dict):
-            connection_items = [("local_mysql", data["mysql"])]
         else:
             connection_items = []
 
@@ -41,6 +64,7 @@ class RouteProbe:
             rows.append(
                 {
                     "config_path": config_ref,
+                    "route_ref": route_ref,
                     "connection_ref": connection_ref,
                     "backend": kind,
                     "enabled": active,

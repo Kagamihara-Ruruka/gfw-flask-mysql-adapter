@@ -22,9 +22,9 @@ function bindPlaybackControlFeedback() {
 }
 
 function syncPlaybackCacheCapacityMeter() {
-  const stats = state.sampledGridRecordCache?.stats || {};
-  const usedBytes = Math.max(0, Number(stats.cacheBytes || 0));
-  const limitBytes = Math.max(0, Number(stats.cacheLimitBytes || state.sampledGridRecordCache?.maxBytes || 0));
+  const snapshot = DataFrameStore.snapshot();
+  const usedBytes = Math.max(0, Number(snapshot.bytes || 0));
+  const limitBytes = Math.max(0, Number(snapshot.maxBytes || state.dataFrameStore?.maxBytes || 0));
   const ratio = limitBytes > 0 ? Math.min(1, usedBytes / limitBytes) : 0;
   const percent = Math.round(ratio * 100);
   const capacityText = $("playback-cache-capacity-text");
@@ -211,47 +211,17 @@ function playbackTargetDateIndex(generation, frameNumber) {
   });
 }
 
-function progressivePreheatDecision({ startIndex = null } = {}) {
-  const options = PlaybackCacheService.options();
-  const dates = datesInSelectedRange();
-  return PlaybackPrefetchController.shouldQueue({
-    options,
-    dates,
-    startIndex,
-    currentDate: $("date").value,
-    requestContext: playbackRequestContext(),
-    cacheService: PlaybackCacheService,
-    intervalMs: state.playIntervalMs,
-    rate: normalizedPlaybackRate(),
-  });
-}
-
-function shouldQueueProgressivePreheat({ startIndex = null } = {}) {
-  return progressivePreheatDecision({ startIndex }).shouldQueue;
-}
-
-function queueProgressivePreheat({ startIndex = null } = {}) {
-  const decision = progressivePreheatDecision({ startIndex });
-  if (!decision.shouldQueue) return;
-  const generation = state.playbackCache.generation;
-  preheatPlaybackCache({ blocking: false, anchorDate: decision.anchorDate }).catch((err) => {
-    if (!isPlaybackGenerationActive(generation)) return;
-    setStatus(err.message, true);
-  });
-}
-
 function syncPlaybackSettingsInputs() {
   const options = PlaybackCacheService.options();
   PlaybackDeliveryPolicy.apply(state);
   const interpolation = PlaybackInterpolationController.options(state);
   if ($("play-speed")) $("play-speed").value = String(normalizedPlaybackRate());
   if ($("playback-rate")) $("playback-rate").value = String(normalizedPlaybackRate());
-  if ($("playback-cache-mode")) $("playback-cache-mode").value = options.mode;
   if ($("playback-interpolation-mode")) $("playback-interpolation-mode").value = interpolation.mode;
-  if ($("playback-cache-concurrency")) $("playback-cache-concurrency").value = String(options.concurrency);
-  if ($("playback-cache-max-dates")) $("playback-cache-max-dates").value = String(options.maxDates);
+  if ($("query-network-concurrency")) $("query-network-concurrency").value = String(state.queryPolicy?.network_concurrency || 6);
+  if ($("playback-cache-low-watermark")) $("playback-cache-low-watermark").value = String(options.lowWatermark);
+  if ($("playback-cache-high-watermark")) $("playback-cache-high-watermark").value = String(options.highWatermark);
   if ($("playback-cache-window-behind")) $("playback-cache-window-behind").value = String(options.windowBehind);
-  if ($("playback-cache-window-ahead")) $("playback-cache-window-ahead").value = String(options.windowAhead);
   if ($("playback-cache-max-gb")) $("playback-cache-max-gb").value = String(Math.round(options.maxGb * 100) / 100);
   if ($("gfw-transition-ms")) $("gfw-transition-ms").value = String(Math.max(0, Number(state.gfwTransitionMs || 0)));
   const blurPx = Math.max(0, Number(state.gfwZoomBlurPx || 0));
@@ -267,52 +237,39 @@ function releasePlaybackRenderArtifacts(reason) {
 
 function bindPlaybackSettingsControls() {
   $("playback-rate")?.addEventListener("change", () => updatePlaybackSpeed("playback-rate"));
-  $("playback-cache-mode")?.addEventListener("change", (event) => {
-    state.playbackCache.mode = event.target.value === "before_play" ? "before_play" : "progressive";
-    syncPlaybackSettingsInputs();
-  });
   $("playback-interpolation-mode")?.addEventListener("change", (event) => {
     PlaybackInterpolationController.setMode(state, event.target.value);
     syncGfwTransitionStyle();
     syncPlaybackSettingsInputs();
   });
-  $("playback-cache-concurrency")?.addEventListener("change", (event) => {
-    state.playbackCache.concurrency = event.target.value === "auto"
-      ? "auto"
-      : Math.max(1, Number(event.target.value || 1));
+  $("query-network-concurrency")?.addEventListener("change", (event) => {
+    state.queryPolicy.network_concurrency = Math.max(1, Math.min(16, Number(event.target.value || 6)));
+    LayerQueryCoordinator.drain?.();
     syncPlaybackSettingsInputs();
   });
-  $("playback-cache-max-dates")?.addEventListener("change", (event) => {
-    state.playbackCache.maxDates = Math.max(0, Number(event.target.value || 0));
+  $("playback-cache-low-watermark")?.addEventListener("change", (event) => {
+    const high = PlaybackCacheService.options().highWatermark;
+    state.playbackCache.lowWatermark = Math.max(1, Math.min(high - 1, Number(event.target.value || 1)));
+    PlaybackCacheService.reconcilePolicy();
     syncPlaybackSettingsInputs();
   });
-  $("playback-cache-window-behind")?.addEventListener("change", (event) => {
-    state.playbackCache.windowBehind = Math.max(0, Number(event.target.value || 0));
-    syncPlaybackSettingsInputs();
-  });
-  $("playback-cache-window-ahead")?.addEventListener("change", (event) => {
-    state.playbackCache.windowAhead = Math.max(1, Number(event.target.value || 1));
+  $("playback-cache-high-watermark")?.addEventListener("change", (event) => {
+    const high = Math.max(2, Number(event.target.value || 10));
+    state.playbackCache.highWatermark = high;
+    state.playbackCache.lowWatermark = Math.min(high - 1, Number(state.playbackCache.lowWatermark || 5));
+    PlaybackCacheService.reconcilePolicy();
     syncPlaybackSettingsInputs();
   });
   $("playback-cache-max-gb")?.addEventListener("change", (event) => {
     const maxGb = Math.max(0.25, Number(event.target.value || 2));
-    state.sampledGridRecordCache.maxBytes = Math.round(maxGb * PlaybackCacheService.BYTES_PER_GB);
-    SampledGridRecordCache.enforceBudget?.();
+    state.dataFrameStore.maxBytes = Math.round(maxGb * PlaybackCacheService.BYTES_PER_GB);
+    DataFrameStore.enforceBudget?.();
     syncPlaybackSettingsInputs();
   });
   $("playback-cache-clear")?.addEventListener("click", () => {
-    SampledGridRecordCache.clear?.();
+    PlaybackCacheService.clear();
+    DataFrameStore.evictAll?.();
     GfwRenderArtifactCache.clear?.({ reason: "manual_cache_clear" });
-    state.playbackCache.isPreheating = false;
-    state.playbackCache.isBackgroundPreloading = false;
-    PlaybackCacheService.clearBufferState();
-    state.playbackCache.stats = {
-      queued: 0,
-      completed: 0,
-      cacheHits: 0,
-      fetched: 0,
-      failed: 0,
-    };
     setStatus("播放快取已釋放");
     syncPlaybackSettingsInputs();
   });
@@ -389,7 +346,6 @@ function updatePlaybackControls() {
   const singleDateEnabled = hasTimeControlLayer && state.availableDates.length > 0;
   const timeSequenceEnabled = hasTimeControlLayer && dates.length > 0;
   const playbackCacheEnabled = timeSequenceEnabled && hasPlaybackCacheLayer();
-  const isPreheating = Boolean(state.playbackCache?.isPreheating);
   const isBuffering = Boolean(state.playbackCache?.buffering);
   const current = $("date").value;
   const index = dates.indexOf(current);
@@ -408,11 +364,11 @@ function updatePlaybackControls() {
   }
   $("start-date").disabled = !timeSequenceEnabled;
   $("end-date").disabled = !timeSequenceEnabled;
-  $("prev-day").disabled = isPreheating || !timeSequenceEnabled || index <= 0;
-  $("next-day").disabled = isPreheating || !timeSequenceEnabled || index < 0 || index >= dates.length - 1;
-  $("replay").disabled = isPreheating || !timeSequenceEnabled;
-  $("play-toggle").disabled = isPreheating || (!isBuffering && (!timeSequenceEnabled || dates.length <= 1));
-  $("play-speed").disabled = isPreheating || !timeSequenceEnabled || dates.length <= 1;
+  $("prev-day").disabled = !timeSequenceEnabled || index <= 0;
+  $("next-day").disabled = !timeSequenceEnabled || index < 0 || index >= dates.length - 1;
+  $("replay").disabled = !timeSequenceEnabled;
+  $("play-toggle").disabled = !isBuffering && (!timeSequenceEnabled || dates.length <= 1);
+  $("play-speed").disabled = !timeSequenceEnabled || dates.length <= 1;
   if (timeSequence) {
     timeSequence.classList.toggle("is-disabled", !timeSequenceEnabled);
     timeSequence.setAttribute("aria-disabled", String(!timeSequenceEnabled));
@@ -426,11 +382,10 @@ function updatePlaybackControls() {
   }
 }
 
-function stopPlayback({ cancelPending = true, clearBuffer = true } = {}) {
+function stopPlayback({ cancelPending = true, clearBuffer = true, reason = "stopped" } = {}) {
   const wasActive = Boolean(state.isPlaying || state.playTimer || state.playbackCache?.timeline);
   if (cancelPending) {
     nextPlaybackGeneration();
-    PlaybackCacheService.cancelBackground?.();
   }
   state.isPlaying = false;
   if (clearBuffer) {
@@ -441,6 +396,7 @@ function stopPlayback({ cancelPending = true, clearBuffer = true } = {}) {
   state.playTimer = null;
   if (wasActive) {
     PlaybackTelemetry.recordStop?.({ date: $("date")?.value });
+    PlaybackEngine.stop(reason);
   }
   updatePlaybackControls();
   syncPlaybackSettingsInputs();
@@ -492,34 +448,11 @@ async function preparePlaybackStart() {
   return true;
 }
 
-async function preheatPlaybackCache({ blocking = true, anchorDate = $("date").value, onStateChange = null } = {}) {
-  const dates = datesInSelectedRange();
-  const intent = RenderIntentService.range({
-    dates,
-    start: dates[0],
-    end: dates[dates.length - 1],
-    anchorDate,
-    layerId: state.dataLayer,
-    renderProfile: "dashboard.playback",
-  });
-  return PlaybackCacheService.preheat({
-    intent,
-    blocking,
-    onStateChange: () => {
-      onStateChange?.();
-      updatePlaybackControls();
-      syncPlaybackSettingsInputs();
-    },
-  });
-}
-
 function playbackFrameDecision(dates, currentIndex, targetIndex) {
-  const options = PlaybackCacheService.options();
   return PlaybackFrameBuffer.inspectTarget({
     dates,
     currentIndex,
     targetIndex,
-    mode: options.mode,
     hasCacheLayer: hasPlaybackCacheLayer(),
     requestContext: playbackRequestContext(),
     cacheService: PlaybackCacheService,
@@ -590,19 +523,23 @@ function markPlaybackTargetWaiting(dates, targetIndex, decision, waitState = nul
   updatePlaybackControls();
   syncPlaybackSettingsInputs();
   setStatus(playbackBufferText() || "緩衝中");
-  queueProgressivePreheat({ startIndex: targetIndex });
+  PlaybackEngine.requireTarget(targetIndex).catch((error) => {
+    if (error?.name !== "AbortError") setStatus(error?.message || "目標影格查詢失敗", true);
+  });
   return { packet, waitStartedAt, attempts };
 }
 
 async function renderPlaybackDateIndex(dates, targetIndex) {
+  const startedAt = nowMs();
+  PlaybackEngine.markRenderStarted(targetIndex);
   await PlaybackRenderer.showDateIndex({
     dates,
     targetIndex,
     dateInput: $("date"),
     updateControls: updatePlaybackControls,
     reloadActiveLayer,
-    afterRender: () => queueProgressivePreheat({ startIndex: targetIndex }),
   });
+  PlaybackEngine.markFrameVisible(targetIndex, { renderMs: nowMs() - startedAt });
   PlaybackTelemetry.recordFrameShown?.({ date: dates[targetIndex] });
 }
 
@@ -653,7 +590,6 @@ async function advancePlaybackToTimelineTarget(generation, frameNumber) {
       targetDate: dates[targetIndex],
       renderDate: dates[renderIndex],
     });
-    queueProgressivePreheat({ startIndex: targetIndex });
   }
   if (state.playbackCache?.buffering) {
     const previousBuffer = state.playbackCache;
@@ -687,11 +623,11 @@ function schedulePlaybackTick(generation = state.playbackCache.generation) {
         return;
       }
       if (result.failed) {
-        stopPlayback({ clearBuffer: false });
+        stopPlayback({ clearBuffer: false, reason: "failed" });
         return;
       }
       if (!result.advanced && result.done) {
-        stopPlayback();
+        stopPlayback({ reason: "ended" });
         return;
       }
       if (!result.advanced) {
@@ -723,11 +659,17 @@ async function setPlayback(active) {
     return;
   }
   state.playbackRate = normalizedPlaybackRate();
-  const options = PlaybackCacheService.options();
-  if (options.mode === "before_play") {
-    await preheatPlaybackCache({ blocking: true });
-    if (!isPlaybackGenerationActive(generation)) return;
-  }
+  const playbackDates = datesInSelectedRange();
+  PlaybackEngine.configure({
+    dates: playbackDates,
+    requestContext: playbackRequestContext(),
+    currentDate: $("date").value,
+  });
+  PlaybackEngine.start({
+    rate: state.playbackRate,
+    step_mode: playbackStepMode(),
+    cache_mode: "watermark",
+  });
   state.isPlaying = true;
   const timeline = startPlaybackTimeline(generation);
   const delivery = PlaybackDeliveryPolicy.options(state);
@@ -745,12 +687,6 @@ async function setPlayback(active) {
   }
   updatePlaybackControls();
   schedulePlaybackTick(generation);
-  if (options.mode === "progressive") {
-    preheatPlaybackCache({ blocking: false, anchorDate: $("date").value }).catch((err) => {
-      if (!isPlaybackGenerationActive(generation)) return;
-      setStatus(err.message, true);
-    });
-  }
 }
 
 async function normalizeDateInputs({ reload = true } = {}) {

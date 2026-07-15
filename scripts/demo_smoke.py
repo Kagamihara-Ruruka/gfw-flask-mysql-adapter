@@ -19,31 +19,44 @@ REQUIRED_HTML_MARKERS = (
     'id="play-speed"',
     'id="records"',
     'id="playback-rate"',
-    'id="playback-delivery-policy"',
-    'id="playback-step-mode"',
-    'id="playback-cache-mode"',
+    'id="query-network-concurrency"',
+    'id="playback-cache-low-watermark"',
+    'id="playback-cache-high-watermark"',
     "playback-delivery-policy.js",
     "playback-scheduler.js",
     "playback-frame-buffer.js",
     "playback-renderer.js",
     "playback-telemetry.js",
     "playback-interpolation-controller.js",
-    "playback-prefetch-controller.js",
+    "lifecycle-event-log.js",
+    "data-frame-store.js",
+    "frame-demand-service.js",
+    "playback-preheater.js",
+    "playback-engine.js",
+    "runtime-composition-root.js",
+    "event-viewer.js",
     "gfw-layer-effects.js",
 )
 
 REQUIRED_SCRIPT_ORDER = (
     "TimingMetrics.js",
+    "lifecycle-event-log.js",
+    "frame-identity.js",
     "render-intent-service.js",
-    "gfw-record-cache.js",
+    "layer-query-coordinator.js",
+    "data-frame-store.js",
+    "frame-demand-service.js",
     "playback-cache-service.js",
+    "playback-preheater.js",
+    "playback-engine.js",
+    "playback-renderer.js",
+    "api-client.js",
+    "runtime-composition-root.js",
     "playback-delivery-policy.js",
     "playback-scheduler.js",
     "playback-frame-buffer.js",
-    "playback-renderer.js",
     "playback-telemetry.js",
     "playback-interpolation-controller.js",
-    "playback-prefetch-controller.js",
     "playback-controls.js",
 )
 
@@ -140,9 +153,9 @@ def check_dataset_contract(base_url: str, dataset_id: str | None, *, timeout: fl
     packet = fetch_json(base_url, "/api/datasets", timeout=timeout)
     datasets = packet.get("datasets")
     require(isinstance(datasets, dict) and datasets, "datasets endpoint returned no datasets")
-    selected = dataset_id or packet.get("default_dataset")
+    selected = dataset_id or next(iter(datasets))
     require(isinstance(selected, str) and selected in datasets, f"dataset {selected!r} is not available")
-    require(datasets[selected].get("layer_id") == "gfw", f"dataset {selected!r} is not a GFW demo layer")
+    require(isinstance(datasets[selected].get("sampled_grid"), dict), f"dataset {selected!r} is not sampled-grid capable")
 
     schema = fetch_json(base_url, f"/api/datasets/{urllib.parse.quote(selected)}/schema", timeout=timeout)
     dates = schema.get("dates")
@@ -183,7 +196,7 @@ def check_records_range(base_url: str, dataset_id: str, dates: list[str], *, tim
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run demo-critical smoke checks against a running adapter.")
     parser.add_argument("--base-url", default="http://127.0.0.1:5081", help="Adapter base URL.")
-    parser.add_argument("--dataset", default=None, help="Dataset id to validate. Defaults to API default_dataset.")
+    parser.add_argument("--dataset", default=None, help="Dataset id to validate. Defaults to the first registered dataset.")
     parser.add_argument("--timeout", type=float, default=30.0, help="HTTP timeout in seconds.")
     parser.add_argument("--skip-records", action="store_true", help="Skip records endpoint checks.")
     parser.add_argument("--skip-range", action="store_true", help="Skip range endpoint check.")

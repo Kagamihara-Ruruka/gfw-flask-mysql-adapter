@@ -70,7 +70,7 @@
 
     render() {
       const item = document.createElement("div");
-      item.className = `developer-config-item${!this.isRoutable ? " is-non-routable" : ""}`;
+      item.className = `developer-config-item${!this.isRoutable ? " is-non-routable" : ""}${this.config.route_blocked ? " is-route-blocked" : ""}`;
       item.dataset.configPath = this.config.path;
       item.setAttribute("role", "option");
       item.setAttribute("tabindex", "0");
@@ -86,7 +86,9 @@
       const viewLabel = this.config.edit_allowed ? "編輯" : "檢視";
       const lockTitle = this.config.locked ? "解除鎖定" : "鎖定";
       const lockLabel = this.config.locked ? "解鎖" : "鎖定";
-      const summary = this.config.parse_ok ? summaryText(this.config) : this.config.error;
+      const summary = this.config.route_blocked || !this.config.parse_ok
+        ? this.config.error
+        : summaryText(this.config);
       const roleBadge = roleLabel ? `<span class="developer-config-role">${escapeHtml(roleLabel)}</span>` : "";
 
       return `

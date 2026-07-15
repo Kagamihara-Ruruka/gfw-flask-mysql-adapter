@@ -35,6 +35,7 @@ from common_adapter.developer.config_service import (
 )
 
 ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_AIS_DENSITY_CELLS_PER_TILE = 8
 
 
 def active_websocket_config_path() -> Path | None:
@@ -105,6 +106,12 @@ class LiveRoutes:
                         "collector_key_gate": ingest.get("key_gate"),
                         "collector_handoff": handoff,
                         "ingest": ingest,
+                        "rendering": {
+                            "density_cells_per_tile": max(
+                                1,
+                                int(settings.get("density_cells_per_tile", DEFAULT_AIS_DENSITY_CELLS_PER_TILE)),
+                            ),
+                        },
                     }
                 )
             except Exception as exc:

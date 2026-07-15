@@ -2,20 +2,24 @@ from __future__ import annotations
 
 import time
 import json
-from collections import OrderedDict
 from dataclasses import dataclass
-from threading import RLock
+from pathlib import Path
+from threading import BoundedSemaphore, RLock
 from typing import Any
 
 import psycopg
 
 from common_adapter.spatial.overlay import elapsed_ms, overlay_settings, postgis_dsn, validate_identifier
+from common_adapter.spatial.tile_cache import MvtTileCache, TileCacheKey, TileCacheValue
 
 
-_TILE_CACHE: OrderedDict[tuple[Any, ...], tuple[bytes, dict[str, Any]]] = OrderedDict()
-_TILE_CACHE_LOCK = RLock()
+ROOT = Path(__file__).resolve().parents[2]
+_TILE_CACHE = MvtTileCache()
 _EEZ_FILL_TABLE_LOCK = RLock()
+_EEZ_QUERY_LIMITERS: dict[int, BoundedSemaphore] = {}
+_EEZ_QUERY_LIMITERS_LOCK = RLock()
 _DEFAULT_TILE_CACHE_MAX = 2048
+_DEFAULT_TILE_QUERY_CONCURRENCY = 6
 
 
 @dataclass(frozen=True)
@@ -29,6 +33,7 @@ class LodSource:
 
 
 WEB_MERCATOR_WORLD_METERS = 40075016.68557849
+GEOGRAPHIC_WORLD_DEGREES = 360.0
 LEAFLET_TILE_PIXELS = 256
 MVT_EXTENT = 4096
 MVT_BUFFER = 64
@@ -41,6 +46,11 @@ def mvt_detail_for_zoom(zoom: float | int | None) -> tuple[int, int, float]:
     return MVT_EXTENT, MVT_BUFFER, visible_pixel_meters
 
 
+def geographic_pixel_degrees_for_zoom(zoom: float | int | None) -> float:
+    z = int(zoom) if zoom is not None else 0
+    return GEOGRAPHIC_WORLD_DEGREES / ((2 ** max(0, z)) * LEAFLET_TILE_PIXELS)
+
+
 def eez_tile_cache_max(config: dict[str, Any]) -> int:
     settings = overlay_settings(config)
     cache_max = settings.get("tile_cache_max", _DEFAULT_TILE_CACHE_MAX)
@@ -48,6 +58,30 @@ def eez_tile_cache_max(config: dict[str, Any]) -> int:
         return max(0, int(cache_max))
     except (TypeError, ValueError):
         return _DEFAULT_TILE_CACHE_MAX
+
+
+def eez_tile_cache_path(config: dict[str, Any]) -> Path | None:
+    configured = overlay_settings(config).get("tile_cache_path")
+    if configured is None or not str(configured).strip():
+        return None
+    path = Path(str(configured))
+    if not path.is_absolute():
+        path = ROOT / path
+    return path.resolve()
+
+
+def eez_tile_query_concurrency(config: dict[str, Any]) -> int:
+    configured = overlay_settings(config).get("tile_query_concurrency")
+    try:
+        return max(1, int(configured))
+    except (TypeError, ValueError):
+        return _DEFAULT_TILE_QUERY_CONCURRENCY
+
+
+def eez_tile_query_limiter(config: dict[str, Any]) -> BoundedSemaphore:
+    concurrency = eez_tile_query_concurrency(config)
+    with _EEZ_QUERY_LIMITERS_LOCK:
+        return _EEZ_QUERY_LIMITERS.setdefault(concurrency, BoundedSemaphore(concurrency))
 
 
 def tile_cache_key(
@@ -60,7 +94,7 @@ def tile_cache_key(
     z: int,
     x: int,
     y: int,
-) -> tuple[Any, ...]:
+) -> TileCacheKey:
     return (
         kind,
         pg.get("host"),
@@ -80,47 +114,39 @@ def tile_cache_key(
     )
 
 
-def cache_get(key: tuple[Any, ...]) -> tuple[bytes, dict[str, Any]] | None:
-    with _TILE_CACHE_LOCK:
-        cached = _TILE_CACHE.get(key)
-        if cached is None:
-            return None
-        _TILE_CACHE.move_to_end(key)
-        tile, meta = cached
-        hit_meta = dict(meta)
-        hit_meta["cache"] = "hit"
-        hit_meta["timing"] = {"tile_ms": 0.0}
-        return tile, hit_meta
+def cache_get(
+    key: TileCacheKey,
+    *,
+    cache_max: int,
+    cache_path: Path | None,
+) -> TileCacheValue | None:
+    return _TILE_CACHE.get(key, max_entries=cache_max, directory=cache_path)
 
 
 def cache_set(
-    key: tuple[Any, ...],
-    value: tuple[bytes, dict[str, Any]],
+    key: TileCacheKey,
+    value: TileCacheValue,
     *,
     cache_max: int,
+    cache_path: Path | None,
 ) -> None:
-    if cache_max <= 0:
-        return
-    with _TILE_CACHE_LOCK:
-        _TILE_CACHE[key] = value
-        _TILE_CACHE.move_to_end(key)
-        while len(_TILE_CACHE) > cache_max:
-            _TILE_CACHE.popitem(last=False)
+    _TILE_CACHE.set(key, value, max_entries=cache_max, directory=cache_path)
 
 
 def eez_lod_source(config: dict[str, Any], zoom: float | int | None) -> LodSource:
     settings = overlay_settings(config)
     pg = settings.get("postgis") or {}
     z = int(zoom) if zoom is not None else 0
-    extent, buffer, _ = mvt_detail_for_zoom(z)
-    table = ensure_eez_fill_table(config)
+    extent, buffer, simplify_meters = mvt_detail_for_zoom(z)
+    base_table = validate_identifier(pg.get("table", "eez_v12"), "postgis EEZ source table")
+    table = pg.get("tile_table", f"{base_table}_tile")
     return LodSource(
-        table=validate_identifier(table, "postgis fill table"),
-        lod=f"web_mercator_fill_z{z}",
+        table=validate_identifier(table, "postgis tile table"),
+        lod=f"web_mercator_subdivided_z{z}",
         extent=extent,
         buffer=buffer,
-        simplify_meters=0.0,
-        geometry_srid=3857,
+        simplify_meters=simplify_meters,
+        geometry_srid=4326,
     )
 
 
@@ -212,8 +238,10 @@ def eez_mvt_tile_packet(
     geom_col = validate_identifier(pg.get("geometry_column", "geom"), "postgis geometry column")
     layer = validate_identifier(pg.get("mvt_layer", "eez"), "mvt layer")
     started = time.perf_counter()
-    key = tile_cache_key(pg, kind="fill-poltype-v2", source=source, geom_col=geom_col, layer=layer, z=z, x=x, y=y)
-    cached = cache_get(key)
+    key = tile_cache_key(pg, kind="fill-poltype-v4", source=source, geom_col=geom_col, layer=layer, z=z, x=x, y=y)
+    cache_max = eez_tile_cache_max(config)
+    cache_path = eez_tile_cache_path(config)
+    cached = cache_get(key, cache_max=cache_max, cache_path=cache_path)
     if cached is not None:
         return cached
     if source.geometry_srid == 3857:
@@ -223,7 +251,7 @@ def eez_mvt_tile_packet(
         source_geom_select = f"ST_Transform(source.{geom_col}, 3857) AS geom"
         source_geom_filter = f"source.{geom_col} && ST_Transform(bounds.geom, 4326)"
     if source.simplify_meters > 0:
-        mvt_geom = "ST_SimplifyPreserveTopology(source_geom.geom, %s)"
+        mvt_geom = "ST_Simplify(source_geom.geom, %s)"
         simplify_params: tuple[Any, ...] = (source.simplify_meters,)
     else:
         mvt_geom = "source_geom.geom"
@@ -244,7 +272,7 @@ def eez_mvt_tile_packet(
             FROM {source.table} AS source, bounds
             WHERE {source_geom_filter}
         ),
-        mvtgeom AS (
+        clipped AS (
             SELECT
                 fid,
                 iso3,
@@ -260,20 +288,40 @@ def eez_mvt_tile_packet(
                     clip_geom => true
                 ) AS geom
             FROM source_geom, bounds
+        ),
+        mvtgeom AS (
+            SELECT
+                fid,
+                iso3,
+                name,
+                pol_type,
+                sovereign,
+                area_km2,
+                ST_Multi(
+                    ST_CollectionExtract(
+                        ST_Collect(geom),
+                        3
+                    )
+                ) AS geom
+            FROM clipped
+            WHERE geom IS NOT NULL
+            GROUP BY fid, iso3, name, pol_type, sovereign, area_km2
         )
         SELECT ST_AsMVT(mvtgeom.*, %s, %s, 'geom') AS tile
         FROM mvtgeom
     """
-    with psycopg.connect(postgis_dsn(pg)) as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql, (z, x, y, *simplify_params, source.extent, source.buffer, layer, source.extent))
-            tile = cur.fetchone()[0] or b""
+    with eez_tile_query_limiter(config):
+        with psycopg.connect(postgis_dsn(pg)) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (z, x, y, *simplify_params, source.extent, source.buffer, layer, source.extent))
+                tile = cur.fetchone()[0] or b""
     meta = {
         "source": "postgis",
         "format": "mvt",
         "layer": layer,
         "lod": source.lod,
         "cache": "miss",
+        "cache_tier": "postgis",
         "table": source.table,
         "z": z,
         "x": x,
@@ -285,7 +333,7 @@ def eez_mvt_tile_packet(
         "timing": {"tile_ms": elapsed_ms(started)},
     }
     result = bytes(tile), meta
-    cache_set(key, result, cache_max=eez_tile_cache_max(config))
+    cache_set(key, result, cache_max=cache_max, cache_path=cache_path)
     return result
 
 
@@ -301,10 +349,13 @@ def eez_boundary_mvt_tile_packet(
     geom_col = validate_identifier(pg.get("geometry_column", "geom"), "postgis geometry column")
     layer = validate_identifier(f"{pg.get('mvt_layer', 'eez')}_boundary", "mvt boundary layer")
     started = time.perf_counter()
-    key = tile_cache_key(pg, kind="boundary-poltype-v1", source=source, geom_col=geom_col, layer=layer, z=z, x=x, y=y)
-    cached = cache_get(key)
+    key = tile_cache_key(pg, kind="boundary-poltype-v2", source=source, geom_col=geom_col, layer=layer, z=z, x=x, y=y)
+    cache_max = eez_tile_cache_max(config)
+    cache_path = eez_tile_cache_path(config)
+    cached = cache_get(key, cache_max=cache_max, cache_path=cache_path)
     if cached is not None:
         return cached
+    simplify_degrees = geographic_pixel_degrees_for_zoom(z)
     sql = f"""
         WITH bounds AS (
             SELECT ST_TileEnvelope(%s, %s, %s) AS geom
@@ -317,7 +368,10 @@ def eez_boundary_mvt_tile_packet(
                 pol_type,
                 sovereign,
                 area_km2,
-                ST_Transform(source.{geom_col}, 3857) AS geom
+                ST_Transform(
+                    ST_Simplify(source.{geom_col}, %s),
+                    3857
+                ) AS geom
             FROM {source.table} AS source, bounds
             WHERE source.{geom_col} && ST_Transform(bounds.geom, 4326)
         ),
@@ -330,7 +384,7 @@ def eez_boundary_mvt_tile_packet(
                 sovereign,
                 area_km2,
                 ST_AsMVTGeom(
-                    ST_Simplify(source_geom.geom, %s),
+                    source_geom.geom,
                     bounds.geom,
                     extent => %s,
                     buffer => %s,
@@ -341,16 +395,18 @@ def eez_boundary_mvt_tile_packet(
         SELECT ST_AsMVT(mvtgeom.*, %s, %s, 'geom') AS tile
         FROM mvtgeom
     """
-    with psycopg.connect(postgis_dsn(pg)) as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql, (z, x, y, source.simplify_meters, source.extent, source.buffer, layer, source.extent))
-            tile = cur.fetchone()[0] or b""
+    with eez_tile_query_limiter(config):
+        with psycopg.connect(postgis_dsn(pg)) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (z, x, y, simplify_degrees, source.extent, source.buffer, layer, source.extent))
+                tile = cur.fetchone()[0] or b""
     meta = {
         "source": "postgis",
         "format": "mvt",
         "layer": layer,
         "lod": source.lod,
         "cache": "miss",
+        "cache_tier": "postgis",
         "table": source.table,
         "z": z,
         "x": x,
@@ -358,11 +414,12 @@ def eez_boundary_mvt_tile_packet(
         "extent": source.extent,
         "buffer": source.buffer,
         "simplify_meters": source.simplify_meters,
+        "simplify_degrees": simplify_degrees,
         "bytes": len(tile),
         "timing": {"tile_ms": elapsed_ms(started)},
     }
     result = bytes(tile), meta
-    cache_set(key, result, cache_max=eez_tile_cache_max(config))
+    cache_set(key, result, cache_max=cache_max, cache_path=cache_path)
     return result
 
 
