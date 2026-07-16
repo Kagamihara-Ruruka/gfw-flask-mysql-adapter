@@ -45,7 +45,7 @@ function createPlaybackCacheService({
     return {
       ...fixedPolicy,
       windowAhead: highWatermark,
-      maxGb: Math.max(0.25, Number(state.dataFrameStore?.maxBytes || 2 * BYTES_PER_GB) / BYTES_PER_GB),
+      maxGb: Math.max(0.25, Number(state.dataFrameStore?.maxBytes || 0.5 * BYTES_PER_GB) / BYTES_PER_GB),
       strategy: policy.strategy,
       policyStatus: policy.status,
       effectiveLowWatermark: policy.lowWatermark,

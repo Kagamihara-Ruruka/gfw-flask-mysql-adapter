@@ -39,7 +39,7 @@ class RuntimeCompositionRoot {
   }
 
   dataFrameStatsTarget() {
-    this.state.dataFrameStore ||= { maxEntries: 0, maxBytes: 2 * 1024 * 1024 * 1024, stats: {} };
+    this.state.dataFrameStore ||= { maxEntries: 0, maxBytes: 512 * 1024 * 1024, stats: {} };
     this.state.dataFrameStore.stats ||= {};
     return this.state.dataFrameStore.stats;
   }
@@ -96,6 +96,9 @@ class RuntimeCompositionRoot {
     }
     const scheduler = this.own("QuerySchedulerInstance", new QueryScheduler({
       concurrencyProvider: () => this.state.queryPolicy?.network_concurrency ?? 6,
+      backgroundConcurrencyProvider: () => (
+        this.state.queryPolicy?.background_network_concurrency ?? 3
+      ),
       eventLog,
       snapshotSink: (snapshot) => this.syncQueryScheduler(snapshot),
       clock: clockDomain.monotonic,
@@ -142,6 +145,17 @@ class RuntimeCompositionRoot {
       frameIdentity: this.frameIdentity,
       clock: clockDomain.playback,
     }));
+    const unsubscribePlaybackQueryIsolation = eventLog.subscribe((event) => {
+      if (event?.type !== "RUN_STARTED" || event.kind !== "playback") return;
+      scheduler.cancelPending({
+        lane: "widget-auto",
+        includeActive: true,
+        reason: "playback_started",
+      });
+    }, { emitCurrent: false });
+    this.own("PlaybackQueryIsolation", {
+      dispose: unsubscribePlaybackQueryIsolation,
+    }, { expose: false });
     this.own("PlaybackRenderer", new PlaybackRendererController({
       eventTarget: this.eventTarget,
     }));
@@ -157,7 +171,7 @@ class RuntimeCompositionRoot {
     adaptiveWatermarkController = this.own(
       "AdaptiveWatermarkController",
       new AdaptiveWatermarkControllerCore({
-        metricsProvider: () => runtimePerformanceMetrics.inputs(),
+        metricsProvider: (context = {}) => runtimePerformanceMetrics.inputs(context),
         cacheSnapshotProvider: () => dataFrameStore.snapshot(),
         configProvider: () => this.state.playbackCache || {},
         eventLog,
@@ -244,6 +258,7 @@ class RuntimeCompositionRoot {
         dataFrameStore,
         frameDemandService,
         queryCoordinator,
+        playbackSnapshotProvider: () => playbackEngine.snapshot(),
         eventLog,
         eventSink,
         timingMetricsProvider: () => timingMetrics,

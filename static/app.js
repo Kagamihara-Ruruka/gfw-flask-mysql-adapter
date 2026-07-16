@@ -29,6 +29,27 @@ function scheduleEezResizeReload(reason) {
   }, 120);
 }
 
+function applyMapContainerSize(reason = "尺寸更新", { force = false } = {}) {
+  const shell = $("map-shell");
+  if (!shell) return false;
+  const rect = shell.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return false;
+  const nextSize = `${Math.round(rect.width)}x${Math.round(rect.height)}`;
+  if (!force && nextSize === lastMapContainerSize) return false;
+  lastMapContainerSize = nextSize;
+  map.invalidateSize({ animate: false, pan: false });
+  scheduleEezResizeReload(reason);
+  return true;
+}
+
+function flushMapContainerSize(reason = "尺寸更新", { force = true } = {}) {
+  if (mapResizeFrame !== null) {
+    cancelAnimationFrame(mapResizeFrame);
+    mapResizeFrame = null;
+  }
+  return applyMapContainerSize(reason, { force });
+}
+
 function syncMapContainerSize(reason = "尺寸更新", { force = false } = {}) {
   const shell = $("map-shell");
   if (!shell) return;
@@ -36,11 +57,10 @@ function syncMapContainerSize(reason = "尺寸更新", { force = false } = {}) {
   if (rect.width <= 0 || rect.height <= 0) return;
   const nextSize = `${Math.round(rect.width)}x${Math.round(rect.height)}`;
   if (!force && nextSize === lastMapContainerSize) return;
-  lastMapContainerSize = nextSize;
-  cancelAnimationFrame(mapResizeFrame);
+  if (mapResizeFrame !== null) cancelAnimationFrame(mapResizeFrame);
   mapResizeFrame = requestAnimationFrame(() => {
-    map.invalidateSize({ animate: false, pan: false });
-    scheduleEezResizeReload(reason);
+    mapResizeFrame = null;
+    applyMapContainerSize(reason, { force });
   });
 }
 
@@ -160,7 +180,7 @@ function bindControls() {
     stopPlayback();
     stepDay(1, "往後一日").catch((err) => setStatus(err.message, true));
   });
-  $("play-toggle").addEventListener("click", () => setPlayback(!state.isPlaying).catch((err) => setStatus(err.message, true)));
+  $("play-toggle").addEventListener("click", () => setPlayback(!playbackIsActive()).catch((err) => setStatus(err.message, true)));
   $("play-speed").addEventListener("change", updatePlaybackSpeed);
   $("latest-date").addEventListener("click", () => jumpToLatestDate().catch((err) => setStatus(err.message, true)));
   $("map-fullscreen").addEventListener("click", () => {
@@ -222,8 +242,8 @@ function bindDeveloperBridge() {
   });
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
-      stopPlayback();
       PlaybackPreheater?.stop?.("document_hidden");
+      stopPlayback({ reason: "document_hidden" });
       return;
     }
     refreshDatasetRegistry().catch((err) => setStatus(err.message, true));

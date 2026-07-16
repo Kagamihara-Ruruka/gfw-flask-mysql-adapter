@@ -37,26 +37,35 @@ class LifecycleEventViewerWidget extends DashboardWidget {
   }
 
   model({ expanded = false } = {}) {
-    const allEvents = this.allEvents();
-    const runId = this.activeRunId(allEvents);
+    const eventLog = this.eventLog();
+    const allEvents = expanded ? this.allEvents() : [];
+    const filteredRunEvent = !expanded && this.filters.runId
+      ? eventLog?.latest?.({ run_id: this.filters.runId })
+      : null;
+    const latestEvent = expanded ? allEvents[allEvents.length - 1] : eventLog?.latest?.({});
+    const runId = expanded
+      ? this.activeRunId(allEvents)
+      : String(filteredRunEvent?.run_id || eventLog?.currentRunId?.() || latestEvent?.run_id || "");
     const filter = {
       ...(runId ? { run_id: runId } : {}),
       ...(this.filters.dataset ? { dataset: this.filters.dataset } : {}),
       ...(this.filters.type ? { type: this.filters.type } : {}),
       limit: expanded ? 250 : 8,
     };
-    const events = this.eventLog()?.query?.(filter) || [];
-    const summary = this.eventLog()?.summary?.(runId) || {};
+    const events = eventLog?.query?.(filter) || [];
+    const summary = eventLog?.summary?.(runId) || {};
     const trustedMetrics = this.services.runtimeMetricsProvider?.(runId) || {};
-    const runStart = allEvents.find((event) => !runId || event.run_id === runId);
+    const runStart = expanded
+      ? allEvents.find((event) => !runId || event.run_id === runId)
+      : eventLog?.latest?.({ ...(runId ? { run_id: runId } : {}), type: "RUN_STARTED" });
     return {
       allEvents,
-      datasets: this.datasets(allEvents),
-      eventTypes: this.eventTypes(allEvents),
+      datasets: expanded ? this.datasets(allEvents) : [],
+      eventTypes: expanded ? this.eventTypes(allEvents) : [],
       events,
       expanded,
       runId,
-      runIds: this.runIds(allEvents),
+      runIds: expanded ? this.runIds(allEvents) : [],
       summary,
       trustedMetrics,
       baseMonotonicMs: Number(runStart?.monotonic_ms || events[0]?.monotonic_ms || 0),
@@ -117,6 +126,20 @@ class LifecycleEventViewerWidget extends DashboardWidget {
         `${Number(event.ready_slices || 0)} / ${Number(event.required_slices || 0)} 張`,
         event.duration_ms ? this.formatDuration(event.duration_ms) : "",
         event.degradation_reason || "",
+      ].filter(Boolean).join(" · ");
+    }
+    if (event.type === "MAP_RELOAD_REQUESTED") {
+      return [
+        event.dataset || "",
+        event.date || "",
+        event.reason || "unspecified",
+      ].filter(Boolean).join(" · ");
+    }
+    if (["RUN_FINISHED", "PREHEATER_STOPPED", "QUERY_SCOPE_CANCELLED"].includes(event.type)) {
+      return [
+        event.dataset || event.dataset_id || "",
+        event.date || "",
+        event.reason || "unspecified",
       ].filter(Boolean).join(" · ");
     }
     return [

@@ -24,9 +24,9 @@ const PlaybackInterpolationController = (() => {
     return options(targetState);
   }
 
-  function playbackTransitionMs(targetState, baseMs) {
+  function playbackTransitionMs(targetState, baseMs, { playbackActive = false } = {}) {
     const ms = Math.max(0, Number(baseMs || 0));
-    if (!targetState?.isPlaying) return ms;
+    if (!playbackActive) return ms;
     return options(targetState).mode === "off" ? 0 : ms;
   }
 

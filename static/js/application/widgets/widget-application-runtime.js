@@ -22,6 +22,13 @@ class WidgetApplicationRuntime {
     this.schedule = schedule;
     this.cancelSchedule = cancelSchedule;
     this.serviceCache = new Map();
+    this.unsubscribeEventLog = this.eventLog?.subscribe?.((event) => {
+      if (event?.type !== "RUN_STARTED" || event.kind !== "playback") return;
+      this.source("line-chart")?.cancelFills?.({
+        lane: "widget-auto",
+        reason: "playback_started",
+      });
+    }, { emitCurrent: false }) || null;
   }
 
   source(widgetType) {
@@ -73,6 +80,8 @@ class WidgetApplicationRuntime {
   }
 
   dispose() {
+    this.unsubscribeEventLog?.();
+    this.unsubscribeEventLog = null;
     for (const source of new Set(this.sources.values())) source?.dispose?.();
     this.sources.clear();
     this.serviceCache.clear();
@@ -93,6 +102,7 @@ function createWidgetApplicationRuntime({
   dataFrameStore,
   frameDemandService,
   queryCoordinator,
+  playbackSnapshotProvider,
   eventLog,
   eventSink,
   timingMetricsProvider,
@@ -110,6 +120,7 @@ function createWidgetApplicationRuntime({
     renderIntentService,
     dataFrameStore,
     frameDemandService,
+    playbackSnapshotProvider,
   });
   const sources = new Map();
   sources.set("line-chart", new LineChartDataSource({

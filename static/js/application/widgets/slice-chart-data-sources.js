@@ -203,6 +203,17 @@ class HorizontalBarChartDataSource {
     return Number.isFinite(value) ? value : null;
   }
 
+  cacheEventAffectsCurrent(event) {
+    const request = this.requestForCurrentState();
+    if (request.blocked) return false;
+    const detail = event?.detail || {};
+    const datasetMatches = request.layers.some((layer) => layer.datasetId === detail.datasetId);
+    const dateMatches = request.selections.some((selection) => (
+      this.queryContext.currentDate(selection) === String(detail.date || "")
+    ));
+    return datasetMatches && dateMatches;
+  }
+
   async loadModel(request, generation) {
     const matrix = await Promise.all(request.layers.map(async (layer) => ({
       layer,

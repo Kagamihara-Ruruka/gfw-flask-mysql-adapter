@@ -12,6 +12,7 @@ class WidgetQueryContext {
     renderIntentService,
     dataFrameStore,
     frameDemandService,
+    playbackSnapshotProvider,
   } = {}) {
     if (typeof stateProvider !== "function") throw new TypeError("WidgetQueryContext requires stateProvider");
     if (!sampledGridContract) throw new TypeError("WidgetQueryContext requires SampledGridContract");
@@ -25,6 +26,7 @@ class WidgetQueryContext {
     this.renderIntentService = renderIntentService;
     this.dataFrameStore = dataFrameStore;
     this.frameDemandService = frameDemandService;
+    this.playbackSnapshotProvider = playbackSnapshotProvider;
   }
 
   state() {
@@ -89,11 +91,16 @@ class WidgetQueryContext {
     });
   }
 
+  requestedResolutionFor(layer) {
+    return this.sampledGridContract.requestResolution({ datasetId: layer.datasetId });
+  }
+
   request(layer, selection) {
     const bbox = this.bbox(selection);
     const date = this.currentDate(selection);
     if (!layer?.datasetId || !bbox || !date) return null;
-    const resolution = this.resolutionFor(layer, selection);
+    const resolution = this.requestedResolutionFor(layer);
+    const queryResolution = this.resolutionFor(layer, selection);
     const mapSnapshot = this.mapSnapshot();
     return {
       datasetId: layer.datasetId,
@@ -104,24 +111,36 @@ class WidgetQueryContext {
       limit: this.renderIntentService?.unlimitedLimit?.() ?? "max",
       columns: "render",
       resolution,
+      queryResolution,
       zoom: mapSnapshot.zoom ?? null,
       latitude: selection?.center?.lat ?? (bbox[1] + bbox[3]) / 2,
       selection,
-      key: [layer.datasetId, date, bbox.join(","), resolution ?? "auto"].join("|"),
+      key: [layer.datasetId, date, bbox.join(","), resolution ?? "auto", queryResolution ?? "auto"].join("|"),
     };
   }
 
-  async fetchValue(layer, selection) {
+  playbackOwnsQueryLifecycle() {
+    const status = String(this.playbackSnapshotProvider?.()?.status || "IDLE");
+    return ["PREPARING", "PLAYING", "BUFFERING"].includes(status);
+  }
+
+  async fetchValue(layer, selection, { allowNetwork = null } = {}) {
     const request = this.request(layer, selection);
     if (!request) {
       return { status: "missing", layer, selection, request, value: null, rowCount: 0 };
     }
     try {
       const cached = this.dataFrameStore.inspect(request);
+      const networkAllowed = allowNetwork === null
+        ? !this.playbackOwnsQueryLifecycle()
+        : Boolean(allowNetwork);
+      if (cached.status !== "ready" && !networkAllowed) {
+        return { status: "missing", layer, selection, request, value: null, rowCount: 0 };
+      }
       const result = cached.status === "ready"
         ? cached
         : await this.frameDemandService.demand(request, {
-          lane: "widget",
+          lane: "widget-interactive",
           scopeId: `widget:${layer.layerId}:${selection?.selection_id || "selected"}`,
           consumerId: `value:${request.date}`,
         });

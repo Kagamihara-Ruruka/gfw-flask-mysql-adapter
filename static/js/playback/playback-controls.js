@@ -3,8 +3,17 @@ const DEFAULT_PLAYBACK_INTERVAL_MS = 1400;
 const PLAYBACK_BUFFER_POLL_MS = 180;
 const PLAYBACK_BUFFER_TIMEOUT_MS = PlaybackTimePolicy.BUFFER_TIMEOUT_MS;
 
+function playbackIsActive() {
+  const status = typeof PlaybackEngine === "undefined"
+    ? "IDLE"
+    : String(PlaybackEngine.snapshot?.()?.status || "IDLE");
+  return ["PREPARING", "PLAYING", "BUFFERING"].includes(
+    status,
+  );
+}
+
 function syncPlayToggleIcon() {
-  if (state.isPlaying) {
+  if (playbackIsActive()) {
     ControlButtons.setIcon("play-toggle", "pause", "II", "暫停");
     if (typeof syncFullscreenPlayToggleIcon === "function") {
       syncFullscreenPlayToggleIcon();
@@ -120,6 +129,8 @@ function syncPlaybackRuntimeGateState() {
       stateName: "BUFFERING",
       errorMessage: playbackDegradationText(gate.degradationReason),
     });
+  } else if (["prebuffering", "waiting"].includes(state.playbackCache?.bufferStatus)) {
+    PlaybackCacheService.clearBufferState();
   }
   updatePlaybackBufferStatus();
 }
@@ -266,6 +277,11 @@ function syncPlaybackSettingsInputs() {
   if ($("playback-interpolation-mode")) $("playback-interpolation-mode").value = interpolation.mode;
   if ($("playback-cache-strategy")) $("playback-cache-strategy").value = options.strategy;
   if ($("query-network-concurrency")) $("query-network-concurrency").value = String(state.queryPolicy?.network_concurrency || 6);
+  if ($("query-background-concurrency")) {
+    $("query-background-concurrency").value = String(
+      state.queryPolicy?.background_network_concurrency || 3,
+    );
+  }
   if ($("playback-cache-low-watermark")) $("playback-cache-low-watermark").value = String(options.lowWatermark);
   if ($("playback-cache-high-watermark")) $("playback-cache-high-watermark").value = String(options.highWatermark);
   if ($("playback-cache-startup-watermark")) $("playback-cache-startup-watermark").value = String(state.playbackCache.startupWatermark);
@@ -298,6 +314,21 @@ function bindPlaybackSettingsControls() {
   });
   $("query-network-concurrency")?.addEventListener("change", (event) => {
     state.queryPolicy.network_concurrency = Math.max(1, Math.min(16, Number(event.target.value || 6)));
+    state.queryPolicy.background_network_concurrency = Math.min(
+      state.queryPolicy.network_concurrency,
+      Math.max(1, Number(state.queryPolicy.background_network_concurrency || 3)),
+    );
+    LayerQueryCoordinator.drain?.();
+    syncPlaybackSettingsInputs();
+  });
+  $("query-background-concurrency")?.addEventListener("change", (event) => {
+    state.queryPolicy.background_network_concurrency = Math.max(
+      1,
+      Math.min(
+        Number(state.queryPolicy.network_concurrency || 6),
+        Number(event.target.value || 3),
+      ),
+    );
     LayerQueryCoordinator.drain?.();
     syncPlaybackSettingsInputs();
   });
@@ -473,11 +504,10 @@ function updatePlaybackControls() {
 }
 
 function stopPlayback({ cancelPending = true, clearBuffer = true, reason = "stopped" } = {}) {
-  const wasActive = Boolean(state.isPlaying || state.playTimer || state.playbackCache?.timeline);
+  const wasActive = Boolean(playbackIsActive() || state.playTimer || state.playbackCache?.timeline);
   if (cancelPending) {
     nextPlaybackGeneration();
   }
-  state.isPlaying = false;
   if (clearBuffer) {
     PlaybackCacheService.clearBufferState();
   }
@@ -543,8 +573,7 @@ function playbackFrameDecision(dates, currentIndex, targetIndex) {
     currentIndex,
     targetIndex,
     hasCacheLayer: hasPlaybackCacheLayer(),
-    requestContext: playbackRequestContext(),
-    cacheService: PlaybackCacheService,
+    inspectFrame: (index) => PlaybackEngine.inspectTarget(index),
     intervalMs: normalizedPlaybackInterval(),
     rate: normalizedPlaybackRate(),
     resumeGate: PlaybackEngine.bufferGate(),
@@ -676,13 +705,13 @@ function schedulePlaybackTick(generation = state.playbackCache.generation) {
   ClockDomain.playback.cancel(state.playTimer);
   const delayMs = delayUntilNextPlaybackFrame(generation);
   state.playTimer = ClockDomain.playback.schedule(async () => {
-    if (!state.isPlaying || !isPlaybackGenerationActive(generation)) return;
+    if (!playbackIsActive() || !isPlaybackGenerationActive(generation)) return;
     try {
       const frameNumber = duePlaybackFrameNumber(generation);
       const result = await advancePlaybackToTimelineTarget(generation, frameNumber);
       if (result.buffering) {
         shiftPlaybackTimeline(generation, PLAYBACK_BUFFER_POLL_MS);
-        if (state.isPlaying && isPlaybackGenerationActive(generation)) {
+        if (playbackIsActive() && isPlaybackGenerationActive(generation)) {
           schedulePlaybackTick(generation);
         }
         return;
@@ -700,7 +729,7 @@ function schedulePlaybackTick(generation = state.playbackCache.generation) {
         return;
       }
       markPlaybackFrameShown(generation, frameNumber);
-      if (state.isPlaying && isPlaybackGenerationActive(generation)) {
+      if (playbackIsActive() && isPlaybackGenerationActive(generation)) {
         schedulePlaybackTick(generation);
       }
     } catch (err) {
@@ -732,7 +761,6 @@ async function setPlayback(active) {
     requestContext: playbackRequestContext(),
     currentDate: $("date").value,
   });
-  state.isPlaying = true;
   const startPromise = PlaybackEngine.start({
     rate: state.playbackRate,
     interval_ms: normalizedPlaybackInterval(),
@@ -756,8 +784,8 @@ async function setPlayback(active) {
     }
     throw error;
   }
-  if (!started || !state.isPlaying || !isPlaybackGenerationActive(generation)) {
-    if (!started && state.isPlaying && isPlaybackGenerationActive(generation)) {
+  if (!started || !playbackIsActive() || !isPlaybackGenerationActive(generation)) {
+    if (!started && playbackIsActive() && isPlaybackGenerationActive(generation)) {
       stopPlayback({ reason: "prepare_cancelled" });
     }
     return;
@@ -800,9 +828,18 @@ function updatePlaybackSpeed(sourceId = "play-speed") {
   if (typeof syncFullscreenPlaybackControls === "function") {
     syncFullscreenPlaybackControls();
   }
-  if (state.isPlaying) {
+  if (playbackIsActive()) {
+    PlaybackEngine.updatePlaybackRate({
+      rate: state.playbackRate,
+      interval_ms: normalizedPlaybackInterval(),
+      consumption_rate: ClockDomain.playback.consumptionRate({
+        baseIntervalMs: basePlaybackInterval(),
+        speed: state.playbackRate,
+      }),
+    });
     reschedulePlaybackTimelineAfterSpeedChange(state.playbackCache.generation);
     schedulePlaybackTick(state.playbackCache.generation);
+    syncPlaybackRuntimeGateState();
   }
   syncPlaybackSettingsInputs();
 }

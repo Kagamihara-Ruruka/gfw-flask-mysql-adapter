@@ -71,6 +71,13 @@ const FrameIdentity = (() => {
     return request.resolution ?? request.requestedResolutionKm ?? request.requested_resolution_km ?? null;
   }
 
+  function queryResolution(request = {}) {
+    return request.queryResolution
+      ?? request.effectiveQueryResolutionKm
+      ?? request.effective_query_resolution_km
+      ?? requestedResolution(request);
+  }
+
   function requestParts(request = {}, { actualResolution = undefined } = {}) {
     const requested = requestedResolution(request);
     const resolution = actualResolution === undefined ? requested : actualResolution;
@@ -98,7 +105,7 @@ const FrameIdentity = (() => {
       packet?.grid?.resolution_km,
       packet?.actual_resolution_km,
       packet?.rows?.[0]?.resolution_km,
-      requestedResolution(request),
+      queryResolution(request),
     ];
     for (const candidate of candidates) {
       const numeric = finiteNumber(candidate);
@@ -119,6 +126,8 @@ const FrameIdentity = (() => {
 
   function normalizeRequest(request = {}) {
     const box = normalizedBbox(request.bbox);
+    const resolution = requestedResolution(request);
+    const effectiveQueryResolution = queryResolution(request);
     return Object.freeze({
       ...request,
       datasetId: String(request.datasetId || request.dataset_id || ""),
@@ -126,7 +135,10 @@ const FrameIdentity = (() => {
       bbox: box ? bboxSignature(box) : "",
       columns: String(request.columns || "render"),
       limit: request.limit == null ? "max" : request.limit,
-      resolution: requestedResolution(request),
+      resolution,
+      requestedResolutionKm: resolution,
+      queryResolution: effectiveQueryResolution,
+      effectiveQueryResolutionKm: effectiveQueryResolution,
       cacheNamespace: datasetNamespace(request),
     });
   }
@@ -140,6 +152,7 @@ const FrameIdentity = (() => {
     normalizeRequest,
     normalizedBbox,
     parseBbox,
+    queryResolution,
     requestParts,
     scopeKey,
   });

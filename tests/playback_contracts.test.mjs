@@ -81,6 +81,15 @@ function cacheService({ readyDates = [], failedDates = [], mode = "progressive" 
   return service;
 }
 
+function engineFrameInspector(service, sourceDates = dates) {
+  return (index) => {
+    const date = sourceDates[index] || "";
+    const failure = service.failureForDate(date);
+    if (failure) return { status: "failed", date, failure };
+    return { status: service.hasDate(date) ? "ready" : "missing", date };
+  };
+}
+
 function loadPlaybackCacheService({ waitForDates = async (dates) => ({
   total: dates.length,
   completed: dates.length,
@@ -319,8 +328,7 @@ test("progressive cold cache produces a target-frame fetching decision", () => {
     targetIndex: 1,
     mode: "progressive",
     hasCacheLayer: true,
-    requestContext: { dataset: "gfw_full" },
-    cacheService: service,
+    inspectFrame: engineFrameInspector(service),
   });
 
   assert.equal(decision.state, PlaybackFrameBuffer.FRAME_STATES.fetching);
@@ -365,8 +373,7 @@ test("a ready target renders immediately when no recovery gate is active", () =>
     targetIndex: 1,
     mode: "progressive",
     hasCacheLayer: true,
-    requestContext: { dataset: "gfw_full" },
-    cacheService: service,
+    inspectFrame: engineFrameInspector(service),
   });
 
   assert.equal(decision.state, PlaybackFrameBuffer.FRAME_STATES.ready);
@@ -387,8 +394,7 @@ test("an active recovery gate blocks a ready target until the resume watermark",
     currentIndex: 0,
     targetIndex: 1,
     hasCacheLayer: true,
-    requestContext: { dataset: "gfw_full" },
-    cacheService: service,
+    inspectFrame: engineFrameInspector(service),
     resumeGate: { active: true, readyCount: 1, required: 3 },
   });
 
@@ -412,8 +418,7 @@ test("progressive target failure becomes an explicit failed frame-buffer state",
     targetIndex: 1,
     mode: "progressive",
     hasCacheLayer: true,
-    requestContext: { dataset: "gfw_full" },
-    cacheService: service,
+    inspectFrame: engineFrameInspector(service),
   });
 
   assert.equal(decision.state, PlaybackFrameBuffer.FRAME_STATES.failed);
@@ -484,8 +489,47 @@ test("watermark playback awaits the engine-owned startup gate without calling th
   assert.ok(start >= 0 && end > start);
   assert.match(body, /const startPromise = PlaybackEngine\.start/);
   assert.match(body, /started = await startPromise/);
-  assert.match(body, /state\.isPlaying = true;[\s\S]*schedulePlaybackTick\(generation\);/);
+  assert.match(body, /schedulePlaybackTick\(generation\);/);
+  assert.doesNotMatch(body, /state\.isPlaying/);
   assert.doesNotMatch(body, /PlaybackPreheater\.|preheatPlaybackCache|before_play/);
+});
+
+test("PlaybackEngine is the only mutable playback lifecycle truth", () => {
+  const controls = readFileSync(
+    path.join(repoRoot, "static/js/playback/playback-controls.js"),
+    "utf8",
+  );
+  const fullscreen = readFileSync(
+    path.join(repoRoot, "static/js/playback/fullscreen-playback-controls.js"),
+    "utf8",
+  );
+  const app = readFileSync(
+    path.join(repoRoot, "static/app.js"),
+    "utf8",
+  );
+  assert.match(controls, /function playbackIsActive\(\)/);
+  assert.doesNotMatch(controls, /state\.isPlaying/);
+  assert.doesNotMatch(fullscreen, /state\.isPlaying/);
+  assert.doesNotMatch(app, /state\.isPlaying/);
+  assert.match(app, /setPlayback\(!playbackIsActive\(\)\)/);
+});
+
+test("document visibility shutdown keeps its lifecycle reason and records preheater stop first", () => {
+  const app = readFileSync(
+    path.join(repoRoot, "static/app.js"),
+    "utf8",
+  );
+  const start = app.indexOf('document.addEventListener("visibilitychange"');
+  const end = app.indexOf("\n  });\n}", start);
+  const body = app.slice(start, end);
+
+  assert.ok(start >= 0 && end > start);
+  assert.match(body, /PlaybackPreheater\?\.stop\?\.\("document_hidden"\)/);
+  assert.match(body, /stopPlayback\(\{ reason: "document_hidden" \}\)/);
+  assert.ok(
+    body.indexOf("PlaybackPreheater") < body.indexOf("stopPlayback"),
+    "the preheater event must be attached to the active run before RUN_FINISHED clears it",
+  );
 });
 
 test("playback rendering advances the preheater through PlaybackEngine only", () => {
@@ -525,5 +569,6 @@ test("legacy batch cache and prefetch entrypoints are removed", () => {
 test("map scope updates flow through PlaybackEngine instead of addressing the preheater directly", () => {
   const apiClient = readFileSync(path.join(repoRoot, "static/js/services/api-client.js"), "utf8");
   assert.match(apiClient, /PlaybackEngine\.configure\(\{[\s\S]{0,220}requestContext,[\s\S]{0,120}currentDate: requestedDate/);
+  assert.doesNotMatch(apiClient, /resolvedRequestContext|resolution:\s*actualResolution/);
   assert.doesNotMatch(apiClient, /PlaybackPreheater\.setScope\(/);
 });

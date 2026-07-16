@@ -20,6 +20,7 @@ function loadLayerActivationController({ schemaError = null } = {}) {
     select: 0,
     stop: 0,
     reloadSnapshots: [],
+    sequence: [],
     viewport: [],
     virtualGrid: [],
   };
@@ -51,6 +52,7 @@ function loadLayerActivationController({ schemaError = null } = {}) {
     stopPlayback: () => { calls.stop += 1; },
     clearPrimaryLayerRecords: () => { calls.clear += 1; },
     loadSchema: async () => {
+      calls.sequence.push("schema");
       calls.schema += 1;
       calls.schemaSnapshots.push({
         dataLayer: state.dataLayer,
@@ -62,6 +64,7 @@ function loadLayerActivationController({ schemaError = null } = {}) {
       state.availableDates = ["2020-01-01"];
     },
     reloadActiveLayer: async () => {
+      calls.sequence.push("reload");
       calls.reload += 1;
       calls.reloadSnapshots.push({
         dataLayer: state.dataLayer,
@@ -79,12 +82,21 @@ function loadLayerActivationController({ schemaError = null } = {}) {
     updateDataLayerMenu: () => { calls.menu += 1; },
     $: () => menu,
     LayerViewportController: {
-      syncForDataset: (datasetId, options) => calls.viewport.push({ datasetId, options }),
+      syncForDataset: (datasetId, options) => {
+        calls.sequence.push("viewport-sync");
+        calls.viewport.push({ method: "sync", datasetId, options });
+      },
+      settleForQuery: async (datasetId, options) => {
+        calls.sequence.push("viewport-settled");
+        calls.viewport.push({ method: "settle", datasetId, options });
+      },
     },
     VirtualGridController: {
       refresh: (reason) => calls.virtualGrid.push(reason),
     },
     dispatchEvent: (event) => calls.dispatch.push(event),
+    cancelScheduledPrimaryReload: () => calls.sequence.push("reload-cancelled"),
+    flushMapContainerSize: () => calls.sequence.push("map-size-flushed"),
   };
   context.AppRuntime = {
     install(name, factory) {
@@ -119,6 +131,7 @@ test("registered datasets remain dormant while the dashboard has no enabled laye
   assert.equal(calls.schema, 0);
   assert.equal(calls.reload, 0);
   assert.deepEqual(plain(calls.viewport.at(-1)), {
+    method: "sync",
     datasetId: null,
     options: { focus: false },
   });
@@ -146,9 +159,13 @@ test("the data-layer drawer owns the complete activation and deactivation sequen
     availableDates: ["2020-01-01"],
   });
   assert.deepEqual(plain(calls.viewport.at(-1)), {
+    method: "settle",
     datasetId: "grid_dataset",
     options: { focus: true },
   });
+  assert.ok(calls.sequence.indexOf("map-size-flushed") < calls.sequence.indexOf("viewport-settled"));
+  assert.ok(calls.sequence.indexOf("viewport-settled") < calls.sequence.indexOf("reload-cancelled"));
+  assert.ok(calls.sequence.indexOf("reload-cancelled") < calls.sequence.indexOf("reload"));
   assert.equal(menu.open, false);
 
   menu.open = true;
@@ -158,6 +175,7 @@ test("the data-layer drawer owns the complete activation and deactivation sequen
   assert.equal(state.schema, null);
   assert.deepEqual(plain(state.enabledLayerIds), []);
   assert.deepEqual(plain(calls.viewport.at(-1)), {
+    method: "sync",
     datasetId: null,
     options: { focus: false },
   });
@@ -219,4 +237,5 @@ test("hidden dashboard resize cannot publish a zero-sized map viewport", () => {
   assert.match(body, /rect\.width <= 0 \|\| rect\.height <= 0/);
   assert.match(body, /\{ force = false \}/);
   assert.match(source, /syncMapContainerSize\([^\n]+\{ force: true \}\)/);
+  assert.match(source, /function flushMapContainerSize[\s\S]*?cancelAnimationFrame\(mapResizeFrame\)[\s\S]*?applyMapContainerSize/);
 });

@@ -88,12 +88,16 @@ class TableWidgetDataSource {
           bbox: this.bboxProvider?.() || "",
           limit: "max",
           columns: "render",
-          resolution: this.sampledGridContract.queryResolution({ datasetId: tab.datasetId }),
+          resolution: this.sampledGridContract.requestResolution({ datasetId: tab.datasetId }),
+          queryResolution: this.sampledGridContract.queryResolution({ datasetId: tab.datasetId }),
         };
     packetRequest.datasetId = tab.datasetId;
     packetRequest.layerId = tab.layerId;
     packetRequest.date = date;
-    packetRequest.resolution = this.sampledGridContract.queryResolution({
+    packetRequest.resolution = this.sampledGridContract.requestResolution({
+      datasetId: tab.datasetId,
+    });
+    packetRequest.queryResolution = this.sampledGridContract.queryResolution({
       datasetId: tab.datasetId,
       zoom: packetRequest.zoom,
       latitude: packetRequest.latitude,
@@ -105,7 +109,13 @@ class TableWidgetDataSource {
       ? selected.tile_key || selected.label || "選取 Tile"
       : "目前視窗";
     const key = this.dataFrameStore.keyFor?.(packetRequest)
-      || [tab.datasetId, date, packetRequest.bbox, packetRequest.resolution ?? "auto"].join("|");
+      || [
+        tab.datasetId,
+        date,
+        packetRequest.bbox,
+        packetRequest.resolution ?? "auto",
+        packetRequest.queryResolution ?? "auto",
+      ].join("|");
     return {
       ...tab,
       selected,

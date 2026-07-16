@@ -208,6 +208,7 @@ function loadWidgetQueryContext(packetRows) {
 
 function loadLayerViewportController(dataset) {
   const mapState = {
+    invalidations: 0,
     minZoom: 2,
     maxBounds: null,
     center: { lat: 0, lng: 0 },
@@ -247,6 +248,7 @@ function loadLayerViewportController(dataset) {
       },
       setZoom: (zoom) => { mapState.zoom = zoom; },
       panInsideBounds() {},
+      invalidateSize: () => { mapState.invalidations += 1; },
     },
     L: { latLngBounds },
     SampledGridContract: {
@@ -600,6 +602,32 @@ test("sampled-grid paint skips zero by default while preserving an explicit over
   }]).length, 1);
 });
 
+test("sampled-grid frame plan reuses one compiled paint context per frame", () => {
+  const { colorScale } = loadColorScale({
+    layer_id: "planned-grid",
+    sampled_grid: {
+      contract_version: "rrkal.sampled_grid.v1",
+      geometry: { encoding: "center", cell_width_degrees: 1, cell_height_degrees: 1 },
+      visualization: { color_scale: { mode: "nonzero_extent", zero_opacity: 0 } },
+    },
+  });
+  const bounds = { west: 120, south: 20, east: 121, north: 21 };
+  const plan = colorScale.frame([
+    { value: 0, coverage_ratio: 1, bounds },
+    { value: 10, coverage_ratio: 1, bounds },
+    { value: 20, coverage_ratio: 1, bounds },
+  ]);
+  const scratch = [0, 0, 0];
+
+  assert.deepEqual(Array.from(plan.rows, (row) => row.value), [10, 20]);
+  assert.deepEqual({ min: plan.domain.min, max: plan.domain.max }, { min: 10, max: 20 });
+  assert.equal(plan.opacityForValue(0), 0);
+  assert.equal(plan.colorPartsForValue(10, scratch), scratch);
+  assert.deepEqual(scratch, [22, 59, 74]);
+  plan.colorPartsForValue(20, scratch);
+  assert.deepEqual(scratch, [216, 90, 48]);
+});
+
 test("sampled-grid WebGL preserves the configured alpha instead of squaring it", () => {
   const source = fs.readFileSync(
     path.join(root, "static/js/rendering/gfw-webgl-renderer.js"),
@@ -706,6 +734,23 @@ test("bounded sampled-grid layers constrain viewport, queries, and rendered rows
   assert.equal(fs.existsSync(path.join(root, "static/js/layers/sampled-grid-coverage-mask.js")), false);
 });
 
+test("dataset activation settles layout before deriving its first query viewport", async () => {
+  const dataset = {
+    sampled_grid: {
+      coverage_areas: [
+        { id: "bounded", bounds: { west: 105, south: 15, east: 135, north: 35 } },
+      ],
+    },
+  };
+  const { context, mapState } = loadLayerViewportController(dataset);
+
+  const viewport = await context.LayerViewportController.settleForQuery("bounded", { focus: true });
+
+  assert.equal(mapState.invalidations, 1);
+  assert.equal(viewport.datasetId, "bounded");
+  assert.deepEqual(JSON.parse(JSON.stringify(mapState.center)), { lat: 25, lng: 120 });
+});
+
 test("schema candidates never become mapping roles automatically", () => {
   const source = fs.readFileSync(
     path.join(root, "static/js/ui/developer/developer-mapping-controller.js"),
@@ -753,9 +798,8 @@ test("sampled-grid widgets consume canonical roles instead of GFW identifiers", 
 
 test("widget queries use the virtual cell effective resolution after fallback", () => {
   const queryContext = loadWidgetQueryContext([]);
-  const resolution = queryContext.resolutionFor(
-    { datasetId: "pipeline.fishing", layerId: "pipeline.fishing" },
-    {
+  const layer = { datasetId: "pipeline.fishing", layerId: "pipeline.fishing" };
+  const selection = {
       selection_grid: {
         participants: [{
           dataset_id: "pipeline.fishing",
@@ -765,9 +809,13 @@ test("widget queries use the virtual cell effective resolution after fallback", 
           effective_resolution_km: 16,
         }],
       },
-    },
-  );
+      bbox: [120, 20, 121, 21],
+    };
+  const resolution = queryContext.resolutionFor(layer, selection);
+  const request = queryContext.request(layer, selection);
   assert.equal(resolution, 16);
+  assert.equal(request.resolution, 4);
+  assert.equal(request.queryResolution, 16);
 });
 
 test("line chart derives its moving window from the canonical snapshot cache", () => {
@@ -832,13 +880,13 @@ test("line charts follow semantic dates inside a scope-bounded moving window", (
   assert.ok(activeDateHandler, "active date handler must remain explicit");
   assert.match(activeDateHandler[1], /renderLineChartWidgets/);
   assert.doesNotMatch(activeDateHandler[1], /refreshLineChartWidgets/);
-  assert.match(activeDateHandler[1], /ensureCurrentWindow/);
+  assert.doesNotMatch(activeDateHandler[1], /ensureCurrentWindow/);
   assert.match(lineChart, /this\.queryContext\.currentDate\(selected\)/);
   assert.match(lineChart, /scopeDates\(selected/);
-  const modelBody = lineChart.slice(lineChart.indexOf("  model() {"), lineChart.indexOf("  ensureCurrentWindow() {"));
-  const ensureBody = lineChart.slice(lineChart.indexOf("  ensureCurrentWindow() {"), lineChart.indexOf("  packetRequest("));
+  const modelBody = lineChart.slice(lineChart.indexOf("  model() {"), lineChart.indexOf("  ensureCurrentWindow("));
+  const ensureBody = lineChart.slice(lineChart.indexOf("  ensureCurrentWindow("), lineChart.indexOf("  packetRequest("));
   assert.doesNotMatch(modelBody, /this\.fill\(/);
-  assert.match(ensureBody, /this\.fill\(request\)/);
+  assert.match(ensureBody, /allowNetwork && snapshots\.missingDates\.length \? this\.fill\(request\) : null/);
   assert.match(lineChart, /const windowSize = Math\.min\(scope\.length, \(this\.windowDays \* 2\) \+ 1\)/);
   assert.match(lineChart, /scope\.length - windowSize/);
   assert.match(lineChartView, /dateX\(model, model\.anchorDate\)/);
@@ -929,11 +977,44 @@ test("selection breathing uses a dedicated SVG renderer under a canvas-first map
   assert.match(selection, /addEventListener\("pointerenter",\s*this\.boundPointerEnter,\s*true\)/);
   assert.match(selection, /boundPointerLeave\s*=\s*\(\)\s*=>\s*this\.clear\(\{ forceRefresh: true \}\)/);
   assert.match(selection, /classList\.toggle\("is-virtual-grid-clickable",\s*next\)/);
-  assert.match(selection, /invalidateSize\?\.\(\{ animate: false, pan: false, debounceMoveend: true \}\)/);
+  assert.doesNotMatch(selection, /invalidateSize/);
   assert.match(selection, /document\.body\?\.classList\.toggle\("is-tile-selection-mode-active",\s*next\)/);
   assert.match(styles, /body\.is-tile-selection-mode-active \*\s*\{\s*cursor:\s*default !important/);
   assert.match(styles, /#map\.is-tile-selection-enabled\.is-virtual-grid-clickable[\s\S]*?cursor:\s*crosshair !important/);
   assert.match(styles, /\.tile-selection-rectangle\s*\{[\s\S]*?animation:\s*tile-selection-breathe/);
+});
+
+test("sampled-grid renderers redraw once after viewport interaction settles", () => {
+  const webgl = fs.readFileSync(
+    path.join(root, "static/js/rendering/gfw-webgl-renderer.js"),
+    "utf8",
+  );
+  const canvas = fs.readFileSync(
+    path.join(root, "static/js/layers/gfw-layer.js"),
+    "utf8",
+  );
+  const ais = fs.readFileSync(
+    path.join(root, "static/js/layers/ais-layer.js"),
+    "utf8",
+  );
+  assert.match(webgl, /targetMap\.on\("moveend zoomend resize",\s*layer\._scheduleViewportReset/);
+  assert.match(webgl, /layer\._renderClock\.request\(\(\)\s*=>\s*\{/);
+  assert.match(webgl, /layer\._renderClock\.cancel\(layer\._viewportResetFrame\)/);
+  assert.doesNotMatch(webgl, /targetMap\.on\("move zoom resize"/);
+  assert.match(canvas, /bindSampledGridViewportRedraw\(this, targetMap\)/);
+  assert.doesNotMatch(canvas, /targetMap\.on\("move zoom resize"/);
+  assert.doesNotMatch(canvas.match(/function renderSampledGridMap[\s\S]*?\n}/)?.[0] || "", /invalidateSize/);
+  assert.doesNotMatch(ais.match(/function renderAisMap[\s\S]*?\n}/)?.[0] || "", /invalidateSize/);
+});
+
+test("sampled-grid viewport queries wait for one configurable idle window", () => {
+  const stateSource = fs.readFileSync(path.join(root, "static/js/core/state.js"), "utf8");
+  const refresh = fs.readFileSync(path.join(root, "static/js/core/render-refresh.js"), "utf8");
+  assert.match(stateSource, /viewportReloadSettleMs:\s*700/);
+  assert.match(refresh, /function viewportReloadSettleMs\(\)/);
+  assert.match(refresh, /state\.rendering\?\.viewportReloadSettleMs/);
+  assert.match(refresh, /schedulePrimaryReload\(viewportReloadSettleMs\(\)\)/);
+  assert.doesNotMatch(refresh, /schedulePrimaryReload\(250\)/);
 });
 
 test("developer control plane and dashboard share one layer-contract registry", () => {

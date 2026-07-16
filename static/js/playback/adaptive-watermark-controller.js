@@ -43,6 +43,8 @@ function calculateAdaptiveWatermarkPolicy({
   const consumptionRate = Math.max(0, Number(metrics.consumption_rate || 0));
   const supplyRate = Math.max(0, Number(metrics.supply_rate || 0));
   const latencyP95Ms = Math.max(0, Number(metrics.cache_ready_latency_p95 || 0));
+  const playbackStatus = String(metrics.playback_status || "").toUpperCase();
+  const startupPhase = !playbackStatus || ["IDLE", "PREPARING"].includes(playbackStatus);
   const supplySamples = Math.max(0, Number(metrics.supply_samples || 0));
   const latencySamples = Math.max(0, Number(metrics.cache_ready_latency_samples || 0));
   const remaining = Math.max(0, Math.round(Number(remainingSlices || 0)));
@@ -98,7 +100,7 @@ function calculateAdaptiveWatermarkPolicy({
       10,
       { minimum: 2, maximum: maxHighWatermark },
     )));
-    const startupWatermark = remaining > 0
+    const startupWatermark = startupPhase && remaining > 0
       ? Math.min(effectiveHighCap, remaining, Math.max(fixed.startupWatermark, minimumStartupSamples))
       : Math.min(fixed.startupWatermark, effectiveHighCap);
     return Object.freeze({
@@ -125,6 +127,8 @@ function calculateAdaptiveWatermarkPolicy({
       sustainable: null,
       degradationReason: "insufficient_metrics",
       minimumStartupSamples,
+      minimumSupplySamples,
+      startupPhase,
     });
   }
 
@@ -164,7 +168,7 @@ function calculateAdaptiveWatermarkPolicy({
   );
   const protectedSlices = Math.max(
     tailDemandSlices + reserveSlices,
-    candidateStartupWatermark,
+    startupPhase ? candidateStartupWatermark : 0,
   );
   const candidateHighWatermark = Math.max(2, Math.min(
     effectiveHighCap,
@@ -177,11 +181,11 @@ function calculateAdaptiveWatermarkPolicy({
   ));
   const startupWatermark = Math.max(1, Math.min(
     candidateHighWatermark,
-    candidateStartupWatermark,
+    startupPhase ? candidateStartupWatermark : fixed.startupWatermark,
   ));
   const resumeWatermark = Math.max(2, Math.min(
     candidateHighWatermark,
-    Math.max(fixed.resumeWatermark, candidateLowWatermark),
+    Math.max(fixed.resumeWatermark, tailDemandSlices + reserveSlices),
   ));
   const ramIsEffectiveCap = ramBudgetFrames !== null
     && ramBudgetFrames <= maxHighWatermark
@@ -215,9 +219,11 @@ function calculateAdaptiveWatermarkPolicy({
     sustainable,
     degradationReason: sustainable
       ? ""
-      : candidateStartupWatermark > effectiveHighCap
+      : startupPhase && candidateStartupWatermark > effectiveHighCap
         ? "startup_capacity_capped"
         : "supply_below_consumption",
+    minimumSupplySamples,
+    startupPhase,
   });
 }
 
@@ -246,6 +252,7 @@ class AdaptiveWatermarkControllerCore {
     this.clock = clock;
     this.current = null;
     this.lastIncreaseAt = null;
+    this.lastDecreaseAt = null;
     this.disposed = false;
   }
 
@@ -270,9 +277,10 @@ class AdaptiveWatermarkControllerCore {
       estimatedFrameBytes: 0,
       consumptionRate: 0,
       supplyRate: 0,
-      latencyP95Ms: 0,
       supplySamples: 0,
+      latencyP95Ms: 0,
       latencySamples: 0,
+      minimumSupplySamples: 2,
       tailDemandSlices: 0,
       startupDemandSlices: 0,
       remainingSlices: 0,
@@ -282,26 +290,38 @@ class AdaptiveWatermarkControllerCore {
     });
   }
 
-  preview({ fixedPolicy = {}, remainingSlices = 0 } = {}) {
+  preview({
+    fixedPolicy = {},
+    remainingSlices = 0,
+    scopeKey = "",
+    datasetId = "",
+    bbox = "",
+    resolution = null,
+  } = {}) {
     const config = this.configProvider() || {};
     const strategy = this.strategy(config);
-    if (this.current?.strategy === strategy) return this.current;
     if (strategy === "fixed") return this.fixedPolicy(fixedPolicy);
+    const metrics = this.metricsProvider({ scopeKey, datasetId, bbox, resolution }) || {};
+    if (
+      this.current?.strategy === strategy
+      && this.current.scopeKey === String(metrics.scope_key || scopeKey || "")
+    ) return this.current;
     return calculateAdaptiveWatermarkPolicy({
       fixedPolicy,
-      metrics: this.metricsProvider() || {},
+      metrics,
       cacheSnapshot: this.cacheSnapshotProvider() || {},
       config,
       remainingSlices,
     });
   }
 
-  applyHysteresis(candidate, config, now) {
+  applyHysteresis(candidate, config, now, { bypassDecreaseHysteresis = false } = {}) {
     const previous = this.current;
     if (!previous || previous.strategy !== candidate.strategy) return candidate;
     if (candidate.strategy !== "adaptive") return candidate;
-    if (candidate.runId !== previous.runId) return candidate;
+    if (candidate.runId !== previous.runId || candidate.scopeKey !== previous.scopeKey) return candidate;
     if (candidate.highWatermark >= previous.highWatermark) return candidate;
+    if (bypassDecreaseHysteresis) return candidate;
 
     const adaptive = config.adaptiveWatermark || {};
     const decreaseHoldMs = adaptiveNumber(
@@ -314,12 +334,26 @@ class AdaptiveWatermarkControllerCore {
       2,
       { minimum: 1, maximum: 30 },
     )));
+    const decreaseStepIntervalMs = adaptiveNumber(
+      adaptive.decreaseStepIntervalMs,
+      1000,
+      { minimum: 0, maximum: 60_000 },
+    );
     const raisedAt = this.lastIncreaseAt ?? previous.appliedMonotonicMs ?? now;
     if (now - raisedAt < decreaseHoldMs) {
       return Object.freeze({
         ...candidate,
         status: candidate.status === "ADAPTIVE" ? "HOLDING" : candidate.status,
         reason: "decrease_hysteresis",
+        highWatermark: previous.highWatermark,
+        lowWatermark: Math.min(previous.lowWatermark, previous.highWatermark - 1),
+      });
+    }
+    if (this.lastDecreaseAt !== null && now - this.lastDecreaseAt < decreaseStepIntervalMs) {
+      return Object.freeze({
+        ...candidate,
+        status: candidate.status === "ADAPTIVE" ? "HOLDING" : candidate.status,
+        reason: "decrease_interval",
         highWatermark: previous.highWatermark,
         lowWatermark: Math.min(previous.lowWatermark, previous.highWatermark - 1),
       });
@@ -336,12 +370,21 @@ class AdaptiveWatermarkControllerCore {
     });
   }
 
-  resolve({ fixedPolicy = {}, remainingSlices = 0 } = {}) {
+  resolve({
+    fixedPolicy = {},
+    remainingSlices = 0,
+    scopeKey = "",
+    datasetId = "",
+    bbox = "",
+    resolution = null,
+    bypassDecreaseHysteresis = false,
+  } = {}) {
     if (this.disposed) return this.current || this.fixedPolicy(fixedPolicy);
     const now = this.clock.now();
     const config = this.configProvider() || {};
-    const metrics = this.metricsProvider() || {};
+    const metrics = this.metricsProvider({ scopeKey, datasetId, bbox, resolution }) || {};
     const runId = String(metrics.run_id || "");
+    const effectiveScopeKey = String(metrics.scope_key || scopeKey || "");
     const strategy = this.strategy(config);
     const rawCandidate = strategy === "fixed"
       ? this.fixedPolicy(fixedPolicy)
@@ -352,11 +395,20 @@ class AdaptiveWatermarkControllerCore {
         config,
         remainingSlices,
       });
-    const candidate = Object.freeze({ ...rawCandidate, runId });
-    const effective = this.applyHysteresis(candidate, config, now);
+    const candidate = Object.freeze({ ...rawCandidate, runId, scopeKey: effectiveScopeKey });
+    const effective = this.applyHysteresis(candidate, config, now, { bypassDecreaseHysteresis });
     const previous = this.current;
     const raised = previous && effective.highWatermark > previous.highWatermark;
-    if (raised || !previous || previous.runId !== effective.runId) this.lastIncreaseAt = now;
+    const lowered = previous && effective.highWatermark < previous.highWatermark;
+    const identityChanged = !previous
+      || previous.runId !== effective.runId
+      || previous.scopeKey !== effective.scopeKey;
+    if (raised || identityChanged) {
+      this.lastIncreaseAt = now;
+      this.lastDecreaseAt = null;
+    } else if (lowered) {
+      this.lastDecreaseAt = now;
+    }
     const changed = !previous
       || previous.strategy !== effective.strategy
       || previous.status !== effective.status
@@ -365,7 +417,8 @@ class AdaptiveWatermarkControllerCore {
       || previous.startupWatermark !== effective.startupWatermark
       || previous.resumeWatermark !== effective.resumeWatermark
       || previous.degradationReason !== effective.degradationReason
-      || previous.runId !== effective.runId;
+      || previous.runId !== effective.runId
+      || previous.scopeKey !== effective.scopeKey;
     this.current = Object.freeze({
       ...effective,
       appliedMonotonicMs: changed ? now : previous.appliedMonotonicMs,
@@ -373,6 +426,7 @@ class AdaptiveWatermarkControllerCore {
     if (changed) {
       this.eventLog.record("WATERMARK_POLICY_CHANGED", {
         run_id: this.current.runId,
+        scope_key: this.current.scopeKey,
         strategy: this.current.strategy,
         policy_status: this.current.status,
         reason: this.current.reason,
@@ -399,6 +453,7 @@ class AdaptiveWatermarkControllerCore {
     if (this.disposed) return;
     this.current = null;
     this.lastIncreaseAt = null;
+    this.lastDecreaseAt = null;
     this.eventLog.record("WATERMARK_POLICY_RESET", { reason });
   }
 
@@ -410,6 +465,7 @@ class AdaptiveWatermarkControllerCore {
     this.disposed = true;
     this.current = null;
     this.lastIncreaseAt = null;
+    this.lastDecreaseAt = null;
   }
 }
 

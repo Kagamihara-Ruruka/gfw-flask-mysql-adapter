@@ -39,8 +39,19 @@ class LineChartDataSource {
 
   clear() {
     this.generation += 1;
+    this.cancelFills({ reason: "source_cleared" });
     this.errors.clear();
     this.inflight.clear();
+  }
+
+  cancelFills({ lane = "", reason = "cancelled" } = {}) {
+    let cancelled = 0;
+    for (const entry of this.inflight.values()) {
+      if (lane && entry.lane !== lane) continue;
+      cancelled += 1;
+      this.frameDemandService.cancelScope?.(entry.scopeId, { includeActive: true });
+    }
+    return cancelled;
   }
 
   dispose() {
@@ -160,9 +171,19 @@ class LineChartDataSource {
       layerId: dataset.layer_id || dataset.data_layer || datasetId,
       label: dataset.label || datasetId,
     };
-    const resolution = this.queryContext.resolutionFor(layer, selected);
+    const resolution = this.queryContext.requestedResolutionFor(layer);
+    const queryResolution = this.queryContext.resolutionFor(layer, selected);
     const mapSnapshot = this.queryContext.mapSnapshot();
-    const key = [datasetId, metric, aggregation, start, end, resolution ?? "auto", bboxString].join("|");
+    const key = [
+      datasetId,
+      metric,
+      aggregation,
+      start,
+      end,
+      resolution ?? "auto",
+      queryResolution ?? "auto",
+      bboxString,
+    ].join("|");
     return {
       key,
       datasetId,
@@ -173,6 +194,7 @@ class LineChartDataSource {
       aggregation,
       bboxString,
       resolution,
+      queryResolution,
       zoom: mapSnapshot.zoom ?? null,
       latitude: selected?.center?.lat ?? mapSnapshot.latitude ?? null,
       start,
@@ -207,11 +229,21 @@ class LineChartDataSource {
     return this.snapshotsToModel(request, snapshots);
   }
 
-  ensureCurrentWindow() {
+  ensureCurrentWindow({ allowNetwork = true } = {}) {
     const request = this.requestForCurrentState();
     if (request.blocked) return null;
     const snapshots = this.snapshotSeries(request);
-    return snapshots.missingDates.length ? this.fill(request) : null;
+    return allowNetwork && snapshots.missingDates.length ? this.fill(request) : null;
+  }
+
+  ensureCurrentSlice() {
+    const request = this.requestForCurrentState();
+    if (request.blocked) return null;
+    const current = request.anchorDate;
+    if (!current || this.dataFrameStore.inspect(this.packetRequest(request, current)).status === "ready") {
+      return null;
+    }
+    return this.fill(request, { dates: [current], lane: "widget-interactive" });
   }
 
   packetRequest(request, date) {
@@ -223,6 +255,7 @@ class LineChartDataSource {
       limit: this.renderIntentService?.unlimitedLimit?.() ?? "max",
       columns: "render",
       resolution: request.resolution,
+      queryResolution: request.queryResolution,
       zoom: request.zoom,
       latitude: request.latitude,
       renderProfile: "widget.line.snapshot",
@@ -270,21 +303,24 @@ class LineChartDataSource {
     return detail.datasetId === request.datasetId && request.dates.includes(String(detail.date || ""));
   }
 
-  fill(request) {
-    if (this.inflight.has(request.key)) return this.inflight.get(request.key);
+  fill(request, { dates = request.dates, lane = "widget-auto" } = {}) {
+    const fillKey = `${request.key}|${lane}|${dates.join(",")}`;
+    if (this.inflight.has(fillKey)) return this.inflight.get(fillKey).promise;
     const generation = this.generation;
+    const scopeId = `widget-line:${fillKey}`;
     const loader = this.frameDemandService.demandRange({
-      dates: request.dates,
+      dates,
       bbox: request.bboxString,
       datasetId: request.datasetId,
       limit: this.renderIntentService?.unlimitedLimit?.() ?? "max",
       columns: "render",
       resolution: request.resolution,
+      queryResolution: request.queryResolution,
       zoom: request.zoom,
       latitude: request.latitude,
     }, {
-      lane: "widget",
-      scopeId: `widget-line:${request.key}`,
+      lane,
+      scopeId,
     })
       .then(() => {
         if (generation !== this.generation) return;
@@ -295,11 +331,11 @@ class LineChartDataSource {
         this.errors.set(request.key, error.message || "snapshot cache fill failed");
       })
       .finally(() => {
-        if (this.inflight.get(request.key) === loader) this.inflight.delete(request.key);
+        if (this.inflight.get(fillKey)?.promise === loader) this.inflight.delete(fillKey);
         if (generation !== this.generation) return;
         this.eventSink?.("rrkal:line-chart-data-changed", { key: request.key });
       });
-    this.inflight.set(request.key, loader);
+    this.inflight.set(fillKey, { lane, promise: loader, scopeId });
     return loader;
   }
 

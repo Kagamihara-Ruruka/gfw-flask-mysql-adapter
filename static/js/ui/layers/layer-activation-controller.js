@@ -71,6 +71,7 @@ class DashboardLayerActivationController {
       this.syncUi(reason);
 
       if (reload) {
+        await this.settleViewport(datasetId, { focus: false });
         await this.effects.reloadActiveLayer();
       }
       this.dispatch(reason);
@@ -107,6 +108,7 @@ class DashboardLayerActivationController {
       this.state.dataLayer = id;
       this.state.enabledLayerIds = [id];
       this.syncUi(reason, { closeMenu });
+      await this.settleViewport(datasetId, { focus });
       await this.effects.reloadActiveLayer();
       this.dispatch(reason);
       return id;
@@ -122,6 +124,14 @@ class DashboardLayerActivationController {
       this.dispatch("activation_failed");
       throw error;
     }
+  }
+
+  async settleViewport(datasetId, { focus = false } = {}) {
+    this.effects.flushMapContainerSize?.("圖層啟用尺寸同步");
+    if (typeof this.viewportController?.settleForQuery === "function") {
+      await this.viewportController.settleForQuery(datasetId, { focus });
+    }
+    this.effects.cancelScheduledPrimaryReload?.();
   }
 
   async deactivateNow({ closeMenu = false, stopPlayback = true, reason = "deactivate" } = {}) {
@@ -178,7 +188,9 @@ function createLayerActivationController({ targetState, viewportController, virt
     stopPlayback: () => stopPlayback(),
     clearPrimaryRecords: () => clearPrimaryLayerRecords(),
     loadSchema: () => loadSchema(),
-    reloadActiveLayer: () => reloadActiveLayer(),
+    reloadActiveLayer: () => reloadActiveLayer({ reason: "layer_activation" }),
+    cancelScheduledPrimaryReload: () => cancelScheduledPrimaryReload(),
+    flushMapContainerSize: (reason) => flushMapContainerSize(reason),
     setAvailableDates: (dates) => setAvailableDates(dates),
     renderDatasetSelect: () => renderDatasetSelect(),
     updateLayerMenu: () => updateDataLayerMenu(),

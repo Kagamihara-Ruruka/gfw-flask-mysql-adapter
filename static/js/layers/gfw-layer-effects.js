@@ -2,7 +2,13 @@ const SampledGridLayerEffects = (() => {
   function transitionMs(targetState) {
     const baseMs = Math.max(0, Number(targetState.sampledGridTransitionMs ?? targetState.gfwTransitionMs ?? 0));
     if (typeof PlaybackInterpolationController !== "undefined") {
-      return PlaybackInterpolationController.playbackTransitionMs(targetState, baseMs);
+      const playbackStatus = typeof PlaybackEngine === "undefined"
+        ? "IDLE"
+        : String(PlaybackEngine.snapshot?.()?.status || "IDLE");
+      const playbackActive = ["PREPARING", "PLAYING", "BUFFERING"].includes(
+        playbackStatus,
+      );
+      return PlaybackInterpolationController.playbackTransitionMs(targetState, baseMs, { playbackActive });
     }
     return baseMs;
   }

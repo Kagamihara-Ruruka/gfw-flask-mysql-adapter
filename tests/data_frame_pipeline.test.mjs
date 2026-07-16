@@ -51,6 +51,7 @@ function createContext({ fetchJson, statePatch = {} } = {}) {
     "static/TimingMetrics.js",
     "static/js/services/lifecycle-event-log.js",
     "static/js/services/frame-identity.js",
+    "static/js/services/render-intent-service.js",
     "static/js/services/layer-query-coordinator.js",
     "static/js/services/data-frame-store.js",
     "static/js/services/frame-demand-service.js",
@@ -83,6 +84,13 @@ function request(date = "2020-01-01", patch = {}) {
   };
 }
 
+test("browser frame cache defaults to a bounded 512 MB budget", () => {
+  const context = createContext({ statePatch: { dataFrameStore: undefined } });
+  assert.equal(api(context, "DataFrameStore").snapshot().maxBytes, 512 * 1024 * 1024);
+  api(context, "AppRuntime").dataFrameStatsTarget();
+  assert.equal(context.state.dataFrameStore.maxBytes, 512 * 1024 * 1024);
+});
+
 test("frame demand stores actual frame identity behind requested intent alias", async () => {
   let requests = 0;
   const context = createContext({
@@ -99,7 +107,7 @@ test("frame demand stores actual frame identity behind requested intent alias", 
   const identity = api(context, "FrameIdentity");
   const store = api(context, "DataFrameStore");
   const first = await demand.demand(request(), { lane: "map-current", scopeId: "map" });
-  const second = await demand.demand(request(), { lane: "widget", scopeId: "widget" });
+  const second = await demand.demand(request(), { lane: "widget-interactive", scopeId: "widget" });
   const actualRoute = await demand.demand(request("2020-01-01", { resolution: 16 }), {
     lane: "playback-window",
     scopeId: "preheater",
@@ -112,8 +120,105 @@ test("frame demand stores actual frame identity behind requested intent alias", 
   assert.equal(first.intentKey, identity.intentKey(request()));
   assert.equal(first.frameKey, identity.frameKey(request(), first.packet));
   assert.notEqual(first.intentKey, first.frameKey);
+  assert.equal(first.packet.grid.requested_resolution_km, 4);
+  assert.equal(first.packet.grid.effective_query_resolution_km, 4);
+  assert.equal(first.packet.grid.actual_resolution_km, 16);
+  assert.equal(first.packet.grid.lod_degraded, true);
   assert.equal(store.snapshot().entries, 1);
   assert.equal(store.snapshot().aliases, 2);
+});
+
+test("resolved query route sends the effective resolution while preserving requested intent", () => {
+  const context = createContext();
+  const demand = api(context, "FrameDemandService");
+  const identity = api(context, "FrameIdentity");
+  const routed = request("2020-01-02", { queryResolution: 16 });
+  const url = new URL(`http://local${demand.urlFor(routed)}`);
+
+  assert.equal(url.searchParams.get("resolution"), "16");
+  assert.match(identity.intentKey(routed), /\|4\|fixed$/);
+  assert.equal(identity.scopeKey(routed), identity.scopeKey(request("2020-01-02")));
+});
+
+test("canonical frame metadata preserves configured, routed and actual resolutions", async () => {
+  let requestedUrl = "";
+  const context = createContext({
+    fetchJson: async (url) => {
+      requestedUrl = url;
+      return {
+        rows: [{ cell_id: "a", value: 3, resolution_km: 16 }],
+        row_count: 1,
+        grid: { requested_resolution_km: 16, actual_resolution_km: 16 },
+      };
+    },
+  });
+  const demand = api(context, "FrameDemandService");
+  const log = api(context, "LifecycleEventLog");
+  const routed = request("2020-01-03", { queryResolution: 16 });
+  const result = await demand.demand(routed, { lane: "playback-window", scopeId: "preheater" });
+  const url = new URL(`http://local${requestedUrl}`);
+  const ready = log.query({ type: "CACHE_READY" }).at(-1);
+
+  assert.equal(url.searchParams.get("resolution"), "16");
+  assert.equal(result.packet.grid.source_requested_resolution_km, 16);
+  assert.equal(result.packet.grid.requested_resolution_km, 4);
+  assert.equal(result.packet.grid.effective_query_resolution_km, 16);
+  assert.equal(result.packet.grid.actual_resolution_km, 16);
+  assert.equal(result.packet.grid.lod_degraded, true);
+  assert.equal(ready.requested_resolution_km, 4);
+  assert.equal(ready.effective_query_resolution_km, 16);
+  assert.equal(ready.actual_resolution_km, 16);
+});
+
+test("render intent separates configured resolution from the effective source route", () => {
+  const context = createContext();
+  const identity = api(context, "FrameIdentity");
+  const createService = api(context, "createRenderIntentService");
+  const service = createService({
+    targetState: { ...context.state, datasetId: "ocean", dataLayer: "ocean.layer" },
+    bboxProvider: () => "120,10,130,20",
+    frameIdentity: identity,
+    sampledGridContract: {
+      requestResolution: () => 4,
+      queryResolution: () => 16,
+    },
+    selectedDateProvider: () => "2020-01-01",
+  });
+  const requestPacket = service.toSampledGridPacketRequest(service.snapshot());
+
+  assert.equal(requestPacket.resolution, 4);
+  assert.equal(requestPacket.queryResolution, 16);
+  assert.match(identity.intentKey(requestPacket), /\|4\|fixed$/);
+});
+
+test("scope cancellation is lifecycle cancellation instead of an HTTP failure", async () => {
+  let requestStarted = false;
+  const context = createContext({
+    fetchJson: async (_url, { signal } = {}) => new Promise((resolve, reject) => {
+      requestStarted = true;
+      signal?.addEventListener("abort", () => {
+        const error = new Error("request cancelled");
+        error.name = "AbortError";
+        reject(error);
+      }, { once: true });
+    }),
+  });
+  const demand = api(context, "FrameDemandService");
+  const log = api(context, "LifecycleEventLog");
+  const pending = demand.demand(request(), {
+    lane: "playback-window",
+    scopeId: "preheater:stale",
+  });
+  await flush();
+  assert.equal(requestStarted, true);
+
+  demand.cancelScope("preheater:stale");
+  await assert.rejects(pending, (error) => error?.name === "AbortError");
+  await flush();
+
+  assert.equal(log.query({ type: "HTTP_CANCELLED" }).length, 1);
+  assert.equal(log.query({ type: "HTTP_FAILED" }).length, 0);
+  assert.equal(api(context, "DataFrameStore").snapshot().failures, 0);
 });
 
 test("concurrent map and widget demand shares one HTTP request", async () => {
@@ -136,6 +241,44 @@ test("concurrent map and widget demand shares one HTTP request", async () => {
   const [left, right] = await Promise.all([background, target]);
   assert.equal(left.frameKey, right.frameKey);
   assert.equal(requests, 1);
+});
+
+test("an in-flight viewport request satisfies a covered widget bbox without duplicate HTTP", async () => {
+  let release;
+  let requests = 0;
+  const response = new Promise((resolve) => { release = resolve; });
+  const context = createContext({
+    fetchJson: async () => {
+      requests += 1;
+      return response;
+    },
+  });
+  const demand = api(context, "FrameDemandService");
+  const viewport = request("2020-01-01", { bbox: "120,10,130,20" });
+  const selectedTile = request("2020-01-01", { bbox: "122,12,124,14" });
+
+  const mapRequest = demand.demand(viewport, {
+    lane: "playback-window",
+    scopeId: "playback-scope",
+  });
+  await flush();
+  const widgetRequest = demand.demand(selectedTile, {
+    lane: "widget-interactive",
+    scopeId: "widget-scope",
+  });
+  await flush();
+
+  assert.equal(requests, 1);
+  release({
+    rows: [{ cell_id: "selected", lat: 13, lon: 123, value: 7 }],
+    row_count: 1,
+    grid: { actual_resolution_km: 4 },
+  });
+  const [mapFrame, widgetFrame] = await Promise.all([mapRequest, widgetRequest]);
+  assert.equal(requests, 1);
+  assert.equal(mapFrame.packet.row_count, 1);
+  assert.equal(widgetFrame.packet.row_count, 1);
+  assert.equal(widgetFrame.packet.rows[0].cell_id, "selected");
 });
 
 test("partially overlapping viewport fetches the new bbox once instead of fragmenting HTTP work", async () => {

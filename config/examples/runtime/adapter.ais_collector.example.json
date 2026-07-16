@@ -8,6 +8,7 @@
     "table_preview_limit": 300,
     "require_time_or_bbox_filter": true,
     "network_concurrency": 6,
+    "background_network_concurrency": 3,
     "snapshot_cache_max_rows": 800000
   },
   "server": {

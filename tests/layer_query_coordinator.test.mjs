@@ -39,13 +39,14 @@ function loadCoordinator(state, { eventLog = null } = {}) {
   const createCoordinator = vm.runInContext("globalThis.createLayerQueryCoordinator", context);
   const scheduler = new QuerySchedulerClass({
     concurrency: state?.queryPolicy?.network_concurrency ?? 6,
+    backgroundConcurrency: state?.queryPolicy?.background_network_concurrency ?? 3,
     eventLog,
     clock: { now: () => performance.now() },
   });
   return createCoordinator({ scheduler, fetchJson: context.fetchJson });
 }
 
-test("query coordinator reserves one of six slots for foreground demand", async () => {
+test("query coordinator caps background work and leaves foreground capacity", async () => {
   const coordinator = loadCoordinator(undefined);
   const release = deferred();
   let started = 0;
@@ -60,9 +61,10 @@ test("query coordinator reserves one of six slots for foreground demand", async 
   }));
 
   await flush();
-  assert.equal(started, 5);
-  assert.equal(coordinator.snapshot().active.length, 5);
-  assert.equal(coordinator.snapshot().queued.length, 3);
+  assert.equal(started, 3);
+  assert.equal(coordinator.snapshot().active.length, 3);
+  assert.equal(coordinator.snapshot().queued.length, 5);
+  assert.equal(coordinator.snapshot().backgroundConcurrency, 3);
 
   let foregroundStarted = false;
   const foreground = coordinator.schedule({
@@ -81,7 +83,7 @@ test("query coordinator reserves one of six slots for foreground demand", async 
   assert.deepEqual(await Promise.all(tasks), [0, 1, 2, 3, 4, 5, 6, 7]);
 });
 
-test("queued map work runs before widget and background fills", async () => {
+test("queued playback work runs before widget and background fills", async () => {
   const coordinator = loadCoordinator({ queryPolicy: { network_concurrency: 1 } });
   const release = deferred();
   const order = [];
@@ -102,8 +104,13 @@ test("queued map work runs before widget and background fills", async () => {
   });
   const widget = coordinator.schedule({
     key: "widget",
-    lane: "widget",
+    lane: "widget-interactive",
     execute: () => { order.push("widget"); },
+  });
+  const playback = coordinator.schedule({
+    key: "playback",
+    lane: "playback-window",
+    execute: () => { order.push("playback"); },
   });
   const map = coordinator.schedule({
     key: "map",
@@ -112,8 +119,8 @@ test("queued map work runs before widget and background fills", async () => {
   });
 
   release.resolve();
-  await Promise.all([blocker, background, widget, map]);
-  assert.deepEqual(order, ["blocker", "map", "widget", "background"]);
+  await Promise.all([blocker, background, widget, playback, map]);
+  assert.deepEqual(order, ["blocker", "map", "playback", "widget", "background"]);
 });
 
 test("cancelling queued background work does not affect completed results", async () => {
@@ -144,6 +151,41 @@ test("cancelling queued background work does not affect completed results", asyn
 
   release.resolve();
   await blocker;
+});
+
+test("lane cancellation removes only widget-auto consumers from shared foreground work", async () => {
+  const recorded = [];
+  const coordinator = loadCoordinator(
+    { queryPolicy: { network_concurrency: 1 } },
+    { eventLog: { record: (type, detail) => recorded.push({ type, detail }) } },
+  );
+  const release = deferred();
+  const widget = coordinator.schedule({
+    key: "shared-frame",
+    lane: "widget-auto",
+    execute: async () => {
+      await release.promise;
+      return "shared";
+    },
+  });
+  await flush();
+  const foreground = coordinator.schedule({
+    key: "shared-frame",
+    lane: "map-current",
+    execute: () => "unused",
+  });
+
+  assert.equal(coordinator.cancelPending({
+    lane: "widget-auto",
+    includeActive: true,
+    reason: "playback_started",
+  }), 1);
+  await assert.rejects(widget, (error) => error?.name === "AbortError");
+  release.resolve();
+  assert.equal(await foreground, "shared");
+  const cancellation = recorded.find((event) => event.type === "QUERY_TASKS_CANCELLED");
+  assert.equal(cancellation?.detail?.cancelled_consumers, 1);
+  assert.equal(cancellation?.detail?.reason, "playback_started");
 });
 
 test("same key shares one execution and queued work is promoted", async () => {
@@ -203,7 +245,7 @@ test("scope cancellation removes only that consumer from shared work", async () 
   });
   const second = coordinator.schedule({
     key: "shared",
-    lane: "widget",
+    lane: "widget-interactive",
     scopeId: "current-scope",
     execute: () => 99,
   });

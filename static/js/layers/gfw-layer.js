@@ -5,18 +5,17 @@ const SampledGridCanvasLayer = L.Layer.extend({
     }
     this._renderClock = renderClock;
     this._rows = [];
-    this._hitCells = [];
   },
   onAdd(targetMap) {
     this._map = targetMap;
     this._canvas = L.DomUtil.create("canvas", "grid-canvas-layer");
     this._ctx = this._canvas.getContext("2d", { alpha: true });
     targetMap.getPane("sampledGridPane").appendChild(this._canvas);
-    targetMap.on("move zoom resize", this._reset, this);
+    bindSampledGridViewportRedraw(this, targetMap);
     this._reset();
   },
   onRemove(targetMap) {
-    targetMap.off("move zoom resize", this._reset, this);
+    unbindSampledGridViewportRedraw(this, targetMap);
     L.DomUtil.remove(this._canvas);
   },
   setRows(rows) {
@@ -38,11 +37,11 @@ const SampledGridCanvasLayer = L.Layer.extend({
     if (!this._ctx || !this._map) return 0;
     const ctx = this._ctx;
     const size = this._map.getSize();
-    const model = SampledGridContract.model();
+    const paintFrame = sampledGridPaintFrame(this._rows);
+    const model = paintFrame.model;
     ctx.clearRect(0, 0, size.x, size.y);
     const layerAlpha = state.layerAlpha[state.dataLayer] ?? state.sampledGridPaint?.alpha ?? 1;
-    const hitCells = [];
-    for (const row of sampledGridRowsForRender(this._rows)) {
+    for (const row of paintFrame.rows) {
       const bounds = model.bounds(row);
       if (!bounds) continue;
       const nw = this._map.latLngToContainerPoint([bounds.north, bounds.west]);
@@ -52,39 +51,19 @@ const SampledGridCanvasLayer = L.Layer.extend({
       const w = Math.max(1, Math.ceil(Math.abs(se.x - nw.x)));
       const h = Math.max(1, Math.ceil(Math.abs(se.y - nw.y)));
       if (x > size.x || y > size.y || x + w < 0 || y + h < 0) continue;
-      const cellOpacity = sampledGridCellOpacity(row);
+      const value = model.value(row);
+      const cellOpacity = paintFrame.opacityForValue(value);
       if (cellOpacity > 0) {
         ctx.globalAlpha = layerAlpha * cellOpacity;
-        ctx.fillStyle = sampledGridCellColorCss(row);
+        ctx.fillStyle = paintFrame.colorCssForValue(value);
         ctx.fillRect(x, y, w, h);
       }
-      hitCells.push({
-        row,
-        rect: { x, y, w, h },
-        bounds: {
-          ...bounds,
-          leaflet: L.latLngBounds([bounds.south, bounds.west], [bounds.north, bounds.east]),
-        },
-        center: {
-          lat: (bounds.south + bounds.north) / 2,
-          lon: normalizeLongitude((bounds.west + bounds.east) / 2),
-        },
-      });
     }
-    this._hitCells = hitCells;
     ctx.globalAlpha = 1;
     return this._renderClock.now() - started;
   },
   hitTest(containerPoint) {
-    const point = L.point(containerPoint);
-    for (let index = this._hitCells.length - 1; index >= 0; index -= 1) {
-      const cell = this._hitCells[index];
-      const { x, y, w, h } = cell.rect;
-      if (point.x >= x && point.x <= x + w && point.y >= y && point.y <= y + h) {
-        return cell;
-      }
-    }
-    return null;
+    return sampledGridHitCellAt(this._map, this._rows, containerPoint);
   },
 });
 
@@ -187,7 +166,6 @@ function createSampledGridLayer(layerClass) {
 function renderSampledGridMap(rows) {
   const visibleRows = sampledGridRowsWithinCoverage(rows);
   syncGfwTransitionStyle();
-  map.invalidateSize();
   removeAisLayer();
   const previousLayer = state.gridLayer && map.hasLayer(state.gridLayer) ? state.gridLayer : null;
   let choice = RendererRegistry.chooseSampledGridLayer(visibleRows, SampledGridCanvasLayer);

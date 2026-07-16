@@ -174,7 +174,13 @@ test("event viewer is a registered read-only lifecycle widget", () => {
   assert.match(eventViewer, /this\.services\.schedule\?\.\(\(\) =>/);
   assert.match(eventViewer, /bindingByContainer = new WeakMap\(\)/);
   assert.match(eventViewer, /WATERMARK_POLICY_CHANGED/);
+  assert.match(eventViewer, /RUN_FINISHED[\s\S]{0,180}event\.reason/);
   assert.match(eventViewer, /effective|有效水位|低 \$\{Number\(event\.low_watermark/);
+  const exportHandlerStart = eventViewer.indexOf('querySelector("[data-event-export]")');
+  const exportMethodStart = eventViewer.indexOf("\n  exportRun(runId)", exportHandlerStart);
+  assert.ok(exportHandlerStart >= 0 && exportMethodStart > exportHandlerStart);
+  assert.match(eventViewer.slice(exportHandlerStart, exportMethodStart), /addEventListener\("click"/);
+  assert.equal((eventViewer.match(/this\.exportRun\(/g) || []).length, 1);
   assert.doesNotMatch(eventViewer, /\n\s*renderExpanded\s*\(/);
   assert.doesNotMatch(eventViewer, /FrameDemandService|LayerQueryCoordinator|fetchJson|["'`]\/api\//);
   assert.match(registry, /"event-viewer"/);

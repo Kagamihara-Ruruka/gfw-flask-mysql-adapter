@@ -38,8 +38,7 @@ const PlaybackFrameBuffer = (() => {
     currentIndex,
     targetIndex,
     hasCacheLayer,
-    requestContext,
-    cacheService,
+    inspectFrame,
     resumeGate = null,
   }) {
     const allDates = Array.isArray(dates) ? dates : [];
@@ -60,10 +59,13 @@ const PlaybackFrameBuffer = (() => {
         canRender: true,
       };
     }
+    if (typeof inspectFrame !== "function") {
+      throw new TypeError("PlaybackFrameBuffer requires the PlaybackEngine frame inspector");
+    }
 
     let renderIndex = -1;
     for (let index = targetIndex; index > currentIndex; index -= 1) {
-      if (cacheService.hasDate(allDates[index], requestContext)) {
+      if (inspectFrame(index)?.status === "ready") {
         renderIndex = index;
         break;
       }
@@ -85,7 +87,7 @@ const PlaybackFrameBuffer = (() => {
         targetDate,
         renderIndex,
         renderDate: allDates[renderIndex] || "",
-        readyCount: cacheService.countReadyPrefix?.(allDates, targetIndex, requestContext) || 1,
+        readyCount: countReadyPrefix(allDates, targetIndex, inspectFrame) || 1,
         requiredCount: 1,
         resumeCount: 1,
         canRender: true,
@@ -93,16 +95,16 @@ const PlaybackFrameBuffer = (() => {
       };
     }
 
-    const failure = cacheService.failureForDate?.(targetDate, requestContext);
-    if (failure) {
+    const target = inspectFrame(targetIndex) || {};
+    if (target.status === "failed") {
       return {
         ...emptyDecision(targetIndex),
         state: FRAME_STATES.failed,
         targetDate,
-        readyCount: cacheService.countReadyPrefix?.(allDates, targetIndex, requestContext) || 0,
+        readyCount: countReadyPrefix(allDates, targetIndex, inspectFrame),
         requiredCount: 1,
         resumeCount: 1,
-        errorMessage: failure.message || "request failed",
+        errorMessage: target.failure?.message || "request failed",
       };
     }
 
@@ -112,10 +114,19 @@ const PlaybackFrameBuffer = (() => {
       targetDate,
       readyCount: resumeGate?.active
         ? Math.max(0, Number(resumeGate.readyCount || 0))
-        : cacheService.countReadyPrefix?.(allDates, targetIndex, requestContext) || 0,
+        : countReadyPrefix(allDates, targetIndex, inspectFrame),
       requiredCount: resumeGate?.active ? Math.max(1, Number(resumeGate.required || 1)) : 1,
       resumeCount: resumeGate?.active ? Math.max(1, Number(resumeGate.required || 1)) : 1,
     };
+  }
+
+  function countReadyPrefix(dates, startIndex, inspectFrame) {
+    let ready = 0;
+    for (let index = startIndex; index < dates.length; index += 1) {
+      if (inspectFrame(index)?.status !== "ready") break;
+      ready += 1;
+    }
+    return ready;
   }
 
   function markWaiting({

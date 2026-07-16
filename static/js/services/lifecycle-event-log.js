@@ -58,6 +58,35 @@ function lifecycleRate(events) {
   return elapsedSeconds > 0 ? (events.length - 1) / elapsedSeconds : 0;
 }
 
+function lifecycleWindowRate(events, startedAt, endedAt) {
+  if (!Array.isArray(events) || events.length < 2) return 0;
+  const first = Number(startedAt);
+  const last = Number(endedAt);
+  const elapsedSeconds = (last - first) / 1000;
+  return elapsedSeconds > 0 ? events.length / elapsedSeconds : 0;
+}
+
+function lifecycleReadyTimings(events, readyEvents, predicate = () => true) {
+  const selectedReady = new Set(readyEvents);
+  const latestQueuedByIntent = new Map();
+  const timings = [];
+  for (const event of events) {
+    if (event.type === "TASK_QUEUED" && event.intent_key && predicate(event)) {
+      latestQueuedByIntent.set(event.intent_key, event);
+    }
+    if (!selectedReady.has(event)) continue;
+    const ready = event;
+    const queued = latestQueuedByIntent.get(ready.intent_key);
+    if (!queued) continue;
+    timings.push(Object.freeze({
+      queuedAt: queued.monotonic_ms,
+      readyAt: ready.monotonic_ms,
+      durationMs: Math.max(0, ready.monotonic_ms - queued.monotonic_ms),
+    }));
+  }
+  return timings;
+}
+
 class LifecycleEventLogCore {
   constructor({ maxEntriesProvider = null, eventTarget = null, clock } = {}) {
     if (!clock || typeof clock.now !== "function" || typeof clock.wallNowIso !== "function") {
@@ -147,10 +176,24 @@ class LifecycleEventLogCore {
   }
 
   query(filter = {}) {
-    const result = this.events.filter((event) => lifecycleMatches(event, filter));
     const limit = Number(filter.limit || 0);
-    if (limit > 0 && result.length > limit) return result.slice(-limit);
-    return result;
+    if (limit > 0) {
+      const result = [];
+      for (let index = this.events.length - 1; index >= 0 && result.length < limit; index -= 1) {
+        const event = this.events[index];
+        if (lifecycleMatches(event, filter)) result.push(event);
+      }
+      return result.reverse();
+    }
+    return this.events.filter((event) => lifecycleMatches(event, filter));
+  }
+
+  latest(filter = {}) {
+    for (let index = this.events.length - 1; index >= 0; index -= 1) {
+      const event = this.events[index];
+      if (lifecycleMatches(event, filter)) return event;
+    }
+    return null;
   }
 
   summary(runId = this.currentRun) {
@@ -159,7 +202,14 @@ class LifecycleEventLogCore {
     const last = selected[selected.length - 1];
     const visible = selected.filter((event) => event.type === "FRAME_VISIBLE");
     const cadence = visible.slice(1).map((event, index) => event.monotonic_ms - visible[index].monotonic_ms);
-    const cacheReady = selected.filter((event) => event.type === "CACHE_READY");
+    const runStarted = selected.find((event) => event.type === "RUN_STARTED");
+    const playbackScopeKey = String(runStarted?.scope_key || "");
+    const playbackSupplyLanes = new Set(["map-current", "playback-target", "playback-window"]);
+    const isPlaybackSupply = (event) => (
+      playbackSupplyLanes.has(String(event.lane || ""))
+      && (!playbackScopeKey || String(event.scope_key || "") === playbackScopeKey)
+    );
+    const cacheReady = selected.filter((event) => event.type === "CACHE_READY" && isPlaybackSupply(event));
     const openStalls = new Map();
     const stallDurations = [];
     for (const event of selected) {
@@ -194,10 +244,15 @@ class LifecycleEventLogCore {
       .filter((event) => event.type === "HTTP_FINISHED")
       .map((event) => Number(event.duration_ms));
     const cacheCommitDurations = lifecyclePairedDurations(selected, "HTTP_FINISHED", "CACHE_READY");
-    const cacheReadyDurations = lifecyclePairedDurations(selected, "TASK_QUEUED", "CACHE_READY");
+    const cacheReadyTimings = lifecycleReadyTimings(this.events, cacheReady, isPlaybackSupply);
+    const cacheReadyDurations = cacheReadyTimings.map((timing) => timing.durationMs);
     const renderDurations = lifecyclePairedDurations(selected, "RENDER_STARTED", "FRAME_VISIBLE", "render_ms");
     const targetDurations = lifecyclePairedDurations(selected, "TARGET_REQUIRED", "FRAME_VISIBLE");
     const preparationDurations = lifecyclePairedDurations(selected, "PREPARE_STARTED", "PREPARE_READY");
+    const firstSupplyQueuedAt = cacheReadyTimings.length
+      ? Math.min(...cacheReadyTimings.map((timing) => timing.queuedAt))
+      : cacheReady[0]?.monotonic_ms;
+    const supplyEndedAt = this.currentRun === runId ? this.clock.now() : last?.monotonic_ms;
     return Object.freeze({
       runId: runId || "",
       eventCount: selected.length,
@@ -225,7 +280,11 @@ class LifecycleEventLogCore {
       }),
       trustedMetrics: Object.freeze({
         observed_consumption_rate: lifecycleRate(visible),
-        supply_rate: lifecycleRate(cacheReady),
+        supply_rate: lifecycleWindowRate(
+          cacheReady,
+          firstSupplyQueuedAt,
+          supplyEndedAt,
+        ),
         cache_ready_latency_p95: lifecyclePercentile(cacheReadyDurations, 0.95),
         consumption_samples: visible.length,
         supply_samples: cacheReady.length,

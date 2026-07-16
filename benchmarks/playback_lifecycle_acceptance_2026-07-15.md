@@ -1,5 +1,11 @@
 # Playback lifecycle acceptance - 2026-07-15
 
+> Historical checkpoint only. This report records the former 2 GB browser-cache
+> default and predates the 512 MiB bounded-store, startup/resume-watermark, and
+> final pipeline acceptance changes. Use
+> [`adaptive_watermark_acceptance_2026-07-16.md`](adaptive_watermark_acceptance_2026-07-16.md)
+> for current runtime behavior and acceptance results.
+
 This report records the first external-browser acceptance run after separating
 playback, preheating, query scheduling, the canonical DataFrame store, and
 rendering. It is evidence for the current lifecycle contract, not a claim that

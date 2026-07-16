@@ -103,6 +103,10 @@ const SampledGridColorScale = (() => {
 
   function prepare(rows, targetProfile = profile()) {
     const model = SampledGridContract.model(targetProfile.datasetId);
+    return prepareWithModel(rows, targetProfile, model);
+  }
+
+  function prepareWithModel(rows, targetProfile, model) {
     let minimum = null;
     let maximum = null;
     let nonzeroMinimum = null;
@@ -130,8 +134,8 @@ const SampledGridColorScale = (() => {
     return targetProfile;
   }
 
-  function domain(targetProfile = profile()) {
-    const modelDomain = SampledGridContract.model(targetProfile.datasetId).valueDomain;
+  function domain(targetProfile = profile(), targetModel = null) {
+    const modelDomain = (targetModel || SampledGridContract.model(targetProfile.datasetId)).valueDomain;
     let minimum;
     let maximum;
     if (targetProfile.mode === "nonzero_extent") {
@@ -149,20 +153,47 @@ const SampledGridColorScale = (() => {
     return { min: minimum, max: maximum, mode: targetProfile.mode };
   }
 
-  function interpolate(stops, ratio) {
+  function compileStops(stops) {
+    return stops.map((stop) => ({
+      position: stop.position,
+      channels: parseHexColor(stop.color, [45, 130, 150]),
+    }));
+  }
+
+  function interpolateCompiled(stops, ratio, target = [0, 0, 0]) {
     const position = clampUnit(ratio);
     let rightIndex = stops.findIndex((stop) => stop.position >= position);
-    if (rightIndex <= 0) return parseHexColor(stops[0].color, [45, 130, 150]);
+    if (rightIndex <= 0) {
+      target[0] = stops[0].channels[0];
+      target[1] = stops[0].channels[1];
+      target[2] = stops[0].channels[2];
+      return target;
+    }
     if (rightIndex < 0) rightIndex = stops.length - 1;
     const left = stops[rightIndex - 1];
     const right = stops[rightIndex];
     const width = Math.max(Number.EPSILON, right.position - left.position);
     const localRatio = clampUnit((position - left.position) / width);
-    const leftColor = parseHexColor(left.color, [45, 130, 150]);
-    const rightColor = parseHexColor(right.color, leftColor);
-    return leftColor.map((channel, index) => (
-      Math.round(channel * (1 - localRatio) + rightColor[index] * localRatio)
-    ));
+    for (let index = 0; index < 3; index += 1) {
+      target[index] = Math.round(
+        left.channels[index] * (1 - localRatio) + right.channels[index] * localRatio,
+      );
+    }
+    return target;
+  }
+
+  function interpolate(stops, ratio) {
+    return interpolateCompiled(compileStops(stops), ratio);
+  }
+
+  function zeroOpacity(targetProfile) {
+    const configured = contract(targetProfile.datasetId);
+    const configuredOpacity = numberOrNull(configured.zero_opacity);
+    return configuredOpacity == null ? 0 : clampUnit(configuredOpacity);
+  }
+
+  function opacityForValue(value, configuredZeroOpacity) {
+    return value === 0 ? configuredZeroOpacity : 1;
   }
 
   function colorParts(row, targetProfile = profile()) {
@@ -177,10 +208,39 @@ const SampledGridColorScale = (() => {
 
   function opacity(row, targetProfile = profile()) {
     const value = SampledGridContract.model(targetProfile.datasetId).value(row);
-    const configured = contract(targetProfile.datasetId);
-    const zeroOpacity = numberOrNull(configured.zero_opacity);
-    if (value === 0) return zeroOpacity == null ? 0 : clampUnit(zeroOpacity);
-    return 1;
+    return opacityForValue(value, zeroOpacity(targetProfile));
+  }
+
+  function frame(rows, targetProfile = profile()) {
+    const model = SampledGridContract.model(targetProfile.datasetId);
+    const configuredZeroOpacity = zeroOpacity(targetProfile);
+    const renderRows = [];
+    for (const row of rows || []) {
+      if (!model.renderable(row)) continue;
+      const value = model.value(row);
+      if (opacityForValue(value, configuredZeroOpacity) <= 0) continue;
+      renderRows.push(row);
+    }
+    prepareWithModel(renderRows, targetProfile, model);
+    const activeDomain = domain(targetProfile, model);
+    const compiledStops = compileStops(targetProfile.colorStops);
+    const colorPartsForValue = (value, target = [0, 0, 0]) => {
+      const ratio = value == null || (activeDomain.mode === "nonzero_extent" && value === 0)
+        ? 0
+        : (value - activeDomain.min) / (activeDomain.max - activeDomain.min);
+      return interpolateCompiled(compiledStops, ratio, target);
+    };
+    return {
+      rows: renderRows,
+      model,
+      domain: activeDomain,
+      opacityForValue: (value) => opacityForValue(value, configuredZeroOpacity),
+      colorPartsForValue,
+      colorCssForValue(value) {
+        const [red, green, blue] = colorPartsForValue(value);
+        return `rgb(${red},${green},${blue})`;
+      },
+    };
   }
 
   return {
@@ -193,6 +253,7 @@ const SampledGridColorScale = (() => {
     domain,
     colorParts,
     opacity,
+    frame,
   };
 })();
 
@@ -210,13 +271,53 @@ function sampledGridCellOpacity(row) {
 }
 
 function sampledGridRowsForRender(rows) {
-  const targetProfile = SampledGridColorScale.profile();
-  const model = SampledGridContract.model(targetProfile.datasetId);
-  const renderRows = (rows || []).filter((row) => (
-    model.renderable(row) && SampledGridColorScale.opacity(row, targetProfile) > 0
-  ));
-  SampledGridColorScale.prepare(renderRows, targetProfile);
-  return renderRows;
+  return sampledGridPaintFrame(rows).rows;
+}
+
+function sampledGridPaintFrame(rows) {
+  return SampledGridColorScale.frame(rows);
+}
+
+function sampledGridHitCellAt(targetMap, rows, containerPoint) {
+  if (!targetMap || !containerPoint) return null;
+  const latLng = targetMap.containerPointToLatLng(L.point(containerPoint));
+  const latitude = Number(latLng?.lat);
+  const longitude = normalizeLongitude(Number(latLng?.lng));
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+
+  const model = SampledGridContract.model();
+  const values = Array.isArray(rows) ? rows : [];
+  for (let index = values.length - 1; index >= 0; index -= 1) {
+    const row = values[index];
+    const bounds = model.bounds(row);
+    if (!bounds || latitude < bounds.south || latitude > bounds.north) continue;
+    const west = normalizeLongitude(bounds.west);
+    const east = normalizeLongitude(bounds.east);
+    const longitudeMatches = west <= east
+      ? longitude >= west && longitude <= east
+      : longitude >= west || longitude <= east;
+    if (!longitudeMatches) continue;
+
+    const nw = targetMap.latLngToContainerPoint([bounds.north, bounds.west]);
+    const se = targetMap.latLngToContainerPoint([bounds.south, bounds.east]);
+    const x = Math.floor(Math.min(nw.x, se.x));
+    const y = Math.floor(Math.min(nw.y, se.y));
+    const w = Math.max(1, Math.ceil(Math.abs(se.x - nw.x)));
+    const h = Math.max(1, Math.ceil(Math.abs(se.y - nw.y)));
+    return {
+      row,
+      rect: { x, y, w, h },
+      bounds: {
+        ...bounds,
+        leaflet: L.latLngBounds([bounds.south, bounds.west], [bounds.north, bounds.east]),
+      },
+      center: {
+        lat: (bounds.south + bounds.north) / 2,
+        lon: normalizeLongitude((bounds.west + bounds.east) / 2),
+      },
+    };
+  }
+  return null;
 }
 
 function gfwCellColorParts(row) {

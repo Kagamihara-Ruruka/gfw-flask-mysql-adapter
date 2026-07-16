@@ -1,137 +1,169 @@
-# Adaptive Watermark Acceptance - 2026-07-16
+# Playback Pipeline and Adaptive Watermark Acceptance - 2026-07-16
 
 ## Scope
 
-This checkpoint adds one DI-owned `AdaptiveWatermarkController` and three distinct playback gates:
+This is the final acceptance record for the playback, query, canonical-frame cache,
+Widget boundary, lifecycle telemetry, and adaptive-watermark changes in this
+checkpoint.
+
+The accepted runtime boundaries are:
 
 ```text
-startupWatermark   cold-cache preparation before playback starts
-resumeWatermark    minimum contiguous frames before leaving BUFFERING
-low/highWatermark  asynchronous replenishment during playback
+Map / Playback demand -> QueryScheduler -> Adapter -> DataFrameStore
+                                                    -> Renderer
+DataFrameStore ------------------------------------> Widgets
 ```
 
-The controller consumes monotonic runtime metrics and the `DataFrameStore` capacity snapshot. It does not own transport, query concurrency, cache eviction, playback cadence, or renderer state.
+Widgets are cache-first consumers. During `PREPARING`, `PLAYING`, and
+`BUFFERING`, they do not start ordinary source transport. A missing explicit
+Tile interaction may request only the current slice through the interactive
+lane. The table and Event Viewer are read-only.
+
+## Acceptance Environment
+
+```text
+browser:              external Chrome Incognito
+tabs:                 one
+URL:                  http://127.0.0.1:5081/?v=goal-playback-v36-clean
+browser frame budget: 512 MiB
+background network:   at most 3
+scheduled look-ahead: at most 12 outstanding frames
+pipeline playback:    4x
+provider service:     existing 8791 process, unchanged
+```
+
+"Cold" below means the dataset namespace was absent from the current browser
+frame store when the layer was activated. Provider- or adapter-side caches were
+not forcibly cleared. "Warm" means an immediate replay in the same browser.
+Because a 512 MiB LRU cannot retain a full year of 4 km canonical frames, a
+full-year warm replay is not expected to be transport-free.
+
+All reported values were captured when each run finished. The Event Viewer uses
+a bounded rolling log, so raw events from early runs can roll out after many
+additional full-year runs. JSON export remains an explicit user action; run
+completion never opens a download or native file dialog.
 
 ## Automated Verification
 
 ```text
-Node contract tests: 117 / 117 passed
+Node contract tests: 157 / 157 passed
 Python unittest:       40 / 40 passed
-Playback smoke:        15 / 15 passed
-Demo smoke:            passed
-JavaScript syntax:     92 files passed
+JavaScript syntax:     93 files passed
 git diff --check:      passed
+UTF-8 validation:      passed
 ```
 
-Deterministic tests cover warming fallback, supply deficits, tail latency, RAM and configured caps, monotonic decrease hysteresis, read-only policy preview, cold `PREPARING`, multi-frame resume, manual target promotion, and playback-speed isolation.
+## External Browser Results
 
-## Pre-Fix Full-Year Baseline
+Every run below ended normally. `Buffer` is `BUFFER_ENTERED / BUFFER_RESUMED`.
+All runs had zero `HTTP_FAILED`, zero active stalls after completion, and one
+matched `PREPARE_STARTED / PREPARE_READY` pair.
 
-The first external Chrome incognito sweep exposed the former one-frame recovery policy. Each dataset completed, and every warm-cache replay used zero HTTP requests, but cold playback repeatedly alternated between `BUFFERING` and `PLAYING`.
+| Dataset | Mode | Visible | HTTP | Buffer | First frame | Stall ratio | Network P95 | Queue P95 | Render P95 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| sea temperature | cold + interaction | 341 | 364 | 6 / 6 | 2.684 s | 8.16% | 4.173 s | 12.380 s | 0.113 s |
+| sea temperature | warm | 355 | 341 | 22 / 22 | 0.193 s | 65.75% | 4.072 s | 10.227 s | 0.157 s |
+| chlorophyll-a | cold | 354 | 336 | 21 / 21 | 0.183 s | 63.47% | 5.752 s | 15.516 s | 0.395 s |
+| chlorophyll-a | warm | 354 | 339 | 18 / 18 | 0.609 s | 53.03% | 6.151 s | 17.469 s | 0.463 s |
+| ocean productivity | cold | 354 | 333 | 19 / 19 | 0.723 s | 59.88% | 5.402 s | 14.392 s | 0.285 s |
+| ocean productivity | warm | 354 | 354 | 22 / 22 | 18.201 s | 62.35% | 5.516 s | 14.131 s | 0.253 s |
+| sustainability pressure | cold | 354 | 336 | 22 / 22 | 0.548 s | 66.86% | 5.329 s | 13.621 s | 0.234 s |
+| sustainability pressure | warm | 354 | 354 | 21 / 21 | 17.084 s | 62.99% | 4.981 s | 13.348 s | 0.279 s |
+| fishing hours | cold | 365 | 347 | 19 / 19 | 0.617 s | 55.37% | 5.540 s | 16.221 s | 0.431 s |
+| fishing hours | warm | 365 | 365 | 18 / 18 | 17.437 s | 48.51% | 5.707 s | 16.477 s | 0.443 s |
+| GFW January 2024 | after layer load | 30 | 0 | 0 / 0 | 0.697 s | 0% | 0 | 0 | 0.282 s |
+| GFW January 2024 | warm | 30 | 0 | 0 / 0 | 0.684 s | 0% | 0 | 0 | 0.286 s |
 
-| Dataset | Cold elapsed | Visible frames | Cold stalls | Cold stall total | Warm elapsed | Warm HTTP | Warm stalls |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| fishing activity | 267.6 s | 365 | 94 | 136.7 s | 128.4 s | 0 | 0 |
-| chlorophyll-a | 251.0 s | 354 | 100 | 124.4 s | 124.9 s | 0 | 0 |
-| sea temperature | 267.6 s | 355 | 106 | 136.4 s | 124.5 s | 0 | 0 |
-| ocean productivity | 259.8 s | 354 | 103 | 127.9 s | 124.1 s | 0 | 0 |
-| sustainability pressure | 243.2 s | 354 | 117 | 115.45 s | 124.9 s | 0 | 0 |
+The four `pipeline_iceberg` datasets contain 355 playback dates except fishing
+hours, which contains all 366 dates in leap year 2020. `FRAME_VISIBLE` excludes
+the already-visible first date, so the completed counts are 354 and 365.
 
-This dataset sweep verified all adapters, mappings, canonical frame identities, and warm-cache reuse. Its stall counts are retained as the before-fix baseline, not as the final acceptance result.
+The GFW layer contains 31 dates in January 2024. Layer activation prepared the
+small month entirely inside the frame budget, so both playback runs were real
+cache-only consumers with zero playback transport.
 
-## Final Cold and Warm Runs
+## Deep Interaction Run
 
-Target:
+The sea-temperature cold run covered 2020-01-15 through 2020-12-31 and mixed:
+
+- 1x, 2x, and 4x rate changes;
+- map zoom and pan;
+- single virtual-grid selection;
+- line, pie, EEZ attribution, and table Widget updates.
+
+Results:
 
 ```text
-external Chrome incognito
-http://127.0.0.1:5081/?v=startup-resume-watermark-v1
-dataset: pipeline_iceberg.sustainability_pressure
-range:   2020-01-01..2020-12-31
+PLAYBACK_SCOPE_CHANGED: 4
+QUERY_SCOPE_CANCELLED:  5
+HTTP_CANCELLED:         11 obsolete background requests
+HTTP_FAILED:            0
+Widget HTTP:            0
+Widget tasks:           0
+final DataFrameStore:   536,848,122 / 536,870,912 bytes
 ```
 
-Final `1x` cold-cache result:
+The selected no-data cell remained selectable. Scope changes cancelled obsolete
+queued/background work without clearing completed canonical frames. Widget
+updates consumed the selected snapshot from `DataFrameStore` and did not compete
+with map playback transport.
+
+## AIS and EEZ Smoke
+
+AIS was enabled in the same Incognito tab after playback acceptance:
 
 ```text
-elapsed:                 509.480 s
-FRAME_VISIBLE:           354
-HTTP_STARTED:            349
-PREPARE_STARTED/READY:   1 / 1
-startup ready/required:  10 / 10
-preparation P95:         1.390 s
-BUFFER_ENTERED:          1
-stall total/max:         11.958 s / 11.958 s
-stall ratio:             2.35%
-consumption/supply:      0.7143 / 0.7098 slices/s
-final store entries:     355
-unhandled browser errors: 0
+collector state:   SQL collector writing
+visible vessels:   437
+SQL inventory:     127,968
+received records:  36,924,920
+written records:   36,862,571
 ```
 
-The cold run no longer resumed once per arriving frame. Preparation is recorded separately from stalls, and only one transient supply miss occurred across the full year.
+AIS correctly switched the dashboard to live mode and disabled historical
+playback controls. EEZ remained enabled throughout. The deep interaction run
+also verified selected-cell EEZ attribution and Widget rendering.
 
-The same full-year store was then replayed at `4x`:
+## Runtime Invariants
 
-```text
-elapsed:                 127.276 s
-FRAME_VISIBLE:           354
-HTTP_STARTED:            0
-TASK_DISPATCHED:         0
-BUFFER_ENTERED:          0
-unhandled browser errors: 0
-```
+- All 12 playback runs finished with `reason=ended`.
+- Every entered buffer had one matching resume event.
+- No run ended with an active stall or permanent `FETCHING` state.
+- No run emitted `HTTP_FAILED`.
+- The browser store remained below its 512 MiB byte budget.
+- GFW replay performed no playback HTTP.
+- Pipeline Widgets did not create an independent query stream.
+- Incognito console errors and warnings were both zero.
+- Exactly one Chrome tab remained open during acceptance.
+- Playback completion did not request a JSON download or open a native save dialog.
 
-This confirms that startup and resume gates do not regress the warm-cache path.
+## Throughput Boundary
 
-## Unsustainable Supply Degradation
+The pipeline datasets cannot sustain the 4x target cadence of 2.857 slices/s on
+the current source/adapter path. Their completed-run supply rates were roughly
+0.59-0.75 slices/s. Network P95 was about 5-6 seconds and queue P95 about 13-17
+seconds, while render P95 stayed below 0.47 seconds.
 
-A `4x` cold-cache 91-slice run was used to force supply below consumption:
-
-```text
-range:                   2020-01-01..2020-03-31
-elapsed:                 64.509 s
-FRAME_VISIBLE:           90
-startup ready/required:  10 / 10
-preparation duration:    1.929 s
-consumption/supply:      2.8571 / 1.5559 slices/s
-BUFFER_ENTERED:          2
-resume gate 1:           30 / 30 slices
-resume gate 2:           19 / 19 slices
-degradation reasons:     supply_below_consumption, startup_capacity_capped
-unhandled browser errors: 0
-```
-
-The player did not return to a one-frame gate. When the computed demand exceeded the configured maximum, the event log and UI exposed the capped policy instead of implying that throughput was sufficient.
-
-## Interaction Regression
-
-`pipeline_iceberg.chlor_a` was played at `4x` from 2020-01-01 through 2020-02-29 while the external browser performed:
-
-- one real zoom-button interaction;
-- one viewport pan;
-- one single-cell virtual-grid selection;
-- the resulting Widget cache inspection/query work.
-
-Result:
-
-```text
-FRAME_VISIBLE:            59
-PLAYBACK_SCOPE_CHANGED:   3
-selected virtual cell:    16 km, no-data cell remained selectable
-HTTP lanes:               playback-window 85, widget 48, map-current 1
-scope-cancelled requests: 9
-unhandled browser errors: 0
-final date:               2020-02-29
-```
-
-All nine `HTTP_FAILED` packets were aborted obsolete `playback-window` requests after BBOX scope changes. They were not provider failures. Completed canonical frames remained in the store, playback reached the end date, and the event-viewer Widget displayed preparation, stalls, supply/consumption, effective watermarks, and degradation state from the shared lifecycle log.
+This is an explicit degraded mode, not a hidden frontend failure. The player
+waits for a multi-frame resume watermark and reports
+`supply_below_consumption`; it does not return to a one-frame gate, clear the
+cache, or pretend that 4x is sustainable. The 8791 provider and its DuckDB/JSON
+path were not modified in this checkpoint.
 
 ## Boundary Result
 
-- Cold start is `PREPARING`, not a playback stall.
-- Buffer recovery requires the current resume watermark and never lowers its gate during one wait.
-- Manual seek does not enter startup preparation; it promotes the map target while Preheater replenishment remains background work.
-- `playbackSpeed` affects only cadence and consumption rate.
-- Adaptive policy never changes query concurrency or clears completed frames.
-- Warm-cache replay remains transport-free.
-- Event Viewer and Metrics Widget read the same runtime truth as the status line.
+- Cold startup and mid-run recovery have separate gates.
+- Playback, Preheater, Scheduler, Store, Renderer, and Widgets have independent
+  owners and communicate through state rather than blocking batch promises.
+- Requested, effective-query, and actual render resolutions remain distinct;
+  the virtual selection grid follows the actual rendered grid.
+- Active playback uses cache-only Widgets; cache misses are filled through the
+  centralized demand service and scheduler.
+- Completed cache entries survive task promotion, scope cancellation, and
+  Widget interaction.
+- Runtime timing is monotonic and is not scaled by playback speed.
+- Event Viewer, status, and metrics consume one lifecycle truth.
 
+The frontend boundary is stable for this checkpoint. Remaining 4x latency is a
+measured source/adapter throughput limit, not a reason to add unbounded browser
+cache or extra frontend concurrency.

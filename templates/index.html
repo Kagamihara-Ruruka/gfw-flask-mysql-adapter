@@ -280,6 +280,17 @@
                 </select>
               </label>
               <label>
+                背景預熱並行數
+                <select id="query-background-concurrency">
+                  <option value="1">1</option>
+                  <option value="2">2</option>
+                  <option value="3" selected>3</option>
+                  <option value="4">4</option>
+                  <option value="5">5</option>
+                  <option value="6">6</option>
+                </select>
+              </label>
+              <label>
                 基準低水位（張）
                 <input id="playback-cache-low-watermark" type="number" min="1" max="59" step="1" value="5">
               </label>
@@ -297,13 +308,13 @@
               </label>
               <label>
                 快取上限 (GB)
-                <input id="playback-cache-max-gb" type="number" min="0.25" max="16" step="0.25" value="2">
+                <input id="playback-cache-max-gb" type="number" min="0.25" max="16" step="0.25" value="0.5">
               </label>
               <p id="playback-cache-policy-status" class="setting-note">自適應水位：樣本累積中 · 低 5 / 高 10 · 啟動 5 / 恢復 5</p>
               <p class="setting-note">預熱器與播放器獨立運作；下一幀尚未就緒時維持目前畫面，低水位觸發補貨至高水位。網路查詢並行數同時約束地圖、播放與 Widget 的共用排程器；快取上限控制記憶體壓力。</p>
               <div class="playback-cache-meter" aria-label="播放快取容量">
                 <div class="playback-cache-meter-label">
-                  <span id="playback-cache-capacity-text">快取容量：0 B / 2.00 GB</span>
+                  <span id="playback-cache-capacity-text">快取容量：0 B / 512 MB</span>
                   <span class="playback-cache-meter-actions">
                     <span id="playback-cache-capacity-percent">0%</span>
                     <button id="playback-cache-clear" class="cache-clear-button" type="button">釋放快取</button>

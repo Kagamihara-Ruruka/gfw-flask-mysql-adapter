@@ -209,6 +209,14 @@ def elapsed_ms(start: float) -> float:
 
 def query_policy(config: dict[str, Any]) -> dict[str, Any]:
     policy = config.get("query_policy", {})
+    network_concurrency = max(1, min(16, int(policy.get("network_concurrency", 6))))
+    background_network_concurrency = max(
+        1,
+        min(
+            network_concurrency,
+            int(policy.get("background_network_concurrency", 3)),
+        ),
+    )
     snapshot_cache_max_rows = policy.get("snapshot_cache_max_rows", 800000)
     if snapshot_cache_max_rows is not None:
         snapshot_cache_max_rows = max(1, int(snapshot_cache_max_rows))
@@ -217,7 +225,8 @@ def query_policy(config: dict[str, Any]) -> dict[str, Any]:
         "max_limit": optional_query_limit(policy.get("max_limit")),
         "table_preview_limit": int(policy.get("table_preview_limit", 300)),
         "require_time_or_bbox_filter": bool(policy.get("require_time_or_bbox_filter", True)),
-        "network_concurrency": max(1, min(16, int(policy.get("network_concurrency", 6)))),
+        "network_concurrency": network_concurrency,
+        "background_network_concurrency": background_network_concurrency,
         "snapshot_cache_max_rows": snapshot_cache_max_rows,
     }
 

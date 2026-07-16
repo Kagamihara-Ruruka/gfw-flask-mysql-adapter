@@ -50,7 +50,12 @@ function createRenderIntentService({
       query: {
         limit: unlimitedLimit(),
         columns: DEFAULT_COLUMNS,
-        requestedResolutionKm: sampledGridContract.queryResolution({
+        requestedResolutionKm: sampledGridContract.requestResolution({
+          datasetId: targetState.datasetId,
+          zoom: viewport.zoom,
+          latitude: viewport.center?.lat,
+        }),
+        effectiveQueryResolutionKm: sampledGridContract.queryResolution({
           datasetId: targetState.datasetId,
           zoom: viewport.zoom,
           latitude: viewport.center?.lat,
@@ -108,6 +113,7 @@ function createRenderIntentService({
       renderProfile: intent?.renderProfile,
       outsideCoverage: Boolean(intent?.viewport?.outsideCoverage),
       resolution: intent?.query?.requestedResolutionKm,
+      queryResolution: intent?.query?.effectiveQueryResolutionKm,
       latitude: intent?.viewport?.center?.lat,
       mappingVersion: intent?.query?.mappingVersion || "",
     };
@@ -132,6 +138,7 @@ function createRenderIntentService({
       renderProfile: intent?.renderProfile,
       outsideCoverage: Boolean(intent?.viewport?.outsideCoverage),
       resolution: intent?.query?.requestedResolutionKm,
+      queryResolution: intent?.query?.effectiveQueryResolutionKm,
       zoom: intent?.viewport?.zoom,
       latitude: intent?.viewport?.center?.lat,
       mappingVersion: intent?.query?.mappingVersion || "",

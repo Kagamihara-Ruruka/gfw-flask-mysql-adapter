@@ -1,11 +1,20 @@
-function schedulePrimaryReload(delayMs = 0) {
+function cancelScheduledPrimaryReload() {
   ClockDomain.monotonic.cancel(state.primaryReloadTimer);
+  state.primaryReloadTimer = null;
+}
+
+function schedulePrimaryReload(delayMs = 0) {
+  cancelScheduledPrimaryReload();
   state.primaryReloadTimer = ClockDomain.monotonic.schedule(() => {
     state.primaryReloadTimer = null;
-    reloadActiveLayer().catch((error) => {
+    reloadActiveLayer({ reason: "viewport_settled" }).catch((error) => {
       if (error?.name !== "AbortError") setStatus(error?.message || "圖層重新載入失敗", true);
     });
   }, delayMs);
+}
+
+function viewportReloadSettleMs() {
+  return Math.max(250, Number(state.rendering?.viewportReloadSettleMs ?? 700));
 }
 
 function invalidatePrimaryRenderForViewport({ lodChanging = false } = {}) {
@@ -37,7 +46,7 @@ function bindMapRefresh() {
   let eezZoomPrepared = false;
 
   function clearScheduledReloads() {
-    ClockDomain.monotonic.cancel(state.primaryReloadTimer);
+    cancelScheduledPrimaryReload();
     ClockDomain.monotonic.cancel(eezTimer);
   }
 
@@ -75,7 +84,7 @@ function bindMapRefresh() {
     if (!primaryPrepared && !eezZoomPrepared) return;
     clearScheduledReloads();
     if (primaryPrepared && state.dataLayer) {
-      schedulePrimaryReload(250);
+      schedulePrimaryReload(viewportReloadSettleMs());
     }
     if (eezZoomPrepared && $("eez-toggle")?.checked) {
       eezTimer = ClockDomain.monotonic.schedule(() => {

@@ -174,7 +174,6 @@ class VirtualGridCursorPolicy {
       this.container?.style.setProperty("cursor", next ? "crosshair" : "default", "important");
     }
     if (this.container) void this.container.offsetWidth;
-    this.map?.invalidateSize?.({ animate: false, pan: false, debounceMoveend: true });
   }
 
   clear(options = {}) {

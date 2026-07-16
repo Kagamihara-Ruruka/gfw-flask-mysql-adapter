@@ -1,3 +1,24 @@
+function bindSampledGridViewportRedraw(layer, targetMap) {
+  layer._viewportResetFrame = null;
+  layer._scheduleViewportReset = () => {
+    if (layer._viewportResetFrame !== null) return;
+    layer._viewportResetFrame = layer._renderClock.request(() => {
+      layer._viewportResetFrame = null;
+      if (layer._map === targetMap) layer._reset();
+    });
+  };
+  targetMap.on("moveend zoomend resize", layer._scheduleViewportReset, layer);
+}
+
+function unbindSampledGridViewportRedraw(layer, targetMap) {
+  targetMap.off("moveend zoomend resize", layer._scheduleViewportReset, layer);
+  if (layer._viewportResetFrame !== null) {
+    layer._renderClock.cancel(layer._viewportResetFrame);
+    layer._viewportResetFrame = null;
+  }
+  layer._scheduleViewportReset = null;
+}
+
 const SampledGridWebglLayer = L.Layer.extend({
   initialize({ renderClock } = {}) {
     if (!renderClock || typeof renderClock.now !== "function") {
@@ -6,7 +27,9 @@ const SampledGridWebglLayer = L.Layer.extend({
     this._renderClock = renderClock;
     this._rows = [];
     this._drawMs = 0;
-    this._hitCells = [];
+    this._vertexData = new Float32Array(0);
+    this._gpuBufferFloats = 0;
+    this._colorScratch = [0, 0, 0];
   },
   onAdd(targetMap) {
     this._map = targetMap;
@@ -23,11 +46,11 @@ const SampledGridWebglLayer = L.Layer.extend({
       return;
     }
     targetMap.getPane("sampledGridPane").appendChild(this._canvas);
-    targetMap.on("move zoom resize", this._reset, this);
+    bindSampledGridViewportRedraw(this, targetMap);
     this._reset();
   },
   onRemove(targetMap) {
-    targetMap.off("move zoom resize", this._reset, this);
+    unbindSampledGridViewportRedraw(this, targetMap);
     this.releaseGpuResources();
     if (this._canvas) {
       L.DomUtil.remove(this._canvas);
@@ -42,6 +65,7 @@ const SampledGridWebglLayer = L.Layer.extend({
       gl.deleteBuffer(this._buffer);
       this._buffer = null;
     }
+    this._gpuBufferFloats = 0;
     if (this._program) {
       gl.deleteProgram(this._program);
       this._program = null;
@@ -115,7 +139,14 @@ const SampledGridWebglLayer = L.Layer.extend({
     this._colorLocation = gl.getAttribLocation(program, "a_color");
     return program;
   },
-  _pushRect(vertices, x, y, w, h, width, height, color, alpha) {
+  _ensureVertexCapacity(requiredFloats) {
+    if (this._vertexData.length >= requiredFloats) return this._vertexData;
+    let capacity = Math.max(1024, this._vertexData.length || 0);
+    while (capacity < requiredFloats) capacity *= 2;
+    this._vertexData = new Float32Array(capacity);
+    return this._vertexData;
+  },
+  _writeRect(vertices, offset, x, y, w, h, width, height, color, alpha) {
     const x1 = (x / width) * 2 - 1;
     const x2 = ((x + w) / width) * 2 - 1;
     const y1 = 1 - (y / height) * 2;
@@ -123,14 +154,21 @@ const SampledGridWebglLayer = L.Layer.extend({
     const r = color[0] / 255;
     const g = color[1] / 255;
     const b = color[2] / 255;
-    vertices.push(
-      x1, y1, r, g, b, alpha,
-      x2, y1, r, g, b, alpha,
-      x1, y2, r, g, b, alpha,
-      x1, y2, r, g, b, alpha,
-      x2, y1, r, g, b, alpha,
-      x2, y2, r, g, b, alpha
-    );
+    const writeVertex = (px, py) => {
+      vertices[offset++] = px;
+      vertices[offset++] = py;
+      vertices[offset++] = r;
+      vertices[offset++] = g;
+      vertices[offset++] = b;
+      vertices[offset++] = alpha;
+    };
+    writeVertex(x1, y1);
+    writeVertex(x2, y1);
+    writeVertex(x1, y2);
+    writeVertex(x1, y2);
+    writeVertex(x2, y1);
+    writeVertex(x2, y2);
+    return offset;
   },
   _draw() {
     const started = this._renderClock.now();
@@ -141,13 +179,14 @@ const SampledGridWebglLayer = L.Layer.extend({
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
 
-    const vertices = [];
     const alpha = Math.max(0, Math.min(1, Number(
       state.layerAlpha[state.dataLayer] ?? state.sampledGridPaint?.alpha ?? 1
     )));
-    const renderRows = sampledGridRowsForRender(this._rows);
-    const model = SampledGridContract.model();
-    const hitCells = [];
+    const paintFrame = sampledGridPaintFrame(this._rows);
+    const renderRows = paintFrame.rows;
+    const vertices = this._ensureVertexCapacity(renderRows.length * 36);
+    let vertexFloatCount = 0;
+    const model = paintFrame.model;
     for (const row of renderRows) {
       const bounds = model.bounds(row);
       if (!bounds) continue;
@@ -158,35 +197,24 @@ const SampledGridWebglLayer = L.Layer.extend({
       const w = Math.max(1, Math.ceil(Math.abs(se.x - nw.x)));
       const h = Math.max(1, Math.ceil(Math.abs(se.y - nw.y)));
       if (x > size.x || y > size.y || x + w < 0 || y + h < 0) continue;
-      const cellOpacity = sampledGridCellOpacity(row);
+      const value = model.value(row);
+      const cellOpacity = paintFrame.opacityForValue(value);
       if (cellOpacity > 0) {
-        this._pushRect(
+        vertexFloatCount = this._writeRect(
           vertices,
+          vertexFloatCount,
           x,
           y,
           w,
           h,
           size.x,
           size.y,
-          sampledGridCellColorParts(row),
+          paintFrame.colorPartsForValue(value, this._colorScratch),
           alpha * cellOpacity
         );
       }
-      hitCells.push({
-        row,
-        rect: { x, y, w, h },
-        bounds: {
-          ...bounds,
-          leaflet: L.latLngBounds([bounds.south, bounds.west], [bounds.north, bounds.east]),
-        },
-        center: {
-          lat: (bounds.south + bounds.north) / 2,
-          lon: normalizeLongitude((bounds.west + bounds.east) / 2),
-        },
-      });
     }
-    this._hitCells = hitCells;
-    if (!vertices.length) {
+    if (!vertexFloatCount) {
       this._drawMs = this._renderClock.now() - started;
       return this._drawMs;
     }
@@ -195,7 +223,11 @@ const SampledGridWebglLayer = L.Layer.extend({
       const program = this._ensureProgram();
       gl.useProgram(program);
       gl.bindBuffer(gl.ARRAY_BUFFER, this._buffer);
-      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.DYNAMIC_DRAW);
+      if (this._gpuBufferFloats < vertices.length) {
+        gl.bufferData(gl.ARRAY_BUFFER, vertices.byteLength, gl.DYNAMIC_DRAW);
+        this._gpuBufferFloats = vertices.length;
+      }
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, vertices, 0, vertexFloatCount);
       const stride = 6 * Float32Array.BYTES_PER_ELEMENT;
       gl.enableVertexAttribArray(this._positionLocation);
       gl.vertexAttribPointer(this._positionLocation, 2, gl.FLOAT, false, stride, 0);
@@ -208,7 +240,7 @@ const SampledGridWebglLayer = L.Layer.extend({
         gl.ONE,
         gl.ONE_MINUS_SRC_ALPHA
       );
-      gl.drawArrays(gl.TRIANGLES, 0, vertices.length / 6);
+      gl.drawArrays(gl.TRIANGLES, 0, vertexFloatCount / 6);
       gl.disable(gl.BLEND);
       this._drawMs = this._renderClock.now() - started;
       return this._drawMs;
@@ -220,15 +252,7 @@ const SampledGridWebglLayer = L.Layer.extend({
     }
   },
   hitTest(containerPoint) {
-    const point = L.point(containerPoint);
-    for (let index = this._hitCells.length - 1; index >= 0; index -= 1) {
-      const cell = this._hitCells[index];
-      const { x, y, w, h } = cell.rect;
-      if (point.x >= x && point.x <= x + w && point.y >= y && point.y <= y + h) {
-        return cell;
-      }
-    }
-    return null;
+    return sampledGridHitCellAt(this._map, this._rows, containerPoint);
   },
 });
 

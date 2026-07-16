@@ -13,7 +13,7 @@ class DataFrameStoreCore {
   }
   const FrameIdentity = frameIdentity;
   const LifecycleEventLog = eventLog;
-  const DEFAULT_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+  const DEFAULT_MAX_BYTES = 512 * 1024 * 1024;
   const BBOX_EPSILON = 1e-6;
   const cache = new Map();
   const metadata = new Map();
@@ -242,6 +242,19 @@ class DataFrameStoreCore {
       .sort((left, right) => bboxArea(left.meta.box) - bboxArea(right.meta.box));
   }
 
+  function canSatisfy(sourceRequest, targetRequest) {
+    const source = FrameIdentity.normalizeRequest(sourceRequest);
+    const target = FrameIdentity.normalizeRequest(targetRequest);
+    const sourceBox = boxFromRequest(source);
+    const targetBox = boxFromRequest(target);
+    if (!sourceBox || !targetBox) return false;
+    return compatibleMeta({
+      ...source,
+      requestedResolution: source.resolution,
+      box: sourceBox,
+    }, target) && containsBbox(sourceBox, targetBox);
+  }
+
   function rowsKey(row) {
     return [row?.cell_id ?? row?.lat ?? "", row?.lon ?? "", row?.resolution_km ?? "", row?.date ?? ""].join("|");
   }
@@ -381,7 +394,7 @@ class DataFrameStoreCore {
     return { status: "missing", packet: null, cacheHit: false, intentKey, frameKey: "" };
   }
 
-  function put(request, packet, { reason = "query" } = {}) {
+  function put(request, packet, { reason = "query", lane = "", scopeId = "" } = {}) {
     const normalized = FrameIdentity.normalizeRequest(request);
     const intentKey = FrameIdentity.intentKey(normalized);
     const storedPacket = scopePacketToRequest(packet, normalized);
@@ -411,6 +424,7 @@ class DataFrameStoreCore {
       datasetId: normalized.datasetId,
       cacheNamespace: normalized.cacheNamespace,
       requestedResolution: normalized.resolution,
+      effectiveQueryResolution: FrameIdentity.queryResolution(normalized),
       actualResolution,
       intentKey,
       intentKeys: [...new Set([intentKey, actualIntentKey])],
@@ -433,10 +447,15 @@ class DataFrameStoreCore {
     LifecycleEventLog?.record?.("CACHE_READY", {
       intent_key: intentKey,
       frame_key: frameKey,
+      scope_key: FrameIdentity.scopeKey(normalized),
+      scope_id: String(scopeId || ""),
+      lane: String(lane || ""),
       dataset: normalized.datasetId,
       date: normalized.date,
+      bbox: normalized.bbox,
       bytes: size,
       requested_resolution_km: normalized.resolution,
+      effective_query_resolution_km: FrameIdentity.queryResolution(normalized),
       actual_resolution_km: change.actualResolution,
     });
     notify(change);
@@ -531,6 +550,7 @@ class DataFrameStoreCore {
   }
 
   Object.assign(this, {
+    canSatisfy,
     clearFailure,
     dispose,
     enforceBudget,

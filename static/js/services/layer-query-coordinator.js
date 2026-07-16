@@ -2,8 +2,9 @@ class QueryScheduler {
   static PRIORITY = Object.freeze({
     "map-current": 0,
     "playback-target": 5,
-    widget: 10,
-    "playback-window": 20,
+    "playback-window": 10,
+    "widget-interactive": 20,
+    "widget-auto": 40,
     background: 40,
   });
 
@@ -17,6 +18,8 @@ class QueryScheduler {
   constructor({
     concurrency = null,
     concurrencyProvider = null,
+    backgroundConcurrency = null,
+    backgroundConcurrencyProvider = null,
     foregroundCutoff = 5,
     eventLog = null,
     snapshotSink = null,
@@ -27,6 +30,8 @@ class QueryScheduler {
     }
     this.configuredConcurrency = concurrency;
     this.concurrencyProvider = concurrencyProvider || (() => 6);
+    this.configuredBackgroundConcurrency = backgroundConcurrency;
+    this.backgroundConcurrencyProvider = backgroundConcurrencyProvider || (() => 3);
     this.foregroundCutoff = foregroundCutoff;
     this.eventLog = eventLog;
     this.snapshotSink = snapshotSink;
@@ -42,6 +47,14 @@ class QueryScheduler {
     const configured = this.configuredConcurrency ?? this.concurrencyProvider();
     const numeric = Number(configured);
     return Math.max(1, Math.min(16, Number.isFinite(numeric) ? numeric : 6));
+  }
+
+  backgroundConcurrency() {
+    const total = this.concurrency();
+    const configured = this.configuredBackgroundConcurrency ?? this.backgroundConcurrencyProvider();
+    const numeric = Number(configured);
+    const fallback = Math.min(3, total);
+    return Math.max(1, Math.min(total, Number.isFinite(numeric) ? numeric : fallback));
   }
 
   normalizeLane(lane) {
@@ -82,6 +95,7 @@ class QueryScheduler {
       queued: this.queue.length,
       active: this.active.size,
       concurrency: this.concurrency(),
+      backgroundConcurrency: this.backgroundConcurrency(),
       foregroundQueued: this.queue.filter((task) => this.isForeground(task)).length,
       backgroundActive: [...this.active.values()].filter((task) => !this.isForeground(task)).length,
     }));
@@ -215,7 +229,7 @@ class QueryScheduler {
   nextRunnableTask() {
     this.queue.sort((left, right) => left.priority - right.priority || left.sequence - right.sequence);
     const total = this.concurrency();
-    const backgroundLimit = Math.max(1, total - 1);
+    const backgroundLimit = this.backgroundConcurrency();
     const backgroundActive = [...this.active.values()].filter((task) => !this.isForeground(task)).length;
     const index = this.queue.findIndex((task) => (
       this.isForeground(task) || backgroundActive < backgroundLimit
@@ -275,19 +289,37 @@ class QueryScheduler {
       }
     }
     this.drain();
+    if (cancelled > 0) {
+      this.eventLog?.record?.("QUERY_SCOPE_CANCELLED", {
+        scope_id: normalized,
+        cancelled_consumers: cancelled,
+        include_active: Boolean(includeActive),
+      });
+    }
     return cancelled;
   }
 
-  cancelPending({ lane = "", predicate = null, includeActive = false } = {}) {
+  cancelPending({ lane = "", predicate = null, includeActive = false, reason = "cancelled" } = {}) {
     const normalizedLane = lane ? this.normalizeLane(lane) : "";
+    let cancelled = 0;
     for (const task of [...this.queue, ...(includeActive ? this.active.values() : [])]) {
       if (predicate && !predicate(task)) continue;
       for (const consumer of [...task.consumers.values()]) {
-        if (normalizedLane && consumer.lane !== normalizedLane && task.lane !== normalizedLane) continue;
-        this.removeConsumer(task, consumer, this.abortError());
+        if (normalizedLane && consumer.lane !== normalizedLane) continue;
+        cancelled += 1;
+        this.removeConsumer(task, consumer, this.abortError(`Query consumer cancelled: ${reason}`));
       }
     }
     this.drain();
+    if (cancelled > 0) {
+      this.eventLog?.record?.("QUERY_TASKS_CANCELLED", {
+        lane: normalizedLane,
+        cancelled_consumers: cancelled,
+        include_active: Boolean(includeActive),
+        reason: String(reason || "cancelled"),
+      });
+    }
+    return cancelled;
   }
 
   snapshot() {
@@ -304,6 +336,7 @@ class QueryScheduler {
       queued: this.queue.map(taskView),
       active: [...this.active.values()].map(taskView),
       concurrency: this.concurrency(),
+      backgroundConcurrency: this.backgroundConcurrency(),
     };
   }
 

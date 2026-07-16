@@ -13,7 +13,7 @@ const sampledGridPaintState = {
 
 const dataFrameStoreState = {
   maxEntries: 0,
-  maxBytes: 2 * 1024 * 1024 * 1024,
+  maxBytes: 512 * 1024 * 1024,
   stats: {
     hits: 0,
     misses: 0,
@@ -115,6 +115,7 @@ const state = {
     sampledGridMode: "canvas",
     sampledGridBackend: "",
     gfwMode: "canvas",
+    viewportReloadSettleMs: 700,
     gfwBackend: "等待中",
   },
   dataFrameStore: dataFrameStoreState,
@@ -129,6 +130,8 @@ const state = {
     lowWatermark: 5,
     startupWatermark: 5,
     resumeWatermark: 5,
+    maxPendingFrames: 12,
+    scopeSettleMs: 600,
     adaptiveWatermark: {
       minimumSupplySamples: 2,
       minimumStartupSamples: 10,
@@ -182,7 +185,6 @@ const state = {
   fetchSeq: 0,
   primaryFetchController: null,
   primaryReloadTimer: null,
-  isPlaying: false,
   playTimer: null,
   playIntervalMs: 1400,
   playbackRate: 1,
@@ -192,5 +194,6 @@ const state = {
     max_limit: null,
     table_preview_limit: 300,
     network_concurrency: 6,
+    background_network_concurrency: 3,
   },
 };

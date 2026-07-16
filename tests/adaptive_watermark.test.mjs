@@ -141,7 +141,7 @@ test("cold startup accounts for the unsupplied tail and reports a capped degrada
 
   assert.equal(policy.startupDemandSlices, 77);
   assert.equal(policy.startupWatermark, 60);
-  assert.equal(policy.resumeWatermark, 30);
+  assert.equal(policy.resumeWatermark, 56);
   assert.equal(policy.sustainable, false);
   assert.equal(policy.degradationReason, "startup_capacity_capped");
 });
@@ -169,6 +169,43 @@ test("a sustainable source keeps the configured startup and resume gates", () =>
   assert.equal(policy.resumeWatermark, 5);
   assert.equal(policy.sustainable, true);
   assert.equal(policy.degradationReason, "");
+});
+
+test("speed changes during playback do not turn the remaining timeline into a startup buffer", () => {
+  const { calculate } = loadController();
+  const metrics = {
+    playback_status: "PLAYING",
+    consumption_rate: 10 / 7,
+    supply_rate: 1.2,
+    cache_ready_latency_p95: 10000,
+    supply_samples: 15,
+    cache_ready_latency_samples: 15,
+  };
+  const cacheSnapshot = {
+    maxBytes: 2 * 1024 * 1024 * 1024,
+    estimatedFrameBytes: 4 * 1024 * 1024,
+  };
+  const active = calculate({
+    fixedPolicy,
+    remainingSlices: 188,
+    metrics,
+    cacheSnapshot,
+    config: baseConfig(),
+  });
+  const cold = calculate({
+    fixedPolicy,
+    remainingSlices: 188,
+    metrics: { ...metrics, playback_status: "PREPARING" },
+    cacheSnapshot,
+    config: baseConfig(),
+  });
+
+  assert.equal(active.startupPhase, false);
+  assert.equal(active.highWatermark, 25);
+  assert.equal(active.startupWatermark, 5);
+  assert.equal(active.degradationReason, "supply_below_consumption");
+  assert.equal(cold.startupPhase, true);
+  assert.equal(cold.highWatermark, 51);
 });
 
 test("the DataFrameStore RAM budget is a hard cap for adaptive watermarks", () => {
@@ -284,6 +321,12 @@ test("watermark hysteresis raises immediately and lowers gradually on monotonic 
   now = 10000;
   assert.equal(controller.resolve({ fixedPolicy }).highWatermark, 53);
   assert.equal(controller.snapshot().reason, "decrease_step");
+  assert.equal(controller.resolve({ fixedPolicy }).highWatermark, 53);
+  assert.equal(controller.snapshot().reason, "decrease_interval");
+
+  now = 11000;
+  assert.equal(controller.resolve({ fixedPolicy }).highWatermark, 50);
+  assert.equal(controller.snapshot().reason, "decrease_step");
 
   metrics = { ...metrics, run_id: "run-2" };
   assert.equal(controller.resolve({ fixedPolicy }).highWatermark, 10);
@@ -294,6 +337,42 @@ test("watermark hysteresis raises immediately and lowers gradually on monotonic 
   assert.equal(fixed.lowWatermark, 5);
   assert.equal(fixed.highWatermark, 10);
   assert.ok(events.some((event) => event.type === "WATERMARK_POLICY_CHANGED"));
+});
+
+test("an explicit rate downshift can bypass decrease hysteresis", () => {
+  const { Controller } = loadController();
+  let metrics = {
+    run_id: "run-downshift",
+    consumption_rate: 4,
+    supply_rate: 2,
+    cache_ready_latency_p95: 5000,
+    supply_samples: 6,
+    cache_ready_latency_samples: 6,
+  };
+  const controller = new Controller({
+    metricsProvider: () => metrics,
+    cacheSnapshotProvider: () => ({
+      maxBytes: 2 * 1024 * 1024 * 1024,
+      estimatedFrameBytes: 4 * 1024 * 1024,
+    }),
+    configProvider: () => baseConfig(),
+    eventLog: { record() {} },
+    clock: { now: () => 0 },
+  });
+
+  assert.equal(controller.resolve({ fixedPolicy }).highWatermark, 56);
+  metrics = {
+    run_id: "run-downshift",
+    consumption_rate: 0,
+    supply_rate: 0,
+    cache_ready_latency_p95: 0,
+    supply_samples: 0,
+    cache_ready_latency_samples: 0,
+  };
+  const lowered = controller.resolve({ fixedPolicy, bypassDecreaseHysteresis: true });
+  assert.equal(lowered.highWatermark, 10);
+  assert.equal(lowered.resumeWatermark, 5);
+  assert.equal(lowered.reason, "insufficient_metrics");
 });
 
 test("preview is read-only and only resolve applies a policy", () => {

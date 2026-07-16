@@ -151,6 +151,15 @@ class DatasetViewportController {
     return this.state.layerViewport;
   }
 
+  settleForQuery(datasetId = this.state.datasetId, { focus = false } = {}) {
+    if (this.disposed) return this.state.layerViewport;
+    // Layer labels and controls can resize the map shell during activation.
+    // Leaflet's size read forces current layout, so this must not depend on a
+    // requestAnimationFrame that browsers throttle in background tabs.
+    this.map.invalidateSize?.({ animate: false, pan: false });
+    return this.syncForDataset(datasetId, { focus });
+  }
+
   release() {
     this.activeDatasetId = null;
     this.map.setMinZoom(this.baseMinZoom);

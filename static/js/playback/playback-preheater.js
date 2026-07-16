@@ -28,16 +28,18 @@ class PlaybackPreheaterController {
     this.inflight = new Map();
     this.retryAfter = new Map();
     this.retryTimer = null;
+    this.scopeSettleTimer = null;
     this.unsubscribeStore = this.store.subscribe?.((change) => this.handleStoreChange(change)) || null;
   }
 
-  options() {
+  options(policyContext = {}) {
     const cache = this.optionsProvider() || {};
     const highWatermark = Math.max(2, Number(cache.highWatermark ?? cache.windowAhead ?? 10));
     const lowWatermark = Math.max(1, Math.min(highWatermark - 1, Number(cache.lowWatermark ?? 5)));
     const fixedPolicy = {
       highWatermark,
       lowWatermark,
+      maxPendingFrames: Math.max(1, Math.min(32, Number(cache.maxPendingFrames ?? 12))),
       startupWatermark: Math.max(1, Math.min(
         highWatermark,
         Number(cache.startupWatermark ?? lowWatermark),
@@ -47,15 +49,37 @@ class PlaybackPreheaterController {
         Number(cache.resumeWatermark ?? lowWatermark),
       )),
       windowBehind: Math.max(0, Number(cache.windowBehind ?? 1)),
+      scopeSettleMs: Math.max(0, Number(cache.scopeSettleMs ?? 0)),
     };
+    const requestContext = this.scope?.requestContext || {};
     const policy = this.watermarkPolicyProvider?.(fixedPolicy, {
-      datasetId: this.scope?.requestContext?.datasetId || "",
+      datasetId: requestContext.datasetId || "",
+      scopeKey: this.scope ? this.frameIdentity.scopeKey(requestContext) : "",
+      bbox: requestContext.bbox || "",
+      resolution: requestContext.resolution ?? null,
       date: this.scope?.anchorDate || "",
       remainingSlices: this.scope
         ? Math.max(0, this.scope.dates.length - this.scope.cursorIndex - 1)
         : 0,
+      ...policyContext,
     }) || fixedPolicy;
     const effectiveHigh = Math.max(2, Number(policy.highWatermark ?? highWatermark));
+    const candidateStartupWatermark = Math.max(1, Number(
+      policy.startupWatermark ?? fixedPolicy.startupWatermark,
+    ));
+    const effectiveStartupWatermark = Math.max(1, Math.min(
+      effectiveHigh,
+      fixedPolicy.maxPendingFrames,
+      candidateStartupWatermark,
+    ));
+    const candidateResumeWatermark = Math.max(2, Number(
+      policy.resumeWatermark ?? fixedPolicy.resumeWatermark,
+    ));
+    const effectiveResumeWatermark = Math.max(2, Math.min(
+      effectiveHigh,
+      fixedPolicy.maxPendingFrames,
+      candidateResumeWatermark,
+    ));
     return {
       ...fixedPolicy,
       highWatermark: effectiveHigh,
@@ -64,14 +88,12 @@ class PlaybackPreheaterController {
         Number(policy.lowWatermark ?? lowWatermark),
       )),
       windowBehind: fixedPolicy.windowBehind,
-      startupWatermark: Math.max(1, Math.min(
-        effectiveHigh,
-        Number(policy.startupWatermark ?? fixedPolicy.startupWatermark),
-      )),
-      resumeWatermark: Math.max(2, Math.min(
-        effectiveHigh,
-        Number(policy.resumeWatermark ?? fixedPolicy.resumeWatermark),
-      )),
+      startupWatermark: effectiveStartupWatermark,
+      candidateStartupWatermark,
+      startupWatermarkCapped: effectiveStartupWatermark < candidateStartupWatermark,
+      resumeWatermark: effectiveResumeWatermark,
+      candidateResumeWatermark,
+      resumeWatermarkCapped: effectiveResumeWatermark < candidateResumeWatermark,
       strategy: policy.strategy || "fixed",
       policyStatus: policy.status || "FIXED",
       policyReason: policy.reason || "configured",
@@ -83,7 +105,10 @@ class PlaybackPreheaterController {
       estimatedFrameBytes: Math.max(0, Number(policy.estimatedFrameBytes || 0)),
       consumptionRate: Math.max(0, Number(policy.consumptionRate || 0)),
       supplyRate: Math.max(0, Number(policy.supplyRate || 0)),
+      supplySamples: Math.max(0, Number(policy.supplySamples || 0)),
       latencyP95Ms: Math.max(0, Number(policy.latencyP95Ms || 0)),
+      latencySamples: Math.max(0, Number(policy.latencySamples || 0)),
+      minimumSupplySamples: Math.max(2, Number(policy.minimumSupplySamples || 2)),
       remainingSlices: Math.max(0, Number(policy.remainingSlices || 0)),
       sustainable: policy.sustainable ?? null,
       degradationReason: String(policy.degradationReason || ""),
@@ -104,6 +129,77 @@ class PlaybackPreheaterController {
     return this.frameIdentity.normalizeRequest({ ...this.scope.requestContext, date });
   }
 
+  ownsQueryScope(scopeId) {
+    if (!this.scope || !scopeId) return false;
+    return this.scope.queryScopeIds?.has(scopeId) || this.scope.id === scopeId;
+  }
+
+  cancelQueryScopes(scope = this.scope, { includeActive = true } = {}) {
+    if (!scope) return 0;
+    const scopeIds = scope.queryScopeIds?.size ? scope.queryScopeIds : new Set([scope.id]);
+    let cancelled = 0;
+    for (const scopeId of scopeIds) {
+      if (scopeId) cancelled += Number(this.demandService.cancelScope?.(scopeId, { includeActive }) || 0);
+    }
+    return cancelled;
+  }
+
+  adoptRequestContext(requestContext = {}, { reason = "resolved_request_context" } = {}) {
+    if (!this.scope) return this.snapshot();
+    const previousScopeId = this.scope.id;
+    const previousScopeKey = this.frameIdentity.scopeKey(this.scope.requestContext);
+    const normalizedContext = this.frameIdentity.normalizeRequest({
+      ...this.scope.requestContext,
+      ...requestContext,
+      date: this.scope.anchorDate || this.scope.dates[0] || "",
+    });
+    const signature = this.scopeSignature({
+      dates: this.scope.dates,
+      requestContext: normalizedContext,
+    });
+    if (signature === this.scope.signature) {
+      const previousQueryResolution = this.frameIdentity.queryResolution(this.scope.requestContext);
+      const nextQueryResolution = this.frameIdentity.queryResolution(normalizedContext);
+      this.scope.requestContext = normalizedContext;
+      if (previousQueryResolution !== nextQueryResolution) {
+        this.eventLog?.record?.("PREHEATER_QUERY_ROUTE_UPDATED", {
+          scope_id: this.scope.id,
+          scope_key: this.frameIdentity.scopeKey(normalizedContext),
+          dataset: normalizedContext.datasetId,
+          date: this.scope.anchorDate,
+          requested_resolution_km: normalizedContext.resolution ?? null,
+          previous_effective_query_resolution_km: previousQueryResolution ?? null,
+          effective_query_resolution_km: nextQueryResolution ?? null,
+          reason,
+        });
+        this.reconcile({ force: true, bypassSettle: true });
+      }
+      return this.snapshot();
+    }
+
+    const id = `preheater:${++this.scopeSequence}:${signature}`;
+    this.scope.queryScopeIds = this.scope.queryScopeIds || new Set([previousScopeId]);
+    this.scope.queryScopeIds.add(id);
+    this.scope.id = id;
+    this.scope.signature = signature;
+    this.scope.requestContext = normalizedContext;
+    this.clock.cancel(this.retryTimer);
+    this.retryTimer = null;
+    this.clock.cancel(this.scopeSettleTimer);
+    this.scopeSettleTimer = null;
+    this.eventLog?.record?.("PREHEATER_SCOPE_MIGRATED", {
+      previous_scope_id: previousScopeId,
+      previous_scope_key: previousScopeKey,
+      scope_id: id,
+      scope_key: this.frameIdentity.scopeKey(normalizedContext),
+      dataset: normalizedContext.datasetId,
+      date: this.scope.anchorDate,
+      reason,
+    });
+    this.reconcile({ force: true, bypassSettle: true });
+    return this.snapshot();
+  }
+
   setScope({ dates = [], requestContext = {}, anchorDate = "" } = {}) {
     const normalizedDates = [...new Set(dates.filter(Boolean))].sort();
     const normalizedContext = this.frameIdentity.normalizeRequest({ ...requestContext, date: anchorDate || normalizedDates[0] || "" });
@@ -115,9 +211,11 @@ class PlaybackPreheaterController {
       this.reconcile();
       return this.snapshot();
     }
-    if (this.scope?.id) this.demandService.cancelScope?.(this.scope.id, { includeActive: true });
+    this.cancelQueryScopes(this.scope, { includeActive: true });
     this.clock.cancel(this.retryTimer);
     this.retryTimer = null;
+    this.clock.cancel(this.scopeSettleTimer);
+    this.scopeSettleTimer = null;
     const id = `preheater:${++this.scopeSequence}:${signature}`;
     this.inflight.clear();
     this.retryAfter.clear();
@@ -132,15 +230,40 @@ class PlaybackPreheaterController {
       readyAhead: 0,
       scheduledTotal: 0,
       failed: 0,
+      replenishing: true,
+      queryScopeIds: new Set([id]),
     };
     this.eventLog?.record?.("PREHEATER_SCOPE_CHANGED", {
       scope_id: id,
+      scope_key: this.frameIdentity.scopeKey(normalizedContext),
       dataset: normalizedContext.datasetId,
       date: this.scope.anchorDate,
       frame_count: normalizedDates.length,
     });
-    this.reconcile({ force: true });
+    const settleMs = this.options().scopeSettleMs;
+    if (settleMs > 0 && normalizedDates.length) {
+      this.syncState("IDLE");
+      this.eventLog?.record?.("PREHEATER_SCOPE_SETTLING", {
+        scope_id: id,
+        scope_key: this.frameIdentity.scopeKey(normalizedContext),
+        dataset: normalizedContext.datasetId,
+        date: this.scope.anchorDate,
+        settle_ms: settleMs,
+      });
+      this.scopeSettleTimer = this.clock.schedule(() => {
+        this.scopeSettleTimer = null;
+        if (this.scope?.id === id) this.reconcile({ force: true, bypassSettle: true });
+      }, settleMs);
+    } else {
+      this.reconcile({ force: true, bypassSettle: true });
+    }
     return this.snapshot();
+  }
+
+  activate() {
+    this.clock.cancel(this.scopeSettleTimer);
+    this.scopeSettleTimer = null;
+    return this.reconcile({ force: true, bypassSettle: true });
   }
 
   setPlayhead({ date = "", index = null } = {}) {
@@ -176,35 +299,64 @@ class PlaybackPreheaterController {
     return count;
   }
 
-  windowRequests() {
+  windowRequests(options = this.options()) {
     if (!this.scope) return [];
-    const { highWatermark, windowBehind } = this.options();
+    const { highWatermark, windowBehind } = options;
     const start = Math.max(0, this.scope.cursorIndex - windowBehind);
     const end = Math.min(this.scope.dates.length, this.scope.cursorIndex + highWatermark + 1);
     return this.scope.dates.slice(start, end).map((date) => this.requestForDate(date));
   }
 
-  reconcile({ force = false } = {}) {
+  reconcile({
+    force = false,
+    bypassSettle = false,
+    bypassDecreaseHysteresis = false,
+    pruneQueued = false,
+  } = {}) {
     if (!this.scope?.dates.length || !this.scope.requestContext.bbox) return this.snapshot();
-    const { lowWatermark } = this.options();
+    if (this.scopeSettleTimer && !bypassSettle) return this.snapshot();
+    const options = this.options({ bypassDecreaseHysteresis });
+    const { highWatermark, lowWatermark, maxPendingFrames } = options;
+    if (pruneQueued) {
+      const cancelled = this.cancelQueryScopes(this.scope, { includeActive: false });
+      if (cancelled > 0) {
+        this.eventLog?.record?.("PREHEATER_PENDING_PRUNED", {
+          scope_id: this.scope.id,
+          scope_key: this.frameIdentity.scopeKey(this.scope.requestContext),
+          dataset: this.scope.requestContext.datasetId,
+          date: this.scope.anchorDate,
+          cancelled_consumers: cancelled,
+          high_watermark: highWatermark,
+          reason: "playback_rate_decreased",
+        });
+      }
+    }
     const readyAhead = this.readyAhead();
     this.scope.readyAhead = readyAhead;
-    if (!force && readyAhead >= lowWatermark) {
+    if (force || readyAhead < lowWatermark) this.scope.replenishing = true;
+    if (readyAhead >= highWatermark) this.scope.replenishing = false;
+    if (!this.scope.replenishing) {
       this.syncState("READY");
       return this.snapshot();
     }
 
+    const capacity = Math.max(0, maxPendingFrames - this.inflight.size);
+    if (capacity === 0) {
+      this.syncState("FETCHING");
+      return this.snapshot();
+    }
+
     const now = this.clock.now();
-    const missing = this.windowRequests().filter((request) => {
+    const missing = this.windowRequests(options).filter((request) => {
       const key = this.frameIdentity.intentKey(request);
       const inspected = this.store.inspect(request);
       const retryAt = Number(this.retryAfter.get(key) || 0);
       return inspected.status !== "ready"
         && !this.inflight.has(key)
         && (force || inspected.status !== "failed" || retryAt <= now);
-    });
+    }).slice(0, capacity);
     if (!missing.length) {
-      const retryPending = this.windowRequests().some((request) => (
+      const retryPending = this.windowRequests(options).some((request) => (
         Number(this.retryAfter.get(this.frameIdentity.intentKey(request)) || 0) > now
       ));
       this.syncState(this.inflight.size ? "FETCHING" : retryPending ? "DEGRADED" : "READY");
@@ -226,7 +378,7 @@ class PlaybackPreheaterController {
           return result;
         })
         .catch((error) => {
-          if (error?.name !== "AbortError" && this.scope?.id === scopeId) {
+          if (error?.name !== "AbortError" && this.ownsQueryScope(scopeId)) {
             this.scope.failed += 1;
             this.retryAfter.set(intentKey, this.clock.now() + 5000);
           }
@@ -234,14 +386,14 @@ class PlaybackPreheaterController {
         })
         .finally(() => {
           if (this.inflight.get(intentKey) === promise) this.inflight.delete(intentKey);
-          if (this.scope?.id !== scopeId) return;
+          if (!this.ownsQueryScope(scopeId)) return;
           this.scope.readyAhead = this.readyAhead();
           const hasRetry = this.windowRequests().some((candidate) => (
             Number(this.retryAfter.get(this.frameIdentity.intentKey(candidate)) || 0) > this.clock.now()
           ));
           this.syncState(this.inflight.size ? "FETCHING" : hasRetry ? "DEGRADED" : "READY");
           if (hasRetry) this.scheduleRetry();
-          else if (this.scope.readyAhead < this.options().lowWatermark) queueMicrotask(() => this.reconcile());
+          else if (this.scope.replenishing) queueMicrotask(() => this.reconcile());
         });
       this.inflight.set(intentKey, promise);
     }
@@ -272,9 +424,27 @@ class PlaybackPreheaterController {
     });
   }
 
-  async waitForDates(dates, { lane = "playback-target", scopeId = "playback-startup" } = {}) {
+  async waitForDates(dates, {
+    lane = "playback-target",
+    scopeId = "playback-startup",
+    signal = null,
+  } = {}) {
     const requests = (dates || []).map((date) => this.requestForDate(date)).filter(Boolean);
-    return this.demandService.demandMany(requests, { lane, scopeId });
+    const progress = { total: requests.length, completed: 0, cacheHits: 0, fetched: 0, failed: 0 };
+    const chunkSize = this.options().maxPendingFrames;
+    for (let index = 0; index < requests.length; index += chunkSize) {
+      if (signal?.aborted) throw this.demandService.abortError?.() || Object.assign(new Error("Playback gate changed"), { name: "AbortError" });
+      const chunk = await this.demandService.demandMany(
+        requests.slice(index, index + chunkSize),
+        { lane, scopeId, signal },
+      );
+      progress.completed += Number(chunk.completed || 0);
+      progress.cacheHits += Number(chunk.cacheHits || 0);
+      progress.fetched += Number(chunk.fetched || 0);
+      progress.failed += Number(chunk.failed || 0);
+      if (progress.failed > 0) break;
+    }
+    return progress;
   }
 
   handleStoreChange(change) {
@@ -292,7 +462,7 @@ class PlaybackPreheaterController {
   }
 
   stop(reason = "scope_stopped") {
-    if (this.scope?.id) this.demandService.cancelScope?.(this.scope.id, { includeActive: true });
+    this.cancelQueryScopes(this.scope, { includeActive: true });
     this.eventLog?.record?.("PREHEATER_STOPPED", {
       scope_id: this.scope?.id || "",
       reason,
@@ -301,6 +471,8 @@ class PlaybackPreheaterController {
     this.retryAfter.clear();
     this.clock.cancel(this.retryTimer);
     this.retryTimer = null;
+    this.clock.cancel(this.scopeSettleTimer);
+    this.scopeSettleTimer = null;
     this.scope = null;
     this.stateSink?.(this.snapshot());
   }
@@ -312,6 +484,10 @@ class PlaybackPreheaterController {
       signature: this.scope.signature,
       status: this.scope.status,
       datasetId: this.scope.requestContext.datasetId,
+      scopeKey: this.frameIdentity.scopeKey(this.scope.requestContext),
+      bbox: this.scope.requestContext.bbox,
+      resolution: this.scope.requestContext.resolution ?? null,
+      queryResolution: this.frameIdentity.queryResolution(this.scope.requestContext),
       anchorDate: this.scope.anchorDate,
       cursorIndex: this.scope.cursorIndex,
       frameCount: this.scope.dates.length,
@@ -320,6 +496,8 @@ class PlaybackPreheaterController {
       queued: this.inflight.size,
       scheduledTotal: this.scope.scheduledTotal,
       failed: this.scope.failed,
+      replenishing: this.scope.replenishing,
+      scopeSettlePending: Boolean(this.scopeSettleTimer),
       ...this.options(),
     });
   }

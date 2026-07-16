@@ -628,11 +628,12 @@ function initWidgetsPanels(popover, applicationRuntime) {
   return panels;
 }
 
-function refreshLineChartWidgets() {
+function refreshLineChartWidgets({ networkMode = "window" } = {}) {
   const source = widgetRuntimeOwner?.applicationRuntime.source("line-chart");
   if (!source) return;
   source.clear();
-  source.ensureCurrentWindow();
+  if (networkMode === "current") source.ensureCurrentSlice();
+  if (networkMode === "window") source.ensureCurrentWindow();
   renderLineChartWidgets();
 }
 
@@ -682,7 +683,12 @@ function refreshTableWidgets() {
 
 function refreshLineChartWidgetsForTileSelection(event) {
   if (!tileSelectionChangeAffectsWidgets(event)) return;
-  refreshLineChartWidgets();
+  const status = typeof PlaybackEngine === "undefined"
+    ? "IDLE"
+    : String(PlaybackEngine.snapshot?.()?.status || "IDLE");
+  refreshLineChartWidgets({
+    networkMode: ["PREPARING", "PLAYING", "BUFFERING"].includes(status) ? "current" : "window",
+  });
 }
 
 function refreshPieChartWidgetsForTileSelection(event) {
@@ -727,7 +733,6 @@ function bindChartWidgetRefresh({ eventTarget, targetMap, signal, applicationRun
     refreshTableWidgets();
   }, listenerOptions);
   eventTarget.addEventListener("rrkal:active-date-changed", () => {
-    applicationRuntime.source("line-chart")?.ensureCurrentWindow();
     renderLineChartWidgets();
     refreshHorizontalBarWidgets();
     refreshTableWidgets();
@@ -751,6 +756,9 @@ function bindChartWidgetRefresh({ eventTarget, targetMap, signal, applicationRun
     if (event?.detail?.type !== "committed") return;
     if (applicationRuntime.source("line-chart")?.cacheEventAffectsCurrent(event)) renderLineChartWidgets();
     if (applicationRuntime.source("table")?.cacheEventAffectsCurrent(event)) refreshTableWidgets();
+    if (applicationRuntime.source("horizontal-bar-chart")?.cacheEventAffectsCurrent(event)) {
+      refreshHorizontalBarWidgets();
+    }
   }, listenerOptions);
   for (const id of ["start-date", "end-date", "dataset-select"]) {
     $(id)?.addEventListener("change", () => {

@@ -14,6 +14,7 @@ class PlaybackEngineCore {
     this.requestContext = null;
     this.currentIndex = -1;
     this.status = "IDLE";
+    this.consumptionRate = 0;
     this.runId = "";
     this.targetRuns = new Map();
     this.bufferStartedAt = null;
@@ -29,7 +30,121 @@ class PlaybackEngineCore {
     this.prepareRequired = 0;
     this.prepareReady = 0;
     this.preparePolicyReason = "";
+    this.prepareWaitController = null;
+    this.bufferWaitController = null;
     this.displayedFrameKey = "";
+    this.unsubscribeEventLog = this.eventLog.subscribe?.((event) => {
+      this.handleLifecycleEvent(event);
+    }, { emitCurrent: false }) || null;
+  }
+
+  handleLifecycleEvent(event) {
+    if (event?.type !== "CACHE_READY" || !this.requestContext) return;
+    const scopeKey = this.frameIdentity.scopeKey(this.requestContext);
+    if (event.scope_key && event.scope_key !== scopeKey) return;
+    const requestedResolution = Number(event.requested_resolution_km);
+    const effectiveQueryResolution = Number(event.effective_query_resolution_km);
+    const actualResolution = Number(event.actual_resolution_km);
+    const activeRequestedResolution = Number(this.requestContext.resolution);
+    const activeQueryResolution = Number(this.frameIdentity.queryResolution(this.requestContext));
+    const resolvedQueryResolution = Number.isFinite(effectiveQueryResolution) && effectiveQueryResolution > 0
+      ? effectiveQueryResolution
+      : actualResolution;
+    if (Number.isFinite(resolvedQueryResolution)
+      && resolvedQueryResolution > 0
+      && Number.isFinite(requestedResolution)
+      && Number.isFinite(activeRequestedResolution)
+      && requestedResolution === activeRequestedResolution
+      && resolvedQueryResolution !== activeQueryResolution) {
+      this.adoptResolvedQueryResolution(resolvedQueryResolution, { reason: "cache_ready_fallback" });
+    }
+    this.refreshActiveWatermarkGate({ reason: "cache_ready" });
+  }
+
+  adoptResolvedQueryResolution(resolution, { reason = "source_resolution_resolved" } = {}) {
+    const effectiveQueryResolution = Number(resolution);
+    if (!this.requestContext || !Number.isFinite(effectiveQueryResolution) || effectiveQueryResolution <= 0) return false;
+    const requestedResolution = Number(this.requestContext.resolution);
+    const previousQueryResolution = Number(this.frameIdentity.queryResolution(this.requestContext));
+    if (Number.isFinite(previousQueryResolution) && previousQueryResolution === effectiveQueryResolution) return false;
+    const previousScope = this.frameIdentity.scopeKey(this.requestContext);
+    this.requestContext = this.frameIdentity.normalizeRequest({
+      ...this.requestContext,
+      date: this.dates[this.currentIndex] || this.requestContext.date || "",
+      queryResolution: effectiveQueryResolution,
+    });
+    this.preheater.adoptRequestContext?.(this.requestContext, { reason });
+    this.eventLog.record("PLAYBACK_QUERY_RESOLUTION_ADOPTED", {
+      run_id: this.runId,
+      previous_scope: previousScope,
+      scope_id: this.frameIdentity.scopeKey(this.requestContext),
+      dataset: this.requestContext.datasetId,
+      date: this.dates[this.currentIndex] || "",
+      requested_resolution_km: Number.isFinite(requestedResolution) ? requestedResolution : null,
+      previous_effective_query_resolution_km: Number.isFinite(previousQueryResolution)
+        ? previousQueryResolution
+        : null,
+      effective_query_resolution_km: effectiveQueryResolution,
+      reason,
+    });
+    return true;
+  }
+
+  refreshActiveWatermarkGate({ reason = "policy_changed", forceAbort = false } = {}) {
+    if (this.status === "PREPARING") {
+      const startIndex = Math.max(0, this.currentIndex + 1);
+      const previousRequired = this.prepareRequired;
+      const gate = this.watermarkGate("startup", startIndex);
+      this.prepareRequired = previousRequired > 0
+        ? Math.min(previousRequired, gate.required)
+        : gate.required;
+      this.prepareReady = this.preheater.readyAhead?.(startIndex) || 0;
+      this.preparePolicyReason = gate.degradationReason;
+      const changed = previousRequired !== this.prepareRequired;
+      if (changed) {
+        this.eventLog.record("PLAYBACK_GATE_UPDATED", {
+          run_id: this.runId,
+          gate: "startup",
+          dataset: this.requestContext.datasetId,
+          date: this.dates[startIndex] || "",
+          previous_required_slices: previousRequired,
+          required_slices: this.prepareRequired,
+          ready_slices: this.prepareReady,
+          reason,
+        });
+      }
+      if (forceAbort || this.prepareRequired < previousRequired || this.prepareReady >= this.prepareRequired) {
+        this.prepareWaitController?.abort?.();
+      }
+      return changed;
+    }
+    if (this.status === "BUFFERING" && this.bufferTargetIndex >= 0) {
+      const previousRequired = this.bufferRequired;
+      const gate = this.watermarkGate("resume", this.bufferTargetIndex);
+      this.bufferRequired = previousRequired > 0
+        ? Math.min(previousRequired, gate.required)
+        : gate.required;
+      this.bufferReady = this.preheater.readyAhead?.(this.bufferTargetIndex) || 0;
+      this.bufferPolicyReason = gate.degradationReason;
+      const changed = previousRequired !== this.bufferRequired;
+      if (changed) {
+        this.eventLog.record("PLAYBACK_GATE_UPDATED", {
+          run_id: this.runId,
+          gate: "resume",
+          dataset: this.requestContext.datasetId,
+          date: this.dates[this.bufferTargetIndex] || "",
+          previous_required_slices: previousRequired,
+          required_slices: this.bufferRequired,
+          ready_slices: this.bufferReady,
+          reason,
+        });
+      }
+      if (forceAbort || this.bufferRequired < previousRequired || this.bufferReady >= this.bufferRequired) {
+        this.bufferWaitController?.abort?.();
+      }
+      return changed;
+    }
+    return false;
   }
 
   configure({ dates = [], requestContext = {}, currentDate = "" } = {}) {
@@ -78,12 +193,15 @@ class PlaybackEngineCore {
 
   async start(metadata = {}) {
     if (!this.dates.length || !this.requestContext) return false;
+    this.consumptionRate = Math.max(0, Number(metadata.consumption_rate || 0));
+    this.preheater.activate?.();
     this.cancelPreparation("restarted");
     this.cancelBuffer("restarted");
     if (this.runId) this.eventLog.endRun({ run_id: this.runId, reason: "restarted" });
     this.runId = this.eventLog.beginRun({
       kind: "playback",
       dataset: this.requestContext.datasetId,
+      scope_key: this.frameIdentity.scopeKey(this.requestContext),
       start_date: this.dates[0],
       end_date: this.dates[this.dates.length - 1],
       frame_count: this.dates.length,
@@ -112,17 +230,70 @@ class PlaybackEngineCore {
     });
 
     try {
+      const initialPolicy = this.preheater.snapshot?.() || {};
+      const remaining = Math.max(0, this.dates.length - startIndex);
+      const initialReady = this.preheater.readyAhead?.(startIndex) || 0;
+      const needsProbe = initialPolicy.policyReason === "insufficient_metrics"
+        && initialReady < remaining;
+      if (needsProbe) {
+        const requiredSamples = Math.max(
+          1,
+          Number(initialPolicy.minimumSupplySamples || 2) - Number(initialPolicy.supplySamples || 0),
+        );
+        const probeStart = Math.min(this.dates.length, startIndex + initialReady);
+        const probeDates = this.dates.slice(probeStart, probeStart + requiredSamples);
+        if (probeDates.length) {
+          this.eventLog.record("PREPARE_PROBE_STARTED", {
+            run_id: this.runId,
+            dataset: this.requestContext.datasetId,
+            date: probeDates[0],
+            requested_slices: probeDates.length,
+            ready_slices: initialReady,
+          });
+          const probe = await this.preheater.waitForDates(probeDates, {
+            lane: "playback-window",
+            scopeId: this.prepareScopeId,
+          });
+          if (token !== this.prepareSequence || this.status !== "PREPARING") return false;
+          if (Number(probe?.failed || 0) > 0) {
+            throw new Error(`Startup supply probe failed for ${Number(probe.failed)} frame(s)`);
+          }
+          this.prepareReady = this.preheater.readyAhead?.(startIndex) || 0;
+          this.eventLog.record("PREPARE_PROBE_READY", {
+            run_id: this.runId,
+            dataset: this.requestContext.datasetId,
+            date: probeDates[probeDates.length - 1],
+            requested_slices: probeDates.length,
+            ready_slices: this.prepareReady,
+          });
+        }
+      }
       while (token === this.prepareSequence && this.status === "PREPARING") {
         const gate = this.watermarkGate("startup", startIndex);
-        this.prepareRequired = Math.max(this.prepareRequired, gate.required);
+        this.prepareRequired = this.prepareRequired > 0
+          ? Math.min(this.prepareRequired, gate.required)
+          : gate.required;
         this.prepareReady = this.preheater.readyAhead?.(startIndex) || 0;
         this.preparePolicyReason = gate.degradationReason;
         if (this.prepareReady >= this.prepareRequired) break;
         const requestedDates = this.dates.slice(startIndex, startIndex + this.prepareRequired);
-        const progress = await this.preheater.waitForDates(requestedDates, {
-          lane: "playback-window",
-          scopeId: this.prepareScopeId,
-        });
+        const waitController = new AbortController();
+        this.prepareWaitController = waitController;
+        let progress;
+        try {
+          progress = await this.preheater.waitForDates(requestedDates, {
+            lane: "playback-window",
+            scopeId: this.prepareScopeId,
+            signal: waitController.signal,
+          });
+        } catch (error) {
+          if (error?.name === "AbortError" && token === this.prepareSequence && this.status === "PREPARING") {
+            continue;
+          }
+          throw error;
+        } finally {
+          if (this.prepareWaitController === waitController) this.prepareWaitController = null;
+        }
         if (token !== this.prepareSequence || this.status !== "PREPARING") return false;
         this.prepareReady = this.preheater.readyAhead?.(startIndex) || 0;
         this.eventLog.record("PREPARE_PROGRESS", {
@@ -202,6 +373,8 @@ class PlaybackEngineCore {
     if (this.prepareScopeId) {
       this.demandService.cancelScope?.(this.prepareScopeId, { includeActive: true });
     }
+    this.prepareWaitController?.abort?.();
+    this.prepareWaitController = null;
     this.eventLog.record("PREPARE_CANCELLED", {
       run_id: this.runId,
       dataset: detail.dataset || this.requestContext?.datasetId || "",
@@ -224,6 +397,8 @@ class PlaybackEngineCore {
     if (this.bufferScopeId) {
       this.demandService.cancelScope?.(this.bufferScopeId, { includeActive: true });
     }
+    this.bufferWaitController?.abort?.();
+    this.bufferWaitController = null;
     this.eventLog.record("BUFFER_CANCELLED", {
       run_id: this.runId,
       intent_key: this.bufferIntentKey,
@@ -257,6 +432,31 @@ class PlaybackEngineCore {
       policyReason: String(policy.policyReason || "configured"),
       degradationReason: String(policy.degradationReason || ""),
     });
+  }
+
+  updatePlaybackRate({ rate = 1, interval_ms = 0, consumption_rate = 0 } = {}) {
+    const normalizedRate = Math.max(0.25, Number(rate || 1));
+    const normalizedConsumption = Math.max(0, Number(consumption_rate || 0));
+    const previousConsumption = this.consumptionRate;
+    const rateDecreased = previousConsumption > 0
+      && normalizedConsumption > 0
+      && normalizedConsumption < previousConsumption;
+    this.consumptionRate = normalizedConsumption;
+    if (this.runId) {
+      this.eventLog.record("PLAYBACK_RATE_CHANGED", {
+        run_id: this.runId,
+        rate: normalizedRate,
+        interval_ms: Math.max(0, Number(interval_ms || 0)),
+        consumption_rate: normalizedConsumption,
+      });
+    }
+    this.preheater.reconcile?.({
+      force: rateDecreased,
+      bypassDecreaseHysteresis: rateDecreased,
+      pruneQueued: rateDecreased,
+    });
+    this.refreshActiveWatermarkGate({ reason: "playback_rate_changed", forceAbort: true });
+    return this.snapshot();
   }
 
   bufferGate() {
@@ -332,17 +532,36 @@ class PlaybackEngineCore {
       const result = await targetPromise;
       while (this.bufferStartedAt !== null && this.bufferIntentKey === intentKey) {
         const gate = this.watermarkGate("resume", index);
-        this.bufferRequired = Math.max(this.bufferRequired, gate.required);
+        this.bufferRequired = this.bufferRequired > 0
+          ? Math.min(this.bufferRequired, gate.required)
+          : gate.required;
         this.bufferPolicyReason = gate.degradationReason;
         this.bufferReady = this.preheater.readyAhead?.(index) || 0;
         if (this.bufferReady >= this.bufferRequired) break;
-        const progress = await this.preheater.waitForDates(
-          this.dates.slice(index, index + this.bufferRequired),
-          {
-            lane: "playback-window",
-            scopeId: this.bufferScopeId,
-          },
-        );
+        const waitController = new AbortController();
+        this.bufferWaitController = waitController;
+        let progress;
+        try {
+          progress = await this.preheater.waitForDates(
+            this.dates.slice(index, index + this.bufferRequired),
+            {
+              lane: "playback-window",
+              scopeId: this.bufferScopeId,
+              signal: waitController.signal,
+            },
+          );
+        } catch (error) {
+          if (
+            error?.name === "AbortError"
+            && this.bufferStartedAt !== null
+            && this.bufferIntentKey === intentKey
+          ) {
+            continue;
+          }
+          throw error;
+        } finally {
+          if (this.bufferWaitController === waitController) this.bufferWaitController = null;
+        }
         this.bufferReady = this.preheater.readyAhead?.(index) || 0;
         if (Number(progress?.failed || 0) > 0 && this.bufferReady < this.bufferRequired) {
           throw new Error(`Resume buffer failed for ${Number(progress.failed)} frame(s)`);
@@ -394,10 +613,10 @@ class PlaybackEngineCore {
   }
 
   markFrameVisible(index, { renderMs = 0 } = {}) {
+    if (["PREPARING", "BUFFERING"].includes(this.status)) return false;
     const inspected = this.inspectTarget(index);
     if (inspected.status !== "ready") return false;
     this.currentIndex = index;
-    this.status = "PLAYING";
     if (inspected.frameKey !== this.displayedFrameKey) {
       this.store.pin(inspected.frameKey, "renderer-current");
       if (this.displayedFrameKey) this.store.release(this.displayedFrameKey, "renderer-current");
@@ -443,6 +662,10 @@ class PlaybackEngineCore {
     return this.prepareStartedAt === null ? 0 : Math.max(0, this.clock.now() - this.prepareStartedAt);
   }
 
+  currentStatus() {
+    return this.status;
+  }
+
   snapshot() {
     if (this.prepareStartedAt !== null) {
       this.prepareReady = this.preheater.readyAhead?.(Math.max(0, this.currentIndex + 1)) || 0;
@@ -451,6 +674,7 @@ class PlaybackEngineCore {
       status: this.status,
       runId: this.runId,
       datasetId: this.requestContext?.datasetId || "",
+      scopeKey: this.requestContext ? this.frameIdentity.scopeKey(this.requestContext) : "",
       currentIndex: this.currentIndex,
       currentDate: this.dates[this.currentIndex] || "",
       frameCount: this.dates.length,
@@ -470,6 +694,8 @@ class PlaybackEngineCore {
   }
 
   dispose() {
+    this.unsubscribeEventLog?.();
+    this.unsubscribeEventLog = null;
     this.stop("disposed");
     this.releaseDisplayedFrame();
   }

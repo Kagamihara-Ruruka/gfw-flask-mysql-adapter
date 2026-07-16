@@ -184,36 +184,174 @@ test("trusted rates, tail latency and ready-ahead values share one event clock",
     maxEntriesProvider: () => 2000,
     clock: clock.domain.monotonic,
   });
-  const runId = eventLog.beginRun({ run_id: "trusted-clock", consumption_rate: 2 });
-  eventLog.record("TASK_QUEUED", { run_id: runId, intent_key: "one" });
+  const runId = eventLog.beginRun({
+    run_id: "trusted-clock",
+    consumption_rate: 2,
+    scope_key: "scope|playback",
+  });
+  for (let index = 0; index < 10; index += 1) {
+    clock.advance(100);
+    eventLog.record("CACHE_READY", {
+      run_id: runId,
+      intent_key: `widget-${index}`,
+      lane: "widget-auto",
+      scope_key: "scope|widget",
+    });
+  }
+  eventLog.record("TASK_QUEUED", {
+    run_id: runId,
+    intent_key: "one",
+    lane: "playback-window",
+    scope_key: "scope|playback",
+  });
   clock.advance(1000);
-  eventLog.record("CACHE_READY", { run_id: runId, intent_key: "one" });
-  clock.advance(500);
-  eventLog.record("TASK_QUEUED", { run_id: runId, intent_key: "two" });
-  clock.advance(1500);
-  eventLog.record("CACHE_READY", { run_id: runId, intent_key: "two" });
+  eventLog.record("CACHE_READY", {
+    run_id: runId,
+    intent_key: "one",
+    lane: "playback-window",
+    scope_key: "scope|playback",
+  });
+  eventLog.record("TASK_QUEUED", {
+    run_id: runId,
+    intent_key: "two",
+    lane: "playback-window",
+    scope_key: "scope|playback",
+  });
+  clock.advance(1000);
+  eventLog.record("CACHE_READY", {
+    run_id: runId,
+    intent_key: "two",
+    lane: "playback-window",
+    scope_key: "scope|playback",
+  });
 
   const metricService = createRuntimePerformanceMetrics({
     eventLog,
-    preheater: { snapshot: () => ({ status: "FETCHING", readyAhead: 6 }) },
+    preheater: { snapshot: () => ({ status: "FETCHING", readyAhead: 6, scopeKey: "scope|playback" }) },
     playbackEngine: { snapshot: () => ({ status: "PLAYING", bufferWaitMs: 0 }) },
     clock: clock.domain.monotonic,
   });
   const metrics = metricService.snapshot(runId);
 
   assert.equal(metrics.consumption_rate, 2);
-  assert.equal(metrics.supply_rate, 0.5);
-  assert.equal(metrics.cache_ready_latency_p95, 1500);
+  assert.equal(metrics.supply_rate, 1);
+  assert.equal(metrics.cache_ready_latency_p95, 1000);
   assert.equal(metrics.ready_ahead_slices, 6);
   assert.equal(metrics.ready_ahead_seconds, 3);
   assert.equal(metrics.monotonic_ms, 3000);
   assert.equal(metrics.supply_samples, 2);
   assert.equal(metrics.cache_ready_latency_samples, 2);
 
+  eventLog.record("PLAYBACK_RATE_CHANGED", {
+    run_id: runId,
+    rate: 1,
+    interval_ms: 1400,
+    consumption_rate: 1,
+  });
+  const slowerMetrics = metricService.snapshot(runId);
+  assert.equal(slowerMetrics.consumption_rate, 1);
+  assert.equal(slowerMetrics.ready_ahead_seconds, 6);
+  assert.equal(slowerMetrics.supply_metric_source, "rate_transition_warmup");
+  assert.equal(slowerMetrics.supply_samples, 0);
+  assert.equal(slowerMetrics.cache_ready_latency_p95, 0);
+
+  for (const intentKey of ["after-rate-one", "after-rate-two"]) {
+    eventLog.record("TASK_QUEUED", {
+      run_id: runId,
+      intent_key: intentKey,
+      lane: "playback-window",
+      scope_key: "scope|playback",
+    });
+    clock.advance(500);
+    eventLog.record("CACHE_READY", {
+      run_id: runId,
+      intent_key: intentKey,
+      lane: "playback-window",
+      scope_key: "scope|playback",
+    });
+  }
+  const settledMetrics = metricService.snapshot(runId);
+  assert.equal(settledMetrics.supply_metric_source, "scope_history");
+  assert.equal(settledMetrics.supply_samples, 2);
+  assert.equal(settledMetrics.cache_ready_latency_p95, 500);
+
   eventLog.endRun({ run_id: runId });
   const afterRun = metricService.inputs();
   assert.equal(afterRun.run_id, runId);
-  assert.equal(afterRun.consumption_rate, 2);
+  assert.equal(afterRun.consumption_rate, 1);
+});
+
+test("playback keeps recent scope supply metrics after an actual-resolution fallback", () => {
+  const context = loadClockRuntime();
+  const createClockDomain = vm.runInContext("createClockDomain", context);
+  const LifecycleEventLogCore = vm.runInContext("LifecycleEventLogCore", context);
+  const createRuntimePerformanceMetrics = vm.runInContext("createRuntimePerformanceMetrics", context);
+  const clock = fakeClockDomain(createClockDomain);
+  const eventLog = new LifecycleEventLogCore({
+    maxEntriesProvider: () => 2000,
+    clock: clock.domain.monotonic,
+  });
+  const bbox = "120.000000,10.000000,130.000000,20.000000";
+
+  for (let index = 0; index < 2; index += 1) {
+    const intentKey = `ocean-${index}`;
+    eventLog.record("TASK_QUEUED", {
+      intent_key: intentKey,
+      lane: "playback-window",
+      scope_key: "scope|ocean|requested-4",
+      dataset: "ocean",
+      bbox,
+      requested_resolution_km: 4,
+    });
+    clock.advance(1000);
+    eventLog.record("CACHE_READY", {
+      intent_key: intentKey,
+      lane: "playback-window",
+      scope_key: "scope|ocean|requested-4",
+      dataset: "ocean",
+      bbox,
+      requested_resolution_km: 4,
+      effective_query_resolution_km: 4,
+      actual_resolution_km: 16,
+    });
+  }
+  for (let index = 0; index < 20; index += 1) {
+    eventLog.record("CACHE_READY", {
+      intent_key: `widget-${index}`,
+      lane: "widget-auto",
+      scope_key: "scope|widget",
+      dataset: "ocean",
+      bbox,
+      requested_resolution_km: 4,
+      effective_query_resolution_km: 16,
+      actual_resolution_km: 16,
+    });
+  }
+
+  const runId = eventLog.beginRun({
+    run_id: "actual-resolution-playback",
+    consumption_rate: 2,
+    scope_key: "scope|ocean|requested-4",
+  });
+  const metricService = createRuntimePerformanceMetrics({
+    eventLog,
+    preheater: { snapshot: () => ({ status: "READY", readyAhead: 10 }) },
+    playbackEngine: { snapshot: () => ({ status: "PREPARING", preparationWaitMs: 0 }) },
+    clock: clock.domain.monotonic,
+  });
+  const metrics = metricService.inputs({
+    runId,
+    scopeKey: "scope|ocean|requested-4",
+    datasetId: "ocean",
+    bbox,
+    resolution: 4,
+  });
+
+  assert.equal(metrics.supply_metric_source, "scope_history");
+  assert.equal(metrics.supply_samples, 2);
+  assert.equal(metrics.supply_rate, 1);
+  assert.equal(metrics.cache_ready_latency_p95, 1000);
+  assert.equal(metrics.cache_ready_latency_samples, 2);
 });
 
 test("runtime timing owners do not read playback speed outside the playback clock path", () => {

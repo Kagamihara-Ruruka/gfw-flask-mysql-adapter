@@ -101,8 +101,8 @@ async function selectDataset(datasetId, { reload = true } = {}) {
   state.columns = [];
   state.renderedSampledGridDate = null;
   state.renderedGfwDate = null;
-  PlaybackPreheater?.stop?.("dataset_changed");
-  PlaybackEngine?.stop?.("dataset_changed");
+  if (typeof PlaybackPreheater !== "undefined") PlaybackPreheater.stop?.("dataset_changed");
+  if (typeof PlaybackEngine !== "undefined") PlaybackEngine.stop?.("dataset_changed");
   await loadSchema();
   if (reload && typeof isSampledGridLayer === "function" && isSampledGridLayer(state.dataLayer)) {
     await reloadSampledGridRecords();
@@ -466,7 +466,6 @@ async function reloadSampledGridRecords() {
     if (seq !== state.fetchSeq) return;
     const metricsSource = currentDatasetBackendDetail(packet);
     TimingMetrics.markRenderStart?.(metricsSource ? `${requestedLayerLabel} ${metricsSource}` : requestedLayerLabel);
-    SampledGridContract.recordResolvedResolution(requestedDataset, packet.grid || null);
     const visibleRows = sampledGridRowsWithinCoverage(packet.rows, requestedDataset);
     const renderResult = renderSampledGridMap(visibleRows);
     renderTable(visibleRows, state.datasets[state.datasetId].display_columns, { layer: requestedLayer, date: requestedDate });
@@ -536,8 +535,8 @@ function clearPrimaryLayerRecords() {
   state.primaryReloadTimer = null;
   state.primaryFetchController?.abort();
   state.primaryFetchController = null;
-  PlaybackPreheater?.stop?.("primary_layer_cleared");
-  PlaybackEngine?.releaseDisplayedFrame?.();
+  if (typeof PlaybackPreheater !== "undefined") PlaybackPreheater.stop?.("primary_layer_cleared");
+  if (typeof PlaybackEngine !== "undefined") PlaybackEngine.releaseDisplayedFrame?.();
   state.fetchSeq += 1;
   state.aisLiveSeq += 1;
   closeAisSocket();
@@ -555,7 +554,14 @@ function clearPrimaryLayerRecords() {
   setStatus($("eez-toggle")?.checked ? "主要資料圖層已關閉，僅顯示 EEZ" : "沒有啟用中的地圖圖層");
 }
 
-function reloadActiveLayer() {
+function reloadActiveLayer({ reason = "date_navigation" } = {}) {
+  window.LifecycleEventLog?.record?.({
+    type: "MAP_RELOAD_REQUESTED",
+    dataset: state.datasetId || "",
+    date: $("date")?.value || "",
+    layer: state.dataLayer || "",
+    reason,
+  });
   if (state.dataLayer === "ais") {
     return reloadAisRecords();
   }

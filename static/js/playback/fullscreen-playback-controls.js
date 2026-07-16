@@ -6,7 +6,7 @@ const FULLSCREEN_PLAYBACK_CONTROL_IDS = [
 ];
 
 function syncFullscreenPlayToggleIcon() {
-  if (state.isPlaying) {
+  if (playbackIsActive()) {
     ControlButtons.setIcon("fs-play-toggle", "pause", "II", "暫停");
     return;
   }
@@ -93,7 +93,7 @@ function bindFullscreenPlaybackControls() {
     stopPlayback();
     stepDay(1, "全螢幕往後一日").catch((err) => setStatus(err.message, true));
   });
-  $("fs-play-toggle")?.addEventListener("click", () => setPlayback(!state.isPlaying).catch((err) => setStatus(err.message, true)));
+  $("fs-play-toggle")?.addEventListener("click", () => setPlayback(!playbackIsActive()).catch((err) => setStatus(err.message, true)));
   $("fs-play-speed")?.addEventListener("change", () => updatePlaybackSpeed("fs-play-speed"));
   syncFullscreenPlaybackControls();
   syncFullscreenPlaybackHud();

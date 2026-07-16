@@ -61,6 +61,34 @@ test("frame identity separates requested intent from actual returned resolution"
   assert.equal(identity.bboxSignature(request.bbox), "120.123456,10.000000,130.000000,20.000000");
 });
 
+test("effective query resolution does not rewrite the requested scope identity", () => {
+  const context = load("static/js/services/frame-identity.js", {
+    state: {
+      datasets: {
+        ocean: {
+          backend: "endpoint",
+          sampled_grid: { mapping_version: "v7" },
+        },
+      },
+    },
+  });
+  const identity = vm.runInContext("FrameIdentity", context);
+  const requested = identity.normalizeRequest({
+    datasetId: "ocean",
+    date: "2020-01-01",
+    bbox: "120,10,130,20",
+    resolution: 4,
+  });
+  const routed = identity.normalizeRequest({ ...requested, queryResolution: 16 });
+
+  assert.equal(routed.resolution, 4);
+  assert.equal(routed.requestedResolutionKm, 4);
+  assert.equal(routed.queryResolution, 16);
+  assert.equal(identity.intentKey(routed), identity.intentKey(requested));
+  assert.equal(identity.scopeKey(routed), identity.scopeKey(requested));
+  assert.match(identity.frameKey(routed), /\|16\|fixed$/);
+});
+
 test("lifecycle log computes user-perceived stall and cadence metrics", () => {
   const context = load("static/js/services/lifecycle-event-log.js", {
     state: { lifecycleEvents: { maxEntries: 1000 } },
@@ -120,4 +148,53 @@ test("scope cancellation closes an active stall instead of leaving it open", () 
   assert.equal(summary.stallCount, 1);
   assert.equal(summary.activeStallCount, 0);
   assert.equal(summary.totalStallMs, 25);
+});
+
+test("lifecycle summaries pair each ready frame with the latest queued intent", () => {
+  const context = load("static/js/services/lifecycle-event-log.js");
+  const LifecycleEventLogCore = vm.runInContext("globalThis.LifecycleEventLogCore", context);
+  const log = new LifecycleEventLogCore({
+    maxEntriesProvider: () => 1000,
+    clock: steppingClock(),
+  });
+  const runId = log.beginRun({ run_id: "linear-ready-pairing", scope_key: "scope-a" });
+  log.record("TASK_QUEUED", {
+    run_id: runId,
+    intent_key: "frame-a",
+    lane: "playback-window",
+    scope_key: "scope-a",
+    monotonic_ms: 100,
+  });
+  log.record("CACHE_READY", {
+    run_id: runId,
+    intent_key: "frame-a",
+    lane: "playback-window",
+    scope_key: "scope-a",
+    monotonic_ms: 160,
+  });
+  log.record("TASK_QUEUED", {
+    run_id: runId,
+    intent_key: "frame-a",
+    lane: "playback-window",
+    scope_key: "scope-a",
+    monotonic_ms: 200,
+  });
+  log.record("CACHE_READY", {
+    run_id: runId,
+    intent_key: "frame-a",
+    lane: "playback-window",
+    scope_key: "scope-a",
+    monotonic_ms: 230,
+  });
+  log.endRun({ run_id: runId, monotonic_ms: 240 });
+
+  const summary = log.summary(runId);
+  assert.equal(summary.trustedMetrics.supply_samples, 2);
+  assert.equal(summary.trustedMetrics.cache_ready_latency_samples, 2);
+  assert.equal(summary.trustedMetrics.cache_ready_latency_p95, 60);
+  assert.equal(
+    Array.from(log.query({ run_id: runId, limit: 2 }), (event) => event.type).join(","),
+    "CACHE_READY,RUN_FINISHED",
+  );
+  assert.equal(log.latest({ run_id: runId, type: "TASK_QUEUED" }).monotonic_ms, 200);
 });
