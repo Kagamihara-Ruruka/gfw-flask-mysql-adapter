@@ -19,7 +19,7 @@ class QueryBatchExecutorTests(unittest.TestCase):
             for index in range(count)
         ]
 
-    def test_provider_capacity_is_the_execution_limit_and_result_order_is_stable(self) -> None:
+    def test_provider_capacity_is_the_execution_limit(self) -> None:
         lock = threading.Lock()
         active = 0
         maximum_active = 0
@@ -44,7 +44,25 @@ class QueryBatchExecutorTests(unittest.TestCase):
         )
 
         self.assertEqual(maximum_active, 2)
-        self.assertEqual([result.packet["index"] for result in results], [0, 1, 2, 3])
+        self.assertCountEqual([result.packet["index"] for result in results], [0, 1, 2, 3])
+        self.assertTrue(all(result.source_capacity_wait_ms >= 0 for result in results))
+
+    def test_results_are_yielded_in_completion_order(self) -> None:
+        def execute(operation: dict) -> dict:
+            if operation["index"] == 0:
+                time.sleep(0.04)
+            return {"index": operation["index"]}
+
+        results = list(
+            self.executor.execute(
+                self.operations(2),
+                execute_operation=execute,
+                source_key_for=lambda operation: operation["source"],
+                source_limit_for=lambda _operation: 2,
+            )
+        )
+
+        self.assertEqual([result.packet["index"] for result in results], [1, 0])
 
     def test_capacity_is_shared_by_concurrent_batches_for_the_same_provider(self) -> None:
         lock = threading.Lock()
@@ -147,8 +165,63 @@ class QueryBatchExecutorTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual([result.status for result in results], ["ok", "error", "ok"])
-        self.assertEqual(results[1].error, "source unavailable")
+        by_index = {result.operation["index"]: result for result in results}
+        self.assertEqual(by_index[0].status, "ok")
+        self.assertEqual(by_index[1].status, "error")
+        self.assertEqual(by_index[1].error, "source unavailable")
+        self.assertEqual(by_index[2].status, "ok")
+
+    def test_closing_stream_releases_permit_for_cancelled_queued_future(self) -> None:
+        executor = QueryBatchExecutor(max_workers=2)
+        self.addCleanup(executor.close)
+        blockers_started = [threading.Event(), threading.Event()]
+        release_blockers = threading.Event()
+
+        def execute(operation: dict) -> dict:
+            blocker_index = operation.get("blocker_index")
+            if blocker_index is not None:
+                blockers_started[blocker_index].set()
+                release_blockers.wait(timeout=1)
+            return operation
+
+        stream = executor.execute(
+            [
+                {"operation_id": "quick", "source": "provider-a"},
+                {"operation_id": "block-1", "source": "provider-b", "blocker_index": 0},
+                {"operation_id": "block-2", "source": "provider-d", "blocker_index": 1},
+                {"operation_id": "cancelled", "source": "provider-c"},
+            ],
+            execute_operation=execute,
+            source_key_for=lambda operation: operation["source"],
+            source_limit_for=lambda _operation: 1,
+        )
+
+        try:
+            first = next(stream)
+            self.assertEqual(first.operation["operation_id"], "quick")
+            self.assertTrue(all(event.wait(timeout=1) for event in blockers_started))
+            stream.close()
+        finally:
+            release_blockers.set()
+
+        completed = threading.Event()
+
+        def run_provider_c() -> None:
+            list(
+                executor.execute(
+                    [{"operation_id": "replacement", "source": "provider-c"}],
+                    execute_operation=execute,
+                    source_key_for=lambda operation: operation["source"],
+                    source_limit_for=lambda _operation: 1,
+                )
+            )
+            completed.set()
+
+        worker = threading.Thread(target=run_provider_c)
+        worker.start()
+        worker.join(timeout=1)
+        self.assertTrue(completed.is_set())
+        self.assertFalse(worker.is_alive())
 
     def test_source_config_declares_provider_capacity(self) -> None:
         dataset = {

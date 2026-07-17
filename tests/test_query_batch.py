@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import time
 import unittest
 from unittest.mock import Mock
 
@@ -53,11 +54,13 @@ class QueryBatchRouteTests(unittest.TestCase):
         self.routes.register(self.app)
         self.client = self.app.test_client()
 
-    def test_batch_streams_results_in_operation_order_and_isolates_failures(self) -> None:
+    def test_batch_streams_results_in_completion_order_and_isolates_failures(self) -> None:
         calls: list[str] = []
 
         def records_result(_dataset_id: str, params: dict) -> dict:
             calls.append(params["date"])
+            if params["date"] == "2020-01-01":
+                time.sleep(0.03)
             if params["date"] == "2020-01-02":
                 raise RuntimeError("source unavailable")
             return {"rows": [{"date": params["date"]}], "row_count": 1}
@@ -65,7 +68,7 @@ class QueryBatchRouteTests(unittest.TestCase):
         self.routes.records_result = records_result  # type: ignore[method-assign]
         response = self.client.post(
             "/api/query/batch",
-            json=batch_payload("first", "second", "third"),
+            json=batch_payload("slow", "fast-error"),
             buffered=False,
         )
         chunks = iter(response.response)
@@ -75,20 +78,28 @@ class QueryBatchRouteTests(unittest.TestCase):
         self.assertEqual(calls, [])
 
         first = json.loads(next(chunks))
-        self.assertEqual(first["operation_id"], "first")
-        self.assertEqual(first["status"], "ok")
+        self.assertEqual(first["operation_id"], "fast-error")
+        self.assertEqual(first["status"], "error")
+        self.assertEqual(first["error"], "source unavailable")
         second = json.loads(next(chunks))
-        self.assertEqual(second["operation_id"], "second")
-        self.assertEqual(second["status"], "error")
-        self.assertEqual(second["error"], "source unavailable")
-
-        third = json.loads(next(chunks))
-        self.assertEqual(third["operation_id"], "third")
-        self.assertEqual(third["status"], "ok")
+        self.assertEqual(second["operation_id"], "slow")
+        self.assertEqual(second["status"], "ok")
         completed = json.loads(next(chunks))
         self.assertEqual(completed["type"], "batch.completed")
-        self.assertEqual(completed["completed_count"], 3)
-        self.assertCountEqual(calls, ["2020-01-01", "2020-01-02", "2020-01-03"])
+        self.assertEqual(completed["completed_count"], 2)
+        metrics = json.loads(next(chunks))
+        self.assertEqual(metrics["type"], "batch.metrics")
+        self.assertIn("batch_encode_ms", metrics["metrics"])
+        self.assertIn("response_bytes", metrics["metrics"])
+        self.assertCountEqual(calls, ["2020-01-01", "2020-01-02"])
+
+    def test_batch_rejects_more_operations_than_source_capacity(self) -> None:
+        response = self.client.post(
+            "/api/query/batch",
+            json=batch_payload("first", "second", "third"),
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("exceeds source capacity", response.get_json()["error"])
 
     def test_batch_rejects_duplicate_operation_identity(self) -> None:
         payload = batch_payload("duplicate", "duplicate")
@@ -107,9 +118,10 @@ class QueryBatchRouteTests(unittest.TestCase):
         events = [json.loads(line) for line in response.data.decode("utf-8").splitlines()]
         results = [event for event in events if event["type"] == "batch.result"]
 
-        self.assertEqual(results[0]["status"], "error")
-        self.assertIn("unsupported query batch operation", results[0]["error"])
-        self.assertEqual(results[1]["status"], "ok")
+        by_id = {event["operation_id"]: event for event in results}
+        self.assertEqual(by_id["unsupported"]["status"], "error")
+        self.assertIn("unsupported query batch operation", by_id["unsupported"]["error"])
+        self.assertEqual(by_id["supported"]["status"], "ok")
 
     def test_batch_stream_supports_incremental_gzip(self) -> None:
         self.routes.records_result = lambda _dataset_id, params: {  # type: ignore[method-assign]
@@ -131,7 +143,9 @@ class QueryBatchRouteTests(unittest.TestCase):
             "batch.started",
             "batch.result",
             "batch.completed",
+            "batch.metrics",
         ])
+        self.assertGreater(events[-1]["metrics"]["response_bytes"], 0)
 
 
 if __name__ == "__main__":

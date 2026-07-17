@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import time
+from collections import deque
 from collections.abc import Callable, Iterable, Iterator
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from threading import Condition
 from typing import Any
@@ -31,6 +33,8 @@ class QueryBatchResult:
     operation: dict[str, Any]
     packet: dict[str, Any] | None = None
     error: str | None = None
+    source_capacity_wait_ms: float = 0.0
+    completed_monotonic_ms: float = 0.0
 
     @property
     def status(self) -> str:
@@ -44,14 +48,18 @@ class SourceCapacityPool:
         self._condition = Condition()
         self._active: dict[str, int] = {}
 
-    def acquire(self, source_key: str, limit: int) -> str:
+    def try_acquire(self, source_key: str, limit: int) -> bool:
         key = str(source_key or "unknown-source")
         capacity = normalized_query_concurrency(limit)
         with self._condition:
-            while self._active.get(key, 0) >= capacity:
-                self._condition.wait()
+            if self._active.get(key, 0) >= capacity:
+                return False
             self._active[key] = self._active.get(key, 0) + 1
-        return key
+            return True
+
+    def wait_for_change(self, timeout: float = 0.05) -> None:
+        with self._condition:
+            self._condition.wait(timeout=timeout)
 
     def release(self, source_key: str) -> None:
         key = str(source_key or "unknown-source")
@@ -81,14 +89,32 @@ class QueryBatchExecutor:
         operation: dict[str, Any],
         *,
         execute_operation: Callable[[dict[str, Any]], dict[str, Any]],
+        source_key: str,
+        source_capacity_wait_ms: float,
     ) -> QueryBatchResult:
         try:
+            packet = execute_operation(operation)
+            timing = dict(packet.get("timing") or {})
+            timing["source_capacity_wait_ms"] = round(source_capacity_wait_ms, 3)
+            timing["pipeline_total_ms"] = round(
+                float(timing.get("api_total_ms") or 0) + source_capacity_wait_ms,
+                3,
+            )
             return QueryBatchResult(
                 operation=operation,
-                packet=execute_operation(operation),
+                packet={**packet, "timing": timing},
+                source_capacity_wait_ms=round(source_capacity_wait_ms, 3),
+                completed_monotonic_ms=time.perf_counter() * 1000,
             )
         except Exception as exc:  # noqa: BLE001 - each operation owns its failure.
-            return QueryBatchResult(operation=operation, error=str(exc))
+            return QueryBatchResult(
+                operation=operation,
+                error=str(exc),
+                source_capacity_wait_ms=round(source_capacity_wait_ms, 3),
+                completed_monotonic_ms=time.perf_counter() * 1000,
+            )
+        finally:
+            self._capacity.release(source_key)
 
     def execute(
         self,
@@ -100,33 +126,52 @@ class QueryBatchExecutor:
     ) -> Iterator[QueryBatchResult]:
         if self._closed:
             raise RuntimeError("QueryBatchExecutor is closed")
-        jobs: list[Future[QueryBatchResult]] = []
+        queued = deque((operation, time.perf_counter()) for operation in operations)
+        jobs: dict[Future[QueryBatchResult], str] = {}
         try:
-            for operation in operations:
-                source_key = self._capacity.acquire(
-                    source_key_for(operation),
-                    source_limit_for(operation),
-                )
-                try:
-                    job = self._executor.submit(
-                        self._execute_one,
-                        operation,
-                        execute_operation=execute_operation,
-                    )
-                except BaseException:
-                    self._capacity.release(source_key)
-                    raise
-                job.add_done_callback(
-                    lambda _job, key=source_key: self._capacity.release(key)
-                )
-                jobs.append(job)
+            while queued or jobs:
+                deferred = deque()
+                while queued:
+                    operation, queued_at = queued.popleft()
+                    source_key = str(source_key_for(operation) or "unknown-source")
+                    if not self._capacity.try_acquire(
+                        source_key,
+                        source_limit_for(operation),
+                    ):
+                        deferred.append((operation, queued_at))
+                        continue
+                    capacity_wait_ms = (time.perf_counter() - queued_at) * 1000
+                    try:
+                        job = self._executor.submit(
+                            self._execute_one,
+                            operation,
+                            execute_operation=execute_operation,
+                            source_key=source_key,
+                            source_capacity_wait_ms=capacity_wait_ms,
+                        )
+                    except BaseException:
+                        self._capacity.release(source_key)
+                        raise
+                    jobs[job] = source_key
+                queued = deferred
 
-            # Preserve query_batch.v1 result order while operations execute concurrently.
-            for job in jobs:
-                yield job.result()
+                if jobs:
+                    completed, _pending = wait(tuple(jobs), return_when=FIRST_COMPLETED)
+                    results = []
+                    for job in completed:
+                        jobs.pop(job, None)
+                        results.append(job.result())
+                    for result in sorted(results, key=lambda item: item.completed_monotonic_ms):
+                        yield result
+                elif queued:
+                    self._capacity.wait_for_change()
         finally:
-            for job in jobs:
-                job.cancel()
+            for job, source_key in jobs.items():
+                # A cancelled-before-start Future never enters _execute_one(), so
+                # the generator owns releasing that permit. Running jobs release
+                # their own permit in _execute_one()'s finally block.
+                if job.cancel():
+                    self._capacity.release(source_key)
 
     def close(self) -> None:
         if self._closed:

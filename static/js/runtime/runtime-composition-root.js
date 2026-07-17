@@ -121,6 +121,9 @@ class RuntimeCompositionRoot {
       clock: clockDomain.monotonic,
       priorityForLane: (lane) => scheduler.priorityFor(lane),
       maxBatchSizeProvider: () => this.state.queryPolicy?.batch_max_operations ?? 3,
+      sourceCapacityProvider: (sourceKey) => (
+        this.state.queryTransportCapacities?.[sourceKey] ?? 1
+      ),
     }));
     const dataFrameStore = this.own("DataFrameStore", new DataFrameStoreCore({
       frameIdentity: this.frameIdentity,

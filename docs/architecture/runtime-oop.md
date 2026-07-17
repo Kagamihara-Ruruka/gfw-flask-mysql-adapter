@@ -73,7 +73,7 @@ flowchart LR
 | 預熱 scope、inflight、retry/settle timer、Store subscription | `PlaybackPreheaterController` | `RuntimeCompositionRoot` | `stop / dispose` 取消 owned query scopes、timer 與 subscription |
 | 有效水位、下降 hold、最近 policy | `AdaptiveWatermarkControllerCore` | `RuntimeCompositionRoot` | `reset / dispose`；不擁有 query、cache 或播放 clock |
 | queued/active task、consumer、lane promotion | `QueryScheduler` | `RuntimeCompositionRoot` | `dispose` abort 未完成 task |
-| provider batch、lane promotion、stream demultiplex、每個 provider 一條 active HTTP batch | `QueryBroker` | `RuntimeCompositionRoot` | `dispose` abort active batches 並拒絕 queued operation |
+| provider batch、lane promotion、stream demultiplex、來源容量與 in-flight operation 計數 | `QueryBroker` | `RuntimeCompositionRoot` | `dispose` abort active batches 並拒絕 queued operation |
 | Flask batch worker pool、跨 request 的 provider in-flight 計數 | `QueryBatchExecutor` | Flask `create_app()` composition root，保存於 `app.extensions` | 跟隨服務 process 生命週期，`close()` shutdown executor |
 | network/background concurrency policy 與不變量 | `QueryPolicyControllerCore` | `RuntimeCompositionRoot` | `dispose` 無資源；UI 只能透過 command 更新 policy |
 | demand inflight、owned scope ids、transport lifecycle | `FrameDemandServiceCore` | `RuntimeCompositionRoot`，再交給 decorator | `dispose` 取消 owned scopes 並清空 inflight |
@@ -138,7 +138,7 @@ Playback UI
 
 - 地圖 application flow 建立 `map-current` demand，這是一般 source transport 的最高優先入口。
 - `FrameDemandServiceCore` 先查 `DataFrameStore`，cache miss 才直接交給 `QueryBroker`；相同 intent 在 Demand 層共用同一份 logical request。
-- `QueryBroker` 是 sampled-grid 唯一瀏覽器 transport owner。它使用 Registry 衍生的 provider transport key 合併跨資料集 operation；相同 provider 同時最多一條 HTTP batch，不同資料集仍保有不同 cache identity。
+- `QueryBroker` 是 sampled-grid 唯一瀏覽器 transport owner。它使用 Registry 衍生的 provider transport key 與 capacity 合併跨資料集 operation，依可用槽位限制 batch 與 in-flight operation；每筆 completion-order result 都會立即釋放槽位並補入最高優先工作。不同資料集仍保有不同 cache identity。
 - Flask `QueryBatchExecutor` 是 batch 解包後的唯一執行 owner；全域 worker 上限來自 runtime query policy，各 provider capacity 來自 source `query_policy.max_in_flight`，而且跨瀏覽器 request 共用同一份 in-flight 計數。Provider permit 必須在提交 worker 前取得，等待來源容量不得占用全域 worker。
 - `QueryScheduler` 保留給其他 query family；不得再包住 sampled-grid Demand/Broker 鏈形成第二個 queued/active owner。
 - tracing decorator 不參與 cache hit、dedupe、promotion 或 cancellation 決策。

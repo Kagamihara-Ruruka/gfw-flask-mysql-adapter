@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any, Iterable
+from dataclasses import dataclass
+from typing import Any, Iterable, Mapping
+
+from common_adapter.query.immutable import freeze_json, thaw_json
 
 
 SAMPLED_GRID_CONTRACT_VERSION = "rrkal.sampled_grid.v1"
@@ -17,6 +20,25 @@ CANONICAL_ROLE_COLUMNS = (
     ("status", "data_status"),
 )
 CANONICAL_COLUMN_BY_ROLE = dict(CANONICAL_ROLE_COLUMNS)
+
+
+@dataclass(frozen=True)
+class CompiledSampledGridMapping:
+    """Immutable dataset mapping context shared by every row in one adapter."""
+
+    source_fields: Mapping[str, str]
+    request_fields: Mapping[str, str]
+    geometry: Mapping[str, Any]
+    alignment: Mapping[str, Any]
+    available_resolutions_km: tuple[float, ...]
+    canonical_columns: tuple[str, ...]
+    grid_profile: Mapping[str, Any]
+    coverage_areas: tuple[Mapping[str, Any], ...]
+    snapshot_cache: Mapping[str, Any]
+    value_domain: Mapping[str, Any]
+    visualization: Mapping[str, Any]
+    default_coverage_id: str | None
+    zero_is_data: bool
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -85,6 +107,49 @@ def sampled_grid_request_fields(dataset: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def _canonical_columns(
+    fields: Mapping[str, str],
+    available_resolutions: Iterable[float],
+) -> tuple[str, ...]:
+    columns = [column for role, column in CANONICAL_ROLE_COLUMNS if role in fields]
+    if tuple(available_resolutions) and "resolution_km" not in columns:
+        columns.append("resolution_km")
+    return tuple(columns)
+
+
+def compile_sampled_grid_mapping(dataset: dict[str, Any]) -> CompiledSampledGridMapping:
+    """Compile a sampled-grid contract once before mapping any source rows."""
+
+    contract = sampled_grid_contract(dataset)
+    if contract is None:
+        raise ValueError("dataset has no sampled-grid contract")
+    source_fields = sampled_grid_source_fields(dataset)
+    request_fields = sampled_grid_request_fields(dataset)
+    available = tuple(sampled_grid_available_resolutions(dataset))
+    frozen_source_fields = freeze_json(source_fields)
+    frozen_request_fields = freeze_json(request_fields)
+    coverage_areas = freeze_json(contract.get("coverage_areas") or [])
+    return CompiledSampledGridMapping(
+        source_fields=frozen_source_fields,
+        request_fields=frozen_request_fields,
+        geometry=freeze_json(_mapping(contract.get("geometry"))),
+        alignment=freeze_json(_mapping(contract.get("alignment"))),
+        available_resolutions_km=available,
+        canonical_columns=_canonical_columns(frozen_source_fields, available),
+        grid_profile=freeze_json(_mapping(contract.get("grid_profile"))),
+        coverage_areas=tuple(coverage_areas),
+        snapshot_cache=freeze_json(_mapping(contract.get("snapshot_cache"))),
+        value_domain=freeze_json(_mapping(contract.get("value_domain"))),
+        visualization=freeze_json(_mapping(contract.get("visualization"))),
+        default_coverage_id=(
+            str(contract.get("default_coverage_id"))
+            if contract.get("default_coverage_id") is not None
+            else None
+        ),
+        zero_is_data=bool(contract.get("zero_is_data", True)),
+    )
+
+
 def sampled_grid_render_columns(dataset: dict[str, Any]) -> list[str]:
     columns: list[str] = []
     for column in sampled_grid_source_fields(dataset).values():
@@ -96,11 +161,7 @@ def sampled_grid_render_columns(dataset: dict[str, Any]) -> list[str]:
 def sampled_grid_canonical_columns(dataset: dict[str, Any]) -> list[str]:
     if sampled_grid_contract(dataset) is None:
         return list(dataset.get("display_columns") or [])
-    fields = sampled_grid_source_fields(dataset)
-    columns = [column for role, column in CANONICAL_ROLE_COLUMNS if role in fields]
-    if sampled_grid_available_resolutions(dataset) and "resolution_km" not in columns:
-        columns.append("resolution_km")
-    return columns
+    return list(compile_sampled_grid_mapping(dataset).canonical_columns)
 
 
 def sampled_grid_public_fields(dataset: dict[str, Any]) -> dict[str, Any]:
@@ -130,18 +191,19 @@ def sampled_grid_public_contract(dataset: dict[str, Any]) -> dict[str, Any] | No
     contract = sampled_grid_contract(dataset)
     if contract is None:
         return None
+    compiled = compile_sampled_grid_mapping(dataset)
     return {
         "contract_version": contract.get("contract_version"),
-        "default_coverage_id": contract.get("default_coverage_id"),
-        "available_resolutions_km": sampled_grid_available_resolutions(dataset),
-        "grid_profile": deepcopy(contract.get("grid_profile") or {}),
-        "coverage_areas": deepcopy(contract.get("coverage_areas") or []),
-        "alignment": deepcopy(contract.get("alignment") or {}),
-        "geometry": deepcopy(contract.get("geometry") or {}),
-        "snapshot_cache": deepcopy(contract.get("snapshot_cache") or {}),
-        "value_domain": deepcopy(contract.get("value_domain") or {}),
-        "visualization": deepcopy(contract.get("visualization") or {}),
-        "zero_is_data": bool(contract.get("zero_is_data", True)),
+        "default_coverage_id": compiled.default_coverage_id,
+        "available_resolutions_km": list(compiled.available_resolutions_km),
+        "grid_profile": thaw_json(compiled.grid_profile),
+        "coverage_areas": thaw_json(compiled.coverage_areas),
+        "alignment": thaw_json(compiled.alignment),
+        "geometry": thaw_json(compiled.geometry),
+        "snapshot_cache": thaw_json(compiled.snapshot_cache),
+        "value_domain": thaw_json(compiled.value_domain),
+        "visualization": thaw_json(compiled.visualization),
+        "zero_is_data": compiled.zero_is_data,
     }
 
 
@@ -240,15 +302,17 @@ def _center_bounds(
     }
 
 
-def sampled_grid_row_bounds(row: dict[str, Any], dataset: dict[str, Any]) -> dict[str, float] | None:
-    contract = sampled_grid_contract(dataset) or {}
-    fields = sampled_grid_source_fields(dataset)
+def sampled_grid_row_bounds(
+    row: dict[str, Any],
+    mapping: CompiledSampledGridMapping,
+) -> dict[str, float] | None:
+    fields = mapping.source_fields
     explicit = _explicit_bounds(row, fields)
     if explicit is not None:
         return explicit
-    geometry = _mapping(contract.get("geometry"))
+    geometry = mapping.geometry
     encoding = str(geometry.get("encoding") or "center").strip().lower()
-    available = sampled_grid_available_resolutions(dataset)
+    available = list(mapping.available_resolutions_km)
     if encoding == "global_index":
         return _global_index_bounds(row, fields, geometry, available)
     if encoding == "center":
@@ -258,14 +322,14 @@ def sampled_grid_row_bounds(row: dict[str, Any], dataset: dict[str, Any]) -> dic
 
 def canonicalize_sampled_grid_row(
     row: dict[str, Any],
-    dataset: dict[str, Any],
+    mapping: CompiledSampledGridMapping,
     *,
     context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    fields = sampled_grid_source_fields(dataset)
-    request_fields = sampled_grid_request_fields(dataset)
+    fields = mapping.source_fields
+    request_fields = mapping.request_fields
     request_context = _mapping(context)
-    bounds = sampled_grid_row_bounds(row, dataset)
+    bounds = sampled_grid_row_bounds(row, mapping)
     lat = _number(_row_value(row, fields, "lat"))
     lon = _number(_row_value(row, fields, "lon"))
     canonical: dict[str, Any] = {}
@@ -289,17 +353,20 @@ def canonicalize_sampled_grid_row(
             "data_status": _canonical_role_value(row, fields, request_fields, request_context, "status"),
         }
     )
-    available = sampled_grid_available_resolutions(dataset)
+    available = mapping.available_resolutions_km
     if canonical["resolution_km"] is None and len(available) == 1:
         canonical["resolution_km"] = available[0]
-    return canonical
+    return freeze_json(canonical)
 
 
-def _actual_resolution(rows: list[dict[str, Any]], dataset: dict[str, Any]) -> float | None:
+def _actual_resolution(
+    rows: list[dict[str, Any]],
+    mapping: CompiledSampledGridMapping,
+) -> float | None:
     values = _positive_numbers(row.get("resolution_km") for row in rows)
     if len(values) == 1:
         return values[0]
-    configured = sampled_grid_available_resolutions(dataset)
+    configured = list(mapping.available_resolutions_km)
     return configured[0] if len(configured) == 1 else None
 
 
@@ -311,32 +378,33 @@ def canonicalize_sampled_grid_packet(
     if contract is None:
         return packet
     if packet.get("row_contract_version") == SAMPLED_GRID_CONTRACT_VERSION:
-        return deepcopy(packet)
-    normalized = deepcopy(packet)
-    rows = [
-        canonicalize_sampled_grid_row(row, dataset)
+        return dict(packet)
+    mapping = compile_sampled_grid_mapping(dataset)
+    normalized = dict(packet)
+    rows = freeze_json([
+        canonicalize_sampled_grid_row(row, mapping)
         for row in packet.get("rows") or []
         if isinstance(row, dict)
-    ]
+    ])
     existing_grid = _mapping(packet.get("grid"))
     available = _positive_numbers(
         existing_grid.get("available_resolutions_km")
-        or sampled_grid_available_resolutions(dataset)
+        or mapping.available_resolutions_km
         or []
     )
     actual = _number(existing_grid.get("actual_resolution_km"))
     if actual is None:
-        actual = _actual_resolution(rows, dataset)
+        actual = _actual_resolution(rows, mapping)
     requested = _number(existing_grid.get("requested_resolution_km"))
     if requested is None and len(available) == 1:
         requested = available[0]
     normalized["rows"] = rows
     normalized["row_count"] = len(rows)
     normalized["row_contract_version"] = SAMPLED_GRID_CONTRACT_VERSION
-    normalized["columns"] = sampled_grid_canonical_columns(dataset)
+    normalized["columns"] = list(mapping.canonical_columns)
     normalized["grid"] = {
         "contract_version": SAMPLED_GRID_CONTRACT_VERSION,
-        "grid_profile": deepcopy(existing_grid.get("grid_profile") or contract.get("grid_profile") or {}),
+        "grid_profile": thaw_json(existing_grid.get("grid_profile") or mapping.grid_profile),
         "available_resolutions_km": available,
         "requested_resolution_km": requested,
         "actual_resolution_km": actual,
@@ -344,8 +412,8 @@ def canonicalize_sampled_grid_packet(
         "degrade_reason": existing_grid.get("degrade_reason"),
         "coverage_status": existing_grid.get("coverage_status", "covered"),
         "coverage_id": existing_grid.get("coverage_id"),
-        "zero_is_data": bool(existing_grid.get("zero_is_data", contract.get("zero_is_data", True))),
-        "alignment": deepcopy(existing_grid.get("alignment") or contract.get("alignment") or {}),
+        "zero_is_data": bool(existing_grid.get("zero_is_data", mapping.zero_is_data)),
+        "alignment": thaw_json(existing_grid.get("alignment") or mapping.alignment),
     }
     return normalized
 

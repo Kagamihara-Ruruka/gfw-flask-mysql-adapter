@@ -25,13 +25,39 @@ function splitQueryBatchEvent(rawEvent, expectedBatchId) {
     throw new Error(`Query batch response mismatch: ${batchId || "<missing>"}`);
   }
   const type = String(event.type || "");
-  if (!["batch.started", "batch.result", "batch.completed"].includes(type)) {
+  if (!["batch.started", "batch.result", "batch.completed", "batch.metrics"].includes(type)) {
     throw new Error(`Unsupported query batch event: ${type || "<missing>"}`);
   }
   if (type === "batch.result" && !String(event.operation_id || "")) {
     throw new Error("Query batch result is missing operation_id");
   }
   return Object.freeze({ ...event, batch_id: batchId, type });
+}
+
+function inflateSampledGridRenderPacket(packet) {
+  const projection = packet?.transport_projection;
+  if (!projection) return packet;
+  if (projection.schema !== "rrkal.sampled_grid.render.v1") {
+    throw new Error(`Unsupported sampled-grid transport projection: ${projection.schema || "<missing>"}`);
+  }
+  const rowFields = projection.row_fields;
+  const frameFields = projection.frame_fields;
+  const projectedRows = packet.rows;
+  if (!Array.isArray(rowFields) || !frameFields || typeof frameFields !== "object"
+    || !Array.isArray(projectedRows)) {
+    throw new Error("Invalid sampled-grid render projection metadata");
+  }
+  const rows = projectedRows.map((values) => {
+    if (!Array.isArray(values) || values.length !== rowFields.length) {
+      throw new Error("Sampled-grid render projection row width mismatch");
+    }
+    const row = { ...frameFields };
+    rowFields.forEach((field, index) => { row[field] = values[index]; });
+    return row;
+  });
+  const inflated = { ...packet, rows };
+  delete inflated.transport_projection;
+  return inflated;
 }
 
 function sampledGridBatchOperation(request, operationId) {
@@ -57,6 +83,7 @@ class QueryBroker {
     clock,
     priorityForLane,
     maxBatchSizeProvider = null,
+    sourceCapacityProvider = null,
     endpoint = "/api/query/batch",
   } = {}) {
     if (typeof fetchFn !== "function" || !eventLog || !clock || typeof clock.now !== "function") {
@@ -70,10 +97,10 @@ class QueryBroker {
     this.clock = clock;
     this.priorityForLane = priorityForLane;
     this.maxBatchSizeProvider = maxBatchSizeProvider || (() => 3);
+    this.sourceCapacityProvider = sourceCapacityProvider || (() => 1);
     this.endpoint = endpoint;
     this.pending = [];
     this.activeBatches = new Map();
-    this.activeSources = new Set();
     this.sequence = 0;
     this.itemSequence = 0;
     this.flushScheduled = false;
@@ -85,6 +112,25 @@ class QueryBroker {
     return Math.max(1, Math.min(32, Number.isFinite(numeric) ? Math.floor(numeric) : 3));
   }
 
+  sourceCapacity(sourceKey) {
+    const numeric = Number(this.sourceCapacityProvider(String(sourceKey || "")));
+    return Math.max(1, Math.min(16, Number.isFinite(numeric) ? Math.floor(numeric) : 1));
+  }
+
+  sourceInflightCount(sourceKey) {
+    const normalizedKey = String(sourceKey || "");
+    return [...this.activeBatches.values()].reduce((total, batch) => {
+      if (batch.sourceKey !== normalizedKey) return total;
+      return total + (batch.envelope?.operations || []).reduce((count, operation) => (
+        batch.completedOperations.has(String(operation.operation_id || "")) ? count : count + 1
+      ), 0);
+    }, 0);
+  }
+
+  sourceAvailableSlots(sourceKey) {
+    return Math.max(0, this.sourceCapacity(sourceKey) - this.sourceInflightCount(sourceKey));
+  }
+
   abortError(reason = "Query batch consumer cancelled") {
     const error = new Error(reason);
     error.name = "AbortError";
@@ -94,10 +140,6 @@ class QueryBroker {
   sourceKey(operation) {
     return String(operation?.source_key || "")
       || `${String(operation?.kind || "")}|${String(operation?.dataset_id || "")}`;
-  }
-
-  activeBatchForSource(sourceKey) {
-    return [...this.activeBatches.values()].find((batch) => batch.sourceKey === sourceKey) || null;
   }
 
   record(type, detail = {}) {
@@ -117,16 +159,6 @@ class QueryBroker {
     };
   }
 
-  shouldPreemptForPromotion(batch, operationId, nextPriority) {
-    if (!batch || batch.preemptRequested || nextPriority >= batch.priority) return false;
-    const normalizedId = String(operationId || "");
-    const remainingOperationIds = (batch.envelope?.operations || [])
-      .map((operation) => String(operation.operation_id || ""))
-      .filter((id) => id && !batch.completedOperations.has(id));
-    if (!remainingOperationIds.length) return false;
-    return remainingOperationIds[0] !== normalizedId;
-  }
-
   promoteOperation(operationId, lane) {
     const normalizedId = String(operationId || "");
     const nextLane = String(lane || "background");
@@ -144,22 +176,11 @@ class QueryBroker {
       item.lane = nextLane;
       item.priority = nextPriority;
       promoted = true;
-      const activeBatch = item.batchId
-        ? this.activeBatches.get(item.batchId)
-        : this.activeBatchForSource(this.sourceKey(item.operation));
-      const preemptRequired = this.shouldPreemptForPromotion(
-        activeBatch,
-        item.operation?.operation_id,
-        nextPriority,
-      );
       this.record("TASK_PROMOTED", this.taskDetail(item, {
         previous_lane: previousLane,
         requested_lane: nextLane,
-        preempt_required: preemptRequired,
+        preempt_required: false,
       }));
-      if (preemptRequired) {
-        activeBatch.preemptRequested = true;
-      }
     }
     if (promoted) this.scheduleFlush();
     return promoted;
@@ -210,16 +231,6 @@ class QueryBroker {
       signal?.addEventListener("abort", item.abortListener, { once: true });
       this.pending.push(item);
       this.record("TASK_QUEUED", this.taskDetail(item));
-      const activeBatch = this.activeBatchForSource(this.sourceKey(operation));
-      if (activeBatch && item.priority < activeBatch.priority && !activeBatch.preemptRequested) {
-        activeBatch.preemptRequested = true;
-        this.record("HTTP_BATCH_PREEMPT_REQUESTED", {
-          batch_id: activeBatch.id,
-          lane: activeBatch.lane,
-          requested_lane: item.lane,
-          source_key: activeBatch.sourceKey,
-        });
-      }
       this.scheduleFlush();
     });
   }
@@ -256,13 +267,20 @@ class QueryBroker {
   nextBatch() {
     this.pending = this.pending.filter((item) => !item.settled && !item.signal?.aborted);
     this.pending.sort((left, right) => left.priority - right.priority || left.sequence - right.sequence);
-    const firstIndex = this.pending.findIndex((item) => !this.activeSources.has(this.sourceKey(item.operation)));
+    const firstIndex = this.pending.findIndex((item) => (
+      this.sourceAvailableSlots(this.sourceKey(item.operation)) > 0
+    ));
     if (firstIndex < 0) return null;
     const first = this.pending[firstIndex];
     const sourceKey = this.sourceKey(first.operation);
     const priority = first.priority;
+    const effectiveBatchSize = Math.min(
+      this.maxBatchSize(),
+      this.sourceCapacity(sourceKey),
+      this.sourceAvailableSlots(sourceKey),
+    );
     const selected = [];
-    for (let index = 0; index < this.pending.length && selected.length < this.maxBatchSize(); index += 1) {
+    for (let index = 0; index < this.pending.length && selected.length < effectiveBatchSize; index += 1) {
       const item = this.pending[index];
       if (item.priority !== priority || this.sourceKey(item.operation) !== sourceKey) continue;
       selected.push(item);
@@ -344,11 +362,10 @@ class QueryBroker {
       envelope,
       completedOperations: new Set(),
       startedAt: this.clock.now(),
-      preemptRequested: false,
-      preempted: false,
+      transportMetrics: null,
+      projectionDecodeMs: 0,
     };
     this.activeBatches.set(batchId, batch);
-    this.activeSources.add(batch.sourceKey);
     for (const item of items) {
       this.record("TASK_DISPATCHED", this.taskDetail(item, {
         batch_id: batchId,
@@ -364,6 +381,10 @@ class QueryBroker {
 
     const handleEvent = (rawEvent) => {
       const event = splitQueryBatchEvent(rawEvent, batchId);
+      if (event.type === "batch.metrics") {
+        batch.transportMetrics = event.metrics || null;
+        return;
+      }
       if (event.type !== "batch.result") return;
       const operationId = String(event.operation_id);
       if (batch.completedOperations.has(operationId)) {
@@ -372,17 +393,16 @@ class QueryBroker {
       batch.completedOperations.add(operationId);
       const consumers = operationItems.get(operationId) || [];
       if (event.status === "ok") {
-        for (const item of consumers) this.settle(item, item.resolve, event.packet);
+        const decodeStartedAt = this.clock.now();
+        const packet = inflateSampledGridRenderPacket(event.packet);
+        batch.projectionDecodeMs += Math.max(0, this.clock.now() - decodeStartedAt);
+        for (const item of consumers) this.settle(item, item.resolve, packet);
       } else {
         const error = new Error(String(event.error || "Query batch operation failed"));
         error.name = "QueryBatchOperationError";
         for (const item of consumers) this.settle(item, item.reject, error);
       }
-      if (batch.preemptRequested && batch.completedOperations.size < operationItems.size) {
-        batch.preempted = true;
-        return false;
-      }
-      return batch.completedOperations.size < operationItems.size;
+      this.scheduleFlush();
     };
 
     Promise.resolve()
@@ -395,9 +415,6 @@ class QueryBroker {
         });
         if (!response.ok) throw await this.responseError(response);
         await this.readEvents(response, handleEvent);
-        if (batch.preempted) {
-          throw this.abortError("Query batch yielded to higher-priority demand");
-        }
         for (const [operationId, consumers] of operationItems.entries()) {
           if (batch.completedOperations.has(operationId)) continue;
           const error = new Error(`Query batch result missing: ${operationId}`);
@@ -409,25 +426,12 @@ class QueryBroker {
           operation_count: envelope.operations.length,
           duration_ms: Math.max(0, this.clock.now() - batch.startedAt),
           source_key: batch.sourceKey,
+          packet_projection_decode_ms: batch.projectionDecodeMs,
+          ...(batch.transportMetrics || {}),
         });
       })
       .catch((error) => {
         const cancelled = error?.name === "AbortError" || controller.signal.aborted;
-        if (batch.preempted) {
-          for (const item of items) {
-            if (item.settled || item.signal?.aborted) continue;
-            item.batchId = "";
-            this.pending.push(item);
-          }
-          this.record("HTTP_BATCH_PREEMPTED", {
-            batch_id: batchId,
-            lane: batch.lane,
-            operation_count: envelope.operations.length,
-            duration_ms: Math.max(0, this.clock.now() - batch.startedAt),
-            source_key: batch.sourceKey,
-          });
-          return;
-        }
         for (const item of items) {
           if (!item.settled) this.settle(item, item.reject, cancelled ? this.abortError() : error);
         }
@@ -442,7 +446,6 @@ class QueryBroker {
       })
       .finally(() => {
         this.activeBatches.delete(batchId);
-        this.activeSources.delete(batch.sourceKey);
         this.scheduleFlush();
       });
   }
@@ -456,6 +459,15 @@ class QueryBroker {
         0,
       ),
       maxBatchSize: this.maxBatchSize(),
+      sourceInflight: Object.freeze(Object.fromEntries(
+        [...new Set([
+          ...this.pending.map((item) => this.sourceKey(item.operation)),
+          ...[...this.activeBatches.values()].map((batch) => batch.sourceKey),
+        ])].map((sourceKey) => [sourceKey, Object.freeze({
+          capacity: this.sourceCapacity(sourceKey),
+          inFlight: this.sourceInflightCount(sourceKey),
+        })]),
+      )),
     });
   }
 
@@ -470,7 +482,6 @@ class QueryBroker {
       for (const item of batch.items) this.settle(item, item.reject, error);
     }
     this.activeBatches.clear();
-    this.activeSources.clear();
   }
 }
 
@@ -479,4 +490,5 @@ if (typeof globalThis !== "undefined") {
   globalThis.compileQueryBatch = compileQueryBatch;
   globalThis.sampledGridBatchOperation = sampledGridBatchOperation;
   globalThis.splitQueryBatchEvent = splitQueryBatchEvent;
+  globalThis.inflateSampledGridRenderPacket = inflateSampledGridRenderPacket;
 }

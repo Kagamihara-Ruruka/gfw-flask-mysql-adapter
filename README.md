@@ -26,6 +26,8 @@ Incognito acceptance report is available at
 [`benchmarks/adaptive_watermark_acceptance_2026-07-16.md`](benchmarks/adaptive_watermark_acceptance_2026-07-16.md).
 The Mapping/query-broker/cache convergence and current side-browser acceptance report is available at
 [`benchmarks/runtime_convergence_acceptance_2026-07-17.md`](benchmarks/runtime_convergence_acceptance_2026-07-17.md).
+The current 5081 sampled-grid throughput, completion-order batching, and five-dataset playback acceptance report is available at
+[`benchmarks/sampled_grid_throughput_acceptance_2026-07-17.md`](benchmarks/sampled_grid_throughput_acceptance_2026-07-17.md).
 
 ## Upstream Handoff
 
@@ -205,7 +207,7 @@ The settings page exposes playback as separate responsibility boxes instead of o
 
 - Playback timeline: delivery policy and `playbackRate` decide which real snapshot date the player is trying to show. Analysis mode is implemented; smooth and strict modes are reserved ports.
 - Frame buffer: analysis mode reports `fetching/missing/ready/waiting/failed` state boundaries. The timing box records `buffering`, `resumed`, and `shown` events separately from SQL/API/render work.
-- Data cache / preheat: an independent producer maintains low/high ready-ahead inventory. Trusted supply/consumption metrics are scoped to the active playback request and exclude Widget traffic. Adaptive mode uses half of the configured RAM budget as playback inventory capacity, with low/high refill thresholds at one-third and two-thirds of that capacity; fixed 10/15 thresholds remain available. The browser canonical-frame budget defaults to 512 MB and remains adjustable in Settings. The producer may desire a large cache inventory, but it exposes at most 12 outstanding frame demands to `QueryBroker`. The broker owns one HTTP batch lane per physical provider; the Flask `QueryBatchExecutor` separately applies the measured per-provider operation capacity after decompression.
+- Data cache / preheat: an independent producer maintains low/high ready-ahead inventory. Trusted supply/consumption metrics are scoped to the active playback request and exclude Widget traffic. Adaptive mode uses half of the configured RAM budget as playback inventory capacity, with low/high refill thresholds at one-third and two-thirds of that capacity; fixed 10/15 thresholds remain available. The browser canonical-frame budget defaults to 512 MB and remains adjustable in Settings. The producer may desire a large cache inventory, but it exposes at most 12 outstanding frame demands to `QueryBroker`. The Registry publishes each physical provider's operation capacity; the broker limits effective batch size and provider in-flight work to that capacity, while the Flask `QueryBatchExecutor` enforces the same shared bound after decompression.
 - Frame interpolation: playback can use the existing layer crossfade as a visual-only interpolation policy or switch directly between real snapshots; data blending remains reserved for a future `requestAnimationFrame` loop backed by render artifacts.
 - Visual effects: crossfade decorates layer replacement; Gaussian blur is limited to zoom / LOD reload masking.
 - Render pressure and timing: renderer policy and the dashboard timing box observe performance without owning the playback clock.
@@ -246,9 +248,9 @@ Current frontend module boundaries:
 | `static/js/services/data-frame-store.js` | Canonical RAM frame store, intent-to-frame aliases, compatible containing-BBOX materialization, pin/release ownership, byte-budgeted LRU eviction, and failure state. It defaults to a 512 MB browser budget and never performs transport. |
 | `static/js/services/layer-query-coordinator.js` | Priority scheduler for query families outside the sampled-grid transport chain, with one execution per intent key, queued-task promotion, consumer-scoped cancellation, and a reserved foreground slot. |
 | `static/js/services/query-policy-controller.js` | DI-owned policy command boundary for that general scheduler. It does not own sampled-grid provider capacity or playback watermarks. |
-| `static/js/services/query-broker.js` | Provider-level transport owner. It bakes compatible operations across datasets into one NDJSON batch, streams and demultiplexes results, and guarantees at most one active HTTP batch per physical provider key. The provider key never replaces the dataset/cache identity. |
+| `static/js/services/query-broker.js` | Provider-level transport owner. It bakes compatible operations across datasets into NDJSON batches, caps effective batch size and in-flight operations by Registry capacity, releases capacity per streamed result, and immediately backfills the highest-priority queued work. The provider key never replaces the dataset/cache identity. |
 | `static/js/services/frame-demand-service.js` | The sampled-grid demand boundary. It checks `DataFrameStore`, joins an exact or containing-BBOX in-flight request when compatible, delegates a real miss directly to `QueryBroker`, normalizes the returned packet, and commits it once. |
-| `common_adapter/query/batch.py` | Flask-side batch execution owner. `QueryBatchExecutor` keeps one global worker pool and a shared per-provider capacity pool, acquires provider permits before worker submission so capacity waits cannot starve other sources, preserves response order, and isolates sibling failures. |
+| `common_adapter/query/batch.py` | Flask-side batch execution owner. `QueryBatchExecutor` keeps one global worker pool and a shared per-provider capacity pool, acquires provider permits before worker submission so capacity waits cannot starve other sources, yields results in completion order by `operation_id`, and isolates sibling failures. |
 | `static/js/services/frame-demand-decorators.js` | DI-composed observability decorator. It records demand boundary duration and outcome without changing cache, scheduling, transport, result, or error semantics. |
 | `static/js/playback/playback-preheater.js` | Long-lived producer that independently maintains low/high ready-ahead inventory. Desired inventory and the 12-request scheduling window are separate concerns; it does not own the playback clock or playback readiness. |
 | `static/js/playback/adaptive-watermark-controller.js` | DI-owned stateful policy owner. It derives effective watermarks from trusted supply, cache-ready P95, playback consumption, and RAM budget, with monotonic decrease hysteresis. |
@@ -332,11 +334,11 @@ A playback frame is a canonical records packet identified by:
 mapping-aware cache namespace + date + source-scope bbox + limit + columns + resolution context
 ```
 
-The cache namespace is derived from the active mapping contract, including source route, canonical field roles, grid profile, resolution policy, and query contract. Changing those semantics creates a new namespace; credentials and visualization-only settings do not. The Registry also derives a non-secret provider transport key from the physical source route. Datasets sharing that key may share one provider batch lane, but they retain independent cache namespaces and canonical frames. On a cold miss, `FrameDemandService` joins the logical intent and delegates it directly to `QueryBroker`; the broker bakes compatible operations into one NDJSON request. Flask then decompresses the request through `QueryBatchExecutor`, which applies the global worker bound and each source's `query_policy.max_in_flight`. Each returned operation is normalized and committed once to `DataFrameStore`. On a warm path, the map, playback, selection tools, and Widgets reuse the same packet.
+The cache namespace is derived from the active mapping contract, including source route, canonical field roles, grid profile, resolution policy, and query contract. Changing those semantics creates a new namespace; credentials and visualization-only settings do not. The Registry also derives a non-secret provider transport key and capacity from the physical source route. Datasets sharing that key share one provider capacity pool, but they retain independent cache namespaces and canonical frames. On a cold miss, `FrameDemandService` joins the logical intent and delegates it directly to `QueryBroker`; the broker bakes compatible operations into NDJSON requests whose effective size is bounded by available provider slots. Flask then decompresses the request through `QueryBatchExecutor`, which applies the global worker bound and each source's `query_policy.max_in_flight`, streams completion-order results, and identifies them by `operation_id`. Each returned operation is normalized and committed once to `DataFrameStore`. On a warm path, the map, playback, selection tools, and Widgets reuse the same immutable packet.
 
 Only the map/query application layer may create sampled-grid demand. `QueryBroker` orders those operations as `map-current`, `playback-target`, `playback-window`, `widget-interactive`, then `widget-auto/background`; `QueryScheduler` remains a separate owner for other query families and is not nested inside this chain. During `PREPARING`, `PLAYING`, or `BUFFERING`, Widgets are cache-only consumers. An explicit Tile interaction may request only the current missing slice through `widget-interactive`; an idle or paused chart may fill its configured history window through `widget-auto`. Active-date refreshes, table inspection, and Event Viewer rendering never start transport. Cancelling queued prewarm or Widget work never evicts completed packets.
 
-There are two independent capacity controls. Runtime `query_policy.network_concurrency` bounds the Flask `QueryBatchExecutor` worker pool, while a source config's `query_policy.max_in_flight` bounds decompressed operations against that physical provider. The latter defaults conservatively to `1`; the tracked Pipeline Iceberg example uses `2` because a controlled one-versus-two-worker benchmark improved throughput. Browser batch size and playback watermarks do not change either capacity. Validate source changes against Queue P95, adapter latency, provider latency, and visible-frame cadence together.
+There are two independent capacity controls. Runtime `query_policy.network_concurrency` bounds the Flask `QueryBatchExecutor` worker pool, while a source config's `query_policy.max_in_flight` bounds decompressed operations against that physical provider. The latter defaults conservatively to `1`; the tracked Pipeline Iceberg example uses `2` because a controlled one-versus-two-worker benchmark improved throughput. `/api/datasets` publishes this provider capacity, and the browser computes `min(batch_max_operations, source_capacity, available_slots)` before dispatch. Browser watermarks do not change either capacity. Validate source changes against Queue P95, adapter latency, provider latency, and visible-frame cadence together.
 
 Source error semantics belong to Mapping. A mapping may declare `snapshot.no_data` to translate a source-specific missing partition into an empty, negatively cached canonical snapshot; `snapshot.retry` handles finite retries for transient source failures; `resolution_policy` is reserved for a real coarser-LOD fallback. These outcomes are not interchangeable.
 
@@ -395,7 +397,7 @@ sequenceDiagram
         Adapter-->>Batch: rows
         Batch->>ServerCache: remember packet
       end
-      Batch-->>API: ordered operation result
+      Batch-->>API: completion-order result(operation_id)
       API-->>Broker: NDJSON batch.result
       Broker-->>Demand: demultiplexed packet(rows + timing)
       Demand->>BrowserCache: commit canonical frame
@@ -759,6 +761,17 @@ Local checkpoint on 2026-07-17, using the finest Mapping resolution, one cold wo
 | `gfw_full` | 31 | 31 | 31 ms / 56 ms | 30 / 30 / 31 ms | 7 ms source probe | 9.28 km |
 
 All 1,818 advertised dates completed with zero failures. Pipeline Iceberg stayed at the requested 4 km route without LOD degradation, and its source snapshot high-water stayed below the global `800,000` canonical-row budget. The GFW probe remains bbox-backed MySQL; browser containment reuse is separately protected by the cache contract tests and prevents a selected tile inside a cached viewport from issuing another transport request.
+
+For the 5081 throughput boundary, use the controlled 30-frame source/batch benchmark:
+
+```powershell
+python scripts\sampled_grid_batch_benchmark.py `
+  --dataset pipeline_iceberg.sea_temperature `
+  --frames 30 `
+  --output "$env:TEMP\sampled-grid-batch.json"
+```
+
+The final 2026-07-17 cold-cache checkpoint measured `8791` at 1.419 fps with one request and 2.569 fps with two. The complete `5081` batch path reached 1.095 fps with source capacity 2, with a 2.278 s batch P95 for two frames. Warm batch throughput was 4.512 fps and warm service lookup P95 was 0.026 ms. A three-operation batch against capacity 2 is rejected with HTTP 400. Canonical source packets are compiled once, frozen at cache commit, shared without a second row-graph copy, and projected only at the render transport boundary. The detailed timing reconciliation and user-level playback results are recorded in the sampled-grid throughput acceptance report linked above.
 
 JavaScript syntax check:
 

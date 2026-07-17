@@ -8,7 +8,7 @@ const root = process.cwd();
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 const encoder = new TextEncoder();
 
-function loadBroker(fetchFn, { maxBatchSize = 3 } = {}) {
+function loadBroker(fetchFn, { maxBatchSize = 3, sourceCapacity = 2 } = {}) {
   const events = [];
   const context = {
     AbortController,
@@ -43,6 +43,7 @@ function loadBroker(fetchFn, { maxBatchSize = 3 } = {}) {
         background: 40,
       })[lane] ?? 40,
       maxBatchSizeProvider: () => maxBatchSize,
+      sourceCapacityProvider: () => sourceCapacity,
     }),
     context,
     events,
@@ -79,7 +80,7 @@ function responseFor(envelope, resultFor) {
   });
 }
 
-test("broker bakes compatible operations into one physical request and demultiplexes results", async () => {
+test("broker limits each physical request to source capacity and demultiplexes results", async () => {
   const envelopes = [];
   const { broker, events } = loadBroker(async (_url, options) => {
     const envelope = JSON.parse(options.body);
@@ -106,16 +107,16 @@ test("broker bakes compatible operations into one physical request and demultipl
   ]);
   await flush();
 
-  assert.equal(envelopes.length, 1);
+  assert.equal(envelopes.length, 2);
   assert.equal(envelopes[0].schema, "query_batch.v1");
-  assert.equal(envelopes[0].operations.length, 3);
+  assert.deepEqual(envelopes.map((envelope) => envelope.operations.length), [2, 1]);
   assert.deepEqual([...results.map((packet) => packet.rows[0].date)], [
     "2020-01-01",
     "2020-01-02",
     "2020-01-03",
   ]);
-  assert.equal(events.filter((event) => event.type === "HTTP_BATCH_STARTED").length, 1);
-  assert.equal(events.filter((event) => event.type === "HTTP_BATCH_FINISHED").length, 1);
+  assert.equal(events.filter((event) => event.type === "HTTP_BATCH_STARTED").length, 2);
+  assert.equal(events.filter((event) => event.type === "HTTP_BATCH_FINISHED").length, 2);
 });
 
 test("sampled-grid source transport is independent of camera zoom and latitude", () => {
@@ -130,7 +131,28 @@ test("sampled-grid source transport is independent of camera zoom and latitude",
   assert.equal("latitude" in compiled.params, false);
 });
 
-test("datasets sharing one physical provider use one serialized batch lane", async () => {
+test("render transport projection inflates before consumers receive canonical rows", () => {
+  const { context } = loadBroker(async () => new Response());
+  const packet = context.inflateSampledGridRenderPacket({
+    row_contract_version: "rrkal.sampled_grid.v1",
+    rows: [["cell-a", 3]],
+    transport_projection: {
+      schema: "rrkal.sampled_grid.render.v1",
+      row_fields: ["cell_id", "value"],
+      frame_fields: { date: "2020-01-01", resolution_km: 4 },
+    },
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(packet.rows)), [{
+    date: "2020-01-01",
+    resolution_km: 4,
+    cell_id: "cell-a",
+    value: 3,
+  }]);
+  assert.equal("transport_projection" in packet, false);
+});
+
+test("datasets sharing one physical provider combine within its capacity", async () => {
   const envelopes = [];
   const { broker } = loadBroker(async (_url, options) => {
     const envelope = JSON.parse(options.body);
@@ -187,7 +209,7 @@ test("different physical providers retain independent batch lanes", async () => 
   );
 });
 
-test("one physical provider never runs two HTTP batches concurrently", async () => {
+test("one physical provider backfills a released slot without exceeding capacity", async () => {
   const streams = [];
   const envelopes = [];
   const { broker } = loadBroker(async (_url, options) => {
@@ -209,9 +231,13 @@ test("one physical provider never runs two HTTP batches concurrently", async () 
     datasetId: "temperature",
     transportKey: "provider:8791",
   }), { operationId: "second", lane: "playback-window" });
+  const third = broker.requestSampledGrid(operation("2020-01-03", {
+    datasetId: "chlorophyll",
+    transportKey: "provider:8791",
+  }), { operationId: "third", lane: "playback-window" });
   await flush();
 
-  assert.equal(envelopes.length, 1);
+  assert.equal(envelopes.length, 2);
   streams[0].controller.enqueue(encoder.encode(`${JSON.stringify({
     type: "batch.result",
     batch_id: streams[0].envelope.batch_id,
@@ -221,7 +247,7 @@ test("one physical provider never runs two HTTP batches concurrently", async () 
   })}\n`));
   assert.equal((await first).rows[0], 1);
   await flush();
-  assert.equal(envelopes.length, 2);
+  assert.equal(envelopes.length, 3);
 
   streams[1].controller.enqueue(encoder.encode(`${JSON.stringify({
     type: "batch.result",
@@ -231,6 +257,15 @@ test("one physical provider never runs two HTTP batches concurrently", async () 
     packet: { rows: [2] },
   })}\n`));
   assert.equal((await second).rows[0], 2);
+  streams[2].controller.enqueue(encoder.encode(`${JSON.stringify({
+    type: "batch.result",
+    batch_id: streams[2].envelope.batch_id,
+    operation_id: "third",
+    status: "ok",
+    packet: { rows: [3] },
+  })}\n`));
+  assert.equal((await third).rows[0], 3);
+  for (const item of streams) item.controller.close();
 });
 
 test("broker streams the first result without waiting for the rest of the batch", async () => {
@@ -353,7 +388,7 @@ test("cancelling one operation keeps the shared physical request alive", async (
   assert.equal((await retained).rows[0], 2);
 });
 
-test("broker releases a source as soon as all operation results arrive", async () => {
+test("broker releases source capacity as soon as an operation result arrives", async () => {
   let firstController;
   let firstEnvelope;
   let firstCancelled = false;
@@ -370,7 +405,7 @@ test("broker releases a source as soon as all operation results arrive", async (
       return new Response(firstStream, { status: 200 });
     }
     return responseFor(envelope, () => ({ status: "ok", packet: { rows: [2] } }));
-  });
+  }, { sourceCapacity: 1 });
   const first = broker.requestSampledGrid(operation("2020-01-01"), {
     operationId: "first-open-stream",
     lane: "playback-window",
@@ -392,12 +427,12 @@ test("broker releases a source as soon as all operation results arrive", async (
   });
   assert.equal((await second).rows[0], 2);
   assert.equal(callCount, 2);
-  assert.equal(firstCancelled, true);
+  assert.equal(firstCancelled, false);
+  firstController.close();
 });
 
-test("foreground demand preempts at an operation boundary and requeues unfinished work", async () => {
+test("foreground demand uses the next released slot without requerying active work", async () => {
   let firstStreamController;
-  let firstSignal;
   let firstStreamCancelled = false;
   const envelopes = [];
   const completionOrder = [];
@@ -405,7 +440,6 @@ test("foreground demand preempts at an operation boundary and requeues unfinishe
     const envelope = JSON.parse(options.body);
     envelopes.push(envelope);
     if (envelopes.length === 1) {
-      firstSignal = options.signal;
       const stream = new ReadableStream({
         start(controller) { firstStreamController = controller; },
         cancel() { firstStreamCancelled = true; },
@@ -440,7 +474,6 @@ test("foreground demand preempts at an operation boundary and requeues unfinishe
     return packet;
   });
 
-  assert.equal(firstSignal.aborted, false);
   firstStreamController.enqueue(encoder.encode(`${JSON.stringify({
     type: "batch.result",
     batch_id: envelopes[0].batch_id,
@@ -451,21 +484,26 @@ test("foreground demand preempts at an operation boundary and requeues unfinishe
 
   assert.equal((await firstBackground).rows[0], "background-frame-1");
   assert.equal((await foreground).rows[0], "foreground-frame");
+  firstStreamController.enqueue(encoder.encode(`${JSON.stringify({
+    type: "batch.result",
+    batch_id: envelopes[0].batch_id,
+    operation_id: "background-frame-2",
+    status: "ok",
+    packet: { rows: ["background-frame-2"] },
+  })}\n${JSON.stringify({
+    type: "batch.completed",
+    batch_id: envelopes[0].batch_id,
+  })}\n`));
+  firstStreamController.close();
   assert.equal((await secondBackground).rows[0], "background-frame-2");
-  assert.equal(firstSignal.aborted, false);
-  assert.equal(firstStreamCancelled, true);
+  assert.equal(firstStreamCancelled, false);
   assert.deepEqual(completionOrder, ["background-1", "foreground", "background-2"]);
   assert.deepEqual(envelopes.map((envelope) => envelope.operations.map((item) => item.operation_id)), [
     ["background-frame-1", "background-frame-2"],
     ["foreground-frame"],
-    ["background-frame-2"],
   ]);
-  assert.deepEqual(envelopes.slice(1).map((envelope) => envelope.operations[0].operation_id), [
-    "foreground-frame",
-    "background-frame-2",
-  ]);
-  assert.equal(events.filter((event) => event.type === "HTTP_BATCH_PREEMPT_REQUESTED").length, 1);
-  assert.equal(events.filter((event) => event.type === "HTTP_BATCH_PREEMPTED").length, 1);
+  assert.equal(events.filter((event) => event.type === "HTTP_BATCH_PREEMPT_REQUESTED").length, 0);
+  assert.equal(events.filter((event) => event.type === "HTTP_BATCH_PREEMPTED").length, 0);
 });
 
 test("promoting an existing operation changes the single broker queue without duplicating transport", async () => {
@@ -497,20 +535,22 @@ test("promoting an existing operation changes the single broker queue without du
   await flush();
 
   assert.equal(broker.promoteSampledGrid("frame-2", "playback-target"), true);
-  streamController.enqueue(encoder.encode(`${JSON.stringify({
-    type: "batch.result",
-    batch_id: envelopes[0].batch_id,
-    operation_id: "frame-1",
-    status: "ok",
-    packet: { rows: ["frame-1"] },
-  })}\n`));
+  for (const operationId of ["frame-1", "frame-2"]) {
+    streamController.enqueue(encoder.encode(`${JSON.stringify({
+      type: "batch.result",
+      batch_id: envelopes[0].batch_id,
+      operation_id: operationId,
+      status: "ok",
+      packet: { rows: [operationId] },
+    })}\n`));
+  }
+  streamController.close();
 
   assert.equal((await first).rows[0], "frame-1");
   assert.equal((await promotedFrame).rows[0], "frame-2");
-  assert.equal(streamCancelled, true);
+  assert.equal(streamCancelled, false);
   assert.deepEqual(envelopes.map((envelope) => envelope.operations.map((item) => item.operation_id)), [
     ["frame-1", "frame-2"],
-    ["frame-2"],
   ]);
   const promoted = events.find((event) => event.type === "TASK_PROMOTED");
   assert.equal(promoted?.detail.previous_lane, "playback-window");
@@ -547,6 +587,7 @@ test("promoting the first unfinished operation keeps the active batch intact", a
       packet: { rows: [operationId] },
     })}\n`));
   }
+  streamController.close();
 
   assert.equal((await first).rows[0], "frame-1");
   assert.equal((await second).rows[0], "frame-2");

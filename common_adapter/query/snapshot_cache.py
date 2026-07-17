@@ -6,6 +6,8 @@ from dataclasses import dataclass, replace
 from threading import Event, RLock
 from typing import Any, Callable, Hashable
 
+from common_adapter.query.immutable import freeze_json
+
 
 def _mapping(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
@@ -84,6 +86,10 @@ class SnapshotLoad:
     payload: Any
     cache_hit: bool = False
     waited: bool = False
+    cache_lookup_ms: float = 0.0
+    cache_wait_ms: float = 0.0
+    cache_commit_ms: float = 0.0
+    cache_evict_ms: float = 0.0
 
 
 @dataclass
@@ -182,9 +188,16 @@ class CanonicalSnapshotCache:
     ) -> SnapshotLoad | None:
         if not policy.enabled:
             return None
+        started = time.perf_counter()
         key = policy.key(identity)
         with self._lock:
-            return self._resolve_locked(namespace, policy, key)
+            resolved = self._resolve_locked(namespace, policy, key)
+        if resolved is None:
+            return None
+        return replace(
+            resolved,
+            cache_lookup_ms=round((time.perf_counter() - started) * 1000, 3),
+        )
 
     def _remember_locked(
         self,
@@ -193,14 +206,16 @@ class CanonicalSnapshotCache:
         requested_key: tuple,
         loaded: SnapshotLoad,
     ) -> SnapshotLoad:
+        commit_started = time.perf_counter()
         actual_key = policy.key(loaded.actual_identity)
         if actual_key in self._entries.get(namespace, {}):
             self._remove_locked(namespace, actual_key)
         entries = self._entries.setdefault(namespace, OrderedDict())
-        row_weight = _payload_row_weight(loaded.payload)
+        payload = freeze_json(loaded.payload)
+        row_weight = _payload_row_weight(payload)
         entries[actual_key] = _CacheEntry(
             identity=dict(loaded.actual_identity),
-            payload=loaded.payload,
+            payload=payload,
             created_at=time.monotonic(),
             row_weight=row_weight,
         )
@@ -210,15 +225,22 @@ class CanonicalSnapshotCache:
         aliases = self._aliases.setdefault(namespace, {})
         if requested_key != actual_key:
             aliases[requested_key] = actual_key
+        evict_started = time.perf_counter()
         while len(entries) > policy.max_entries:
             stale_key = next(iter(entries))
             self._remove_locked(namespace, stale_key)
         self._trim_global_locked()
+        cache_evict_ms = round((time.perf_counter() - evict_started) * 1000, 3)
+        cache_commit_ms = round((time.perf_counter() - commit_started) * 1000, 3)
         return SnapshotLoad(
             dict(loaded.actual_identity),
-            loaded.payload,
+            payload,
             cache_hit=loaded.cache_hit,
             waited=loaded.waited,
+            cache_lookup_ms=loaded.cache_lookup_ms,
+            cache_wait_ms=loaded.cache_wait_ms,
+            cache_commit_ms=cache_commit_ms,
+            cache_evict_ms=cache_evict_ms,
         )
 
     def get_or_load(
@@ -230,29 +252,42 @@ class CanonicalSnapshotCache:
     ) -> SnapshotLoad:
         if not policy.enabled:
             return loader()
+        lookup_started = time.perf_counter()
         requested_key = policy.key(requested_identity)
         inflight_key = (namespace, requested_key)
         with self._lock:
             cached = self._resolve_locked(namespace, policy, requested_key)
+            lookup_ms = round((time.perf_counter() - lookup_started) * 1000, 3)
             if cached is not None:
-                return cached
+                return replace(cached, cache_lookup_ms=lookup_ms)
             inflight = self._inflight.get(inflight_key)
             owner = inflight is None
             if inflight is None:
                 inflight = _InflightLoad(Event())
                 self._inflight[inflight_key] = inflight
         if not owner:
+            wait_started = time.perf_counter()
             inflight.event.wait()
+            wait_ms = round((time.perf_counter() - wait_started) * 1000, 3)
             if inflight.error is not None:
                 raise inflight.error
             if inflight.result is None:
                 raise RuntimeError("snapshot cache load completed without a result")
-            return replace(inflight.result, cache_hit=True, waited=True)
+            return replace(
+                inflight.result,
+                cache_hit=True,
+                waited=True,
+                cache_lookup_ms=lookup_ms,
+                cache_wait_ms=wait_ms,
+                cache_commit_ms=0.0,
+                cache_evict_ms=0.0,
+            )
 
         try:
             loaded = loader()
             with self._lock:
                 result = self._remember_locked(namespace, policy, requested_key, loaded)
+                result = replace(result, cache_lookup_ms=lookup_ms)
                 inflight.result = result
             return result
         except BaseException as exc:

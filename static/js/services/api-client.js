@@ -53,6 +53,7 @@ async function loadDatasets() {
   state.overlayLayers = state.overlayLayers || {};
   // Keep frontend limits aligned with the Flask adapter config.
   state.queryPolicy = packet.query_policy || state.queryPolicy;
+  state.queryTransportCapacities = packet.query_transport_capacities || {};
   renderDatasetSelect();
   if (typeof renderDataLayerMenu === "function") {
     renderDataLayerMenu();

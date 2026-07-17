@@ -26,10 +26,55 @@ from common_adapter.query.sampled_grid import (
     sampled_grid_public_fields,
 )
 from common_adapter.query.snapshot_cache import CANONICAL_SNAPSHOT_CACHE
+from common_adapter.query.transport import project_sampled_grid_render_packet
 from common_adapter.spatial.overlay import elapsed_ms
 
 
+class BatchStreamTiming:
+    """Owns monotonic timing for the 5081 NDJSON transport boundary."""
+
+    def __init__(self) -> None:
+        self.started_at = time.perf_counter()
+        self.batch_encode_ms = 0.0
+        self.batch_gzip_ms = 0.0
+        self.batch_yield_ms = 0.0
+        self.response_bytes = 0
+        self.uncompressed_bytes = 0
+
+    def encode(self, event: dict[str, Any]) -> bytes:
+        started_at = time.perf_counter()
+        encoded = (
+            json.dumps(event, ensure_ascii=True, separators=(",", ":")) + "\n"
+        ).encode("utf-8")
+        self.batch_encode_ms += elapsed_ms(started_at)
+        self.uncompressed_bytes += len(encoded)
+        return encoded
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "batch_encode_ms": round(self.batch_encode_ms, 3),
+            "batch_gzip_ms": round(self.batch_gzip_ms, 3),
+            "batch_yield_ms": round(self.batch_yield_ms, 3),
+            "response_bytes": self.response_bytes,
+            "uncompressed_bytes": self.uncompressed_bytes,
+            "batch_total_ms": round(elapsed_ms(self.started_at), 3),
+        }
+
+
 class DatasetRoutes:
+    API_TIMING_PHASES = (
+        "cache_lookup_ms",
+        "cache_wait_ms",
+        "source_http_ms",
+        "canonicalize_rows_ms",
+        "canonical_packet_copy_ms",
+        "cache_commit_ms",
+        "cache_evict_ms",
+        "filter_ms",
+        "packet_projection_ms",
+        "serialize_ms",
+    )
+
     def __init__(
         self,
         config: dict[str, Any],
@@ -90,6 +135,25 @@ class DatasetRoutes:
         except Exception:
             return 1
 
+    def batch_source_capacities(self, operations: list[dict[str, Any]]) -> dict[str, int]:
+        capacities: dict[str, int] = {}
+        counts: dict[str, int] = {}
+        for operation in operations:
+            source_key = self.batch_operation_source_key(operation)
+            capacity = self.batch_operation_source_limit(operation)
+            capacities[source_key] = min(capacities.get(source_key, capacity), capacity)
+            counts[source_key] = counts.get(source_key, 0) + 1
+        exceeded = [
+            f"{source_key}: {counts[source_key]} > {capacity}"
+            for source_key, capacity in capacities.items()
+            if counts[source_key] > capacity
+        ]
+        if exceeded:
+            raise ValueError(
+                "query batch exceeds source capacity: " + ", ".join(exceeded)
+            )
+        return capacities
+
     def get_dataset(self, dataset_id: str) -> dict[str, Any]:
         dataset = self.layer_registry.get_dataset(dataset_id)
         if dataset is None:
@@ -133,6 +197,15 @@ class DatasetRoutes:
             or dataset_query_transport_key(dataset),
         }
 
+    @classmethod
+    def finalize_api_timing(cls, packet: dict[str, Any], api_total_ms: float) -> None:
+        timing = dict(packet.get("timing") or {})
+        tracked = sum(float(timing.get(key) or 0) for key in cls.API_TIMING_PHASES)
+        timing["api_total_ms"] = round(float(api_total_ms), 3)
+        timing["api_unattributed_ms"] = round(max(0.0, float(api_total_ms) - tracked), 3)
+        timing["api_accounted_ms"] = round(tracked + timing["api_unattributed_ms"], 3)
+        packet["timing"] = timing
+
     def records_result(self, dataset_id: str, values: Mapping[str, Any]) -> dict[str, Any]:
         request_start = time.perf_counter()
         dataset = self.get_dataset(dataset_id)
@@ -148,7 +221,7 @@ class DatasetRoutes:
         )
         packet["dataset_id"] = dataset_id
         packet["runtime"] = self.runtime_packet(dataset_id, dataset)
-        packet["timing"]["api_total_ms"] = elapsed_ms(request_start)
+        self.finalize_api_timing(packet, elapsed_ms(request_start))
         return packet
 
     @staticmethod
@@ -190,15 +263,27 @@ class DatasetRoutes:
         return batch_id, normalized
 
     @staticmethod
-    def gzip_stream(chunks):
+    def plain_stream(chunks, timing: BatchStreamTiming):
+        for chunk in chunks:
+            timing.response_bytes += len(chunk)
+            yield chunk
+
+    @staticmethod
+    def gzip_stream(chunks, timing: BatchStreamTiming):
         compressor = zlib.compressobj(wbits=16 + zlib.MAX_WBITS)
         for chunk in chunks:
             encoded = chunk.encode("utf-8") if isinstance(chunk, str) else chunk
+            gzip_started = time.perf_counter()
             compressed = compressor.compress(encoded) + compressor.flush(zlib.Z_SYNC_FLUSH)
+            timing.batch_gzip_ms += elapsed_ms(gzip_started)
             if compressed:
+                timing.response_bytes += len(compressed)
                 yield compressed
+        gzip_started = time.perf_counter()
         tail = compressor.flush(zlib.Z_FINISH)
+        timing.batch_gzip_ms += elapsed_ms(gzip_started)
         if tail:
+            timing.response_bytes += len(tail)
             yield tail
 
     def register(self, app: Flask) -> None:
@@ -207,10 +292,17 @@ class DatasetRoutes:
         @app.get("/api/datasets")
         def datasets():
             safe = {}
+            query_transport_capacities: dict[str, int] = {}
             policy = query_policy(config)
             registry = self.layer_registry.snapshot(force=True)
             for dataset_id, runtime_dataset in registry["datasets"].items():
                 runtime = self.runtime_packet(dataset_id, runtime_dataset)
+                transport_key = str(runtime["query_transport_key"])
+                source_capacity = dataset_query_concurrency(runtime_dataset)
+                query_transport_capacities[transport_key] = min(
+                    query_transport_capacities.get(transport_key, source_capacity),
+                    source_capacity,
+                )
                 public_fields = sampled_grid_public_fields(runtime_dataset)
                 if str(runtime_dataset.get("backend") or "") == "sampled_grid_http":
                     backend_kind = runtime_dataset.get("backend")
@@ -237,6 +329,7 @@ class DatasetRoutes:
                 {
                     "sql_backend": config.get("sql_backend", {"kind": "mysql", "driver": "pymysql"}),
                     "query_policy": policy,
+                    "query_transport_capacities": query_transport_capacities,
                     "datasets": safe,
                     "imported_layers": registry["imported_layers"],
                     "layers": registry["layers"],
@@ -271,19 +364,27 @@ class DatasetRoutes:
                     request.get_json(silent=True),
                     max_operations=policy["batch_max_operations"],
                 )
+                source_capacities = self.batch_source_capacities(operations)
             except Exception as exc:
                 return jsonify({"error": str(exc)}), 400
 
+            stream_timing = BatchStreamTiming()
+
             def event_stream():
-                yield json.dumps(
+                def emit(event: dict[str, Any]):
+                    chunk = stream_timing.encode(event)
+                    yielded_at = time.perf_counter()
+                    yield chunk
+                    stream_timing.batch_yield_ms += elapsed_ms(yielded_at)
+
+                yield from emit(
                     {
                         "type": "batch.started",
                         "batch_id": batch_id,
                         "operation_count": len(operations),
-                    },
-                    ensure_ascii=True,
-                    separators=(",", ":"),
-                ) + "\n"
+                        "source_capacities": source_capacities,
+                    }
+                )
                 completed = 0
                 results = self.batch_executor.execute(
                     operations,
@@ -297,29 +398,37 @@ class DatasetRoutes:
                         "type": "batch.result",
                         "batch_id": batch_id,
                         "operation_id": operation["operation_id"],
+                        "source_capacity_wait_ms": result.source_capacity_wait_ms,
                     }
                     event["status"] = result.status
                     if result.error is None:
-                        event["packet"] = result.packet
+                        event["packet"] = project_sampled_grid_render_packet(result.packet)
                     else:
                         event["error"] = result.error
                     completed += 1
-                    yield json.dumps(event, ensure_ascii=True, separators=(",", ":")) + "\n"
-                yield json.dumps(
+                    yield from emit(event)
+                yield from emit(
                     {
                         "type": "batch.completed",
                         "batch_id": batch_id,
                         "operation_count": len(operations),
                         "completed_count": completed,
-                    },
-                    ensure_ascii=True,
-                    separators=(",", ":"),
-                ) + "\n"
+                    }
+                )
+                yield from emit(
+                    {
+                        "type": "batch.metrics",
+                        "batch_id": batch_id,
+                        "metrics": stream_timing.snapshot(),
+                    }
+                )
 
             accepts_gzip = "gzip" in request.headers.get("Accept-Encoding", "").lower()
             chunks = stream_with_context(event_stream())
             response = Response(
-                self.gzip_stream(chunks) if accepts_gzip else chunks,
+                self.gzip_stream(chunks, stream_timing)
+                if accepts_gzip
+                else self.plain_stream(chunks, stream_timing),
                 mimetype="application/x-ndjson",
             )
             response.headers["Cache-Control"] = "no-store"

@@ -1019,7 +1019,20 @@ def records_packet(
         column_profile=column_profile,
         query_context=query_context,
     )
-    return canonicalize_sampled_grid_packet(packet, dataset)
+    canonical_started = time.perf_counter()
+    normalized = canonicalize_sampled_grid_packet(packet, dataset)
+    canonical_ms = elapsed_ms(canonical_started)
+    timing = dict(normalized.get("timing") or {})
+    if packet.get("row_contract_version") == "rrkal.sampled_grid.v1":
+        timing["canonical_packet_copy_ms"] = canonical_ms
+    else:
+        timing["canonical_packet_copy_ms"] = 0.0
+        timing["canonicalize_rows_ms"] = round(
+            float(timing.get("canonicalize_rows_ms") or 0) + canonical_ms,
+            3,
+        )
+    normalized["timing"] = timing
+    return normalized
 
 
 def records_range_packet(

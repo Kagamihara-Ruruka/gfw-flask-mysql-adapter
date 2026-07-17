@@ -24,6 +24,8 @@ Clock Domain 與可信效能指標校正後的回歸結果記錄在
 [`benchmarks/adaptive_watermark_acceptance_2026-07-16.md`](benchmarks/adaptive_watermark_acceptance_2026-07-16.md)。
 Mapping、QueryBroker、共用快取收斂與目前側邊瀏覽器驗收結果記錄在
 [`benchmarks/runtime_convergence_acceptance_2026-07-17.md`](benchmarks/runtime_convergence_acceptance_2026-07-17.md)。
+目前 5081 sampled-grid 吞吐、完成順序 batch 與五個資料集播放驗收結果記錄在
+[`benchmarks/sampled_grid_throughput_acceptance_2026-07-17.md`](benchmarks/sampled_grid_throughput_acceptance_2026-07-17.md)。
 
 ## 專案邊界
 
@@ -213,9 +215,9 @@ python scripts/playback_contract_smoke.py
 | `static/js/services/data-frame-store.js` | Canonical RAM frame store：intent/frame alias、局部 coverage 合成、pin/release、LRU 淘汰與 failure state；不執行 transport。 |
 | `static/js/services/layer-query-coordinator.js` | sampled-grid 傳輸鏈以外查詢族群使用的 QueryScheduler：相同 intent 單次執行、queued task 提升、consumer scope 取消與前景保留槽。 |
 | `static/js/services/query-policy-controller.js` | 一般 QueryScheduler 的 DI policy 命令邊界；不擁有 sampled-grid provider capacity 或播放水位。 |
-| `static/js/services/query-broker.js` | 實體來源級 transport owner：跨資料集合併相容 operation、串流分流結果，並保證同一 provider key 同時最多一條 HTTP batch。provider key 不取代 dataset/cache identity。 |
+| `static/js/services/query-broker.js` | 實體來源級 transport owner：跨資料集合併相容 operation，依 Registry 公開的來源容量限制有效 batch 與 in-flight operation；每收到一筆串流結果就釋放槽位並立即補入最高優先工作。provider key 不取代 dataset/cache identity。 |
 | `static/js/services/frame-demand-service.js` | sampled-grid demand 邊界；先查 `DataFrameStore`、合併相容 inflight，真正 miss 才直接交給 `QueryBroker`，回傳後只提交一次 canonical packet。 |
-| `common_adapter/query/batch.py` | Flask 端 batch 執行 owner；`QueryBatchExecutor` 維護全域 worker pool 與跨 request 共用的 provider capacity，在提交 worker 前取得來源 permit，避免等待中的來源占滿 worker 使其他來源飢餓，同時保持回傳順序並隔離同批失敗。 |
+| `common_adapter/query/batch.py` | Flask 端 batch 執行 owner；`QueryBatchExecutor` 維護全域 worker pool 與跨 request 共用的 provider capacity，在提交 worker 前取得來源 permit，避免等待中的來源占滿 worker 使其他來源飢餓；結果依完成順序串流，以 `operation_id` 還原身份並隔離同批失敗。 |
 | `static/js/services/frame-demand-decorators.js` | 由 DI 組裝的 observability decorator；只記錄 demand 邊界耗時與結果，不改變快取、排程、transport、回傳值或錯誤語意。 |
 | `static/js/playback/playback-preheater.js` | 長時間存在的生產者，獨立維護 ready-ahead 高低水位，不擁有播放 clock。 |
 | `static/js/playback/adaptive-watermark-controller.js` | DI 建立的有狀態 policy owner；依可信供需、cache-ready P95、播放消耗率與 RAM 預算決定有效水位，並以 monotonic hysteresis 防止頻繁下降。 |
@@ -269,7 +271,7 @@ AIS live 模式目前不走日期播放器。
 - 預熱器在圖層、日期範圍與查詢 scope 確定後獨立運作；低於低水位時非同步補到高水位。
 - `AdaptiveWatermarkController` 在尚無 frame-size 樣本時使用固定低 10 / 高 15；有樣本後取設定 RAM 上限的 50% 換算播放庫存容量，低水位為容量 1/3、高水位為 2/3。供需比低於 1 只觸發提前補貨，不改變播放 gate。
 - 有效高水位受 `DataFrameStore` RAM／entry 預算共同限制。水位提高可立即生效；降低使用 monotonic hold 與有限步長，避免短期波動造成來回震盪。
-- 高水位代表目標 ready-ahead，不代表開相同數量的 HTTP。sampled-grid 瀏覽器傳輸由 `QueryBroker` 限制每個 provider 一條 HTTP batch；Flask 解包後的全域與來源 operation capacity 分別由 runtime `query_policy.network_concurrency` 與 source `query_policy.max_in_flight` 管理。
+- 高水位代表目標 ready-ahead，不代表開相同數量的 HTTP。sampled-grid 瀏覽器傳輸由 `QueryBroker` 依 provider capacity 計算有效 batch 與可用槽位；Flask 解包後的全域與來源 operation capacity 分別由 runtime `query_policy.network_concurrency` 與 source `query_policy.max_in_flight` 管理。
 - 設定頁可在自適應與固定水位間切換；切換只重算 policy，不會清除已完成的 Canonical frame。
 - 預熱器 `FETCHING` 與播放器 `PLAYING` 可同時成立。冷啟動 `PREPARING` 與中途 `BUFFERING` 都只等待下一 target；背景水位不構成播放資格門檻。
 - 快取有容量上限，瀏覽器預設 512 MB，可在播放設定中調整。
@@ -286,11 +288,11 @@ AIS live 模式目前不走日期播放器。
 mapping-aware cache namespace + date + source-scope bbox + limit + columns + resolution context
 ```
 
-cache namespace 由目前 mapping contract 推導，包含 source route、canonical 欄位角色、grid profile、resolution policy 與 query contract。只要 mapping 語意改變，就會使用新的 namespace；密碼與純視覺設定不影響資料快取身分。Registry 另從實體來源路由推導不含密鑰的 provider transport key；共用 provider key 的資料集可共用同一條 batch lane，但仍保有各自的 cache namespace 與 canonical frame。冷路徑由 `FrameDemandService` 合併 logical intent 並直接委派給 `QueryBroker`，Broker 把相容 operation 壓成一份 NDJSON request；Flask 再由 `QueryBatchExecutor` 解包，在全域 worker 上限與來源 `query_policy.max_in_flight` 之內執行。每份 operation 結果各自正規化並只提交一次到 `DataFrameStore`；暖路徑讓地圖、播放、選取工具與 Widgets 共用同一份 packet。
+cache namespace 由目前 mapping contract 推導，包含 source route、canonical 欄位角色、grid profile、resolution policy 與 query contract。只要 mapping 語意改變，就會使用新的 namespace；密碼與純視覺設定不影響資料快取身分。Registry 另從實體來源路由推導不含密鑰的 provider transport key 與容量；共用 provider key 的資料集共用同一個容量池，但仍保有各自的 cache namespace 與 canonical frame。冷路徑由 `FrameDemandService` 合併 logical intent 並直接委派給 `QueryBroker`，Broker 依可用來源槽位把相容 operation 壓成 NDJSON request；Flask 再由 `QueryBatchExecutor` 解包，在全域 worker 上限與來源 `query_policy.max_in_flight` 之內執行，並以完成順序串流、用 `operation_id` 還原身份。每份 operation 結果各自正規化並只提交一次到 `DataFrameStore`；暖路徑讓地圖、播放、選取工具與 Widgets 共用同一份 immutable packet。
 
 只有地圖/query application layer 可以建立 sampled-grid demand。`QueryBroker` 依 `map-current`、`playback-target`、`playback-window`、`widget-interactive`、`widget-auto/background` 排序；`QueryScheduler` 是其他 query family 的獨立 owner，不得再巢狀包住這條鏈。Widget 先查 canonical cache，只有明確允許的 miss 才能經 demand 邊界補一張；表格工具是嚴格唯讀的目前快照快取檢閱器，不能向 source 發 request。
 
-容量有兩個獨立維度：runtime `query_policy.network_concurrency` 限制 Flask `QueryBatchExecutor` 的總 worker 數，source config 的 `query_policy.max_in_flight` 限制同一實體 provider 同時執行的解包 operation。後者未宣告時保守採 `1`；追蹤的 Pipeline Iceberg 範例採 `2`，是依相同日期集合的一路／兩路量測決定。瀏覽器 batch 大小與播放水位不得改變這兩個容量。
+容量有兩個獨立維度：runtime `query_policy.network_concurrency` 限制 Flask `QueryBatchExecutor` 的總 worker 數，source config 的 `query_policy.max_in_flight` 限制同一實體 provider 同時執行的解包 operation。後者未宣告時保守採 `1`；追蹤的 Pipeline Iceberg 範例採 `2`，是依相同日期集合的一路／兩路量測決定。`/api/datasets` 會公開來源容量，瀏覽器 dispatch 前計算 `min(batch_max_operations, source_capacity, available_slots)`；播放水位不得改變這兩個容量。
 
 來源錯誤語意由 Mapping 翻譯。`snapshot.no_data` 把來源特有的缺 partition 錯誤轉成空的 canonical snapshot 並做負快取；`snapshot.retry` 只處理有限次的瞬時錯誤重試；`resolution_policy` 只在來源確實有較粗 LOD 時降級。三者不能混用。
 
@@ -349,7 +351,7 @@ sequenceDiagram
         Adapter-->>Batch: rows
         Batch->>ServerCache: remember packet
       end
-      Batch-->>API: ordered operation result
+      Batch-->>API: completion-order result(operation_id)
       API-->>Broker: NDJSON batch.result
       Broker-->>Demand: 分流 packet(rows + timing)
       Demand->>BrowserCache: commit canonical frame
@@ -556,6 +558,17 @@ python scripts\full_year_cache_benchmark.py `
 | `gfw_full` | 31 | 31 | 31 ms / 56 ms | 30 / 30 / 31 ms | 7 ms source probe | 9.28 km |
 
 六個資料集共 1,818 個可用日期全部完成，沒有失敗。Pipeline Iceberg 全程使用要求的 4 km route，沒有 LOD 降級，server snapshot high-water 也維持在全域 `800,000` canonical rows 上限內。GFW 的 server probe 仍是 bbox MySQL 查詢；瀏覽器 containment reuse 另由快取合約測試保護，選取已快取 viewport 內的 Tile 不得再次發送 transport request。
+
+5081 管路吞吐使用固定 30-frame A/B 基準：
+
+```powershell
+python scripts\sampled_grid_batch_benchmark.py `
+  --dataset pipeline_iceberg.sea_temperature `
+  --frames 30 `
+  --output "$env:TEMP\sampled-grid-batch.json"
+```
+
+最終 2026-07-17 冷快取 checkpoint：`8791` 單路 1.419 fps、雙路 2.569 fps；完整 `5081` batch=2 管路為 1.095 fps，兩張一批的 P95 為 2.278 秒。暖 batch 為 4.512 fps，service lookup P95 為 0.026 ms。來源容量為 2 時，三筆 operation 的 batch 會以 HTTP 400 拒絕。Canonical mapping context 只編譯一次，source packet 在 cache commit 時凍結，後續共用同一份 rows，不再建立第二份完整 row graph；render projection 只發生在傳輸邊界。詳細計時對帳與使用者級播放結果記錄於上方的 sampled-grid 吞吐驗收報告。
 
 JavaScript syntax check：
 

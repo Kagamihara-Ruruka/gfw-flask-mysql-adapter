@@ -1,5 +1,11 @@
 # Runtime Convergence Acceptance - 2026-07-17
 
+> Historical checkpoint: the runtime truth-chain evidence remains useful, but its
+> single-active-batch, preserved-result-order, preemption, source-resolution, test-count,
+> and browser-capacity statements are superseded by
+> [`sampled_grid_throughput_acceptance_2026-07-17.md`](sampled_grid_throughput_acceptance_2026-07-17.md).
+> The newer report is the current truth for sampled-grid transport and playback acceptance.
+
 ## Scope
 
 This checkpoint validates the convergence of the Mapping truth chain, provider-level query batching, streamed result splitting, shared canonical RAM cache, playback replenishment policy, and Runtime ownership boundaries.
@@ -29,7 +35,7 @@ Observed state:
 - The dashboard import registry exposed AIS, EEZ, GFW, and all five Pipeline Iceberg layers as `READY`.
 - Mapping roles for Pipeline Iceberg selected date, cell identity, latitude, longitude, value, resolution, coverage, and data status. Only unrelated columns remained `do not query`.
 - A configured `default_coverage_id` selects the initial coverage. Nested coverage routing chooses one source coverage instead of unioning intersecting AOIs.
-- Sea temperature retains a 4 km configured selection grid while the current provider response explicitly reports a 16 km source fallback as `4 km -> 16 km`. Selection identity and source fallback are not silently conflated.
+- Sea temperature retains a 4 km configured selection grid and the current Mapping route requests the same 4 km source resolution. Configured, routed, and actual resolution remain separate fields so a future provider fallback cannot silently rewrite selection identity.
 
 ## Query and Cache Boundaries
 
@@ -47,11 +53,11 @@ FrameDemandService
 Validated invariants:
 
 - compatible operations can share one physical adapter request;
-- each physical provider has at most one active browser HTTP batch lane;
+- each physical provider has one in-flight operation budget published by Registry and enforced in both browser and Flask;
 - decompressed operations use one Flask-owned worker pool and a provider capacity shared across browser requests;
 - results are consumed incrementally instead of waiting for the whole response;
 - one failed operation does not discard successful siblings;
-- promotion of the first unfinished operation does not restart its active batch, while a later foreground operation may request preemption at a real operation boundary;
+- promotion changes queued priority without restarting active transport, and each completed operation immediately releases a slot for the highest-priority queued work;
 - exact and containing-BBOX requests share an in-flight or completed canonical frame;
 - cache hits do not issue another source request;
 - Widgets and the table remain cache-first, and the table is strictly read-only;
@@ -59,11 +65,11 @@ Validated invariants:
 - dataset identity remains separate even when datasets share a provider lane;
 - configured, routed, and actual resolutions remain distinct identities.
 
-The Flask batch route also passed incremental gzip, operation isolation, preserved result ordering, global worker-bound, and per-provider capacity tests.
+The Flask batch route also passed incremental gzip, operation isolation, completion-order identity restoration through `operation_id`, global worker-bound, and per-provider capacity tests.
 
 ## Historical Full-Year Source Audit
 
-This earlier benchmark used one cold worker, a 30-date warm pass, the finest Mapping resolution available at that run, and interaction probes. It remains evidence for advertised-date availability, but its resolution column predates the provider's current explicit 16 km fallback and is not the current resolution assertion.
+This earlier benchmark used one cold worker, a 30-date warm pass, the finest Mapping resolution available at that run, and interaction probes. It remains evidence for advertised-date availability, but the current sampled-grid throughput report is the authoritative resolution and transport assertion.
 
 | Dataset | Dates | Failures | Cold median / P95 | Warm hits / P95 | Actual resolution |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -85,7 +91,7 @@ The same direct 8791 date workload was measured before exposing source capacity:
 | 1 | 24 | 15.954 s | 1.504 slices/s | 664.5 ms | 690 ms |
 | 2 | 24 | 9.031 s | 2.658 slices/s | 752.3 ms | 845 ms |
 
-Repeating concurrency 1 reproduced 1.504 slices/s. The Pipeline Iceberg source example therefore declares `query_policy.max_in_flight: 2`; absent source policy still defaults to 1. A controlled three-operation cold `/api/query/batch` request improved from 2.994 s on the sequential route to 2.284 s through the capacity-aware executor while preserving operation order. A final post-restart transport-only run under later provider load completed three cold operations and about 19.7 MB of NDJSON in 4.231 s with HTTP 200; one direct 8791 snapshot was then about 2.7 s, confirming provider variance rather than an executor deadlock.
+Repeating concurrency 1 reproduced 1.504 slices/s. The Pipeline Iceberg source example therefore declares `query_policy.max_in_flight: 2`; absent source policy still defaults to 1. The current executor returns completion-order results and restores request identity through `operation_id`; a three-operation browser batch is now rejected when source capacity is 2 instead of creating a 2+1 batch shape. Final controlled measurements are in the current sampled-grid throughput report.
 
 ## Side-Browser Interaction Audit
 
@@ -118,7 +124,7 @@ The architecture suite prohibits direct Widget/Renderer transport, playback-owne
 ## Residual Boundaries
 
 - The Pipeline Iceberg provider still has marginal cold supply and exposes no useful repeated-query result cache. The adapter uses the measured two-operation capacity instead of hiding this with uncontrolled concurrency.
-- The provider currently returns an explicit 16 km source fallback for a configured 4 km request. Virtual-grid identity remains 4 km; correcting source resolution is a separate Mapping/provider contract task, not a playback refill patch.
+- Configured, routed, and actual source resolutions remain separate identities. The current tracked route requests and returns 4 km; any future source fallback must be reported explicitly rather than rewriting the virtual-grid identity.
 - `config/artifacts/layer_mappings.local.json` is Runtime state and remains intentionally ignored by Git. Production deployment must provide or generate its Mapping artifact.
 - The current interactive acceptance baseline is the Codex side browser because external Chrome takeover is unavailable under the current host policy.
 - The aerial backdrop provider returned HTTP 502 during one selected-tile interaction. It is independent of sampled-grid Mapping, playback, and cache correctness and was not patched in this checkpoint.

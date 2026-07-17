@@ -185,4 +185,5 @@ const state = {
     background_network_concurrency: 3,
     batch_max_operations: 3,
   },
+  queryTransportCapacities: {},
 };

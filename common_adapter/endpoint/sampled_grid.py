@@ -4,6 +4,7 @@ import math
 import time
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from dataclasses import replace
 from typing import Any
 
 from common_adapter.endpoint.client import EndpointHttpClient, EndpointRequestError
@@ -12,6 +13,7 @@ from common_adapter.query.registry import query_adapter
 from common_adapter.query.sampled_grid import (
     SAMPLED_GRID_CONTRACT_VERSION,
     canonicalize_sampled_grid_row,
+    compile_sampled_grid_mapping,
 )
 from common_adapter.query.snapshot_cache import (
     CANONICAL_SNAPSHOT_CACHE,
@@ -276,9 +278,10 @@ class SampledGridHttpQueryAdapter:
         self.config = config
         self.dataset = dataset
         self.descriptor = _mapping(dataset.get("sampled_grid"))
+        self.mapping_context = compile_sampled_grid_mapping(dataset)
         self.query = _mapping(self.descriptor.get("query"))
         self.client = EndpointHttpClient.from_config(_mapping(dataset.get("endpoint_source")))
-        self.available_resolutions = _positive_numbers(self.descriptor.get("available_resolutions_km"))
+        self.available_resolutions = list(self.mapping_context.available_resolutions_km)
         self.coverages = [row for row in _list(self.descriptor.get("coverage_areas")) if isinstance(row, dict)]
         self.default_coverage_id = str(self.descriptor.get("default_coverage_id") or "").strip()
         self.dataset_id = str(dataset.get("dataset_id") or dataset.get("data_layer") or "").strip()
@@ -347,7 +350,7 @@ class SampledGridHttpQueryAdapter:
         )
 
         def load() -> SnapshotLoad:
-            source_query_ms = 0.0
+            source_http_ms = 0.0
             degrade_reason = None
             for index, resolution in enumerate(candidates):
                 candidate_identity = self._snapshot_identity(
@@ -365,7 +368,7 @@ class SampledGridHttpQueryAdapter:
                         **_mapping(cached.payload),
                         "degrade_reason": degrade_reason or _mapping(cached.payload).get("degrade_reason"),
                     }
-                    return SnapshotLoad(candidate_identity, payload, cache_hit=True)
+                    return replace(cached, actual_identity=candidate_identity, payload=payload)
 
                 params = _query_parameters(
                     self.query,
@@ -390,18 +393,18 @@ class SampledGridHttpQueryAdapter:
                     query_started = time.perf_counter()
                     try:
                         body = self.client.get_json(path, params=params)
-                        source_query_ms += (time.perf_counter() - query_started) * 1000
+                        source_http_ms += (time.perf_counter() - query_started) * 1000
                         break
                     except EndpointRequestError as exc:
-                        source_query_ms += (time.perf_counter() - query_started) * 1000
+                        source_http_ms += (time.perf_counter() - query_started) * 1000
                         if no_data_policy and _endpoint_error_matches(exc, no_data_policy):
                             return SnapshotLoad(
                                 candidate_identity,
                                 {
                                     "rows": [],
                                     "actual_resolution_km": resolution,
-                                    "source_query_ms": round(source_query_ms, 3),
-                                    "normalize_ms": 0.0,
+                                    "source_http_ms": round(source_http_ms, 3),
+                                    "canonicalize_rows_ms": 0.0,
                                     "degrade_reason": None,
                                     "empty_reason": str(
                                         no_data_policy.get("reason") or "source_snapshot_unavailable"
@@ -429,25 +432,25 @@ class SampledGridHttpQueryAdapter:
                 if fallback_to_next:
                     continue
 
-                normalize_started = time.perf_counter()
+                canonicalize_started = time.perf_counter()
                 canonical_rows = []
                 for row in _list(value_at(body, snapshot.get("rows_path", "rows"))):
                     if not isinstance(row, dict):
                         continue
                     canonical = canonicalize_sampled_grid_row(
                         row,
-                        self.dataset,
+                        self.mapping_context,
                         context={"date": date_value},
                     )
                     canonical_rows.append(canonical)
-                normalize_ms = (time.perf_counter() - normalize_started) * 1000
+                canonicalize_rows_ms = (time.perf_counter() - canonicalize_started) * 1000
                 return SnapshotLoad(
                     candidate_identity,
                     {
                         "rows": canonical_rows,
                         "actual_resolution_km": resolution,
-                        "source_query_ms": round(source_query_ms, 3),
-                        "normalize_ms": round(normalize_ms, 3),
+                        "source_http_ms": round(source_http_ms, 3),
+                        "canonicalize_rows_ms": round(canonicalize_rows_ms, 3),
                         "degrade_reason": degrade_reason,
                     },
                 )
@@ -658,7 +661,6 @@ class SampledGridHttpQueryAdapter:
             candidates = [self.available_resolutions[-1]]
         resolution_policy = _mapping(self.descriptor.get("resolution_policy"))
         allow_fallback = str(resolution_policy.get("fallback") or "none").strip().lower() == "coarser"
-        cache_started = time.perf_counter()
         loaded = self._load_canonical_snapshot(
             date_value=date_value,
             coverage=coverage,
@@ -669,7 +671,6 @@ class SampledGridHttpQueryAdapter:
             resolution_policy=resolution_policy,
             allow_fallback=allow_fallback,
         )
-        cache_lookup_ms = round((time.perf_counter() - cache_started) * 1000, 3)
         source_slice = _mapping(loaded.payload)
         actual_resolution = _number(source_slice.get("actual_resolution_km"))
         if actual_resolution is None:
@@ -691,15 +692,31 @@ class SampledGridHttpQueryAdapter:
             rows = rows[:effective_limit]
         filter_ms = round((time.perf_counter() - filter_started) * 1000, 3)
         cache_stats = CANONICAL_SNAPSHOT_CACHE.stats(self.snapshot_cache_namespace)
-        source_query_ms = 0.0 if loaded.cache_hit else float(source_slice.get("source_query_ms") or 0)
-        normalize_ms = 0.0 if loaded.cache_hit else float(source_slice.get("normalize_ms") or 0)
-        serialize_ms = round(normalize_ms + filter_ms, 3)
+        source_http_ms = 0.0 if loaded.cache_hit else float(source_slice.get("source_http_ms") or 0)
+        canonicalize_rows_ms = (
+            0.0 if loaded.cache_hit else float(source_slice.get("canonicalize_rows_ms") or 0)
+        )
+        packet_projection_started = time.perf_counter()
+        projected_rows = rows
+        packet_projection_ms = round((time.perf_counter() - packet_projection_started) * 1000, 3)
+        tracked_server_ms = sum(
+            (
+                loaded.cache_lookup_ms,
+                loaded.cache_wait_ms,
+                source_http_ms,
+                canonicalize_rows_ms,
+                loaded.cache_commit_ms,
+                loaded.cache_evict_ms,
+                filter_ms,
+                packet_projection_ms,
+            )
+        )
         degrade_reason = source_slice.get("degrade_reason") if actual_resolution > requested_resolution else None
         bounds = requested_bbox or coverage.get("bounds")
         return {
             "row_contract_version": SAMPLED_GRID_CONTRACT_VERSION,
-            "rows": rows,
-            "row_count": len(rows),
+            "rows": projected_rows,
+            "row_count": len(projected_rows),
             "source_row_count": source_row_count,
             "source_slice_row_count": len(_list(source_slice.get("rows"))),
             "limit": effective_limit,
@@ -733,12 +750,19 @@ class SampledGridHttpQueryAdapter:
                 "cache_total_entries": cache_stats["total_entries"],
                 "cache_total_rows": cache_stats["total_rows"],
                 "cache_max_rows": cache_stats["max_total_rows"],
-                "cache_lookup_ms": cache_lookup_ms,
-                "query_ms": round(source_query_ms, 3),
-                "normalize_ms": round(normalize_ms, 3),
+                "cache_lookup_ms": loaded.cache_lookup_ms,
+                "cache_wait_ms": loaded.cache_wait_ms,
+                "cache_commit_ms": loaded.cache_commit_ms,
+                "cache_evict_ms": loaded.cache_evict_ms,
+                "source_http_ms": round(source_http_ms, 3),
+                "canonicalize_rows_ms": round(canonicalize_rows_ms, 3),
+                "canonical_packet_copy_ms": 0.0,
                 "filter_ms": filter_ms,
-                "serialize_ms": serialize_ms,
-                "server_total_ms": round(cache_lookup_ms + filter_ms, 3),
+                "packet_projection_ms": packet_projection_ms,
+                "query_ms": round(source_http_ms, 3),
+                "normalize_ms": round(canonicalize_rows_ms, 3),
+                "serialize_ms": 0.0,
+                "server_total_ms": round(tracked_server_ms, 3),
             },
             "backend": {
                 "kind": "sampled_grid_http",
@@ -780,6 +804,16 @@ class SampledGridHttpQueryAdapter:
             },
             "timing": {
                 "cache_hit": False,
+                "cache_waited": False,
+                "cache_lookup_ms": 0.0,
+                "cache_wait_ms": 0.0,
+                "cache_commit_ms": 0.0,
+                "cache_evict_ms": 0.0,
+                "source_http_ms": 0.0,
+                "canonicalize_rows_ms": 0.0,
+                "canonical_packet_copy_ms": 0.0,
+                "filter_ms": 0.0,
+                "packet_projection_ms": 0.0,
                 "query_ms": 0,
                 "serialize_ms": 0,
                 "server_total_ms": 0,
