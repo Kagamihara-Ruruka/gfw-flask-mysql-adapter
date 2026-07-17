@@ -7,6 +7,7 @@ from pathlib import Path
 from common_adapter.ais.ingest import run_ais_ingest_forever
 from common_adapter.config.paths import runtime_config_path as resolve_runtime_config_path
 from common_adapter.db.connect import import_duckdb_to_mysql, load_config, server_settings
+from common_adapter.endpoint.supervisor import ManagedEndpointSupervisor
 from common_adapter.http.server import run_server, run_server_pair
 from common_adapter.spatial.dependency import check_runtime_dependencies
 from common_adapter.spatial.eez_bootstrap import ensure_eez_runtime_assets
@@ -44,18 +45,31 @@ def command_serve(args: argparse.Namespace) -> int:
     host = args.host or server["host"]
     port = args.port if args.port is not None else server["port"]
     debug = args.debug if args.debug is not None else server["debug"]
-    if args.no_developer_server:
-        run_server(config, host=host, port=port, debug=debug, kill_port_if_busy=server["kill_port_if_busy"])
-    else:
-        developer_port = args.developer_port if args.developer_port is not None else port + 1
-        run_server_pair(
-            config,
-            host=host,
-            port=port,
-            developer_port=developer_port,
-            debug=debug,
-            kill_port_if_busy=server["kill_port_if_busy"],
-    )
+    endpoint_supervisor = ManagedEndpointSupervisor(config)
+    endpoint_statuses = endpoint_supervisor.start()
+    print(json.dumps({"status": "managed_endpoints_checked", "endpoints": endpoint_statuses}, ensure_ascii=False))
+    try:
+        if args.no_developer_server:
+            run_server(
+                config,
+                host=host,
+                port=port,
+                debug=debug,
+                kill_port_if_busy=server["kill_port_if_busy"],
+            )
+        else:
+            developer_port = args.developer_port if args.developer_port is not None else port + 1
+            run_server_pair(
+                config,
+                host=host,
+                port=port,
+                developer_port=developer_port,
+                debug=debug,
+                kill_port_if_busy=server["kill_port_if_busy"],
+                endpoint_supervisor=endpoint_supervisor,
+            )
+    finally:
+        endpoint_supervisor.stop()
     return 0
 
 

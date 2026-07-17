@@ -186,8 +186,14 @@ function createRuntimePerformanceMetrics({
         status: preheaterSnapshot.policyStatus || "FIXED",
         low_watermark: Number(preheaterSnapshot.lowWatermark || 0),
         high_watermark: Number(preheaterSnapshot.highWatermark || 0),
-        startup_watermark: Number(preheaterSnapshot.startupWatermark || 0),
-        resume_watermark: Number(preheaterSnapshot.resumeWatermark || 0),
+        target_watermark: Number(preheaterSnapshot.targetWatermark || 0),
+        immediate_replenishment: Boolean(preheaterSnapshot.immediateReplenishment),
+        tail_mode: Boolean(preheaterSnapshot.tailMode),
+        supply_ratio: Number.isFinite(Number(preheaterSnapshot.supplyRatio))
+          ? Number(preheaterSnapshot.supplyRatio)
+          : null,
+        capacity_frames: Number(preheaterSnapshot.ramBudgetFrames || 0),
+        playback_ram_budget_bytes: Number(preheaterSnapshot.playbackRamBudgetBytes || 0),
         degradation_reason: String(preheaterSnapshot.degradationReason || ""),
       }),
       summary,

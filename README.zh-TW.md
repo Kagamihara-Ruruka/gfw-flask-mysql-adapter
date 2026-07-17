@@ -22,6 +22,8 @@ Clock Domain 與可信效能指標校正後的回歸結果記錄在
 [`benchmarks/clock_domain_acceptance_2026-07-16.md`](benchmarks/clock_domain_acceptance_2026-07-16.md)。
 自適應水位與最終全年冷／暖快取驗收結果記錄在
 [`benchmarks/adaptive_watermark_acceptance_2026-07-16.md`](benchmarks/adaptive_watermark_acceptance_2026-07-16.md)。
+Mapping、QueryBroker、共用快取收斂與目前側邊瀏覽器驗收結果記錄在
+[`benchmarks/runtime_convergence_acceptance_2026-07-17.md`](benchmarks/runtime_convergence_acceptance_2026-07-17.md)。
 
 ## 專案邊界
 
@@ -140,7 +142,7 @@ Hive 與 Spark 目前只是明確保留的 unsupported stub。這代表架構上
 - active websocket/read-model route 提供的 AIS 船舶位置
 - active spatial route 提供的 EEZ 經濟海域邊界
 
-主資料圖層由啟用狀態控制，可以全部關閉；未勾選的 imported layer 不得查詢也不得渲染。EEZ 是獨立 overlay。圖層可拖拉排序，齒輪會依 Layer Contract 暴露 metric、resolution、顏色、alpha 與顯示模式。
+主資料圖層由啟用狀態控制，可以全部關閉；未勾選的 imported layer 不得查詢也不得渲染。EEZ 是獨立 overlay。圖層可拖拉排序，齒輪會依 Layer Contract 暴露 metric、resolution、顏色、alpha 與顯示模式。若 sampled-grid 有巢狀 coverage，Mapping 的 `default_coverage_id` 決定初始視角，viewport request 則只路由到一個實際 coverage，不能把多個 AOI 聯集後造成錯誤 LOD 降級。
 
 ## 時間與播放
 
@@ -171,7 +173,7 @@ Hive 與 Spark 目前只是明確保留的 unsupported stub。這代表架構上
 
 - 播放時間軸：播放交付策略與 `playbackRate` 決定播放器正在追哪一張真實 snapshot。分析模式已實作；流暢與嚴格模式是已暴露但未啟用的保留端口。
 - Frame buffer：分析模式會回報 `fetching/missing/ready/waiting/failed` 邊界；`LifecycleEventLog` 會把 `BUFFER_ENTERED`、`BUFFER_RESUMED`、`FRAME_VISIBLE` 與 Queue/HTTP/cache/render 分開觀測。
-- 資料快取 / 預熱：獨立生產者維持冷啟動、恢復及 ready-ahead 高低水位；預設由可信供需、cache-ready P95、剩餘切片與 RAM 預算自適應計算，也可切回固定基準水位。scheduler 並行數仍獨立限制實際查詢工作。
+- 資料快取 / 預熱：獨立生產者只維持 ready-ahead 高低水位；自適應模式取使用者 RAM 上限的 50% 作播放庫存容量，再以容量的 1/3、2/3 作低高補貨門檻，也可切回固定 10/15 水位。水位只管理背景庫存，不決定播放器能否前進。
 - Frame 補間：播放可選用現有 layer crossfade 作為純視覺補間，也可在播放時直接切換真實 snapshot；真正資料 blend 仍保留給未來由 render artifact 支撐的 `requestAnimationFrame` 循環。
 - 視覺效果：淡入淡出只修飾 layer 替換；高斯模糊只限縮放 / LOD 重算時遮罩。
 - 渲染壓力與測速：renderer policy 與儀表板測速 Widget 只觀測或降級，不擁有播放 clock；`consumption_rate`、`supply_rate`、`cache_ready_latency_p95`、`ready_ahead_slices` 與 `ready_ahead_seconds` 由 Runtime 統一提供。
@@ -189,8 +191,8 @@ python scripts/playback_contract_smoke.py
 - progressive cold cache 會回報 `fetching 0 / 1`；target packet ready 後先記錄 `BUFFER_RESUMED`，然後才記錄 `FRAME_VISIBLE`。
 - progressive request 失敗會回報 `failed` 並留下 lifecycle error event；若 target frame 長時間等不到，會以真實 monotonic 30 秒 timeout 停止播放，而不是受倍率影響或無限等待。
 - 被取消或被取代的 progressive preheat，不得把 late progress、status 或 failure state 套到目前播放 generation。
-- 冷快取播放先進入 `PREPARING`，累積至冷啟動水位才開始；這段準備等待不計入播放停頓。播放期間由獨立預熱器逐張補足至高水位。
-- 只有當下 target 缺少時才可進入 `BUFFERING`；恢復時必須累積至恢復水位，不再使用一張到貨即重播的 gate。手動 Seek 仍只提升目標影格，不進入冷啟動準備。
+- 冷快取播放先進入 `PREPARING`，只等待下一張真實 target；這段準備等待不計入播放停頓。播放期間由獨立預熱器在背景補足至高水位。
+- 只有當下 target 缺少時才可進入 `BUFFERING`；target 一到貨就恢復，不等待低水位或高水位。手動 Seek 也只提升目標影格。
 - `AdaptiveWatermarkController` 只讀 `RuntimePerformanceMetrics` 與 `DataFrameStore` 容量快照；它不執行 transport、不改變 query concurrency，也不清除快取。UI 只能預覽或顯示目前策略，只有 Preheater reconcile 能套用策略。
 - `fluid` 是唯一允許把 elapsed time 映射到未來日期的 step mode；目前仍保留在 disabled 的流暢交付端口後面。
 - prefetch、render、interpolation、blur 與測速觀測只供應或修飾 frame，不擁有播放日期 clock。
@@ -202,6 +204,7 @@ python scripts/playback_contract_smoke.py
 | `static/js/playback/playback-delivery-policy.js` | 播放交付策略：analysis / smooth / strict 時間軸語意的唯一上層入口。目前只啟用分析模式；流暢與嚴格模式明確標示為保留端口。 |
 | `static/js/core/clock-domain.js` | DI 注入的 monotonic、playback 與 render clocks；播放倍率只存在 playback cadence／consumption rate 計算。 |
 | `static/js/playback/playback-scheduler.js` | 純時間線計算：cadence、due frame、speed/rate 映射與目標日期 index。 |
+| `static/js/playback/playback-runtime-controller.js` | 播放子系統的公開 facade，也是 timer、generation、timeline 與 session callback 的唯一 owner；UI 不直接存取 Engine 或 Preheater。 |
 | `static/js/playback/playback-time-policy.js` | 純 timeout policy；buffer timeout 使用 monotonic elapsed time，不讀播放倍率。 |
 | `static/js/playback/playback-frame-buffer.js` | frame readiness 決策：missing/fetching/ready/waiting/failed 狀態 packet、target-frame buffering，以及最近 ready frame 選擇。 |
 | `static/js/playback/playback-renderer.js` | 播放器到渲染的 handoff：設定選取日期、同步控制狀態、呼叫既有 active-layer reload。 |
@@ -209,10 +212,13 @@ python scripts/playback_contract_smoke.py
 | `static/js/services/frame-identity.js` | canonical BBOX signature、request intent key、scope key 與回傳 frame key 的唯一建構器。 |
 | `static/js/services/data-frame-store.js` | Canonical RAM frame store：intent/frame alias、局部 coverage 合成、pin/release、LRU 淘汰與 failure state；不執行 transport。 |
 | `static/js/services/layer-query-coordinator.js` | QueryScheduler：相同 intent 單次執行、queued task 提升、consumer scope 取消與前景保留槽。 |
+| `static/js/services/query-policy-controller.js` | DI 建立的 query policy 命令邊界；維持總並行／背景並行不變量，也是 UI 改動策略後喚醒 scheduler 的唯一入口。 |
+| `static/js/services/query-broker.js` | 實體來源級 transport owner：跨資料集合併相容 operation、串流分流結果，並保證同一 provider key 同時最多一條 HTTP batch。provider key 不取代 dataset/cache identity。 |
 | `static/js/services/frame-demand-service.js` | sampled-grid 唯一 transport 邊界；先查 `DataFrameStore`，miss 才排程，回傳後只提交一次 canonical packet。 |
+| `static/js/services/frame-demand-decorators.js` | 由 DI 組裝的 observability decorator；只記錄 demand 邊界耗時與結果，不改變快取、排程、transport、回傳值或錯誤語意。 |
 | `static/js/playback/playback-preheater.js` | 長時間存在的生產者，獨立維護 ready-ahead 高低水位，不擁有播放 clock。 |
 | `static/js/playback/adaptive-watermark-controller.js` | DI 建立的有狀態 policy owner；依可信供需、cache-ready P95、播放消耗率與 RAM 預算決定有效水位，並以 monotonic hysteresis 防止頻繁下降。 |
-| `static/js/playback/playback-engine.js` | frame 消費者與播放生命週期 owner；擁有冷啟動準備、target miss 緩衝、恢復 gate、可見 frame pin 與相關 lifecycle event。 |
+| `static/js/playback/playback-engine.js` | frame 消費者與播放生命週期 owner；擁有下一 target 準備、target miss 緩衝、可見 frame pin 與相關 lifecycle event。播放就緒只看下一 target，不讀補貨水位。 |
 | `static/js/playback/playback-cache-service.js` | 播放快取設定與狀態 facade；只暴露水位與 RAM 容量，不擁有 transport 或 batch pipeline。 |
 | `static/js/services/lifecycle-event-log.js` | 有界事件記錄、Run 匯出，以及 Queue/HTTP/cache/render/stall 體感指標。 |
 | `static/js/services/runtime-performance-metrics.js` | 由 lifecycle、preheater 與 engine 組合唯一可信的供需、尾端延遲、ready-ahead 與 buffer wait snapshot。 |
@@ -222,14 +228,17 @@ python scripts/playback_contract_smoke.py
 
 ```mermaid
 flowchart LR
-  UI["地圖與播放命令"] --> Engine["PlaybackEngine"]
-  Engine -->|"frame demand"| Demand["FrameDemandService"]
+  UI["播放命令"] --> Runtime["PlaybackRuntime facade"]
+  Runtime --> Engine["PlaybackEngine"]
+  MapApp["地圖 application flow"] --> Demand["FrameDemandService + tracing decorator"]
+  Engine -->|"frame demand"| Demand
   Preheater["PlaybackPreheater"] -->|"水位補充 demand"| Demand
   Metrics["RuntimePerformanceMetrics"] --> Watermark["AdaptiveWatermarkController"]
   Store --> Watermark
   Watermark -->|"有效高低水位"| Preheater
   Demand --> Scheduler["QueryScheduler"]
-  Scheduler --> Adapter["Flask API + Mapping adapter"]
+  Scheduler --> Broker["QueryBroker：來源級合批與串流分流"]
+  Broker --> Adapter["Flask API + Mapping adapter"]
   Adapter --> Store["DataFrameStore：canonical RAM frames"]
   Store --> Renderer["Sampled-grid renderer：WebGL/Canvas draw"]
   Store --> Widgets["Widgets：cache-first 消費者"]
@@ -250,14 +259,14 @@ AIS live 模式目前不走日期播放器。
 播放快取是 sampled-grid 查詢管線的一部分：
 
 - `static/js/playback/playback-cache-service.js` 提供水位、容量與狀態顯示；實際補充生命週期由 `PlaybackPreheater` 擁有。
-- `static/js/playback/playback-controls.js` 保留控制器事件、按鈕狀態、播放節奏與設定視窗。
+- `static/js/playback/playback-controls.js` 保留按鈕、狀態投影與設定視窗；播放節奏與 timer 由 `PlaybackRuntime` 擁有。
 - 預熱器在圖層、日期範圍與查詢 scope 確定後獨立運作；低於低水位時非同步補到高水位。
-- `AdaptiveWatermarkController` 以固定 5/10 與至少 10 張冷啟動樣本作為樣本不足時的基準；指標可信後，使用播放消耗率、供應率、cache-ready P95、剩餘切片、尾端安全係數與 frame-size P95 計算冷啟動、恢復及高低候選水位。
-- 有效高水位受設定上限與 `DataFrameStore` RAM／entry 預算共同限制。水位提高可立即生效；降低使用 monotonic hold 與有限步長，避免短期波動造成來回震盪。
+- `AdaptiveWatermarkController` 在尚無 frame-size 樣本時使用固定低 10 / 高 15；有樣本後取設定 RAM 上限的 50% 換算播放庫存容量，低水位為容量 1/3、高水位為 2/3。供需比低於 1 只觸發提前補貨，不改變播放 gate。
+- 有效高水位受 `DataFrameStore` RAM／entry 預算共同限制。水位提高可立即生效；降低使用 monotonic hold 與有限步長，避免短期波動造成來回震盪。
 - 高水位代表目標 ready-ahead，不代表開相同數量的 HTTP。網路並行數與前景保留槽仍由 `QueryScheduler` 單獨管理。
 - 設定頁可在自適應與固定水位間切換；切換只重算 policy，不會清除已完成的 Canonical frame。
-- 預熱器 `FETCHING` 與播放器 `PLAYING` 可同時成立。冷啟動使用 `PREPARING`；只有 target frame miss 且前方已無 ready frame 時，播放器才進入 `BUFFERING`，並累積至恢復水位後才繼續。
-- 快取有容量上限，預設 2 GB，可在播放設定中調整。
+- 預熱器 `FETCHING` 與播放器 `PLAYING` 可同時成立。冷啟動 `PREPARING` 與中途 `BUFFERING` 都只等待下一 target；背景水位不構成播放資格門檻。
+- 快取有容量上限，瀏覽器預設 512 MB，可在播放設定中調整。
 - 快取生命週期以瀏覽器頁面為主；關閉頁面後可視為釋放。
 - HTTP sampled-grid adapter 另有 server-side canonical source snapshot cache；`query_policy.snapshot_cache_max_rows` 是跨 dataset namespace 的全域 row budget，不會讓每個資料集各自無上限常駐。
 
@@ -271,7 +280,7 @@ AIS live 模式目前不走日期播放器。
 mapping-aware cache namespace + date + bbox + limit + columns + resolution/LOD context
 ```
 
-cache namespace 由目前 mapping contract 推導，包含 source route、canonical 欄位角色、grid profile、resolution policy 與 query contract。只要 mapping 語意改變，就會使用新的 namespace；密碼與純視覺設定不影響資料快取身分。冷路徑由 `FrameDemandService` 要求 `QueryScheduler` 排入唯一 source request，再由 `DataFrameStore` 保存 canonical 結果；暖路徑讓地圖、播放、選取工具與 Widgets 共用同一份 packet。
+cache namespace 由目前 mapping contract 推導，包含 source route、canonical 欄位角色、grid profile、resolution policy 與 query contract。只要 mapping 語意改變，就會使用新的 namespace；密碼與純視覺設定不影響資料快取身分。Registry 另從實體來源路由推導不含密鑰的 provider transport key；共用 provider key 的資料集可共用序列化 batch lane，但仍保有各自的 cache namespace 與 canonical frame。冷路徑由 `FrameDemandService` 要求 `QueryScheduler` 排入 intent，再由 `QueryBroker` 合批並串流分流，最後由 `DataFrameStore` 保存 canonical 結果；暖路徑讓地圖、播放、選取工具與 Widgets 共用同一份 packet。
 
 只有地圖/query layer 擁有 source transport。地圖 request 的 scheduler 優先序最高；Widget 先查 canonical cache，miss 時只能透過 coordinator 排入較低優先序的 fill。表格工具是嚴格唯讀的目前快照快取檢閱器，不能向 source 發 request。
 
@@ -282,6 +291,7 @@ sequenceDiagram
   autonumber
   actor User as 使用者
   participant UI as 儀表板 UI
+  participant Runtime as PlaybackRuntime
   participant Playback as PlaybackEngine
   participant Preload as PlaybackPreheater
   participant Demand as FrameDemandService
@@ -294,7 +304,8 @@ sequenceDiagram
   participant Map as Leaflet Map
 
   User->>UI: 按下播放
-  UI->>Playback: setPlayback(true)
+  UI->>Runtime: start(播放命令)
+  Runtime->>Playback: configure + start
   Playback->>Playback: 啟動時間線(交付策略 + display cadence + playback rate)
   Preload->>Preload: 維持 ready-ahead 高低水位
   Preload->>Demand: demand 缺少的窗口 frames
@@ -508,28 +519,28 @@ python -m unittest discover -s tests
 node --test tests/*.test.mjs
 ```
 
-以 6 條冷查詢 worker、30 日暖窗、拖曳視窗、選格與 LOD probe 稽核資料集完整可用日期：
+以單路冷查詢 worker、30 日暖窗、拖曳視窗、選格與 LOD probe 稽核資料集完整可用日期。單路預設用來量測實體來源，不再重現已由 Runtime Broker 隔離的來源過度並行競爭：
 
 ```powershell
 python scripts\full_year_cache_benchmark.py `
   --dataset pipeline_iceberg.fishing_hours `
-  --concurrency 6 `
+  --concurrency 1 `
   --warm-window 30 `
   --output "$env:TEMP\rrkal-full-year.json"
 ```
 
-2026-07-15 本機 checkpoint，每套資料集均先重啟服務清空 server cache，並使用來源宣告的最細解析度：
+2026-07-17 本機 checkpoint，使用 Mapping 最細解析度、單路冷查詢與 30 日暖快取：
 
-| 資料集 | 可用日期 | 冷跑完成 | 冷跑中位 / p95 | 暖窗命中 | 選格 |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `pipeline_iceberg.fishing_hours` | 366 | 366 | 2.90 s / 4.05 s | 29 / 30 | 27 ms，cache hit |
-| `pipeline_iceberg.chlor_a` | 355 | 355 | 2.92 s / 4.21 s | 29 / 30 | 26 ms，cache hit |
-| `pipeline_iceberg.ocean_productivity_score` | 355 | 355 | 3.58 s / 4.67 s | 30 / 30 | 32 ms，cache hit |
-| `pipeline_iceberg.sea_temperature` | 356 | 356 | 3.65 s / 5.02 s | 30 / 30 | 30 ms，cache hit |
-| `pipeline_iceberg.sustainability_pressure` | 355 | 355 | 3.32 s / 4.33 s | 30 / 30 | 24 ms，cache hit |
-| `gfw_full` | 31 | 31 | 68 ms / 106 ms | 30 / 30 | 16 ms server probe |
+| 資料集 | 日期 | 冷跑完成 | 冷跑中位 / p95 | 暖窗命中 / p95 | 選格 | 實際解析度 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `pipeline_iceberg.fishing_hours` | 366 | 366 | 781 ms / 1,113 ms | 30 / 30 / 67 ms | 30 ms，cache hit | 4 km |
+| `pipeline_iceberg.chlor_a` | 355 | 355 | 793 ms / 1,088 ms | 30 / 30 / 61 ms | 13 ms，cache hit | 4 km |
+| `pipeline_iceberg.ocean_productivity_score` | 355 | 355 | 803 ms / 1,183 ms | 30 / 30 / 65 ms | 14 ms，cache hit | 4 km |
+| `pipeline_iceberg.sea_temperature` | 356 | 356 | 781 ms / 1,006 ms | 30 / 30 / 63 ms | 26 ms，cache hit | 4 km |
+| `pipeline_iceberg.sustainability_pressure` | 355 | 355 | 762 ms / 1,190 ms | 30 / 30 / 75 ms | 16 ms，cache hit | 4 km |
+| `gfw_full` | 31 | 31 | 31 ms / 56 ms | 30 / 30 / 31 ms | 7 ms source probe | 9.28 km |
 
-Pipeline Iceberg 的 server snapshot high-water 維持在 `800,000` canonical rows 以下；全年稽核時 Flask worker set 約由 1.53 GB 降到 0.89 GB。GFW 的 server probe 仍是 bbox MySQL 查詢，瀏覽器的 containment reuse 另由 `tests/playback_contracts.test.mjs` 保護：選取已快取 viewport 內的 Tile 不得再次發送 transport request。
+六個資料集共 1,818 個可用日期全部完成，沒有失敗。Pipeline Iceberg 全程使用要求的 4 km route，沒有 LOD 降級，server snapshot high-water 也維持在全域 `800,000` canonical rows 上限內。GFW 的 server probe 仍是 bbox MySQL 查詢；瀏覽器 containment reuse 另由快取合約測試保護，選取已快取 viewport 內的 Tile 不得再次發送 transport request。
 
 JavaScript syntax check：
 

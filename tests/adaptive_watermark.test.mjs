@@ -26,13 +26,9 @@ function baseConfig(patch = {}) {
     watermarkStrategy: "adaptive",
     adaptiveWatermark: {
       minimumSupplySamples: 2,
-      minimumStartupSamples: 10,
       latencySafetyFactor: 1.35,
       reserveSlices: 2,
       maxSupplyDeficitFactor: 2,
-      lowRatio: 0.5,
-      maxHighWatermark: 60,
-      ramBudgetFraction: 0.75,
       defaultFrameBytes: 4 * 1024 * 1024,
       decreaseHoldMs: 10000,
       decreaseStep: 3,
@@ -43,14 +39,25 @@ function baseConfig(patch = {}) {
 }
 
 const fixedPolicy = {
-  lowWatermark: 5,
-  highWatermark: 10,
-  startupWatermark: 5,
-  resumeWatermark: 5,
+  lowWatermark: 10,
+  highWatermark: 15,
   windowBehind: 1,
 };
 
-test("adaptive watermark falls back to the configured policy until metrics are trustworthy", () => {
+const emptyCache = {
+  maxBytes: 4 * 1024 * 1024 * 1024,
+  maxEntries: 0,
+  estimatedFrameBytes: 0,
+  averageFrameBytes: 0,
+};
+
+const observedCache = {
+  maxBytes: 4 * 1024 * 1024 * 1024,
+  maxEntries: 0,
+  estimatedFrameBytes: 128 * 1024 * 1024,
+};
+
+test("an unobserved dataset uses the configured warm-up watermarks", () => {
   const { calculate } = loadController();
   const policy = calculate({
     fixedPolicy,
@@ -61,66 +68,39 @@ test("adaptive watermark falls back to the configured policy until metrics are t
       supply_samples: 1,
       cache_ready_latency_samples: 1,
     },
-    cacheSnapshot: {
-      maxBytes: 2 * 1024 * 1024 * 1024,
-      maxEntries: 0,
-      estimatedFrameBytes: 4 * 1024 * 1024,
-    },
+    cacheSnapshot: emptyCache,
     config: baseConfig(),
   });
 
   assert.equal(policy.status, "WARMING");
+  assert.equal(policy.hasObservedFrameSize, false);
+  assert.equal(policy.ramBudgetFrames, null);
+  assert.equal(policy.lowWatermark, 10);
+  assert.equal(policy.highWatermark, 15);
+  assert.equal(policy.targetWatermark, 15);
+  assert.equal(policy.immediateReplenishment, false);
+});
+
+test("adaptive capacity uses half of RAM with one-third and two-thirds watermarks", () => {
+  const { calculate } = loadController();
+  const policy = calculate({
+    fixedPolicy,
+    remainingSlices: 365,
+    metrics: {},
+    cacheSnapshot: observedCache,
+    config: baseConfig(),
+  });
+
+  assert.equal(policy.status, "WARMING");
+  assert.equal(policy.hasObservedFrameSize, true);
+  assert.equal(policy.playbackRamBudgetBytes, 2 * 1024 * 1024 * 1024);
+  assert.equal(policy.ramBudgetFrames, 16);
   assert.equal(policy.lowWatermark, 5);
   assert.equal(policy.highWatermark, 10);
-  assert.equal(policy.startupWatermark, 10);
-  assert.equal(policy.resumeWatermark, 5);
+  assert.equal(policy.targetWatermark, 10);
 });
 
-test("an empty cache uses the configured conservative frame-size estimate", () => {
-  const { calculate } = loadController();
-  const policy = calculate({
-    fixedPolicy,
-    metrics: {},
-    cacheSnapshot: {
-      maxBytes: 2 * 1024 * 1024 * 1024,
-      maxEntries: 0,
-      estimatedFrameBytes: 0,
-      averageFrameBytes: 0,
-    },
-    config: baseConfig(),
-  });
-
-  assert.equal(policy.estimatedFrameBytes, 4 * 1024 * 1024);
-  assert.equal(policy.ramBudgetFrames, 382);
-});
-
-test("tail latency and a supply deficit raise the adaptive high watermark", () => {
-  const { calculate } = loadController();
-  const policy = calculate({
-    fixedPolicy,
-    metrics: {
-      consumption_rate: 4,
-      supply_rate: 2,
-      cache_ready_latency_p95: 5000,
-      supply_samples: 6,
-      cache_ready_latency_samples: 6,
-    },
-    cacheSnapshot: {
-      maxBytes: 2 * 1024 * 1024 * 1024,
-      maxEntries: 0,
-      estimatedFrameBytes: 4 * 1024 * 1024,
-    },
-    config: baseConfig(),
-  });
-
-  assert.equal(policy.status, "ADAPTIVE");
-  assert.equal(policy.supplyDeficitFactor, 2);
-  assert.equal(policy.tailDemandSlices, 54);
-  assert.equal(policy.highWatermark, 56);
-  assert.equal(policy.lowWatermark, 28);
-});
-
-test("cold startup accounts for the unsupplied tail and reports a capped degradation", () => {
+test("supply ratio is only an early refill trigger", () => {
   const { calculate } = loadController();
   const policy = calculate({
     fixedPolicy,
@@ -132,21 +112,23 @@ test("cold startup accounts for the unsupplied tail and reports a capped degrada
       supply_samples: 6,
       cache_ready_latency_samples: 6,
     },
-    cacheSnapshot: {
-      maxBytes: 2 * 1024 * 1024 * 1024,
-      estimatedFrameBytes: 4 * 1024 * 1024,
-    },
+    cacheSnapshot: observedCache,
     config: baseConfig(),
   });
 
-  assert.equal(policy.startupDemandSlices, 77);
-  assert.equal(policy.startupWatermark, 60);
-  assert.equal(policy.resumeWatermark, 56);
-  assert.equal(policy.sustainable, false);
-  assert.equal(policy.degradationReason, "startup_capacity_capped");
+  assert.equal(policy.status, "ADAPTIVE");
+  assert.equal(policy.reason, "supply_deficit");
+  assert.equal(policy.supplyRatio, 0.5);
+  assert.equal(policy.immediateReplenishment, true);
+  assert.equal(policy.lowWatermark, 5);
+  assert.equal(policy.highWatermark, 10);
+  assert.equal(policy.targetWatermark, 10);
+  assert.equal(policy.tailDemandSlices, 54);
+  assert.equal(policy.deficitCoverageSlices, 77);
+  assert.equal(policy.degradationReason, "supply_below_consumption");
 });
 
-test("a sustainable source keeps the configured startup and resume gates", () => {
+test("a sustainable source waits for the low watermark", () => {
   const { calculate } = loadController();
   const policy = calculate({
     fixedPolicy,
@@ -158,253 +140,142 @@ test("a sustainable source keeps the configured startup and resume gates", () =>
       supply_samples: 6,
       cache_ready_latency_samples: 6,
     },
-    cacheSnapshot: {
-      maxBytes: 2 * 1024 * 1024 * 1024,
-      estimatedFrameBytes: 4 * 1024 * 1024,
-    },
+    cacheSnapshot: observedCache,
     config: baseConfig(),
   });
 
-  assert.equal(policy.startupWatermark, 5);
-  assert.equal(policy.resumeWatermark, 5);
   assert.equal(policy.sustainable, true);
+  assert.equal(policy.immediateReplenishment, false);
+  assert.equal(policy.lowWatermark, 5);
+  assert.equal(policy.highWatermark, 10);
+  assert.equal(policy.targetWatermark, 10);
   assert.equal(policy.degradationReason, "");
 });
 
-test("speed changes during playback do not turn the remaining timeline into a startup buffer", () => {
+test("terminal tail fetches only the remaining dataset frames", () => {
+  const { calculate } = loadController();
+  const policy = calculate({
+    fixedPolicy,
+    remainingSlices: 4,
+    metrics: {
+      consumption_rate: 4,
+      supply_rate: 1,
+      cache_ready_latency_p95: 10000,
+      supply_samples: 6,
+      cache_ready_latency_samples: 6,
+    },
+    cacheSnapshot: observedCache,
+    config: baseConfig(),
+  });
+
+  assert.equal(policy.status, "TAIL");
+  assert.equal(policy.reason, "terminal_tail");
+  assert.equal(policy.targetWatermark, 4);
+  assert.equal(policy.tailMode, true);
+  assert.equal(policy.sustainable, null);
+  assert.equal(policy.degradationReason, "");
+});
+
+test("maxEntries remains an absolute cap after RAM conversion", () => {
+  const { calculate } = loadController();
+  const policy = calculate({
+    fixedPolicy,
+    remainingSlices: 365,
+    metrics: {},
+    cacheSnapshot: { ...observedCache, maxEntries: 9 },
+    config: baseConfig(),
+  });
+
+  assert.equal(policy.ramBudgetFrames, 9);
+  assert.equal(policy.lowWatermark, 3);
+  assert.equal(policy.highWatermark, 6);
+});
+
+test("playback lifecycle status cannot alter RAM-derived watermarks", () => {
   const { calculate } = loadController();
   const metrics = {
-    playback_status: "PLAYING",
     consumption_rate: 10 / 7,
     supply_rate: 1.2,
     cache_ready_latency_p95: 10000,
     supply_samples: 15,
     cache_ready_latency_samples: 15,
   };
-  const cacheSnapshot = {
-    maxBytes: 2 * 1024 * 1024 * 1024,
-    estimatedFrameBytes: 4 * 1024 * 1024,
-  };
   const active = calculate({
     fixedPolicy,
     remainingSlices: 188,
-    metrics,
-    cacheSnapshot,
+    metrics: { ...metrics, playback_status: "PLAYING" },
+    cacheSnapshot: observedCache,
     config: baseConfig(),
   });
-  const cold = calculate({
+  const preparing = calculate({
     fixedPolicy,
     remainingSlices: 188,
     metrics: { ...metrics, playback_status: "PREPARING" },
-    cacheSnapshot,
+    cacheSnapshot: observedCache,
     config: baseConfig(),
   });
 
-  assert.equal(active.startupPhase, false);
-  assert.equal(active.highWatermark, 25);
-  assert.equal(active.startupWatermark, 5);
-  assert.equal(active.degradationReason, "supply_below_consumption");
-  assert.equal(cold.startupPhase, true);
-  assert.equal(cold.highWatermark, 51);
+  assert.equal(active.preparing, false);
+  assert.equal(preparing.preparing, true);
+  assert.equal(active.lowWatermark, 5);
+  assert.equal(preparing.lowWatermark, 5);
+  assert.equal(active.highWatermark, 10);
+  assert.equal(preparing.highWatermark, 10);
 });
 
-test("the DataFrameStore RAM budget is a hard cap for adaptive watermarks", () => {
-  const { calculate } = loadController();
-  const policy = calculate({
-    fixedPolicy,
-    metrics: {
-      consumption_rate: 4,
-      supply_rate: 1,
-      cache_ready_latency_p95: 10000,
-      supply_samples: 6,
-      cache_ready_latency_samples: 6,
-    },
-    cacheSnapshot: {
-      maxBytes: 64 * 1024 * 1024,
-      maxEntries: 0,
-      estimatedFrameBytes: 16 * 1024 * 1024,
-    },
-    config: baseConfig(),
-  });
-
-  assert.equal(policy.ramBudgetFrames, 2);
-  assert.equal(policy.highWatermark, 2);
-  assert.equal(policy.lowWatermark, 1);
-  assert.equal(policy.startupWatermark, 2);
-  assert.equal(policy.resumeWatermark, 2);
-  assert.equal(policy.reason, "ram_budget_capped");
-});
-
-test("the configured maximum is reported separately from the RAM budget", () => {
-  const { calculate } = loadController();
-  const policy = calculate({
-    fixedPolicy,
-    metrics: {
-      consumption_rate: 4,
-      supply_rate: 1,
-      cache_ready_latency_p95: 10000,
-      supply_samples: 6,
-      cache_ready_latency_samples: 6,
-    },
-    cacheSnapshot: {
-      maxBytes: 2 * 1024 * 1024 * 1024,
-      maxEntries: 0,
-      estimatedFrameBytes: 4 * 1024 * 1024,
-    },
-    config: baseConfig(),
-  });
-
-  assert.ok(policy.ramBudgetFrames > 60);
-  assert.equal(policy.highWatermark, 60);
-  assert.equal(policy.reason, "max_watermark_capped");
-});
-
-test("the smaller configured cap wins when demand exceeds both limits", () => {
-  const { calculate } = loadController();
-  const policy = calculate({
-    fixedPolicy,
-    metrics: {
-      consumption_rate: 4,
-      supply_rate: 1,
-      cache_ready_latency_p95: 100000,
-      supply_samples: 100,
-      cache_ready_latency_samples: 100,
-    },
-    cacheSnapshot: {
-      maxBytes: 2 * 1024 * 1024 * 1024,
-      maxEntries: 0,
-      estimatedFrameBytes: 7 * 1024 * 1024,
-    },
-    config: baseConfig(),
-  });
-
-  assert.ok(policy.ramBudgetFrames > 60);
-  assert.equal(policy.highWatermark, 60);
-  assert.equal(policy.reason, "max_watermark_capped");
-});
-
-test("watermark hysteresis raises immediately and lowers gradually on monotonic time", () => {
+test("controller forwards dataset partition context and publishes the refill policy", () => {
   const { Controller } = loadController();
-  let now = 0;
-  let config = baseConfig();
-  let metrics = {
-    run_id: "run-1",
-    consumption_rate: 4,
-    supply_rate: 2,
-    cache_ready_latency_p95: 5000,
-    supply_samples: 6,
-    cache_ready_latency_samples: 6,
-  };
-  const events = [];
-  const controller = new Controller({
-    metricsProvider: () => metrics,
-    cacheSnapshotProvider: () => ({
-      maxBytes: 2 * 1024 * 1024 * 1024,
-      maxEntries: 0,
-      estimatedFrameBytes: 4 * 1024 * 1024,
-    }),
-    configProvider: () => config,
-    eventLog: { record: (type, detail) => events.push({ type, ...detail }) },
-    clock: { now: () => now },
-  });
-
-  assert.equal(controller.resolve({ fixedPolicy }).highWatermark, 56);
-  metrics = {
-    ...metrics,
-    consumption_rate: 1,
-    supply_rate: 8,
-    cache_ready_latency_p95: 100,
-  };
-  assert.equal(controller.resolve({ fixedPolicy }).highWatermark, 56);
-  assert.equal(controller.snapshot().reason, "decrease_hysteresis");
-
-  now = 10000;
-  assert.equal(controller.resolve({ fixedPolicy }).highWatermark, 53);
-  assert.equal(controller.snapshot().reason, "decrease_step");
-  assert.equal(controller.resolve({ fixedPolicy }).highWatermark, 53);
-  assert.equal(controller.snapshot().reason, "decrease_interval");
-
-  now = 11000;
-  assert.equal(controller.resolve({ fixedPolicy }).highWatermark, 50);
-  assert.equal(controller.snapshot().reason, "decrease_step");
-
-  metrics = { ...metrics, run_id: "run-2" };
-  assert.equal(controller.resolve({ fixedPolicy }).highWatermark, 10);
-
-  config = { ...config, watermarkStrategy: "fixed" };
-  const fixed = controller.resolve({ fixedPolicy });
-  assert.equal(fixed.strategy, "fixed");
-  assert.equal(fixed.lowWatermark, 5);
-  assert.equal(fixed.highWatermark, 10);
-  assert.ok(events.some((event) => event.type === "WATERMARK_POLICY_CHANGED"));
-});
-
-test("an explicit rate downshift can bypass decrease hysteresis", () => {
-  const { Controller } = loadController();
-  let metrics = {
-    run_id: "run-downshift",
-    consumption_rate: 4,
-    supply_rate: 2,
-    cache_ready_latency_p95: 5000,
-    supply_samples: 6,
-    cache_ready_latency_samples: 6,
-  };
-  const controller = new Controller({
-    metricsProvider: () => metrics,
-    cacheSnapshotProvider: () => ({
-      maxBytes: 2 * 1024 * 1024 * 1024,
-      estimatedFrameBytes: 4 * 1024 * 1024,
-    }),
-    configProvider: () => baseConfig(),
-    eventLog: { record() {} },
-    clock: { now: () => 0 },
-  });
-
-  assert.equal(controller.resolve({ fixedPolicy }).highWatermark, 56);
-  metrics = {
-    run_id: "run-downshift",
-    consumption_rate: 0,
-    supply_rate: 0,
-    cache_ready_latency_p95: 0,
-    supply_samples: 0,
-    cache_ready_latency_samples: 0,
-  };
-  const lowered = controller.resolve({ fixedPolicy, bypassDecreaseHysteresis: true });
-  assert.equal(lowered.highWatermark, 10);
-  assert.equal(lowered.resumeWatermark, 5);
-  assert.equal(lowered.reason, "insufficient_metrics");
-});
-
-test("preview is read-only and only resolve applies a policy", () => {
-  const { Controller } = loadController();
+  const contexts = [];
   const events = [];
   const controller = new Controller({
     metricsProvider: () => ({
-      run_id: "run-preview",
+      run_id: "run-1",
       consumption_rate: 2,
-      supply_rate: 2,
+      supply_rate: 1,
       cache_ready_latency_p95: 1000,
       supply_samples: 4,
       cache_ready_latency_samples: 4,
     }),
-    cacheSnapshotProvider: () => ({
-      maxBytes: 2 * 1024 * 1024 * 1024,
-      estimatedFrameBytes: 4 * 1024 * 1024,
-    }),
+    cacheSnapshotProvider: (context) => {
+      contexts.push(context);
+      return observedCache;
+    },
     configProvider: () => baseConfig(),
     eventLog: { record: (type, detail) => events.push({ type, ...detail }) },
     clock: { now: () => 100 },
   });
 
-  const preview = controller.preview({ fixedPolicy });
-  assert.equal(preview.strategy, "adaptive");
-  assert.equal(controller.snapshot(), null);
-  assert.equal(events.length, 0);
+  const policy = controller.resolve({
+    fixedPolicy,
+    remainingSlices: 100,
+    datasetId: "pipeline_iceberg.sea_temperature",
+    cacheNamespace: "sea-temperature-v1",
+  });
+  assert.equal(policy.targetWatermark, 10);
+  assert.equal(policy.immediateReplenishment, true);
+  assert.equal(contexts[0].datasetId, "pipeline_iceberg.sea_temperature");
+  assert.equal(contexts[0].cacheNamespace, "sea-temperature-v1");
+  assert.equal(events[0].target_watermark, 10);
+  assert.equal(events[0].immediate_replenishment, true);
+});
 
-  controller.resolve({ fixedPolicy });
-  assert.ok(controller.snapshot());
-  assert.equal(events.length, 1);
-  assert.equal(events[0].type, "WATERMARK_POLICY_CHANGED");
+test("fixed mode retains the manually configured single target", () => {
+  const { Controller } = loadController();
+  const controller = new Controller({
+    metricsProvider: () => ({}),
+    cacheSnapshotProvider: () => observedCache,
+    configProvider: () => ({ watermarkStrategy: "fixed" }),
+    eventLog: { record() {} },
+    clock: { now: () => 100 },
+  });
+
+  const policy = controller.resolve({ fixedPolicy });
+  assert.equal(policy.strategy, "fixed");
+  assert.equal(policy.lowWatermark, 10);
+  assert.equal(policy.highWatermark, 15);
+  assert.equal(policy.targetWatermark, 15);
+  assert.equal("startupWatermark" in policy, false);
+  assert.equal("resumeWatermark" in policy, false);
 });
 
 test("adaptive watermark timing never reads playback rate or ambient clocks", () => {

@@ -58,7 +58,7 @@ class PlaybackEngineCore {
       && resolvedQueryResolution !== activeQueryResolution) {
       this.adoptResolvedQueryResolution(resolvedQueryResolution, { reason: "cache_ready_fallback" });
     }
-    this.refreshActiveWatermarkGate({ reason: "cache_ready" });
+    this.refreshActiveReadiness();
   }
 
   adoptResolvedQueryResolution(resolution, { reason = "source_resolution_resolved" } = {}) {
@@ -90,59 +90,21 @@ class PlaybackEngineCore {
     return true;
   }
 
-  refreshActiveWatermarkGate({ reason = "policy_changed", forceAbort = false } = {}) {
+  refreshActiveReadiness() {
     if (this.status === "PREPARING") {
       const startIndex = Math.max(0, this.currentIndex + 1);
-      const previousRequired = this.prepareRequired;
-      const gate = this.watermarkGate("startup", startIndex);
-      this.prepareRequired = previousRequired > 0
-        ? Math.min(previousRequired, gate.required)
-        : gate.required;
       this.prepareReady = this.preheater.readyAhead?.(startIndex) || 0;
-      this.preparePolicyReason = gate.degradationReason;
-      const changed = previousRequired !== this.prepareRequired;
-      if (changed) {
-        this.eventLog.record("PLAYBACK_GATE_UPDATED", {
-          run_id: this.runId,
-          gate: "startup",
-          dataset: this.requestContext.datasetId,
-          date: this.dates[startIndex] || "",
-          previous_required_slices: previousRequired,
-          required_slices: this.prepareRequired,
-          ready_slices: this.prepareReady,
-          reason,
-        });
-      }
-      if (forceAbort || this.prepareRequired < previousRequired || this.prepareReady >= this.prepareRequired) {
+      if (this.prepareReady >= this.prepareRequired) {
         this.prepareWaitController?.abort?.();
       }
-      return changed;
+      return true;
     }
     if (this.status === "BUFFERING" && this.bufferTargetIndex >= 0) {
-      const previousRequired = this.bufferRequired;
-      const gate = this.watermarkGate("resume", this.bufferTargetIndex);
-      this.bufferRequired = previousRequired > 0
-        ? Math.min(previousRequired, gate.required)
-        : gate.required;
       this.bufferReady = this.preheater.readyAhead?.(this.bufferTargetIndex) || 0;
-      this.bufferPolicyReason = gate.degradationReason;
-      const changed = previousRequired !== this.bufferRequired;
-      if (changed) {
-        this.eventLog.record("PLAYBACK_GATE_UPDATED", {
-          run_id: this.runId,
-          gate: "resume",
-          dataset: this.requestContext.datasetId,
-          date: this.dates[this.bufferTargetIndex] || "",
-          previous_required_slices: previousRequired,
-          required_slices: this.bufferRequired,
-          ready_slices: this.bufferReady,
-          reason,
-        });
-      }
-      if (forceAbort || this.bufferRequired < previousRequired || this.bufferReady >= this.bufferRequired) {
+      if (this.bufferReady >= this.bufferRequired) {
         this.bufferWaitController?.abort?.();
       }
-      return changed;
+      return true;
     }
     return false;
   }
@@ -215,7 +177,7 @@ class PlaybackEngineCore {
     this.prepareScopeId = `playback-startup:${this.runId}`;
     this.prepareRequired = 0;
     this.prepareReady = this.preheater.readyAhead?.(startIndex) || 0;
-    const initialGate = this.watermarkGate("startup", startIndex);
+    const initialGate = this.readinessGate("startup", startIndex);
     this.prepareRequired = initialGate.required;
     this.preparePolicyReason = initialGate.degradationReason;
     this.eventLog.record("PREPARE_STARTED", {
@@ -230,46 +192,8 @@ class PlaybackEngineCore {
     });
 
     try {
-      const initialPolicy = this.preheater.snapshot?.() || {};
-      const remaining = Math.max(0, this.dates.length - startIndex);
-      const initialReady = this.preheater.readyAhead?.(startIndex) || 0;
-      const needsProbe = initialPolicy.policyReason === "insufficient_metrics"
-        && initialReady < remaining;
-      if (needsProbe) {
-        const requiredSamples = Math.max(
-          1,
-          Number(initialPolicy.minimumSupplySamples || 2) - Number(initialPolicy.supplySamples || 0),
-        );
-        const probeStart = Math.min(this.dates.length, startIndex + initialReady);
-        const probeDates = this.dates.slice(probeStart, probeStart + requiredSamples);
-        if (probeDates.length) {
-          this.eventLog.record("PREPARE_PROBE_STARTED", {
-            run_id: this.runId,
-            dataset: this.requestContext.datasetId,
-            date: probeDates[0],
-            requested_slices: probeDates.length,
-            ready_slices: initialReady,
-          });
-          const probe = await this.preheater.waitForDates(probeDates, {
-            lane: "playback-window",
-            scopeId: this.prepareScopeId,
-          });
-          if (token !== this.prepareSequence || this.status !== "PREPARING") return false;
-          if (Number(probe?.failed || 0) > 0) {
-            throw new Error(`Startup supply probe failed for ${Number(probe.failed)} frame(s)`);
-          }
-          this.prepareReady = this.preheater.readyAhead?.(startIndex) || 0;
-          this.eventLog.record("PREPARE_PROBE_READY", {
-            run_id: this.runId,
-            dataset: this.requestContext.datasetId,
-            date: probeDates[probeDates.length - 1],
-            requested_slices: probeDates.length,
-            ready_slices: this.prepareReady,
-          });
-        }
-      }
       while (token === this.prepareSequence && this.status === "PREPARING") {
-        const gate = this.watermarkGate("startup", startIndex);
+        const gate = this.readinessGate("startup", startIndex);
         this.prepareRequired = this.prepareRequired > 0
           ? Math.min(this.prepareRequired, gate.required)
           : gate.required;
@@ -419,17 +343,14 @@ class PlaybackEngineCore {
     return true;
   }
 
-  watermarkGate(kind, startIndex) {
+  readinessGate(kind, startIndex) {
     const remaining = Math.max(0, this.dates.length - Math.max(0, startIndex));
     const policy = this.preheater.snapshot?.() || {};
-    const configured = kind === "startup"
-      ? policy.startupWatermark ?? policy.lowWatermark ?? 1
-      : policy.resumeWatermark ?? policy.lowWatermark ?? 2;
     return Object.freeze({
       kind,
       remaining,
-      required: Math.min(remaining, Math.max(remaining > 1 && kind === "resume" ? 2 : 1, Number(configured || 1))),
-      policyReason: String(policy.policyReason || "configured"),
+      required: Math.min(remaining, 1),
+      policyReason: "next_frame_ready",
       degradationReason: String(policy.degradationReason || ""),
     });
   }
@@ -455,7 +376,6 @@ class PlaybackEngineCore {
       bypassDecreaseHysteresis: rateDecreased,
       pruneQueued: rateDecreased,
     });
-    this.refreshActiveWatermarkGate({ reason: "playback_rate_changed", forceAbort: true });
     return this.snapshot();
   }
 
@@ -505,8 +425,8 @@ class PlaybackEngineCore {
       this.bufferStartedAt = this.clock.now();
       this.bufferIntentKey = intentKey;
       this.bufferTargetIndex = index;
-      this.bufferScopeId = `playback-resume:${this.runId || "idle"}:${inspected.date}`;
-      const gate = this.watermarkGate("resume", index);
+      this.bufferScopeId = `playback-buffer:${this.runId || "idle"}:${inspected.date}`;
+      const gate = this.readinessGate("resume", index);
       this.bufferRequired = gate.required;
       this.bufferReady = this.preheater.readyAhead?.(index) || 0;
       this.bufferPolicyReason = gate.degradationReason;
@@ -531,7 +451,7 @@ class PlaybackEngineCore {
     const promise = (async () => {
       const result = await targetPromise;
       while (this.bufferStartedAt !== null && this.bufferIntentKey === intentKey) {
-        const gate = this.watermarkGate("resume", index);
+        const gate = this.readinessGate("resume", index);
         this.bufferRequired = this.bufferRequired > 0
           ? Math.min(this.bufferRequired, gate.required)
           : gate.required;

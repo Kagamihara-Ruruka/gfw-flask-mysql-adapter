@@ -7,6 +7,7 @@ from typing import Any
 
 
 DATASET_CACHE_NAMESPACE_VERSION = "rrkal.dataset_cache.v1"
+QUERY_TRANSPORT_KEY_VERSION = "rrkal.query_transport.v1"
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -107,3 +108,32 @@ def dataset_contract_fingerprint(dataset: dict[str, Any]) -> str:
 
 def dataset_cache_namespace(dataset: dict[str, Any]) -> str:
     return f"{DATASET_CACHE_NAMESPACE_VERSION}:{dataset_contract_fingerprint(dataset)[:24]}"
+
+
+def dataset_query_transport_identity(dataset: dict[str, Any]) -> dict[str, Any]:
+    """Return the physical provider identity used to serialize query transport.
+
+    Dataset and metric identities are deliberately excluded so datasets backed by
+    the same provider can share one batch lane. Credentials are never included.
+    """
+
+    return {
+        "version": QUERY_TRANSPORT_KEY_VERSION,
+        "source_route_group": dataset.get("__runtime_source_route_group"),
+        "source_config": dataset.get("__runtime_source_config_path"),
+        "connection_ref": dataset.get("connection_ref"),
+        "backend": dataset.get("backend"),
+        "source_backend": dataset.get("source_backend"),
+        "endpoint": _endpoint_location(dataset),
+    }
+
+
+def dataset_query_transport_key(dataset: dict[str, Any]) -> str:
+    payload = json.dumps(
+        _canonical(dataset_query_transport_identity(dataset)),
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    fingerprint = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return f"{QUERY_TRANSPORT_KEY_VERSION}:{fingerprint[:24]}"

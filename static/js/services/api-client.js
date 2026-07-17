@@ -93,25 +93,6 @@ function renderDatasetSelect() {
   select.value = state.datasetId || "";
 }
 
-async function selectDataset(datasetId, { reload = true } = {}) {
-  if (!datasetId || !state.datasets[datasetId] || datasetId === state.datasetId) return;
-  stopPlayback();
-  state.datasetId = datasetId;
-  state.rows = [];
-  state.columns = [];
-  state.renderedSampledGridDate = null;
-  state.renderedGfwDate = null;
-  if (typeof PlaybackPreheater !== "undefined") PlaybackPreheater.stop?.("dataset_changed");
-  if (typeof PlaybackEngine !== "undefined") PlaybackEngine.stop?.("dataset_changed");
-  await loadSchema();
-  if (reload && typeof isSampledGridLayer === "function" && isSampledGridLayer(state.dataLayer)) {
-    await reloadSampledGridRecords();
-  } else {
-    renderTable([], state.datasets[state.datasetId].display_columns, { layer: "none" });
-    updatePlaybackControls();
-  }
-}
-
 async function loadSchema() {
   if (!state.datasetId || !state.datasets[state.datasetId]) {
     state.schema = null;
@@ -259,7 +240,7 @@ function applyAisPacket(packet, bboxes, timing) {
   TimingMetrics.markRenderStart?.("AIS WebSocket");
   renderAisMap(rows);
   renderTable(rows, AIS_COLUMNS, { layer: "ais", wrappedBboxCount: bboxes.length });
-  TimingMetrics.setText("query-ms", `${Number(packet.timing?.query_ms || 0).toFixed(3)} ms`);
+  TimingMetrics.setText("query-ms", `${formatDisplayNumber(packet.timing?.query_ms || 0, { maximumFractionDigits: 2 })} ms`);
   TimingMetrics.setText("serialize-ms", "-");
   TimingMetrics.setText("api-ms", "WebSocket");
   TimingMetrics.setCount("row-count", rows.length);
@@ -397,7 +378,7 @@ async function reloadAisRecordsRest() {
   TimingMetrics.markRenderStart?.("AIS REST");
   renderAisMap(rows);
   renderTable(rows, AIS_COLUMNS, { layer: "ais", wrappedBboxCount: bboxes.length });
-  TimingMetrics.setText("query-ms", `${queryMs.toFixed(3)} ms`);
+  TimingMetrics.setText("query-ms", `${formatDisplayNumber(queryMs, { maximumFractionDigits: 2 })} ms`);
   TimingMetrics.setText("serialize-ms", "-");
   TimingMetrics.setText("api-ms", "REST");
   TimingMetrics.setCount("row-count", rows.length);
@@ -491,8 +472,8 @@ async function reloadSampledGridRecords() {
     const actualResolution = Number(packet.grid?.actual_resolution_km);
     const resolutionDetail = Number.isFinite(actualResolution)
       ? (packet.grid?.lod_degraded && Number.isFinite(requestedResolution)
-        ? `${requestedResolution} -> ${actualResolution} km`
-        : `${actualResolution} km`)
+        ? `${formatResolutionKm(requestedResolution)} → ${formatResolutionKm(actualResolution)}`
+        : formatResolutionKm(actualResolution))
       : "無有效資料粒度";
     RenderState.ready(
       requestedLayer,
@@ -500,7 +481,7 @@ async function reloadSampledGridRecords() {
     );
     setStatus(`${requestedLayerLabel} 就緒，${requestedDate}，z${currentLodZoom()}，${resolutionDetail}，${sourceDetail}，${renderResult.detail}`);
     if (Array.isArray(state.availableDates) && state.availableDates.length > 0) {
-      PlaybackEngine.configure({
+      PlaybackRuntime.configure({
         dates: typeof datesInSelectedRange === "function" ? datesInSelectedRange() : state.availableDates,
         requestContext,
         currentDate: requestedDate,
@@ -526,17 +507,12 @@ async function reloadSampledGridRecords() {
   }
 }
 
-function reloadGfwRecords() {
-  return reloadSampledGridRecords();
-}
-
 function clearPrimaryLayerRecords() {
   ClockDomain.monotonic.cancel(state.primaryReloadTimer);
   state.primaryReloadTimer = null;
   state.primaryFetchController?.abort();
   state.primaryFetchController = null;
-  if (typeof PlaybackPreheater !== "undefined") PlaybackPreheater.stop?.("primary_layer_cleared");
-  if (typeof PlaybackEngine !== "undefined") PlaybackEngine.releaseDisplayedFrame?.();
+  if (typeof PlaybackRuntime !== "undefined") PlaybackRuntime.releaseDisplayedFrame();
   state.fetchSeq += 1;
   state.aisLiveSeq += 1;
   closeAisSocket();

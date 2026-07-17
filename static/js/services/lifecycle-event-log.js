@@ -241,9 +241,13 @@ class LifecycleEventLogCore {
       .filter((event) => event.type === "TASK_DISPATCHED")
       .map((event) => Number(event.wait_ms));
     const networkDurations = selected
-      .filter((event) => event.type === "HTTP_FINISHED")
+      .filter((event) => event.type === "HTTP_BATCH_FINISHED")
       .map((event) => Number(event.duration_ms));
-    const cacheCommitDurations = lifecyclePairedDurations(selected, "HTTP_FINISHED", "CACHE_READY");
+    const cacheCommitDurations = lifecyclePairedDurations(
+      selected,
+      "QUERY_OPERATION_FINISHED",
+      "CACHE_READY",
+    );
     const cacheReadyTimings = lifecycleReadyTimings(this.events, cacheReady, isPlaybackSupply);
     const cacheReadyDurations = cacheReadyTimings.map((timing) => timing.durationMs);
     const renderDurations = lifecyclePairedDurations(selected, "RENDER_STARTED", "FRAME_VISIBLE", "render_ms");
@@ -260,7 +264,8 @@ class LifecycleEventLogCore {
       cacheHits: selected.filter((event) => event.type === "CACHE_HIT").length,
       cacheMisses: selected.filter((event) => event.type === "CACHE_MISS").length,
       promotedTasks: selected.filter((event) => event.type === "TASK_PROMOTED").length,
-      httpRequests: selected.filter((event) => event.type === "HTTP_STARTED").length,
+      httpRequests: selected.filter((event) => event.type === "HTTP_BATCH_STARTED").length,
+      queryOperations: selected.filter((event) => event.type === "QUERY_OPERATION_STARTED").length,
       prepareCount: selected.filter((event) => event.type === "PREPARE_STARTED").length,
       stallCount: allStalls.length,
       activeStallCount: activeStalls.length,

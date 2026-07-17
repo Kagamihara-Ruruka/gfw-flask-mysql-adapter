@@ -16,7 +16,6 @@ const PlaybackFrameBuffer = (() => {
       renderDate: "",
       readyCount: 0,
       requiredCount: 0,
-      resumeCount: 0,
       canRender: false,
       isFallback: false,
       errorMessage: "",
@@ -39,7 +38,7 @@ const PlaybackFrameBuffer = (() => {
     targetIndex,
     hasCacheLayer,
     inspectFrame,
-    resumeGate = null,
+    bufferGate = null,
   }) {
     const allDates = Array.isArray(dates) ? dates : [];
     if (targetIndex < 0 || targetIndex >= allDates.length) {
@@ -55,7 +54,6 @@ const PlaybackFrameBuffer = (() => {
         renderDate: targetDate,
         readyCount: 1,
         requiredCount: 1,
-        resumeCount: 1,
         canRender: true,
       };
     }
@@ -71,14 +69,13 @@ const PlaybackFrameBuffer = (() => {
       }
     }
     if (renderIndex >= 0) {
-      if (resumeGate?.active) {
+      if (bufferGate?.active && !bufferGate.ready) {
         return {
           ...emptyDecision(targetIndex),
           state: FRAME_STATES.waiting,
           targetDate,
-          readyCount: Math.max(0, Number(resumeGate.readyCount || 0)),
-          requiredCount: Math.max(1, Number(resumeGate.required || 1)),
-          resumeCount: Math.max(1, Number(resumeGate.required || 1)),
+          readyCount: Math.max(0, Number(bufferGate.readyCount || 0)),
+          requiredCount: Math.max(1, Number(bufferGate.required || 1)),
         };
       }
       return {
@@ -89,7 +86,6 @@ const PlaybackFrameBuffer = (() => {
         renderDate: allDates[renderIndex] || "",
         readyCount: countReadyPrefix(allDates, targetIndex, inspectFrame) || 1,
         requiredCount: 1,
-        resumeCount: 1,
         canRender: true,
         isFallback: renderIndex < targetIndex,
       };
@@ -103,7 +99,6 @@ const PlaybackFrameBuffer = (() => {
         targetDate,
         readyCount: countReadyPrefix(allDates, targetIndex, inspectFrame),
         requiredCount: 1,
-        resumeCount: 1,
         errorMessage: target.failure?.message || "request failed",
       };
     }
@@ -112,11 +107,10 @@ const PlaybackFrameBuffer = (() => {
       ...emptyDecision(targetIndex),
       state: FRAME_STATES.fetching,
       targetDate,
-      readyCount: resumeGate?.active
-        ? Math.max(0, Number(resumeGate.readyCount || 0))
+      readyCount: bufferGate?.active
+        ? Math.max(0, Number(bufferGate.readyCount || 0))
         : countReadyPrefix(allDates, targetIndex, inspectFrame),
-      requiredCount: resumeGate?.active ? Math.max(1, Number(resumeGate.required || 1)) : 1,
-      resumeCount: resumeGate?.active ? Math.max(1, Number(resumeGate.required || 1)) : 1,
+      requiredCount: bufferGate?.active ? Math.max(1, Number(bufferGate.required || 1)) : 1,
     };
   }
 
@@ -129,57 +123,53 @@ const PlaybackFrameBuffer = (() => {
     return ready;
   }
 
-  function markWaiting({
+  function waitingState({
     decision,
     dates,
     targetIndex,
-    cacheService,
     attempts = 0,
   }) {
     const packet = decision || emptyDecision(targetIndex);
-    cacheService.setBufferState({
+    return {
       buffering: true,
       status: "waiting",
       ready: packet.readyCount || 0,
       required: packet.requiredCount || 1,
-      resume: packet.resumeCount || packet.requiredCount || 1,
       currentDate: packet.targetDate || dates[targetIndex] || "",
       targetIndex,
       attempts,
       stateName: packet.state,
       errorMessage: packet.errorMessage || "",
-    });
+    };
   }
 
-  function markFailed({
+  function failedState({
     decision,
     dates,
     targetIndex,
-    cacheService,
     attempts = 0,
     errorMessage = "",
   }) {
     const packet = decision || emptyDecision(targetIndex);
-    cacheService.setBufferState({
+    return {
       buffering: false,
       status: "failed",
       ready: packet.readyCount || 0,
       required: packet.requiredCount || 1,
-      resume: packet.resumeCount || packet.requiredCount || 1,
       currentDate: packet.targetDate || dates[targetIndex] || "",
       targetIndex,
       attempts,
       stateName: packet.state || FRAME_STATES.failed,
       errorMessage: errorMessage || packet.errorMessage || "",
-    });
+    };
   }
 
   return {
     FRAME_STATES,
     frameStateLabel,
     inspectTarget,
-    markFailed,
-    markWaiting,
+    failedState,
+    waitingState,
   };
 })();
 

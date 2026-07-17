@@ -163,7 +163,7 @@ function removeAisLayer() {
 }
 
 function renderAisMap(rows) {
-  removeGfwLayer();
+  removeSampledGridLayer();
   const strategy = $("ais-render-strategy").value;
   const LayerClass = strategy === "point_dots" ? AisPointCanvasLayer : AisDensityCanvasLayer;
   if (state.aisLayer && !(state.aisLayer instanceof LayerClass)) {

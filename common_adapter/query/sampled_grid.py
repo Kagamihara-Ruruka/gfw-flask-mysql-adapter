@@ -132,6 +132,7 @@ def sampled_grid_public_contract(dataset: dict[str, Any]) -> dict[str, Any] | No
         return None
     return {
         "contract_version": contract.get("contract_version"),
+        "default_coverage_id": contract.get("default_coverage_id"),
         "available_resolutions_km": sampled_grid_available_resolutions(dataset),
         "grid_profile": deepcopy(contract.get("grid_profile") or {}),
         "coverage_areas": deepcopy(contract.get("coverage_areas") or []),

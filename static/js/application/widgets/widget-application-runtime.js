@@ -79,6 +79,10 @@ class WidgetApplicationRuntime {
     this.source(widgetType)?.clear?.();
   }
 
+  hasActiveLayer() {
+    return Boolean(this.queryContext.state()?.dataLayer);
+  }
+
   dispose() {
     this.unsubscribeEventLog?.();
     this.unsubscribeEventLog = null;

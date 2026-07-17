@@ -1,26 +1,16 @@
 function normalizedFixedWatermarkPolicy(policy = {}) {
   const highWatermark = Math.max(2, Math.round(adaptiveNumber(
     policy.highWatermark ?? policy.windowAhead,
-    10,
+    15,
     { minimum: 2 },
   )));
   const lowWatermark = Math.max(1, Math.min(
     highWatermark - 1,
-    Math.round(adaptiveNumber(policy.lowWatermark, 5, { minimum: 1 })),
-  ));
-  const startupWatermark = Math.max(1, Math.min(
-    highWatermark,
-    Math.round(adaptiveNumber(policy.startupWatermark, lowWatermark, { minimum: 1 })),
-  ));
-  const resumeWatermark = Math.max(2, Math.min(
-    highWatermark,
-    Math.round(adaptiveNumber(policy.resumeWatermark, lowWatermark, { minimum: 2 })),
+    Math.round(adaptiveNumber(policy.lowWatermark, 10, { minimum: 1 })),
   ));
   return Object.freeze({
     highWatermark,
     lowWatermark,
-    startupWatermark,
-    resumeWatermark,
     windowBehind: Math.max(0, Math.round(adaptiveNumber(policy.windowBehind, 1, { minimum: 0 }))),
   });
 }
@@ -44,7 +34,7 @@ function calculateAdaptiveWatermarkPolicy({
   const supplyRate = Math.max(0, Number(metrics.supply_rate || 0));
   const latencyP95Ms = Math.max(0, Number(metrics.cache_ready_latency_p95 || 0));
   const playbackStatus = String(metrics.playback_status || "").toUpperCase();
-  const startupPhase = !playbackStatus || ["IDLE", "PREPARING"].includes(playbackStatus);
+  const preparing = !playbackStatus || ["IDLE", "PREPARING"].includes(playbackStatus);
   const supplySamples = Math.max(0, Number(metrics.supply_samples || 0));
   const latencySamples = Math.max(0, Number(metrics.cache_ready_latency_samples || 0));
   const remaining = Math.max(0, Math.round(Number(remainingSlices || 0)));
@@ -58,10 +48,6 @@ function calculateAdaptiveWatermarkPolicy({
     && supplySamples >= minimumSupplySamples
     && latencySamples >= 1;
 
-  const maxHighWatermark = Math.max(
-    fixed.highWatermark,
-    Math.round(adaptiveNumber(adaptive.maxHighWatermark, 60, { minimum: 2 })),
-  );
   const defaultFrameBytes = adaptiveNumber(
     adaptive.defaultFrameBytes,
     4 * 1024 * 1024,
@@ -70,65 +56,101 @@ function calculateAdaptiveWatermarkPolicy({
   const observedFrameBytes = Number(
     cacheSnapshot.estimatedFrameBytes || cacheSnapshot.averageFrameBytes || 0,
   );
+  const hasObservedFrameSize = Number.isFinite(observedFrameBytes) && observedFrameBytes > 0;
   const estimatedFrameBytes = adaptiveNumber(
-    observedFrameBytes > 0 ? observedFrameBytes : defaultFrameBytes,
+    hasObservedFrameSize ? observedFrameBytes : defaultFrameBytes,
     defaultFrameBytes,
     { minimum: 512 },
   );
-  const ramBudgetFraction = adaptiveNumber(
-    adaptive.ramBudgetFraction,
-    0.75,
-    { minimum: 0.1, maximum: 1 },
-  );
   const maxBytes = Math.max(0, Number(cacheSnapshot.maxBytes || 0));
   const maxEntries = Math.max(0, Number(cacheSnapshot.maxEntries || 0));
-  const reservedFrames = fixed.windowBehind + 1;
-  const byteCapacity = maxBytes > 0
-    ? Math.floor((maxBytes * ramBudgetFraction) / estimatedFrameBytes)
-    : Infinity;
-  const entryCapacity = maxEntries > 0 ? maxEntries : Infinity;
-  const rawRamBudgetFrames = Math.max(2, Math.min(
-    Number.isFinite(byteCapacity) ? Math.max(2, byteCapacity - reservedFrames) : Infinity,
-    Number.isFinite(entryCapacity) ? Math.max(2, entryCapacity - reservedFrames) : Infinity,
-  ));
-  const ramBudgetFrames = Number.isFinite(rawRamBudgetFrames) ? rawRamBudgetFrames : null;
-  const effectiveHighCap = Math.min(maxHighWatermark, ramBudgetFrames ?? maxHighWatermark);
+  const playbackRamBudgetBytes = maxBytes > 0 ? Math.floor(maxBytes * 0.5) : 0;
+  const byteCapacity = hasObservedFrameSize && playbackRamBudgetBytes > 0
+    ? Math.max(2, Math.floor(playbackRamBudgetBytes / estimatedFrameBytes))
+    : null;
+  const entryCapacity = maxEntries > 0 ? Math.max(2, maxEntries) : null;
+  const rawAdaptiveCapacity = byteCapacity === null
+    ? null
+    : entryCapacity === null
+      ? byteCapacity
+      : Math.min(byteCapacity, entryCapacity);
+  const ramBudgetFrames = rawAdaptiveCapacity === null
+    ? null
+    : Math.max(2, rawAdaptiveCapacity);
+  const configuredHigh = ramBudgetFrames === null
+    ? fixed.highWatermark
+    : Math.max(2, Math.floor((ramBudgetFrames * 2) / 3));
+  const configuredLow = ramBudgetFrames === null
+    ? Math.max(1, Math.min(configuredHigh - 1, fixed.lowWatermark))
+    : Math.max(1, Math.min(configuredHigh - 1, Math.floor(ramBudgetFrames / 3)));
+  const supplyRatio = consumptionRate > 0 && supplyRate > 0
+    ? supplyRate / consumptionRate
+    : null;
+  const tailMode = remaining > 0 && remaining < configuredLow;
 
-  if (!trustworthy) {
-    const minimumStartupSamples = Math.max(2, Math.round(adaptiveNumber(
-      adaptive.minimumStartupSamples,
-      10,
-      { minimum: 2, maximum: maxHighWatermark },
-    )));
-    const startupWatermark = startupPhase && remaining > 0
-      ? Math.min(effectiveHighCap, remaining, Math.max(fixed.startupWatermark, minimumStartupSamples))
-      : Math.min(fixed.startupWatermark, effectiveHighCap);
+  if (tailMode) {
     return Object.freeze({
       strategy: "adaptive",
-      status: "WARMING",
-      reason: "insufficient_metrics",
-      lowWatermark: Math.min(fixed.lowWatermark, effectiveHighCap - 1),
-      highWatermark: Math.min(fixed.highWatermark, effectiveHighCap),
-      candidateLowWatermark: Math.min(fixed.lowWatermark, effectiveHighCap - 1),
-      candidateHighWatermark: Math.min(fixed.highWatermark, effectiveHighCap),
-      startupWatermark,
-      resumeWatermark: Math.min(fixed.resumeWatermark, effectiveHighCap),
+      status: "TAIL",
+      reason: "terminal_tail",
+      lowWatermark: configuredLow,
+      highWatermark: configuredHigh,
+      candidateLowWatermark: configuredLow,
+      candidateHighWatermark: configuredHigh,
+      targetWatermark: remaining,
+      immediateReplenishment: true,
+      tailMode: true,
       ramBudgetFrames,
+      playbackRamBudgetBytes,
+      hasObservedFrameSize,
       estimatedFrameBytes,
       consumptionRate,
       supplyRate,
+      supplyRatio,
       latencyP95Ms,
       supplySamples,
       latencySamples,
       tailDemandSlices: 0,
-      startupDemandSlices: 0,
+      deficitCoverageSlices: 0,
+      remainingSlices: remaining,
+      supplyDeficitFactor: 1,
+      sustainable: null,
+      degradationReason: "",
+      minimumSupplySamples,
+      preparing,
+    });
+  }
+
+  if (!trustworthy) {
+    return Object.freeze({
+      strategy: "adaptive",
+      status: "WARMING",
+      reason: "insufficient_metrics",
+      lowWatermark: configuredLow,
+      highWatermark: configuredHigh,
+      candidateLowWatermark: configuredLow,
+      candidateHighWatermark: configuredHigh,
+      targetWatermark: configuredHigh,
+      immediateReplenishment: false,
+      tailMode: false,
+      ramBudgetFrames,
+      playbackRamBudgetBytes,
+      hasObservedFrameSize,
+      estimatedFrameBytes,
+      consumptionRate,
+      supplyRate,
+      supplyRatio,
+      latencyP95Ms,
+      supplySamples,
+      latencySamples,
+      tailDemandSlices: 0,
+      deficitCoverageSlices: 0,
       remainingSlices: remaining,
       supplyDeficitFactor: 1,
       sustainable: null,
       degradationReason: "insufficient_metrics",
-      minimumStartupSamples,
       minimumSupplySamples,
-      startupPhase,
+      preparing,
     });
   }
 
@@ -140,7 +162,7 @@ function calculateAdaptiveWatermarkPolicy({
   const reserveSlices = Math.max(0, Math.round(adaptiveNumber(
     adaptive.reserveSlices,
     2,
-    { minimum: 0, maximum: maxHighWatermark },
+    { minimum: 0, maximum: configuredHigh },
   )));
   const maxSupplyDeficitFactor = adaptiveNumber(
     adaptive.maxSupplyDeficitFactor,
@@ -161,69 +183,39 @@ function calculateAdaptiveWatermarkPolicy({
   const supplyDeficitRatio = consumptionRate > 0
     ? Math.max(0, 1 - Math.min(1, supplyRate / consumptionRate))
     : 0;
-  const startupDemandSlices = Math.ceil(remaining * supplyDeficitRatio) + latencySafetySlices;
-  const candidateStartupWatermark = Math.max(
-    fixed.startupWatermark,
-    startupDemandSlices,
-  );
-  const protectedSlices = Math.max(
-    tailDemandSlices + reserveSlices,
-    startupPhase ? candidateStartupWatermark : 0,
-  );
-  const candidateHighWatermark = Math.max(2, Math.min(
-    effectiveHighCap,
-    Math.max(fixed.highWatermark, protectedSlices),
-  ));
-  const lowRatio = adaptiveNumber(adaptive.lowRatio, 0.5, { minimum: 0.1, maximum: 0.9 });
-  const candidateLowWatermark = Math.max(1, Math.min(
-    candidateHighWatermark - 1,
-    Math.max(fixed.lowWatermark, Math.floor(candidateHighWatermark * lowRatio)),
-  ));
-  const startupWatermark = Math.max(1, Math.min(
-    candidateHighWatermark,
-    startupPhase ? candidateStartupWatermark : fixed.startupWatermark,
-  ));
-  const resumeWatermark = Math.max(2, Math.min(
-    candidateHighWatermark,
-    Math.max(fixed.resumeWatermark, tailDemandSlices + reserveSlices),
-  ));
-  const ramIsEffectiveCap = ramBudgetFrames !== null
-    && ramBudgetFrames <= maxHighWatermark
-    && protectedSlices > ramBudgetFrames;
+  const deficitCoverageSlices = Math.ceil(remaining * supplyDeficitRatio) + latencySafetySlices;
+  const candidateHighWatermark = configuredHigh;
+  const candidateLowWatermark = configuredLow;
 
   return Object.freeze({
     strategy: "adaptive",
     status: "ADAPTIVE",
-    reason: ramIsEffectiveCap
-      ? "ram_budget_capped"
-      : protectedSlices > maxHighWatermark
-        ? "max_watermark_capped"
-        : "trusted_metrics",
+    reason: supplyRatio < 1 ? "supply_deficit" : "trusted_metrics",
     lowWatermark: candidateLowWatermark,
     highWatermark: candidateHighWatermark,
     candidateLowWatermark,
     candidateHighWatermark,
-    startupWatermark,
-    resumeWatermark,
+    targetWatermark: candidateHighWatermark,
+    immediateReplenishment: supplyRatio < 1,
+    tailMode: false,
     ramBudgetFrames,
+    playbackRamBudgetBytes,
+    hasObservedFrameSize,
     estimatedFrameBytes,
     consumptionRate,
     supplyRate,
+    supplyRatio,
     latencyP95Ms,
     supplySamples,
     latencySamples,
     tailDemandSlices,
-    startupDemandSlices,
+    deficitCoverageSlices,
     remainingSlices: remaining,
     supplyDeficitFactor,
     sustainable,
-    degradationReason: sustainable
-      ? ""
-      : startupPhase && candidateStartupWatermark > effectiveHighCap
-        ? "startup_capacity_capped"
-        : "supply_below_consumption",
+    degradationReason: sustainable ? "" : "supply_below_consumption",
     minimumSupplySamples,
-    startupPhase,
+    preparing,
   });
 }
 
@@ -271,9 +263,13 @@ class AdaptiveWatermarkControllerCore {
       ...fixed,
       candidateLowWatermark: fixed.lowWatermark,
       candidateHighWatermark: fixed.highWatermark,
-      startupWatermark: fixed.startupWatermark,
-      resumeWatermark: fixed.resumeWatermark,
+      targetWatermark: fixed.highWatermark,
+      immediateReplenishment: false,
+      tailMode: false,
+      supplyRatio: null,
       ramBudgetFrames: null,
+      playbackRamBudgetBytes: 0,
+      hasObservedFrameSize: false,
       estimatedFrameBytes: 0,
       consumptionRate: 0,
       supplyRate: 0,
@@ -282,7 +278,7 @@ class AdaptiveWatermarkControllerCore {
       latencySamples: 0,
       minimumSupplySamples: 2,
       tailDemandSlices: 0,
-      startupDemandSlices: 0,
+      deficitCoverageSlices: 0,
       remainingSlices: 0,
       supplyDeficitFactor: 1,
       sustainable: null,
@@ -295,13 +291,15 @@ class AdaptiveWatermarkControllerCore {
     remainingSlices = 0,
     scopeKey = "",
     datasetId = "",
+    cacheNamespace = "",
     bbox = "",
     resolution = null,
   } = {}) {
     const config = this.configProvider() || {};
     const strategy = this.strategy(config);
     if (strategy === "fixed") return this.fixedPolicy(fixedPolicy);
-    const metrics = this.metricsProvider({ scopeKey, datasetId, bbox, resolution }) || {};
+    const context = { scopeKey, datasetId, cacheNamespace, bbox, resolution };
+    const metrics = this.metricsProvider(context) || {};
     if (
       this.current?.strategy === strategy
       && this.current.scopeKey === String(metrics.scope_key || scopeKey || "")
@@ -309,7 +307,7 @@ class AdaptiveWatermarkControllerCore {
     return calculateAdaptiveWatermarkPolicy({
       fixedPolicy,
       metrics,
-      cacheSnapshot: this.cacheSnapshotProvider() || {},
+      cacheSnapshot: this.cacheSnapshotProvider(context) || {},
       config,
       remainingSlices,
     });
@@ -321,6 +319,10 @@ class AdaptiveWatermarkControllerCore {
     if (candidate.strategy !== "adaptive") return candidate;
     if (candidate.runId !== previous.runId || candidate.scopeKey !== previous.scopeKey) return candidate;
     if (candidate.highWatermark >= previous.highWatermark) return candidate;
+    if (
+      candidate.ramBudgetFrames !== null
+      && (previous.ramBudgetFrames === null || candidate.ramBudgetFrames < previous.ramBudgetFrames)
+    ) return candidate;
     if (bypassDecreaseHysteresis) return candidate;
 
     const adaptive = config.adaptiveWatermark || {};
@@ -341,21 +343,25 @@ class AdaptiveWatermarkControllerCore {
     );
     const raisedAt = this.lastIncreaseAt ?? previous.appliedMonotonicMs ?? now;
     if (now - raisedAt < decreaseHoldMs) {
+      const highWatermark = previous.highWatermark;
       return Object.freeze({
         ...candidate,
         status: candidate.status === "ADAPTIVE" ? "HOLDING" : candidate.status,
         reason: "decrease_hysteresis",
-        highWatermark: previous.highWatermark,
-        lowWatermark: Math.min(previous.lowWatermark, previous.highWatermark - 1),
+        highWatermark,
+        lowWatermark: Math.min(previous.lowWatermark, highWatermark - 1),
+        targetWatermark: candidate.tailMode ? candidate.targetWatermark : highWatermark,
       });
     }
     if (this.lastDecreaseAt !== null && now - this.lastDecreaseAt < decreaseStepIntervalMs) {
+      const highWatermark = previous.highWatermark;
       return Object.freeze({
         ...candidate,
         status: candidate.status === "ADAPTIVE" ? "HOLDING" : candidate.status,
         reason: "decrease_interval",
-        highWatermark: previous.highWatermark,
-        lowWatermark: Math.min(previous.lowWatermark, previous.highWatermark - 1),
+        highWatermark,
+        lowWatermark: Math.min(previous.lowWatermark, highWatermark - 1),
+        targetWatermark: candidate.tailMode ? candidate.targetWatermark : highWatermark,
       });
     }
     const highWatermark = Math.max(candidate.highWatermark, previous.highWatermark - decreaseStep);
@@ -367,6 +373,7 @@ class AdaptiveWatermarkControllerCore {
         highWatermark - 1,
         candidate.lowWatermark,
       )),
+      targetWatermark: candidate.tailMode ? candidate.targetWatermark : highWatermark,
     });
   }
 
@@ -375,6 +382,7 @@ class AdaptiveWatermarkControllerCore {
     remainingSlices = 0,
     scopeKey = "",
     datasetId = "",
+    cacheNamespace = "",
     bbox = "",
     resolution = null,
     bypassDecreaseHysteresis = false,
@@ -382,7 +390,8 @@ class AdaptiveWatermarkControllerCore {
     if (this.disposed) return this.current || this.fixedPolicy(fixedPolicy);
     const now = this.clock.now();
     const config = this.configProvider() || {};
-    const metrics = this.metricsProvider({ scopeKey, datasetId, bbox, resolution }) || {};
+    const context = { scopeKey, datasetId, cacheNamespace, bbox, resolution };
+    const metrics = this.metricsProvider(context) || {};
     const runId = String(metrics.run_id || "");
     const effectiveScopeKey = String(metrics.scope_key || scopeKey || "");
     const strategy = this.strategy(config);
@@ -391,7 +400,7 @@ class AdaptiveWatermarkControllerCore {
       : calculateAdaptiveWatermarkPolicy({
         fixedPolicy,
         metrics,
-        cacheSnapshot: this.cacheSnapshotProvider() || {},
+        cacheSnapshot: this.cacheSnapshotProvider(context) || {},
         config,
         remainingSlices,
       });
@@ -414,8 +423,9 @@ class AdaptiveWatermarkControllerCore {
       || previous.status !== effective.status
       || previous.lowWatermark !== effective.lowWatermark
       || previous.highWatermark !== effective.highWatermark
-      || previous.startupWatermark !== effective.startupWatermark
-      || previous.resumeWatermark !== effective.resumeWatermark
+      || previous.targetWatermark !== effective.targetWatermark
+      || previous.immediateReplenishment !== effective.immediateReplenishment
+      || previous.tailMode !== effective.tailMode
       || previous.degradationReason !== effective.degradationReason
       || previous.runId !== effective.runId
       || previous.scopeKey !== effective.scopeKey;
@@ -434,9 +444,12 @@ class AdaptiveWatermarkControllerCore {
         high_watermark: this.current.highWatermark,
         candidate_low_watermark: this.current.candidateLowWatermark,
         candidate_high_watermark: this.current.candidateHighWatermark,
-        startup_watermark: this.current.startupWatermark,
-        resume_watermark: this.current.resumeWatermark,
+        target_watermark: this.current.targetWatermark,
+        immediate_replenishment: this.current.immediateReplenishment,
+        tail_mode: this.current.tailMode,
+        supply_ratio: this.current.supplyRatio,
         ram_budget_frames: this.current.ramBudgetFrames,
+        playback_ram_budget_bytes: this.current.playbackRamBudgetBytes,
         estimated_frame_bytes: this.current.estimatedFrameBytes,
         consumption_rate: this.current.consumptionRate,
         supply_rate: this.current.supplyRate,

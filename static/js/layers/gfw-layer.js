@@ -67,61 +67,35 @@ const SampledGridCanvasLayer = L.Layer.extend({
   },
 });
 
-const GridCanvasLayer = SampledGridCanvasLayer;
-
-function setGfwPaneOpacity(opacity) {
-  SampledGridLayerEffects.setPaneOpacity(map, opacity);
-}
-
-function syncGfwTransitionStyle() {
+function syncSampledGridTransitionStyle() {
   SampledGridLayerEffects.syncTransitionStyle(map, state);
 }
 
-function gfwTransitionMs() {
-  return SampledGridLayerEffects.transitionMs(state);
-}
-
-function gfwLayerElement(layer) {
-  return SampledGridLayerEffects.layerElement(layer);
-}
-
-function setGfwLayerTransition(layer) {
+function setSampledGridLayerTransition(layer) {
   SampledGridLayerEffects.setLayerTransition(layer, state);
 }
 
-function setGfwLayerOpacity(layer, opacity) {
+function setSampledGridLayerOpacity(layer, opacity) {
   SampledGridLayerEffects.setLayerOpacity(layer, opacity);
 }
 
-function setGfwLayerBlur(layer, active) {
+function setSampledGridLayerBlur(layer, active) {
   SampledGridLayerEffects.setLayerBlur(layer, state, active);
 }
 
-function setGfwPaneBlur(active) {
-  SampledGridLayerEffects.setPaneBlur(map, state, active);
-}
-
-function fadeOutGfwLayer() {
+function fadeOutSampledGridLayer() {
   SampledGridLayerEffects.fadeOut({ targetMap: map, targetState: state });
 }
 
-function waitGfwTransition() {
-  return SampledGridLayerEffects.waitTransition(state, ClockDomain.render);
-}
-
-function revealGfwLayer() {
+function revealSampledGridLayer() {
   SampledGridLayerEffects.reveal({ targetMap: map, targetState: state });
 }
 
-function removeRetiredGfwLayer(layer) {
-  SampledGridLayerEffects.removeRetiredLayer({ targetMap: map, targetState: state, layer });
-}
-
-function removeRetiredGfwLayers() {
+function removeRetiredSampledGridLayers() {
   SampledGridLayerEffects.removeRetiredLayers({ targetMap: map, targetState: state });
 }
 
-function crossfadeGfwLayer(previousLayer, nextLayer) {
+function crossfadeSampledGridLayer(previousLayer, nextLayer) {
   SampledGridLayerEffects.crossfade({
     targetMap: map,
     targetState: state,
@@ -132,14 +106,13 @@ function crossfadeGfwLayer(previousLayer, nextLayer) {
 }
 
 function removeSampledGridLayer() {
-  removeRetiredGfwLayers();
+  removeRetiredSampledGridLayers();
   if (state.gridLayer && map.hasLayer(state.gridLayer)) {
     map.removeLayer(state.gridLayer);
   }
   state.gridLayer = null;
-  revealGfwLayer();
+  revealSampledGridLayer();
   state.renderedSampledGridDate = null;
-  state.renderedGfwDate = null;
   state.sampledGridMeta = null;
   clearRenderedLodZoom(state.dataLayer || "sampled-grid");
 }
@@ -150,22 +123,22 @@ function sampledGridRowsWithinCoverage(rows, datasetId = state.datasetId) {
 }
 
 function clearSampledGridLayerForLodReload() {
-  fadeOutGfwLayer();
+  fadeOutSampledGridLayer();
   clearRenderedLodZoom(state.dataLayer || "sampled-grid");
   RenderState.loading(state.dataLayer || "sampled-grid", "LOD 更新");
 }
 
 function createSampledGridLayer(layerClass) {
   const layer = new layerClass({ renderClock: ClockDomain.render }).addTo(map);
-  setGfwLayerTransition(layer);
-  setGfwLayerOpacity(layer, 0);
-  setGfwLayerBlur(layer, false);
+  setSampledGridLayerTransition(layer);
+  setSampledGridLayerOpacity(layer, 0);
+  setSampledGridLayerBlur(layer, false);
   return layer;
 }
 
 function renderSampledGridMap(rows) {
   const visibleRows = sampledGridRowsWithinCoverage(rows);
-  syncGfwTransitionStyle();
+  syncSampledGridTransitionStyle();
   removeAisLayer();
   const previousLayer = state.gridLayer && map.hasLayer(state.gridLayer) ? state.gridLayer : null;
   let choice = RendererRegistry.chooseSampledGridLayer(visibleRows, SampledGridCanvasLayer);
@@ -179,30 +152,13 @@ function renderSampledGridMap(rows) {
   }
   state.gridLayer = nextLayer;
   state.renderedSampledGridDate = $("date")?.value || state.renderedSampledGridDate;
-  state.renderedGfwDate = state.renderedSampledGridDate;
   setRenderedLodZoom(state.dataLayer || "sampled-grid");
   applyLayerOrder();
-  crossfadeGfwLayer(previousLayer, nextLayer);
+  crossfadeSampledGridLayer(previousLayer, nextLayer);
   return {
     backend: choice.backend,
     drawMs,
     rowCount: visibleRows.length,
     detail: RendererRegistry.recordSampledGridRender(choice.backend, drawMs),
   };
-}
-
-function removeGfwLayer() {
-  return removeSampledGridLayer();
-}
-
-function clearGfwLayerForLodReload() {
-  return clearSampledGridLayerForLodReload();
-}
-
-function createGfwLayer(layerClass) {
-  return createSampledGridLayer(layerClass);
-}
-
-function renderGfwMap(rows) {
-  return renderSampledGridMap(rows);
 }

@@ -384,7 +384,6 @@ function createLayerQueryCoordinator({ scheduler, fetchJson: fetchJsonFn } = {})
     promote: scheduler.promote.bind(scheduler),
     schedule: scheduler.schedule.bind(scheduler),
     snapshot: scheduler.snapshot.bind(scheduler),
-    scheduler,
   });
 }
 

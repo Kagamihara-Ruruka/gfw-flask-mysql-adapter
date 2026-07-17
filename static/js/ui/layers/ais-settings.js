@@ -48,7 +48,10 @@ function renderAisDiagnostics(packet) {
   } else {
     result.classList.add("is-warning");
   }
-  const elapsed = Number(packet.total_elapsed_seconds || packet.duration_seconds || 0).toFixed(1);
+  const elapsed = formatDisplayNumber(
+    packet.total_elapsed_seconds || packet.duration_seconds || 0,
+    { maximumFractionDigits: 1 },
+  );
   result.innerHTML = [
     `<strong>診斷：${packet.status || "unknown"}</strong>`,
     `<span>${packet.diagnosis || "未回傳診斷。"}</span>`,

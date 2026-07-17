@@ -105,26 +105,28 @@ const LayerRuntimeContractRegistry = (() => {
 })();
 
 class ExactCommonGridResolver {
-  resolve({ layers = [], zoom = null, latitude = null } = {}) {
+  resolve({ layers = [], multiplier = 1, zoom = null, latitude = null } = {}) {
+    const normalizedMultiplier = Math.max(1, Math.min(64, Math.round(Number(multiplier) || 1)));
     const participants = layers.map((layer) => {
       const model = SampledGridContract.model(layer.datasetId);
       const resolution = SampledGridContract.resolutionState(layer.datasetId);
-      const geometry = model.gridGeometry(resolution.effectiveResolutionKm);
+      const geometry = model.gridGeometry(resolution.selectionResolutionKm);
       return geometry ? {
         ...layer,
         model,
         requestedResolutionKm: resolution.requestedResolutionKm,
         actualResolutionKm: resolution.actualResolutionKm,
-        effectiveResolutionKm: resolution.effectiveResolutionKm,
+        queryResolutionKm: resolution.queryResolutionKm,
+        selectionResolutionKm: resolution.selectionResolutionKm,
         degraded: resolution.degraded,
         geometry,
       } : null;
     }).filter(Boolean);
     if (!participants.length) {
-      return this.unavailable("目前沒有已導入且具 sampled-grid 合約的圖層");
+      return this.unavailable("目前沒有已啟用且具 sampled-grid 合約的圖層", [], normalizedMultiplier);
     }
     if (participants.length === 1) {
-      return this.result("single", participants, participants[0].geometry);
+      return this.result("single", participants, participants[0].geometry, normalizedMultiplier);
     }
     const width = virtualGridFractionLcm(participants.map((item) => (
       virtualGridFraction(item.geometry.cell_width_degrees)
@@ -132,7 +134,9 @@ class ExactCommonGridResolver {
     const height = virtualGridFractionLcm(participants.map((item) => (
       virtualGridFraction(item.geometry.cell_height_degrees)
     )).filter(Boolean));
-    if (!width || !height) return this.unavailable("圖層格網尺寸無法轉換為精確共同格距", participants);
+    if (!width || !height) {
+      return this.unavailable("圖層格網尺寸無法轉換為精確共同格距", participants, normalizedMultiplier);
+    }
     const cellWidth = width.numerator / width.denominator;
     const cellHeight = height.numerator / height.denominator;
     const origin = participants[0].geometry;
@@ -144,33 +148,39 @@ class ExactCommonGridResolver {
         (origin.origin_lat - item.geometry.origin_lat) / item.geometry.cell_height_degrees,
       )
     ));
-    if (!aligned) return this.unavailable("圖層格網原點不相容，無法建立共同網格", participants);
+    if (!aligned) {
+      return this.unavailable("圖層格網原點不相容，無法建立共同網格", participants, normalizedMultiplier);
+    }
     return this.result("common", participants, {
       encoding: "canonical_common_grid",
       origin_lon: origin.origin_lon,
       origin_lat: origin.origin_lat,
       cell_width_degrees: cellWidth,
       cell_height_degrees: cellHeight,
-    });
+    }, normalizedMultiplier);
   }
 
-  result(status, participants, geometry) {
-    const width = Number(geometry.cell_width_degrees);
-    const height = Number(geometry.cell_height_degrees);
+  result(status, participants, baseGeometry, multiplier = 1) {
+    const baseWidth = Number(baseGeometry.cell_width_degrees);
+    const baseHeight = Number(baseGeometry.cell_height_degrees);
+    const width = baseWidth * multiplier;
+    const height = baseHeight * multiplier;
     const equivalentResolutions = participants.map((item) => (
-      Number(item.effectiveResolutionKm) * Math.max(
-        width / Number(item.geometry.cell_width_degrees),
-        height / Number(item.geometry.cell_height_degrees),
+      Number(item.selectionResolutionKm) * Math.max(
+        baseWidth / Number(item.geometry.cell_width_degrees),
+        baseHeight / Number(item.geometry.cell_height_degrees),
       )
     )).filter(Number.isFinite);
-    const resolutionKm = equivalentResolutions.length ? Math.max(...equivalentResolutions) : null;
+    const baseResolutionKm = equivalentResolutions.length ? Math.max(...equivalentResolutions) : null;
+    const resolutionKm = Number.isFinite(baseResolutionKm) ? baseResolutionKm * multiplier : null;
     const participantRows = participants.map((item) => ({
       dataset_id: item.datasetId,
       layer_id: item.layerId,
       label: item.label,
       requested_resolution_km: item.requestedResolutionKm,
+      query_resolution_km: item.queryResolutionKm,
       actual_resolution_km: item.actualResolutionKm,
-      effective_resolution_km: item.effectiveResolutionKm,
+      selection_resolution_km: item.selectionResolutionKm,
       lod_degraded: item.degraded,
       cell_width_degrees: item.geometry.cell_width_degrees,
       cell_height_degrees: item.geometry.cell_height_degrees,
@@ -180,20 +190,22 @@ class ExactCommonGridResolver {
       status,
       participants: participantRows,
       geometry: {
-        encoding: geometry.encoding,
-        origin_lon: virtualGridCleanNumber(geometry.origin_lon),
-        origin_lat: virtualGridCleanNumber(geometry.origin_lat),
-        cell_width_degrees: Number(geometry.cell_width_degrees),
-        cell_height_degrees: Number(geometry.cell_height_degrees),
+        encoding: baseGeometry.encoding,
+        origin_lon: Number(baseGeometry.origin_lon),
+        origin_lat: Number(baseGeometry.origin_lat),
+        cell_width_degrees: width,
+        cell_height_degrees: height,
       },
+      baseResolutionKm: Number.isFinite(baseResolutionKm) ? baseResolutionKm : null,
       resolutionKm: Number.isFinite(resolutionKm) ? resolutionKm : null,
+      multiplier,
       detail: status === "single"
-        ? `${participantRows[0].label} 使用 ${participantRows[0].effective_resolution_km} km 格網`
-        : `${participantRows.length} 個圖層使用精確共同格網`,
+        ? `${participantRows[0].label} 使用原生格網 × ${multiplier}`
+        : `${participantRows.length} 個圖層使用最小公倍數格網 × ${multiplier}`,
     };
   }
 
-  unavailable(detail, participants = []) {
+  unavailable(detail, participants = [], multiplier = 1) {
     return {
       strategy: "least_common_multiple",
       status: "unavailable",
@@ -202,11 +214,14 @@ class ExactCommonGridResolver {
         layer_id: item.layerId,
         label: item.label,
         requested_resolution_km: item.requestedResolutionKm,
+        query_resolution_km: item.queryResolutionKm,
         actual_resolution_km: item.actualResolutionKm,
-        effective_resolution_km: item.effectiveResolutionKm,
+        selection_resolution_km: item.selectionResolutionKm,
       })),
       geometry: null,
+      baseResolutionKm: null,
       resolutionKm: null,
+      multiplier,
       detail,
     };
   }
@@ -217,10 +232,11 @@ const VirtualGridContract = (() => {
 
   function resolve({ zoom = map?.getZoom?.(), latitude = map?.getCenter?.().lat } = {}) {
     if (state.virtualGrid?.strategy !== "least_common_multiple") {
-      return resolver.unavailable("所選策略尚未實作");
+      return resolver.unavailable("所選策略尚未實作", [], state.virtualGrid?.multiplier);
     }
     return resolver.resolve({
       layers: LayerRuntimeContractRegistry.sampledGridLayers({ enabledOnly: true }),
+      multiplier: state.virtualGrid?.multiplier,
       zoom,
       latitude,
     });
@@ -268,6 +284,7 @@ function virtualGridSignature(snapshot) {
     return JSON.stringify({
       strategy: snapshot.strategy,
       status: snapshot.status,
+      multiplier: snapshot.multiplier,
       participants: snapshot.participants,
       geometry: snapshot.geometry,
     });
@@ -307,6 +324,11 @@ class VirtualGridRuntimeController {
   setStrategy(strategy) {
     this.state.virtualGrid.strategy = strategy;
     return this.refresh("strategy_changed");
+  }
+
+  setMultiplier(multiplier) {
+    this.state.virtualGrid.multiplier = Math.max(1, Math.min(64, Math.round(Number(multiplier) || 1)));
+    return this.refresh("multiplier_changed");
   }
 
   bind() {

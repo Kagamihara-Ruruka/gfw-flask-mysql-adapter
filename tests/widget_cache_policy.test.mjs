@@ -112,6 +112,50 @@ test("line-chart active-date refresh can render cache state without filling its 
   assert.equal(source.model().state, "loading");
 });
 
+test("line-chart source owns cache-first refresh policy", async () => {
+  const { LineChartDataSource } = loadWidgetClasses();
+  const dates = ["2020-01-01", "2020-01-02", "2020-01-03"];
+  const demands = [];
+  let playbackOwnsQuery = true;
+  const source = new LineChartDataSource({
+    stateProvider: () => ({
+      datasetId: "ocean",
+      availableDates: dates,
+      datasets: { ocean: { sampled_grid: {}, layer_id: "ocean.layer", label: "Ocean" } },
+    }),
+    queryContext: {
+      selectedCell: () => selection,
+      currentDate: () => "2020-01-02",
+      resolutionFor: () => 4,
+      requestedResolutionFor: () => 4,
+      mapSnapshot: () => ({ zoom: 5, latitude: 13 }),
+      playbackOwnsQueryLifecycle: () => playbackOwnsQuery,
+    },
+    dataFrameStore: { inspect: () => ({ status: "missing" }) },
+    frameDemandService: {
+      demandRange(request, options) {
+        demands.push({ request, options });
+        return Promise.resolve({});
+      },
+    },
+    renderIntentService: { unlimitedLimit: () => "max" },
+    selectedRangeProvider: () => dates,
+    dateBoundsProvider: () => ({ start: dates[0], end: dates.at(-1) }),
+  });
+
+  assert.equal(source.refresh({ cause: "context_changed" }), null);
+  assert.equal(demands.length, 0);
+
+  await source.refresh({ cause: "tile_selection" });
+  assert.deepEqual(Array.from(demands[0].request.dates), ["2020-01-02"]);
+  assert.equal(demands[0].options.lane, "widget-interactive");
+
+  playbackOwnsQuery = false;
+  await source.refresh({ cause: "context_changed" });
+  assert.deepEqual(Array.from(demands[1].request.dates), dates);
+  assert.equal(demands[1].options.lane, "widget-auto");
+});
+
 test("line-chart auto fill cancels through its scheduler-owned query scope", async () => {
   const { LineChartDataSource } = loadWidgetClasses();
   const dates = ["2020-01-01", "2020-01-02", "2020-01-03"];

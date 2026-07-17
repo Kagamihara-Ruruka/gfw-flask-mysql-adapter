@@ -75,12 +75,18 @@ class LifecycleEventViewerWidget extends DashboardWidget {
   formatDuration(value) {
     const numeric = Number(value || 0);
     if (!Number.isFinite(numeric) || numeric <= 0) return "-";
-    return numeric >= 1000 ? `${(numeric / 1000).toFixed(2)} s` : `${numeric.toFixed(1)} ms`;
+    return numeric >= 1000
+      ? `${this.formatNumber(numeric / 1000, 2)} s`
+      : `${this.formatNumber(numeric, 1)} ms`;
+  }
+
+  formatNumber(value, maximumFractionDigits = 2) {
+    return formatDisplayNumber(value, { maximumFractionDigits });
   }
 
   formatPercent(value) {
     const numeric = Number(value || 0);
-    return `${Math.max(0, numeric * 100).toFixed(1)}%`;
+    return `${this.formatNumber(Math.max(0, numeric * 100), 1)}%`;
   }
 
   eventTone(type) {
@@ -102,13 +108,23 @@ class LifecycleEventViewerWidget extends DashboardWidget {
       return [
         event.strategy || "watermark",
         `低 ${Number(event.low_watermark || 0)} / 高 ${Number(event.high_watermark || 0)}`,
-        `啟動 ${Number(event.startup_watermark || 0)} / 恢復 ${Number(event.resume_watermark || 0)}`,
+        `補貨目標 ${Number(event.target_watermark || event.high_watermark || 0)}`,
+        event.tail_mode ? "資料尾端" : event.immediate_replenishment ? "供給不足，提前補貨" : "",
         event.reason || "",
         event.degradation_reason || "",
       ].filter(Boolean).join(" · ");
     }
     if (event.type === "WATERMARK_POLICY_RESET") {
       return `水位策略重設 · ${event.reason || "configuration_changed"}`;
+    }
+    if (/^PREHEATER_REFILL_(STARTED|COMPLETED)$/.test(event.type)) {
+      return [
+        event.dataset || "",
+        event.date || "",
+        `${Number(event.ready_ahead || 0)} / ${Number(event.target_watermark || 0)} 張`,
+        event.trigger || "",
+        Number.isFinite(Number(event.supply_ratio)) ? `供需比 ${this.formatNumber(event.supply_ratio, 2)}` : "",
+      ].filter(Boolean).join(" · ");
     }
     if (/^PREPARE_/.test(event.type)) {
       return [
@@ -207,13 +223,13 @@ class LifecycleEventViewerWidget extends DashboardWidget {
         <span><b>${Number(summary.maxQueueDepth || 0)}</b><em>最大 Queue</em></span>
         <span><b>${lineChartEscape(this.formatDuration(summary.targetToVisibleP95Ms))}</b><em>目標至可見 P95</em></span>
         <span><b>${lineChartEscape(this.formatDuration(summary.phases?.preparation?.p95Ms))}</b><em>啟動準備 P95</em></span>
-        <span><b>${Number(trusted.consumption_rate || 0).toFixed(2)} /s</b><em>消耗率</em></span>
-        <span><b>${Number(trusted.supply_rate || 0).toFixed(2)} /s</b><em>補給率</em></span>
+        <span><b>${this.formatNumber(trusted.consumption_rate || 0, 2)} /s</b><em>消耗率</em></span>
+        <span><b>${this.formatNumber(trusted.supply_rate || 0, 2)} /s</b><em>補給率</em></span>
         <span><b>${lineChartEscape(this.formatDuration(trusted.cache_ready_latency_p95))}</b><em>Cache Ready P95</em></span>
         <span><b>${Number(trusted.ready_ahead_slices || 0)}</b><em>前方影格</em></span>
-        <span><b>${Number(trusted.ready_ahead_seconds || 0).toFixed(1)} s</b><em>前方秒數</em></span>
+        <span><b>${this.formatNumber(trusted.ready_ahead_seconds || 0, 1)} s</b><em>前方秒數</em></span>
         <span><b>${Number(trusted.watermark_policy?.low_watermark || 0)} / ${Number(trusted.watermark_policy?.high_watermark || 0)}</b><em>有效水位</em></span>
-        <span><b>${Number(trusted.watermark_policy?.startup_watermark || 0)} / ${Number(trusted.watermark_policy?.resume_watermark || 0)}</b><em>啟動 / 恢復</em></span>
+        <span><b>${Number(trusted.watermark_policy?.target_watermark || 0)}</b><em>補貨目標</em></span>
         <span><b>${lineChartEscape(trusted.watermark_policy?.status || "-")}</b><em>水位策略</em></span>
         <span><b>${lineChartEscape(trusted.watermark_policy?.degradation_reason || "-")}</b><em>降級原因</em></span>
       </div>

@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { createContext, runInContext } from "node:vm";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (relativePath) => readFileSync(path.join(root, relativePath), "utf8");
@@ -142,9 +143,32 @@ test("table widget is a read-only current-snapshot cache inspector", () => {
   assert.doesNotMatch(runtime, /refreshTableWidgets[\s\S]{0,180}source\.clear\(\)/);
 });
 
+test("table widget formats canonical numbers without exposing floating-point tails", () => {
+  const context = createContext({
+    formatDisplayNumber(value, { maximumFractionDigits = 2 } = {}) {
+      return Number(value).toLocaleString("zh-TW", { maximumFractionDigits });
+    },
+    window: {
+      WidgetCore: { DashboardWidget: class {} },
+      WidgetCapabilityShared: { lineChartEscape: String },
+      WidgetCapabilities: {},
+    },
+  });
+  runInContext(read("static/js/ui/widgets/capabilities/table.js"), context);
+  const { formatTableCell } = context.window.WidgetCapabilities;
+
+  assert.equal(formatTableCell(23.520833333333336, "lat"), "23.520833");
+  assert.equal(formatTableCell(40.28771030548551, "value"), "40.29");
+  assert.equal(
+    formatTableCell({ west: 121.20833333333333, south: 23.5, east: 121.25, north: 23.541666666666668 }, "bounds"),
+    "{ west: 121.208333, south: 23.5, east: 121.25, north: 23.541667 }",
+  );
+});
+
 test("widget application services own data while capabilities only render injected models", () => {
   const rootSource = read("static/js/runtime/runtime-composition-root.js");
   const appRuntime = read("static/js/application/widgets/widget-application-runtime.js");
+  const lineChartSource = read("static/js/application/widgets/line-chart-data-source.js");
   const registry = read("static/js/ui/widgets/registry/widget-registry.js");
   const runtime = read("static/js/ui/widgets/runtime/widgets-runtime.js");
 
@@ -156,6 +180,9 @@ test("widget application services own data while capabilities only render inject
   assert.match(runtime, /applicationRuntime\.servicesFor/);
   assert.match(runtime, /targetWidget\.dispose\?\.\(\)/);
   assert.doesNotMatch(runtime, /currentWidget\.dispose\?\.\(\)/);
+  assert.match(lineChartSource, /refresh\(\{ cause = "context_changed" \}/);
+  assert.match(lineChartSource, /playbackOwnsQueryLifecycle/);
+  assert.doesNotMatch(runtime, /networkMode|PlaybackEngine/);
 
   for (const relativePath of jsModules.filter((item) => item.includes("/capabilities/"))) {
     const capability = read(relativePath);
@@ -187,15 +214,43 @@ test("event viewer is a registered read-only lifecycle widget", () => {
   assert.match(registry, /LifecycleEventViewerWidget/);
 });
 
+test("visible metric values use the shared formatter without fixed trailing zeroes", () => {
+  const numericSurfaces = [
+    read("static/js/ui/widgets/capabilities/table.js"),
+    read("static/js/ui/widgets/capabilities/metrics.js"),
+    read("static/js/ui/widgets/capabilities/event-viewer.js"),
+    read("static/js/ui/telemetry/snapshot-performance-chart.js"),
+    read("static/js/playback/playback-controls.js"),
+    read("static/js/playback/playback-cache-service.js"),
+    read("static/js/ui/layers/ais-settings.js"),
+    read("static/js/services/api-client.js"),
+    read("static/js/ui/developer/developer-utils.js"),
+  ];
+  for (const source of numericSurfaces) {
+    assert.doesNotMatch(source, /\.toFixed\(/);
+  }
+  for (const source of numericSurfaces.slice(0, 8)) {
+    assert.match(source, /formatDisplayNumber/);
+  }
+});
+
 test("widget page lifecycle is owned by runtime only", () => {
   for (const relativePath of jsModules) {
     const source = read(relativePath);
     if (relativePath.endsWith("runtime/widgets-runtime.js")) {
       assert.match(source, /AppRuntime\.install\(/);
       assert.match(source, /class WidgetRuntimeController/);
+      assert.match(source, /class WidgetRefreshCoordinator/);
       assert.match(source, /createWidgetRuntimeOwner\(\{/);
-      assert.match(source, /bindChartWidgetRefresh\(\{/);
-      assert.match(source, /this\.abortController\?\.abort\(\)/);
+      const runtimeClass = source.slice(
+        source.indexOf("class WidgetRuntimeController"),
+        source.indexOf("function createWidgetRuntimeOwner"),
+      );
+      assert.doesNotMatch(runtimeClass, /new WidgetRefreshCoordinator/);
+      assert.match(source, /refreshCoordinatorFactory: \(dependencies\) => new WidgetRefreshCoordinator/);
+      assert.doesNotMatch(source, /function bindChartWidgetRefresh/);
+      assert.match(source, /this\.refreshCoordinator\?\.dispose\(\)/);
+      assert.match(source, /this\.applicationRuntime\.cancelSchedule\(timerId\)/);
       assert.doesNotMatch(source, /WidgetPopoverController\.shared\(\)/);
       continue;
     }

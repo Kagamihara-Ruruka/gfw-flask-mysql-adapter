@@ -36,13 +36,12 @@ class SampledGridResolutionController {
     if (!this.datasetId) return;
     const isActive = this.layerId === state.dataLayer && this.datasetId === state.datasetId;
     if (isActive) {
-      stopPlayback();
+      stopPlayback({ clearPreheater: true, reason: "resolution_changed" });
       removeSampledGridLayer();
       RenderState.loading(this.layerId, "切換解析度");
     }
     const selected = SampledGridContract.setRequestedResolution(this.datasetId, resolutionKm);
     if (!Number.isFinite(selected)) throw new Error("所選解析度不在 Mapping 合約中");
-    PlaybackPreheater?.stop?.("resolution_changed");
     this.sync(this.layerId);
     if (isActive) await reloadActiveLayer();
   }
@@ -59,7 +58,7 @@ class SampledGridResolutionController {
     select.replaceChildren(...available.map((resolutionKm, index) => {
       const option = document.createElement("option");
       option.value = String(resolutionKm);
-      option.textContent = `${resolutionKm} km${index === 0 ? "（最細）" : ""}`;
+      option.textContent = `${formatResolutionKm(resolutionKm)}${index === 0 ? "（最細）" : ""}`;
       return option;
     }));
     const requested = this.datasetId
@@ -78,13 +77,15 @@ class SampledGridResolutionController {
       return;
     }
     const resolution = SampledGridContract.resolutionState(this.datasetId);
+    const selectionLabel = formatResolutionKm(resolution.selectionResolutionKm);
+    const queryLabel = formatResolutionKm(resolution.queryResolutionKm);
     if (!resolution.resolved) {
-      status.textContent = `將以 ${resolution.requestedResolutionKm} km 查詢；實際粒度等待資料回應。`;
+      status.textContent = `選格 ${selectionLabel}；查詢粒度等待資料回應。`;
       return;
     }
     status.textContent = resolution.degraded
-      ? `已選 ${resolution.requestedResolutionKm} km；來源實際回傳 ${resolution.actualResolutionKm} km。`
-      : `目前渲染與選取網格均為 ${resolution.effectiveResolutionKm} km。`;
+      ? `選格 ${selectionLabel}；來源查詢使用 ${queryLabel}。`
+      : `目前選格與查詢均為 ${selectionLabel}。`;
   }
 }
 

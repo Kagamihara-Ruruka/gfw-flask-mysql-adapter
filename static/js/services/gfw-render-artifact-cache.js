@@ -27,11 +27,11 @@ class RenderArtifactCache {
     this.generation += 1;
     let released = 0;
     if (this.releaseLayer(this.state.gridLayer)) released += 1;
-    for (const layer of this.state.gfwRetiringLayers || []) {
+    for (const layer of this.state.sampledGridRetiringLayers || []) {
       if (this.releaseLayer(layer)) released += 1;
     }
 
-    this.state.gfwRenderArtifactCache = {
+    this.state.sampledGridRenderArtifactCache = {
       generation: this.generation,
       released,
       reason,

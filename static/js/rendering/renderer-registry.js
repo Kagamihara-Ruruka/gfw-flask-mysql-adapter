@@ -35,8 +35,6 @@ const RendererRegistry = (() => {
     const detail = `${backend} / ${formatted}`;
     state.rendering.sampledGridMode = backend;
     state.rendering.sampledGridBackend = detail;
-    state.rendering.gfwMode = backend;
-    state.rendering.gfwBackend = detail;
     TimingMetrics.setMetricMs?.("draw", drawMs, {
       label: backend === "webgl" ? "WebGL 渲染" : "Canvas 渲染",
       source: backend,
@@ -46,9 +44,7 @@ const RendererRegistry = (() => {
 
   return {
     chooseSampledGridLayer,
-    chooseGfwLayer: chooseSampledGridLayer,
     gpuAvailable,
     recordSampledGridRender,
-    recordGfwRender: recordSampledGridRender,
   };
 })();

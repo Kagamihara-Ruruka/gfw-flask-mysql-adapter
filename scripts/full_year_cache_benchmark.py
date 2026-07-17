@@ -266,7 +266,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--drag-bbox", default="120.75,22.75,122.25,25.75")
     parser.add_argument("--selection-bbox", default="121,23.5,121.041666667,23.541666667")
     parser.add_argument("--resolution", type=float, default=None)
-    parser.add_argument("--concurrency", type=int, default=6)
+    parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--warm-window", type=int, default=30)
     parser.add_argument("--date-limit", type=int, default=0)
     parser.add_argument("--timeout", type=float, default=120)

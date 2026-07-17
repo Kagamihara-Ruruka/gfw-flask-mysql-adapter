@@ -20,7 +20,7 @@ class SnapshotPerformanceChart {
 
   formatMs(value) {
     const parsed = this.numberOrNull(value);
-    return parsed === null ? "-" : `${parsed.toFixed(1)} ms`;
+    return parsed === null ? "-" : `${formatDisplayNumber(parsed, { maximumFractionDigits: 1 })} ms`;
   }
 
   displayDetail(sample, item) {
@@ -113,7 +113,12 @@ class SnapshotPerformanceChart {
       name: item.name,
       x: samples.map((sample) => sample.index),
       y: samples.map((sample) => this.numberOrNull(sample[item.key])),
-      customdata: samples.map((sample) => [sample.label, sample.rows, this.displayDetail(sample, item)]),
+      customdata: samples.map((sample) => [
+        sample.label,
+        sample.rows,
+        this.displayDetail(sample, item),
+        this.formatMs(sample[item.key]),
+      ]),
       connectgaps: false,
       line: { color: item.color, width: 2.5, shape: "spline", smoothing: 0.55 },
       marker: { color: item.color, size: samples.length > 1 ? 6 : 8 },
@@ -122,7 +127,7 @@ class SnapshotPerformanceChart {
         "顯示細項：%{customdata[2]}<br>" +
         "快照：%{customdata[0]}<br>" +
         "資料列：%{customdata[1]}<br>" +
-        "耗時：%{y:.1f} ms<extra></extra>",
+        "耗時：%{customdata[3]}<extra></extra>",
     };
   }
 

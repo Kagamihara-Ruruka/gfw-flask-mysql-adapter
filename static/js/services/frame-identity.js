@@ -1,4 +1,7 @@
-const FrameIdentity = (() => {
+function createFrameIdentity({ datasetResolver } = {}) {
+  if (typeof datasetResolver !== "function") {
+    throw new TypeError("FrameIdentity requires a datasetResolver");
+  }
   const BBOX_PRECISION = 6;
 
   function finiteNumber(value) {
@@ -53,7 +56,7 @@ const FrameIdentity = (() => {
 
   function datasetNamespace(request = {}) {
     const datasetId = String(request.datasetId || request.dataset_id || "");
-    const dataset = typeof state === "undefined" ? {} : state?.datasets?.[datasetId] || {};
+    const dataset = datasetResolver(datasetId) || {};
     const sampledGrid = dataset.sampled_grid || {};
     const gridProfile = sampledGrid.grid_profile || {};
     return String(request.cacheNamespace || dataset.cache_namespace || [
@@ -65,6 +68,19 @@ const FrameIdentity = (() => {
       sampledGrid.mapping_version || request.mappingVersion || "",
       gridProfile.signature || "",
     ].join("~"));
+  }
+
+  function transportKey(request = {}) {
+    const datasetId = String(request.datasetId || request.dataset_id || "");
+    const dataset = datasetResolver(datasetId) || {};
+    return String(
+      request.transportKey
+      || request.queryTransportKey
+      || request.query_transport_key
+      || dataset.query_transport_key
+      || dataset.runtime?.query_transport_key
+      || `dataset:${datasetId}`
+    );
   }
 
   function requestedResolution(request = {}) {
@@ -140,6 +156,7 @@ const FrameIdentity = (() => {
       queryResolution: effectiveQueryResolution,
       effectiveQueryResolutionKm: effectiveQueryResolution,
       cacheNamespace: datasetNamespace(request),
+      transportKey: transportKey(request),
     });
   }
 
@@ -155,7 +172,8 @@ const FrameIdentity = (() => {
     queryResolution,
     requestParts,
     scopeKey,
+    transportKey,
   });
-})();
+}
 
-if (typeof window !== "undefined") window.FrameIdentity = FrameIdentity;
+if (typeof globalThis !== "undefined") globalThis.createFrameIdentity = createFrameIdentity;

@@ -4,9 +4,7 @@ const VirtualGridSettings = (() => {
   }
 
   function formatNumber(value, digits = 3) {
-    const number = Number(value);
-    if (!Number.isFinite(number)) return "-";
-    return number.toLocaleString("zh-TW", { maximumFractionDigits: digits });
+    return formatDisplayNumber(value, { maximumFractionDigits: digits });
   }
 
   function statusLabel(snapshot) {
@@ -29,7 +27,7 @@ const VirtualGridSettings = (() => {
     const geometry = snapshot.geometry;
     const rows = [
       ["參與圖層", String(snapshot.participants?.length || 0)],
-      ["等效解析度", Number.isFinite(Number(snapshot.resolutionKm)) ? `${formatNumber(snapshot.resolutionKm)} km` : "-"],
+      ["等效解析度", formatResolutionKm(snapshot.resolutionKm)],
       ["格網寬度", geometry ? `${formatNumber(geometry.cell_width_degrees, 6)}°` : "-"],
       ["格網高度", geometry ? `${formatNumber(geometry.cell_height_degrees, 6)}°` : "-"],
     ];
@@ -47,12 +45,13 @@ const VirtualGridSettings = (() => {
       label.textContent = participant.label || participant.layer_id;
       const resolution = document.createElement("strong");
       const requested = Number(participant.requested_resolution_km);
-      const effective = Number(participant.effective_resolution_km);
-      resolution.textContent = Number.isFinite(requested)
-        && Number.isFinite(effective)
-        && Math.abs(requested - effective) > 1e-9
-        ? `${formatNumber(requested)} → ${formatNumber(effective)} km`
-        : `${formatNumber(effective || requested)} km`;
+      const selection = Number(participant.selection_resolution_km ?? requested);
+      const query = Number(participant.query_resolution_km ?? selection);
+      resolution.textContent = Number.isFinite(selection)
+        && Number.isFinite(query)
+        && Math.abs(selection - query) > 1e-9
+        ? `${formatResolutionKm(selection)} → ${formatResolutionKm(query)}`
+        : formatResolutionKm(selection);
       item.append(label, resolution);
       participants.append(item);
     }

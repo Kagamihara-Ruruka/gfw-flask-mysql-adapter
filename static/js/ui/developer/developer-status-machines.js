@@ -124,6 +124,11 @@
           render: (row) => `<strong>${escapeHtml(row.label || row.layer_id)}</strong><small>${escapeHtml(row.layer_id)}</small>`,
         },
         {
+          key: "runtime_status",
+          width: "9rem",
+          render: (row) => `${bitCell(row.available)}<small>${escapeHtml((row.runtime_status || "unknown").toUpperCase())}</small>`,
+        },
+        {
           key: "contract_group",
           width: "7rem",
           render: (row) => escapeHtml((row.contract_group || row.contract_source || "-").toUpperCase()),

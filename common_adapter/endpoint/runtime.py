@@ -12,6 +12,16 @@ from common_adapter.query.grid_registry import GridRegistry
 SAMPLED_GRID_MAPPING_VERSION = "rrkal.mapping.sampled_grid.v1"
 SAMPLED_GRID_CONTRACT_VERSION = "rrkal.sampled_grid.v1"
 LAYER_MAPPINGS_CONFIG_REF = "config/artifacts/layer_mappings.local.json"
+SAMPLED_GRID_CANONICAL_ROLES = {
+    "time": "date",
+    "id": "cell_id",
+    "lat": "lat",
+    "lon": "lon",
+    "value": "value",
+    "resolution": "resolution_km",
+    "coverage": "coverage_ratio",
+    "status": "data_status",
+}
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -84,6 +94,38 @@ def sampled_grid_catalog_mappings(config_ref: str) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda row: _text(row.get("mapping_id")))
 
 
+def resolved_mapping_for_dataset(dataset_id: str, dataset: dict[str, Any]) -> dict[str, Any]:
+    """Expose the exact canonical mapping consumed by a generated runtime dataset."""
+    roles = {
+        str(role): str(column)
+        for role, column in (
+            _mapping(dataset.get("canonical_roles")) or SAMPLED_GRID_CANONICAL_ROLES
+        ).items()
+        if _text(role) and _text(column)
+    }
+    selected_columns: list[str] = []
+    for column in [
+        *roles.values(),
+        *_list(dataset.get("display_columns")),
+        *_list(dataset.get("metric_columns")),
+        *_list(dataset.get("category_columns")),
+    ]:
+        name = _text(column)
+        if name and name not in selected_columns:
+            selected_columns.append(name)
+    return {
+        "source_mapping_id": dataset.get("__runtime_mapping_id"),
+        "dataset_id": dataset_id,
+        "layer_id": dataset.get("data_layer") or dataset_id,
+        "label": dataset.get("label") or dataset_id,
+        "roles": roles,
+        "selected_columns": selected_columns,
+        "display_columns": list(_list(dataset.get("display_columns"))),
+        "metric_columns": list(_list(dataset.get("metric_columns"))),
+        "category_columns": list(_list(dataset.get("category_columns"))),
+    }
+
+
 def _field(item: dict[str, Any], fields: dict[str, Any], role: str, fallback: Any = None) -> Any:
     return value_at(item, fields.get(role), fallback)
 
@@ -137,6 +179,13 @@ def _dataset_from_catalog_item(
     metric_value = _field(item, fields, "metric", source_layer_id)
     resolutions = _positive_numbers(value_at(catalog_body, catalog.get("resolutions_path")))
     coverages = _coverage_rows(catalog_body, catalog)
+    default_coverage_id = _text(sampled_grid.get("default_coverage_id"))
+    if default_coverage_id and not any(
+        coverage.get("id") == default_coverage_id for coverage in coverages
+    ):
+        raise ValueError(
+            f"mapping default_coverage_id is not advertised by catalog: {default_coverage_id}"
+        )
     row_fields = {
         str(role): str(path)
         for role, path in _mapping(sampled_grid.get("row_fields")).items()
@@ -161,6 +210,7 @@ def _dataset_from_catalog_item(
     descriptor = {
         "contract_version": SAMPLED_GRID_CONTRACT_VERSION,
         "mapping_version": _text(sampled_grid.get("mapping_version"), SAMPLED_GRID_MAPPING_VERSION),
+        "default_coverage_id": default_coverage_id,
         "available_resolutions_km": resolutions,
         "coverage_areas": coverages,
         "source_fields": row_fields,
@@ -193,6 +243,7 @@ def _dataset_from_catalog_item(
         "display_columns": display_columns,
         "metric_columns": ["value"],
         "category_columns": ["data_status"],
+        "canonical_roles": deepcopy(SAMPLED_GRID_CANONICAL_ROLES),
         "sampled_grid": descriptor,
         "grid_profile_id": grid_profile.profile_id,
         "endpoint_source": deepcopy(route_config),
@@ -262,6 +313,10 @@ def endpoint_layer_contracts(datasets: dict[str, dict[str, Any]]) -> list[dict[s
     for dataset_id, dataset in datasets.items():
         descriptor = _mapping(dataset.get("sampled_grid"))
         source_route_group = _text(dataset.get("__runtime_source_route_group"), "endpoint")
+        canonical_roles = deepcopy(
+            _mapping(dataset.get("canonical_roles")) or SAMPLED_GRID_CANONICAL_ROLES
+        )
+        canonical_roles.setdefault("bounds", "bounds")
         contracts.append(
             {
                 "contract_version": "rrkal.layer_contract.v1",
@@ -280,18 +335,11 @@ def endpoint_layer_contracts(datasets: dict[str, dict[str, Any]]) -> list[dict[s
                 "connection_ref": dataset.get("connection_ref"),
                 "detail": f"{source_route_group.upper()} {dataset.get('connection_ref') or '-'}",
                 "mapping": {
-                    "canonical_roles": {
-                        "time": "date",
-                        "id": "cell_id",
-                        "lat": "lat",
-                        "lon": "lon",
-                        "value": "value",
-                        "resolution": "resolution_km",
-                        "bounds": "bounds",
-                    },
+                    "canonical_roles": canonical_roles,
                     "sampled_grid": {
                         "contract_version": descriptor.get("contract_version"),
                         "grid_profile": descriptor.get("grid_profile") or {},
+                        "default_coverage_id": descriptor.get("default_coverage_id"),
                         "available_resolutions_km": descriptor.get("available_resolutions_km") or [],
                         "coverage_areas": descriptor.get("coverage_areas") or [],
                         "alignment": descriptor.get("alignment") or {},

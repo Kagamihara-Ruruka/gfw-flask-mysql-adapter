@@ -32,12 +32,12 @@
       return "-";
     }
     if (bytes < 1024) {
-      return `${bytes} B`;
+      return `${bytes.toLocaleString("zh-TW", { maximumFractionDigits: 0 })} B`;
     }
     if (bytes < 1024 * 1024) {
-      return `${(bytes / 1024).toFixed(1)} KB`;
+      return `${(bytes / 1024).toLocaleString("zh-TW", { maximumFractionDigits: 1 })} KB`;
     }
-    return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+    return `${(bytes / 1024 / 1024).toLocaleString("zh-TW", { maximumFractionDigits: 2 })} MB`;
   }
 
   function escapeHtml(value) {

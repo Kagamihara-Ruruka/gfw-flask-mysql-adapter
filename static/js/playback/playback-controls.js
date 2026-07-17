@@ -4,12 +4,7 @@ const PLAYBACK_BUFFER_POLL_MS = 180;
 const PLAYBACK_BUFFER_TIMEOUT_MS = PlaybackTimePolicy.BUFFER_TIMEOUT_MS;
 
 function playbackIsActive() {
-  const status = typeof PlaybackEngine === "undefined"
-    ? "IDLE"
-    : String(PlaybackEngine.snapshot?.()?.status || "IDLE");
-  return ["PREPARING", "PLAYING", "BUFFERING"].includes(
-    status,
-  );
+  return PlaybackRuntime.isActive();
 }
 
 function syncPlayToggleIcon() {
@@ -83,7 +78,9 @@ function playbackBufferText() {
   const waitMs = Number(cache.bufferStatus === "prebuffering"
     ? runtime.preparation_wait_ms
     : runtime.buffer_wait_ms) || 0;
-  const waitText = waitMs >= 1000 ? ` · 等待 ${(waitMs / 1000).toFixed(1)}s` : "";
+  const waitText = waitMs >= 1000
+    ? ` · 等待 ${formatDisplayNumber(waitMs / 1000, { maximumFractionDigits: 1 })} s`
+    : "";
   if (cache.bufferStatus === "prebuffering") {
     return `播放準備中${date}${stateName}：${ready} / ${required}${waitText}${error}`;
   }
@@ -102,14 +99,13 @@ function playbackDegradationText(reason) {
 }
 
 function syncPlaybackRuntimeGateState() {
-  const engine = PlaybackEngine.snapshot();
+  const engine = PlaybackRuntime.lifecycleSnapshot();
   if (engine.status === "PREPARING") {
     PlaybackCacheService.setBufferState({
       buffering: false,
       status: "prebuffering",
       ready: engine.preparationReady,
       required: engine.preparationRequired,
-      resume: engine.preparationRequired,
       currentDate: datesInSelectedRange()[engine.currentIndex + 1] || engine.currentDate,
       targetIndex: engine.currentIndex + 1,
       stateName: "PREPARING",
@@ -122,7 +118,6 @@ function syncPlaybackRuntimeGateState() {
       status: "waiting",
       ready: gate.readyCount,
       required: gate.required,
-      resume: gate.required,
       currentDate: state.playbackCache?.bufferCurrentDate || "",
       targetIndex: gate.targetIndex ?? state.playbackCache?.bufferTargetIndex ?? -1,
       attempts: state.playbackCache?.bufferAttempts || 0,
@@ -144,15 +139,6 @@ function updatePlaybackBufferStatus() {
   text.textContent = message;
 }
 
-function nextPlaybackGeneration() {
-  state.playbackCache.generation = Number(state.playbackCache.generation || 0) + 1;
-  return state.playbackCache.generation;
-}
-
-function isPlaybackGenerationActive(generation) {
-  return state.playbackCache.generation === generation;
-}
-
 function playbackStepMode() {
   if (typeof PlaybackDeliveryPolicy !== "undefined") {
     return PlaybackDeliveryPolicy.stepMode(state);
@@ -166,10 +152,6 @@ function normalizedPlaybackInterval(stepMode = playbackStepMode(), rate = normal
     speed: rate,
     stepMode,
   });
-}
-
-function timelineStepMode(timeline) {
-  return timeline?.stepMode === "fluid" ? "fluid" : "sequential";
 }
 
 function basePlaybackInterval() {
@@ -194,110 +176,51 @@ function currentPlaybackDateIndex(dates = datesInSelectedRange()) {
   return dates.indexOf($("date")?.value);
 }
 
-function clearPlaybackTimeline() {
-  state.playbackCache.timeline = null;
-}
-
-function startPlaybackTimeline(generation, { firstDelayMs = 0 } = {}) {
-  const stepMode = playbackStepMode();
-  const rate = normalizedPlaybackRate();
-  const intervalMs = normalizedPlaybackInterval(stepMode, rate);
-  const dates = datesInSelectedRange();
-  const currentIndex = currentPlaybackDateIndex(dates);
-  state.playbackCache.timeline = PlaybackScheduler.start({
-    generation,
-    intervalMs,
-    rate,
-    stepMode,
-    baseDateIndex: currentIndex,
-    nowMs: ClockDomain.playback.now(),
-    firstDelayMs,
-  });
-  return state.playbackCache.timeline;
-}
-
-function playbackTimeline(generation) {
-  const timeline = state.playbackCache?.timeline;
-  if (timeline && timeline.generation === generation) return timeline;
-  return startPlaybackTimeline(generation);
-}
-
-function delayUntilNextPlaybackFrame(generation) {
-  const timeline = playbackTimeline(generation);
-  return PlaybackScheduler.delayUntilNextFrame(timeline, {
-    nowMs: ClockDomain.playback.now(),
-    fallbackIntervalMs: normalizedPlaybackInterval(),
-  });
-}
-
-function duePlaybackFrameNumber(generation) {
-  const timeline = playbackTimeline(generation);
-  return PlaybackScheduler.dueFrameNumber(timeline, {
-    nowMs: ClockDomain.playback.now(),
-    fallbackIntervalMs: normalizedPlaybackInterval(),
-  });
-}
-
-function markPlaybackFrameShown(generation, frameNumber = null) {
-  const timeline = playbackTimeline(generation);
-  PlaybackScheduler.markFrameShown(timeline, {
-    frameNumber: frameNumber || duePlaybackFrameNumber(generation),
-  });
-}
-
-function shiftPlaybackTimeline(generation, deltaMs) {
-  const amount = Math.max(0, Number(deltaMs || 0));
-  if (amount <= 0) return;
-  const timeline = playbackTimeline(generation);
-  PlaybackScheduler.shift(timeline, amount);
-}
-
-function reschedulePlaybackTimelineAfterSpeedChange(generation) {
-  const intervalMs = normalizedPlaybackInterval();
-  startPlaybackTimeline(generation, { firstDelayMs: intervalMs });
-}
-
-function playbackTargetDateIndex(generation, frameNumber) {
-  const dates = datesInSelectedRange();
-  if (!dates.length) return -1;
-  const timeline = playbackTimeline(generation);
-  return PlaybackScheduler.targetDateIndex(timeline, {
-    datesLength: dates.length,
-    currentIndex: currentPlaybackDateIndex(dates),
-    frameNumber,
-  });
-}
-
 function syncPlaybackSettingsInputs() {
   const options = PlaybackCacheService.options();
+  const queryPolicy = QueryPolicyController.snapshot();
   PlaybackDeliveryPolicy.apply(state);
   const interpolation = PlaybackInterpolationController.options(state);
   if ($("play-speed")) $("play-speed").value = String(normalizedPlaybackRate());
   if ($("playback-rate")) $("playback-rate").value = String(normalizedPlaybackRate());
   if ($("playback-interpolation-mode")) $("playback-interpolation-mode").value = interpolation.mode;
   if ($("playback-cache-strategy")) $("playback-cache-strategy").value = options.strategy;
-  if ($("query-network-concurrency")) $("query-network-concurrency").value = String(state.queryPolicy?.network_concurrency || 6);
-  if ($("query-background-concurrency")) {
-    $("query-background-concurrency").value = String(
-      state.queryPolicy?.background_network_concurrency || 3,
-    );
+  if ($("query-network-concurrency")) {
+    $("query-network-concurrency").value = String(queryPolicy.networkConcurrency);
   }
-  if ($("playback-cache-low-watermark")) $("playback-cache-low-watermark").value = String(options.lowWatermark);
-  if ($("playback-cache-high-watermark")) $("playback-cache-high-watermark").value = String(options.highWatermark);
-  if ($("playback-cache-startup-watermark")) $("playback-cache-startup-watermark").value = String(state.playbackCache.startupWatermark);
-  if ($("playback-cache-resume-watermark")) $("playback-cache-resume-watermark").value = String(state.playbackCache.resumeWatermark);
+  if ($("query-background-concurrency")) {
+    $("query-background-concurrency").value = String(queryPolicy.backgroundConcurrency);
+  }
+  const configuredHigh = Math.max(4, Number(state.playbackCache.highWatermark || 15));
+  const configuredLow = Math.max(1, Math.min(
+    configuredHigh - 1,
+    Number(state.playbackCache.lowWatermark || 10),
+  ));
+  if ($("playback-cache-low-watermark")) {
+    $("playback-cache-low-watermark").disabled = options.strategy === "adaptive";
+    $("playback-cache-low-watermark").min = "1";
+    $("playback-cache-low-watermark").max = String(configuredHigh - 1);
+    $("playback-cache-low-watermark").value = String(configuredLow);
+  }
+  if ($("playback-cache-high-watermark")) {
+    $("playback-cache-high-watermark").disabled = options.strategy === "adaptive";
+    $("playback-cache-high-watermark").min = String(configuredLow + 1);
+    $("playback-cache-high-watermark").value = String(configuredHigh);
+  }
   if ($("playback-cache-window-behind")) $("playback-cache-window-behind").value = String(options.windowBehind);
   if ($("playback-cache-max-gb")) $("playback-cache-max-gb").value = String(Math.round(options.maxGb * 100) / 100);
-  if ($("gfw-transition-ms")) $("gfw-transition-ms").value = String(Math.max(0, Number(state.gfwTransitionMs || 0)));
-  const blurPx = Math.max(0, Number(state.gfwZoomBlurPx || 0));
-  if ($("gfw-zoom-blur-px")) $("gfw-zoom-blur-px").value = String(blurPx);
-  if ($("gfw-zoom-blur-value")) $("gfw-zoom-blur-value").textContent = `${blurPx}px`;
+  if ($("sampled-grid-transition-ms")) {
+    $("sampled-grid-transition-ms").value = String(Math.max(0, Number(state.sampledGridTransitionMs || 0)));
+  }
+  const blurPx = Math.max(0, Number(state.sampledGridZoomBlurPx || 0));
+  if ($("sampled-grid-zoom-blur-px")) $("sampled-grid-zoom-blur-px").value = String(blurPx);
+  if ($("sampled-grid-zoom-blur-value")) $("sampled-grid-zoom-blur-value").textContent = `${formatDisplayNumber(blurPx, { maximumFractionDigits: 1 })} px`;
   updatePlaybackCacheStatus(PlaybackCacheService.statusText());
 }
 
 function releasePlaybackRenderArtifacts(reason) {
-  if (!GfwRenderArtifactCache?.webglAvailable?.()) return;
-  GfwRenderArtifactCache.clear?.({ reason, requireGpu: true });
+  if (!SampledGridRenderArtifactCache?.webglAvailable?.()) return;
+  SampledGridRenderArtifactCache.clear?.({ reason, requireGpu: true });
 }
 
 function bindPlaybackSettingsControls() {
@@ -309,54 +232,34 @@ function bindPlaybackSettingsControls() {
   });
   $("playback-interpolation-mode")?.addEventListener("change", (event) => {
     PlaybackInterpolationController.setMode(state, event.target.value);
-    syncGfwTransitionStyle();
+    syncSampledGridTransitionStyle();
     syncPlaybackSettingsInputs();
   });
   $("query-network-concurrency")?.addEventListener("change", (event) => {
-    state.queryPolicy.network_concurrency = Math.max(1, Math.min(16, Number(event.target.value || 6)));
-    state.queryPolicy.background_network_concurrency = Math.min(
-      state.queryPolicy.network_concurrency,
-      Math.max(1, Number(state.queryPolicy.background_network_concurrency || 3)),
-    );
-    LayerQueryCoordinator.drain?.();
+    QueryPolicyController.setNetworkConcurrency(event.target.value);
     syncPlaybackSettingsInputs();
   });
   $("query-background-concurrency")?.addEventListener("change", (event) => {
-    state.queryPolicy.background_network_concurrency = Math.max(
-      1,
-      Math.min(
-        Number(state.queryPolicy.network_concurrency || 6),
-        Number(event.target.value || 3),
-      ),
-    );
-    LayerQueryCoordinator.drain?.();
+    QueryPolicyController.setBackgroundConcurrency(event.target.value);
     syncPlaybackSettingsInputs();
   });
   $("playback-cache-low-watermark")?.addEventListener("change", (event) => {
-    const high = PlaybackCacheService.options().highWatermark;
-    state.playbackCache.lowWatermark = Math.max(1, Math.min(high - 1, Number(event.target.value || 1)));
+    const high = Math.max(4, Number(state.playbackCache.highWatermark || 15));
+    state.playbackCache.lowWatermark = Math.max(
+      1,
+      Math.min(high - 1, Number(event.target.value || 10)),
+    );
     PlaybackCacheService.resetPolicy("low_watermark_changed");
     syncPlaybackSettingsInputs();
   });
   $("playback-cache-high-watermark")?.addEventListener("change", (event) => {
-    const high = Math.max(2, Number(event.target.value || 10));
+    const high = Math.max(4, Number(event.target.value || 15));
     state.playbackCache.highWatermark = high;
-    state.playbackCache.lowWatermark = Math.min(high - 1, Number(state.playbackCache.lowWatermark || 5));
-    state.playbackCache.startupWatermark = Math.min(high, Number(state.playbackCache.startupWatermark || 5));
-    state.playbackCache.resumeWatermark = Math.max(2, Math.min(high, Number(state.playbackCache.resumeWatermark || 5)));
+    state.playbackCache.lowWatermark = Math.max(
+      1,
+      Math.min(high - 1, Number(state.playbackCache.lowWatermark || 10)),
+    );
     PlaybackCacheService.resetPolicy("high_watermark_changed");
-    syncPlaybackSettingsInputs();
-  });
-  $("playback-cache-startup-watermark")?.addEventListener("change", (event) => {
-    const high = PlaybackCacheService.options().highWatermark;
-    state.playbackCache.startupWatermark = Math.max(1, Math.min(high, Number(event.target.value || 5)));
-    PlaybackCacheService.resetPolicy("startup_watermark_changed");
-    syncPlaybackSettingsInputs();
-  });
-  $("playback-cache-resume-watermark")?.addEventListener("change", (event) => {
-    const high = PlaybackCacheService.options().highWatermark;
-    state.playbackCache.resumeWatermark = Math.max(2, Math.min(high, Number(event.target.value || 5)));
-    PlaybackCacheService.resetPolicy("resume_watermark_changed");
     syncPlaybackSettingsInputs();
   });
   $("playback-cache-max-gb")?.addEventListener("change", (event) => {
@@ -367,20 +270,20 @@ function bindPlaybackSettingsControls() {
     syncPlaybackSettingsInputs();
   });
   $("playback-cache-clear")?.addEventListener("click", () => {
-    PlaybackCacheService.clear();
+    stopPlayback({ clearPreheater: true, reason: "manual_cache_clear" });
     DataFrameStore.evictAll?.();
-    GfwRenderArtifactCache.clear?.({ reason: "manual_cache_clear" });
+    SampledGridRenderArtifactCache.clear?.({ reason: "manual_cache_clear" });
     PlaybackCacheService.resetPolicy("cache_cleared");
     setStatus("播放快取已釋放");
     syncPlaybackSettingsInputs();
   });
-  $("gfw-transition-ms")?.addEventListener("change", (event) => {
-    state.gfwTransitionMs = Math.max(0, Number(event.target.value || 0));
-    syncGfwTransitionStyle();
+  $("sampled-grid-transition-ms")?.addEventListener("change", (event) => {
+    state.sampledGridTransitionMs = Math.max(0, Number(event.target.value || 0));
+    syncSampledGridTransitionStyle();
     syncPlaybackSettingsInputs();
   });
-  $("gfw-zoom-blur-px")?.addEventListener("input", (event) => {
-    state.gfwZoomBlurPx = Math.max(0, Number(event.target.value || 0));
+  $("sampled-grid-zoom-blur-px")?.addEventListener("input", (event) => {
+    state.sampledGridZoomBlurPx = Math.max(0, Number(event.target.value || 0));
     syncPlaybackSettingsInputs();
   });
   window.addEventListener("rrkal:data-frame-store-changed", () => {
@@ -503,20 +406,11 @@ function updatePlaybackControls() {
   }
 }
 
-function stopPlayback({ cancelPending = true, clearBuffer = true, reason = "stopped" } = {}) {
-  const wasActive = Boolean(playbackIsActive() || state.playTimer || state.playbackCache?.timeline);
-  if (cancelPending) {
-    nextPlaybackGeneration();
-  }
+function stopPlayback({ clearBuffer = true, clearPreheater = false, reason = "stopped" } = {}) {
   if (clearBuffer) {
     PlaybackCacheService.clearBufferState();
   }
-  clearPlaybackTimeline();
-  ClockDomain.playback.cancel(state.playTimer);
-  state.playTimer = null;
-  if (wasActive) {
-    PlaybackEngine.stop(reason);
-  }
+  PlaybackRuntime.stop({ clearPreheater, reason });
   updatePlaybackControls();
   syncPlaybackSettingsInputs();
 }
@@ -573,10 +467,10 @@ function playbackFrameDecision(dates, currentIndex, targetIndex) {
     currentIndex,
     targetIndex,
     hasCacheLayer: hasPlaybackCacheLayer(),
-    inspectFrame: (index) => PlaybackEngine.inspectTarget(index),
+    inspectFrame: (index) => PlaybackRuntime.inspectTarget(index),
     intervalMs: normalizedPlaybackInterval(),
     rate: normalizedPlaybackRate(),
-    resumeGate: PlaybackEngine.bufferGate(),
+    bufferGate: PlaybackRuntime.bufferGate(),
   });
 }
 
@@ -591,7 +485,7 @@ function playbackBufferAttempt(packet) {
 
 function playbackBufferTimedOut() {
   return PlaybackTimePolicy.bufferTimedOut(
-    PlaybackEngine.bufferWaitMs(),
+    PlaybackRuntime.bufferWaitMs(),
     PLAYBACK_BUFFER_TIMEOUT_MS,
   );
 }
@@ -599,14 +493,13 @@ function playbackBufferTimedOut() {
 function markPlaybackTargetFailed(dates, targetIndex, decision, { attempts = 0, reason = "" } = {}) {
   const packet = decision || playbackFrameDecision(dates, currentPlaybackDateIndex(dates), targetIndex);
   const errorMessage = reason || packet.errorMessage || "frame request failed";
-  PlaybackFrameBuffer.markFailed({
+  PlaybackCacheService.setBufferState(PlaybackFrameBuffer.failedState({
     decision: packet,
     dates,
     targetIndex,
-    cacheService: PlaybackCacheService,
     attempts,
     errorMessage,
-  });
+  }));
   updatePlaybackControls();
   syncPlaybackSettingsInputs();
   setStatus(playbackBufferText() || `播放失敗 ${packet.targetDate || dates[targetIndex] || ""}`, true);
@@ -616,25 +509,23 @@ function markPlaybackTargetFailed(dates, targetIndex, decision, { attempts = 0, 
 function markPlaybackTargetWaiting(dates, targetIndex, decision, waitState = null) {
   let packet = decision || playbackFrameDecision(dates, currentPlaybackDateIndex(dates), targetIndex);
   const { attempts } = waitState || playbackBufferAttempt(packet);
-  PlaybackEngine.requireTarget(targetIndex).catch((error) => {
+  PlaybackRuntime.requireTarget(targetIndex).catch((error) => {
     if (error?.name !== "AbortError") setStatus(error?.message || "目標影格查詢失敗", true);
   });
-  const gate = PlaybackEngine.bufferGate();
+  const gate = PlaybackRuntime.bufferGate();
   if (gate.active) {
     packet = {
       ...packet,
       readyCount: gate.readyCount,
       requiredCount: gate.required,
-      resumeCount: gate.required,
     };
   }
-  PlaybackFrameBuffer.markWaiting({
+  PlaybackCacheService.setBufferState(PlaybackFrameBuffer.waitingState({
     decision: packet,
     dates,
     targetIndex,
-    cacheService: PlaybackCacheService,
     attempts,
-  });
+  }));
   updatePlaybackControls();
   syncPlaybackSettingsInputs();
   setStatus(playbackBufferText() || "緩衝中");
@@ -643,7 +534,7 @@ function markPlaybackTargetWaiting(dates, targetIndex, decision, waitState = nul
 
 async function renderPlaybackDateIndex(dates, targetIndex) {
   const startedAt = ClockDomain.render.now();
-  PlaybackEngine.markRenderStarted(targetIndex);
+  PlaybackRuntime.markRenderStarted(targetIndex);
   await PlaybackRenderer.showDateIndex({
     dates,
     targetIndex,
@@ -651,11 +542,10 @@ async function renderPlaybackDateIndex(dates, targetIndex) {
     updateControls: updatePlaybackControls,
     reloadActiveLayer,
   });
-  PlaybackEngine.markFrameVisible(targetIndex, { renderMs: ClockDomain.render.now() - startedAt });
+  PlaybackRuntime.markFrameVisible(targetIndex, { renderMs: ClockDomain.render.now() - startedAt });
 }
 
-async function advancePlaybackToTimelineTarget(generation, frameNumber) {
-  const timeline = playbackTimeline(generation);
+async function advancePlaybackToTimelineTarget(targetIndex, { stepMode = "sequential" } = {}) {
   const dates = datesInSelectedRange();
   const currentIndex = currentPlaybackDateIndex(dates);
   if (currentIndex < 0) {
@@ -665,7 +555,6 @@ async function advancePlaybackToTimelineTarget(generation, frameNumber) {
     return { advanced: false, done: true };
   }
 
-  const targetIndex = playbackTargetDateIndex(generation, frameNumber);
   if (targetIndex <= currentIndex) {
     return { advanced: true, held: true, done: false };
   }
@@ -680,7 +569,7 @@ async function advancePlaybackToTimelineTarget(generation, frameNumber) {
   }
   const renderIndex = decision.renderIndex;
   if (renderIndex < 0) {
-    if (timelineStepMode(timeline) === "fluid") {
+    if (stepMode === "fluid") {
       markPlaybackTargetWaiting(dates, targetIndex, decision, waitState);
       return { advanced: true, held: true, done: false };
     }
@@ -701,51 +590,12 @@ async function advancePlaybackToTimelineTarget(generation, frameNumber) {
   return { advanced: true, rendered: true, done: renderIndex >= dates.length - 1 };
 }
 
-function schedulePlaybackTick(generation = state.playbackCache.generation) {
-  ClockDomain.playback.cancel(state.playTimer);
-  const delayMs = delayUntilNextPlaybackFrame(generation);
-  state.playTimer = ClockDomain.playback.schedule(async () => {
-    if (!playbackIsActive() || !isPlaybackGenerationActive(generation)) return;
-    try {
-      const frameNumber = duePlaybackFrameNumber(generation);
-      const result = await advancePlaybackToTimelineTarget(generation, frameNumber);
-      if (result.buffering) {
-        shiftPlaybackTimeline(generation, PLAYBACK_BUFFER_POLL_MS);
-        if (playbackIsActive() && isPlaybackGenerationActive(generation)) {
-          schedulePlaybackTick(generation);
-        }
-        return;
-      }
-      if (result.failed) {
-        stopPlayback({ clearBuffer: false, reason: "failed" });
-        return;
-      }
-      if (!result.advanced && result.done) {
-        stopPlayback({ reason: "ended" });
-        return;
-      }
-      if (!result.advanced) {
-        stopPlayback();
-        return;
-      }
-      markPlaybackFrameShown(generation, frameNumber);
-      if (playbackIsActive() && isPlaybackGenerationActive(generation)) {
-        schedulePlaybackTick(generation);
-      }
-    } catch (err) {
-      stopPlayback();
-      setStatus(err.message, true);
-    }
-  }, Math.max(0, Number(delayMs || 0)));
-}
-
 async function setPlayback(active) {
   if (!active) {
     stopPlayback();
     return;
   }
   TimingMetrics.markInteraction?.("播放");
-  const generation = nextPlaybackGeneration();
   TimingMetrics.resetSnapshotHistory?.("playback_start");
   releasePlaybackRenderArtifacts("playback_start");
   if (!(await preparePlaybackStart())) {
@@ -756,22 +606,45 @@ async function setPlayback(active) {
   const playbackDates = datesInSelectedRange();
   const delivery = PlaybackDeliveryPolicy.options(state);
   const interpolation = PlaybackInterpolationController.options(state);
-  PlaybackEngine.configure({
-    dates: playbackDates,
-    requestContext: playbackRequestContext(),
-    currentDate: $("date").value,
-  });
-  const startPromise = PlaybackEngine.start({
+  const stepMode = playbackStepMode();
+  const intervalMs = normalizedPlaybackInterval(stepMode, state.playbackRate);
+  const startPromise = PlaybackRuntime.start({
+    configure: {
+      dates: playbackDates,
+      requestContext: playbackRequestContext(),
+      currentDate: $("date").value,
+    },
+    engineOptions: {
+      rate: state.playbackRate,
+      interval_ms: intervalMs,
+      consumption_rate: ClockDomain.playback.consumptionRate({
+        baseIntervalMs: basePlaybackInterval(),
+        speed: state.playbackRate,
+      }),
+      step_mode: stepMode,
+      cache_mode: "watermark",
+      delivery_policy: PlaybackDeliveryPolicy.telemetryLabel(delivery),
+      interpolation_mode: PlaybackInterpolationController.modeLabel(interpolation.mode),
+    },
     rate: state.playbackRate,
-    interval_ms: normalizedPlaybackInterval(),
-    consumption_rate: ClockDomain.playback.consumptionRate({
-      baseIntervalMs: basePlaybackInterval(),
-      speed: state.playbackRate,
-    }),
-    step_mode: playbackStepMode(),
-    cache_mode: "watermark",
-    delivery_policy: PlaybackDeliveryPolicy.telemetryLabel(delivery),
-    interpolation_mode: PlaybackInterpolationController.modeLabel(interpolation.mode),
+    intervalMs,
+    stepMode,
+    currentIndexProvider: () => currentPlaybackDateIndex(),
+    datesLengthProvider: () => datesInSelectedRange().length,
+    bufferPollMs: PLAYBACK_BUFFER_POLL_MS,
+    onFrameDue: ({ targetIndex, stepMode: activeStepMode }) => (
+      advancePlaybackToTimelineTarget(targetIndex, { stepMode: activeStepMode })
+    ),
+    onTerminal: ({ reason }) => {
+      if (reason !== "failed") PlaybackCacheService.clearBufferState();
+      updatePlaybackControls();
+      syncPlaybackSettingsInputs();
+    },
+    onError: (error) => {
+      updatePlaybackControls();
+      syncPlaybackSettingsInputs();
+      setStatus(error?.message || "播放失敗", true);
+    },
   });
   syncPlaybackRuntimeGateState();
   updatePlaybackControls();
@@ -779,24 +652,17 @@ async function setPlayback(active) {
   try {
     started = await startPromise;
   } catch (error) {
-    if (isPlaybackGenerationActive(generation)) {
-      stopPlayback({ reason: "prepare_failed" });
-    }
+    stopPlayback({ reason: "prepare_failed" });
     throw error;
   }
-  if (!started || !playbackIsActive() || !isPlaybackGenerationActive(generation)) {
-    if (!started && playbackIsActive() && isPlaybackGenerationActive(generation)) {
-      stopPlayback({ reason: "prepare_cancelled" });
-    }
+  if (!started || !playbackIsActive()) {
     return;
   }
   PlaybackCacheService.clearBufferState();
-  startPlaybackTimeline(generation);
   if (typeof syncFullscreenPlaybackControls === "function") {
     syncFullscreenPlaybackControls();
   }
   updatePlaybackControls();
-  schedulePlaybackTick(generation);
 }
 
 async function normalizeDateInputs({ reload = true } = {}) {
@@ -829,16 +695,15 @@ function updatePlaybackSpeed(sourceId = "play-speed") {
     syncFullscreenPlaybackControls();
   }
   if (playbackIsActive()) {
-    PlaybackEngine.updatePlaybackRate({
+    PlaybackRuntime.updateRate({
       rate: state.playbackRate,
-      interval_ms: normalizedPlaybackInterval(),
-      consumption_rate: ClockDomain.playback.consumptionRate({
+      intervalMs: normalizedPlaybackInterval(),
+      stepMode: playbackStepMode(),
+      consumptionRate: ClockDomain.playback.consumptionRate({
         baseIntervalMs: basePlaybackInterval(),
         speed: state.playbackRate,
       }),
     });
-    reschedulePlaybackTimelineAfterSpeedChange(state.playbackCache.generation);
-    schedulePlaybackTick(state.playbackCache.generation);
     syncPlaybackRuntimeGateState();
   }
   syncPlaybackSettingsInputs();

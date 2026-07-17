@@ -1,74 +1,72 @@
-function createFrameDemandService({
-  frameIdentity,
-  queryCoordinator,
-  dataFrameStore,
-  eventLog,
-  fetchJson: fetchJsonFn,
-  sampledGridContract = null,
-  clock,
-} = {}) {
-  if (!frameIdentity || !queryCoordinator || !dataFrameStore || !eventLog) {
-    throw new TypeError("FrameDemandService requires identity, coordinator, store and event log");
+class FrameDemandServiceCore {
+  constructor({
+    frameIdentity,
+    queryCoordinator,
+    queryBroker,
+    dataFrameStore,
+    eventLog,
+    sampledGridContract = null,
+    clock,
+  } = {}) {
+    if (!frameIdentity || !queryCoordinator || !queryBroker || !dataFrameStore || !eventLog) {
+      throw new TypeError("FrameDemandService requires identity, coordinator, broker, store and event log");
+    }
+    if (!clock || typeof clock.now !== "function") {
+      throw new TypeError("FrameDemandService requires a monotonic clock");
+    }
+    this.frameIdentity = frameIdentity;
+    this.queryCoordinator = queryCoordinator;
+    this.queryBroker = queryBroker;
+    this.dataFrameStore = dataFrameStore;
+    this.eventLog = eventLog;
+    this.sampledGridContract = sampledGridContract;
+    this.clock = clock;
+    this.inflight = new Map();
+    this.scopeIds = new Set();
+    this.disposed = false;
   }
-  if (typeof fetchJsonFn !== "function") throw new TypeError("FrameDemandService requires fetchJson");
-  if (!clock || typeof clock.now !== "function") {
-    throw new TypeError("FrameDemandService requires a monotonic clock");
+
+  assertActive() {
+    if (this.disposed) throw new Error("FrameDemandService is disposed");
   }
-  const FrameIdentity = frameIdentity;
-  const LayerQueryCoordinator = queryCoordinator;
-  const DataFrameStore = dataFrameStore;
-  const LifecycleEventLog = eventLog;
-  const SampledGridContract = sampledGridContract;
-  const inflight = new Map();
-  function abortError(reason = "Frame demand cancelled") {
+
+  abortError(reason = "Frame demand cancelled") {
     const error = new Error(reason);
     error.name = "AbortError";
     return error;
   }
 
-  function waitWithSignal(promise, signal) {
+  waitWithSignal(promise, signal) {
     if (!signal) return promise;
-    if (signal.aborted) return Promise.reject(abortError());
+    if (signal.aborted) return Promise.reject(this.abortError());
     return new Promise((resolve, reject) => {
-      const handleAbort = () => reject(abortError());
+      const handleAbort = () => reject(this.abortError());
       signal.addEventListener("abort", handleAbort, { once: true });
       Promise.resolve(promise)
         .then(resolve, reject)
         .finally(() => signal.removeEventListener("abort", handleAbort));
     });
   }
-  function urlFor(request) {
-    const params = new URLSearchParams();
-    params.set("date", request.date);
-    params.set("limit", request.limit == null ? "max" : String(request.limit));
-    params.set("bbox", request.bbox);
-    if (request.columns) params.set("columns", request.columns);
-    const effectiveQueryResolution = FrameIdentity.queryResolution(request);
-    if (effectiveQueryResolution != null) params.set("resolution", String(effectiveQueryResolution));
-    if (request.zoom != null) params.set("zoom", String(request.zoom));
-    if (request.latitude != null) params.set("latitude", String(request.latitude));
-    return `/api/datasets/${request.datasetId}/records?${params}`;
-  }
 
-  function eventDetail(request, extra = {}) {
+  eventDetail(request, extra = {}) {
     return {
-      intent_key: FrameIdentity.intentKey(request),
-      scope_key: FrameIdentity.scopeKey(request),
+      intent_key: this.frameIdentity.intentKey(request),
+      scope_key: this.frameIdentity.scopeKey(request),
       dataset: request.datasetId,
       layer_id: request.layerId || "",
       date: request.date,
       bbox: request.bbox,
       requested_resolution_km: request.resolution,
-      effective_query_resolution_km: FrameIdentity.queryResolution(request),
+      effective_query_resolution_km: this.frameIdentity.queryResolution(request),
       ...extra,
     };
   }
 
-  function canonicalPacket(request, packet) {
+  canonicalPacket(request, packet) {
     const sourceGrid = packet?.grid && typeof packet.grid === "object" ? packet.grid : {};
     const requestedResolution = Number(request.resolution);
-    const effectiveQueryResolution = Number(FrameIdentity.queryResolution(request));
-    const actualResolution = Number(FrameIdentity.actualResolutionFrom(packet, {
+    const effectiveQueryResolution = Number(this.frameIdentity.queryResolution(request));
+    const actualResolution = Number(this.frameIdentity.actualResolutionFrom(packet, {
       ...request,
       resolution: effectiveQueryResolution,
     }));
@@ -96,86 +94,94 @@ function createFrameDemandService({
     };
   }
 
-  async function fetchRequest(request, { lane, signal, scopeId, consumerId } = {}) {
-    const intentKey = FrameIdentity.intentKey(request);
-    return LayerQueryCoordinator.schedule({
+  fetchRequest(request, { lane, signal, scopeId, consumerId } = {}) {
+    const intentKey = this.frameIdentity.intentKey(request);
+    return this.queryCoordinator.schedule({
       key: `sampled-grid:${intentKey}`,
       lane,
       signal,
       scopeId,
       consumerId,
-      metadata: eventDetail(request, { resource: "sampled-grid", scope_id: scopeId }),
+      metadata: this.eventDetail(request, { resource: "sampled-grid", scope_id: scopeId }),
       execute: async (taskSignal) => {
-        const startedAt = clock.now();
-        LifecycleEventLog?.record?.("HTTP_STARTED", eventDetail(request, { lane, scope_id: scopeId }));
+        const startedAt = this.clock.now();
+        this.eventLog.record?.("QUERY_OPERATION_STARTED", this.eventDetail(request, { lane, scope_id: scopeId }));
         try {
-          const sourcePacket = await fetchJsonFn(urlFor(request), { signal: taskSignal });
-          const packet = canonicalPacket(request, sourcePacket);
-          const elapsedMs = clock.now() - startedAt;
-          LifecycleEventLog?.record?.("HTTP_FINISHED", eventDetail(request, {
+          const sourcePacket = await this.queryBroker.requestSampledGrid(request, {
+            operationId: intentKey,
+            lane,
+            signal: taskSignal,
+            metadata: this.eventDetail(request, { scope_id: scopeId }),
+          });
+          const packet = this.canonicalPacket(request, sourcePacket);
+          const elapsedMs = this.clock.now() - startedAt;
+          this.eventLog.record?.("QUERY_OPERATION_FINISHED", this.eventDetail(request, {
             lane,
             scope_id: scopeId,
             duration_ms: elapsedMs,
             row_count: Number(packet?.row_count || packet?.rows?.length || 0),
           }));
-          if (typeof SampledGridContract !== "undefined") {
-            SampledGridContract.recordResolvedResolution?.(request.datasetId, packet?.grid || null);
-          }
-          return DataFrameStore.put(request, packet, { lane, scopeId });
+          this.sampledGridContract?.recordResolvedResolution?.(request.datasetId, packet?.grid || null);
+          return this.dataFrameStore.put(request, packet, { lane, scopeId });
         } catch (error) {
           const cancelled = error?.name === "AbortError" || taskSignal?.aborted;
-          LifecycleEventLog?.record?.(cancelled ? "HTTP_CANCELLED" : "HTTP_FAILED", eventDetail(request, {
+          this.eventLog.record?.(
+            cancelled ? "QUERY_OPERATION_CANCELLED" : "QUERY_OPERATION_FAILED",
+            this.eventDetail(request, {
             lane,
             scope_id: scopeId,
             error: error?.message || String(error),
             reason: cancelled ? "query_cancelled" : "request_failed",
-          }));
-          if (!cancelled) DataFrameStore.markFailed(request, error);
+            }),
+          );
+          if (!cancelled) this.dataFrameStore.markFailed(request, error);
           throw error;
         }
       },
     });
   }
 
-  async function demand(rawRequest, {
+  async demand(rawRequest, {
     lane = "background",
     signal = null,
     scopeId = "",
     consumerId = "",
     allowPartial = false,
   } = {}) {
-    const request = FrameIdentity.normalizeRequest(rawRequest);
-    if (signal?.aborted) throw abortError();
+    this.assertActive();
+    if (scopeId) this.scopeIds.add(String(scopeId));
+    const request = this.frameIdentity.normalizeRequest(rawRequest);
+    if (signal?.aborted) throw this.abortError();
     if (!request.datasetId || !request.date || !request.bbox) {
       const error = new Error("Frame demand requires datasetId, date and canonical bbox");
       error.name = "FrameDemandError";
       throw error;
     }
-    const existing = DataFrameStore.inspect(request);
+    const existing = this.dataFrameStore.inspect(request);
     if (existing.status === "ready") {
-      LifecycleEventLog?.record?.("CACHE_HIT", eventDetail(request, { frame_key: existing.frameKey, lane }));
+      this.eventLog.record?.("CACHE_HIT", this.eventDetail(request, { frame_key: existing.frameKey, lane }));
       return existing;
     }
-    LifecycleEventLog?.record?.("CACHE_MISS", eventDetail(request, { lane }));
-    DataFrameStore.clearFailure(request);
+    this.eventLog.record?.("CACHE_MISS", this.eventDetail(request, { lane }));
+    this.dataFrameStore.clearFailure(request);
 
-    const covering = [...inflight.values()].find((entry) => (
-      DataFrameStore.canSatisfy?.(entry.request, request)
+    const covering = [...this.inflight.values()].find((entry) => (
+      this.dataFrameStore.canSatisfy?.(entry.request, request)
     ));
     if (covering) {
-      if (FrameIdentity.intentKey(covering.request) === FrameIdentity.intentKey(request)) {
-        return fetchRequest(request, { lane, signal, scopeId, consumerId });
+      if (this.frameIdentity.intentKey(covering.request) === this.frameIdentity.intentKey(request)) {
+        return this.fetchRequest(request, { lane, signal, scopeId, consumerId });
       }
-      LifecycleEventLog?.record?.("CACHE_WAIT", eventDetail(request, {
+      this.eventLog.record?.("CACHE_WAIT", this.eventDetail(request, {
         lane,
-        covering_intent_key: FrameIdentity.intentKey(covering.request),
+        covering_intent_key: this.frameIdentity.intentKey(covering.request),
       }));
       try {
-        await waitWithSignal(covering.promise, signal);
-        if (signal?.aborted) throw abortError();
-        const reused = DataFrameStore.inspect(request);
+        await this.waitWithSignal(covering.promise, signal);
+        if (signal?.aborted) throw this.abortError();
+        const reused = this.dataFrameStore.inspect(request);
         if (reused.status === "ready") {
-          LifecycleEventLog?.record?.("CACHE_HIT", eventDetail(request, {
+          this.eventLog.record?.("CACHE_HIT", this.eventDetail(request, {
             frame_key: reused.frameKey,
             lane,
             reuse: "inflight_covered_bbox",
@@ -188,41 +194,42 @@ function createFrameDemandService({
     }
 
     if (allowPartial) {
-      const missing = DataFrameStore.missingRegions(request);
+      const missing = this.dataFrameStore.missingRegions(request);
       if (missing.length > 0 && missing.length <= 8 && missing.some((bbox) => bbox !== request.bbox)) {
-        await Promise.all(missing.map((bbox, index) => demand(
+        await Promise.all(missing.map((bbox, index) => this.demand(
           { ...request, bbox },
           { lane, signal, scopeId, consumerId: `${consumerId || "partial"}-${index}`, allowPartial: false },
         )));
-        const materialized = DataFrameStore.materialize(request);
+        const materialized = this.dataFrameStore.materialize(request);
         if (materialized) return materialized;
       }
     }
-    const intentKey = FrameIdentity.intentKey(request);
-    const promise = fetchRequest(request, { lane, signal, scopeId, consumerId });
-    inflight.set(intentKey, { request, promise });
+    const intentKey = this.frameIdentity.intentKey(request);
+    const promise = this.fetchRequest(request, { lane, signal, scopeId, consumerId });
+    this.inflight.set(intentKey, { request, promise });
     try {
       return await promise;
     } finally {
-      if (inflight.get(intentKey)?.promise === promise) inflight.delete(intentKey);
+      if (this.inflight.get(intentKey)?.promise === promise) this.inflight.delete(intentKey);
     }
   }
 
-  async function demandMany(requests, {
+  async demandMany(requests, {
     lane = "background",
     signal = null,
     scopeId = "",
     onProgress = null,
   } = {}) {
+    this.assertActive();
     const unique = new Map();
     for (const request of requests || []) {
-      const normalized = FrameIdentity.normalizeRequest(request);
-      unique.set(FrameIdentity.intentKey(normalized), normalized);
+      const normalized = this.frameIdentity.normalizeRequest(request);
+      unique.set(this.frameIdentity.intentKey(normalized), normalized);
     }
     const progress = { total: unique.size, completed: 0, cacheHits: 0, fetched: 0, failed: 0 };
     await Promise.all([...unique.values()].map(async (request, index) => {
       try {
-        const result = await demand(request, {
+        const result = await this.demand(request, {
           lane,
           signal,
           scopeId,
@@ -242,23 +249,33 @@ function createFrameDemandService({
     return progress;
   }
 
-  function requestsForDates({ dates = [], ...context } = {}) {
+  requestsForDates({ dates = [], ...context } = {}) {
     return [...new Set(dates.filter(Boolean))].map((date) => ({ ...context, date }));
   }
 
-  function demandRange(context, options = {}) {
-    return demandMany(requestsForDates(context), options);
+  demandRange(context, options = {}) {
+    return this.demandMany(this.requestsForDates(context), options);
   }
 
-  return Object.freeze({
-    cancelScope: (...args) => LayerQueryCoordinator.cancelScope(...args),
-    demand,
-    demandMany,
-    demandRange,
-    inspect: (request) => DataFrameStore.inspect(FrameIdentity.normalizeRequest(request)),
-    requestsForDates,
-    urlFor,
-  });
+  cancelScope(scopeId, options) {
+    const normalized = String(scopeId || "");
+    this.scopeIds.delete(normalized);
+    return this.queryCoordinator.cancelScope(normalized, options);
+  }
+
+  inspect(request) {
+    return this.dataFrameStore.inspect(this.frameIdentity.normalizeRequest(request));
+  }
+
+  dispose() {
+    if (this.disposed) return;
+    this.disposed = true;
+    for (const scopeId of this.scopeIds) {
+      this.queryCoordinator.cancelScope(scopeId, { includeActive: true });
+    }
+    this.scopeIds.clear();
+    this.inflight.clear();
+  }
 }
 
-if (typeof globalThis !== "undefined") globalThis.createFrameDemandService = createFrameDemandService;
+if (typeof globalThis !== "undefined") globalThis.FrameDemandServiceCore = FrameDemandServiceCore;

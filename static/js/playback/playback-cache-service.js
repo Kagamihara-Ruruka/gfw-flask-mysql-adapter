@@ -3,6 +3,7 @@ function createPlaybackCacheService({
   dataFrameStore,
   preheater,
   watermarkController,
+  fixedPolicyNormalizer,
   frameIdentity,
   sampledGridLayerPredicate,
 } = {}) {
@@ -11,6 +12,9 @@ function createPlaybackCacheService({
   }
   if (typeof sampledGridLayerPredicate !== "function") {
     throw new TypeError("PlaybackCacheService requires a sampled-grid predicate");
+  }
+  if (typeof fixedPolicyNormalizer !== "function") {
+    throw new TypeError("PlaybackCacheService requires a fixed watermark policy normalizer");
   }
   const state = targetState;
   const DataFrameStore = dataFrameStore;
@@ -27,32 +31,23 @@ function createPlaybackCacheService({
   }
 
   function options() {
-    const highWatermark = Math.max(2, Number(state.playbackCache?.highWatermark ?? state.playbackCache?.windowAhead ?? 10));
-    const fixedPolicy = {
-      windowBehind: Math.max(0, Number(state.playbackCache?.windowBehind ?? 1)),
-      highWatermark,
-      lowWatermark: Math.max(1, Math.min(highWatermark - 1, Number(state.playbackCache?.lowWatermark ?? 5))),
-      startupWatermark: Math.max(1, Math.min(
-        highWatermark,
-        Number(state.playbackCache?.startupWatermark ?? state.playbackCache?.lowWatermark ?? 5),
-      )),
-      resumeWatermark: Math.max(2, Math.min(
-        highWatermark,
-        Number(state.playbackCache?.resumeWatermark ?? state.playbackCache?.lowWatermark ?? 5),
-      )),
-    };
+    const fixedPolicy = fixedPolicyNormalizer(state.playbackCache || {});
     const policy = WatermarkController.preview({ fixedPolicy });
     return {
       ...fixedPolicy,
-      windowAhead: highWatermark,
+      windowAhead: fixedPolicy.highWatermark,
       maxGb: Math.max(0.25, Number(state.dataFrameStore?.maxBytes || 0.5 * BYTES_PER_GB) / BYTES_PER_GB),
       strategy: policy.strategy,
       policyStatus: policy.status,
       effectiveLowWatermark: policy.lowWatermark,
       effectiveHighWatermark: policy.highWatermark,
-      effectiveStartupWatermark: policy.startupWatermark,
-      effectiveResumeWatermark: policy.resumeWatermark,
+      effectiveTargetWatermark: policy.targetWatermark ?? policy.highWatermark,
+      immediateReplenishment: Boolean(policy.immediateReplenishment),
+      tailMode: Boolean(policy.tailMode),
+      supplyRatio: Number.isFinite(Number(policy.supplyRatio)) ? Number(policy.supplyRatio) : null,
       ramBudgetFrames: policy.ramBudgetFrames,
+      playbackRamBudgetBytes: Number(policy.playbackRamBudgetBytes || 0),
+      hasObservedFrameSize: Boolean(policy.hasObservedFrameSize),
       estimatedFrameBytes: policy.estimatedFrameBytes,
       policyReason: policy.reason,
       degradationReason: policy.degradationReason || "",
@@ -61,10 +56,16 @@ function createPlaybackCacheService({
 
   function formatBytes(bytes) {
     const value = Math.max(0, Number(bytes || 0));
-    if (value >= BYTES_PER_GB) return `${(value / BYTES_PER_GB).toFixed(2)} GB`;
-    if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(0)} MB`;
-    if (value >= 1024) return `${(value / 1024).toFixed(0)} KB`;
-    return `${value.toFixed(0)} B`;
+    if (value >= BYTES_PER_GB) {
+      return `${formatDisplayNumber(value / BYTES_PER_GB, { maximumFractionDigits: 2 })} GB`;
+    }
+    if (value >= 1024 * 1024) {
+      return `${formatDisplayNumber(value / (1024 * 1024), { maximumFractionDigits: 0 })} MB`;
+    }
+    if (value >= 1024) {
+      return `${formatDisplayNumber(value / 1024, { maximumFractionDigits: 0 })} KB`;
+    }
+    return `${formatDisplayNumber(value, { maximumFractionDigits: 0 })} B`;
   }
 
   function statusText() {
@@ -79,18 +80,23 @@ function createPlaybackCacheService({
 
   function policyStatusText() {
     const policy = options();
-    const gates = ` · 啟動 ${policy.effectiveStartupWatermark} / 恢復 ${policy.effectiveResumeWatermark}`;
+    const target = ` · 目標 ${policy.effectiveTargetWatermark}`;
     if (policy.strategy === "fixed") {
-      return `固定水位：低 ${policy.effectiveLowWatermark} / 高 ${policy.effectiveHighWatermark}${gates}`;
+      return `固定水位：低 ${policy.effectiveLowWatermark} 觸發 / 高 ${policy.effectiveHighWatermark}${target}`;
     }
     if (policy.policyStatus === "WARMING") {
-      return `自適應水位：樣本累積中 · 低 ${policy.effectiveLowWatermark} / 高 ${policy.effectiveHighWatermark}${gates}`;
+      return `自適應補水：樣本累積中 · 低 ${policy.effectiveLowWatermark} 觸發 / 高 ${policy.effectiveHighWatermark}${target}`;
     }
     const budget = Number.isFinite(Number(policy.ramBudgetFrames))
-      ? ` · RAM 上限 ${Number(policy.ramBudgetFrames)} 張`
+      ? ` · RAM 50% 可容納 ${Number(policy.ramBudgetFrames)} 張`
       : "";
     const degradation = policy.degradationReason ? ` · ${policy.degradationReason}` : "";
-    return `自適應水位：低 ${policy.effectiveLowWatermark} / 高 ${policy.effectiveHighWatermark}${gates}${budget}${degradation}`;
+    const mode = policy.tailMode
+      ? " · 尾端模式"
+      : policy.immediateReplenishment
+        ? " · 供給不足，提前補貨"
+        : "";
+    return `自適應補水：低 ${policy.effectiveLowWatermark} 觸發 / 高 ${policy.effectiveHighWatermark}${target}${mode}${budget}${degradation}`;
   }
 
   function requestForDate(date, context = {}) {
@@ -127,7 +133,6 @@ function createPlaybackCacheService({
     status = "idle",
     ready = 0,
     required = 0,
-    resume = 0,
     currentDate = "",
     targetIndex = -1,
     attempts = 0,
@@ -139,7 +144,6 @@ function createPlaybackCacheService({
       bufferStatus: status,
       bufferReady: ready,
       bufferRequired: required,
-      bufferResume: resume,
       bufferCurrentDate: currentDate,
       bufferTargetIndex: targetIndex,
       bufferAttempts: attempts,
@@ -150,11 +154,6 @@ function createPlaybackCacheService({
 
   function clearBufferState() {
     setBufferState();
-  }
-
-  function clear() {
-    PlaybackPreheater.stop("cache_service_clear");
-    clearBufferState();
   }
 
   function reconcilePolicy() {
@@ -168,7 +167,6 @@ function createPlaybackCacheService({
 
   return Object.freeze({
     BYTES_PER_GB,
-    clear,
     clearBufferState,
     countReadyPrefix,
     failureForDate,

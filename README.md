@@ -24,6 +24,8 @@ The Clock Domain and trusted runtime-metrics acceptance report is available at
 The current 512 MiB playback-pipeline, adaptive-watermark, and external Chrome
 Incognito acceptance report is available at
 [`benchmarks/adaptive_watermark_acceptance_2026-07-16.md`](benchmarks/adaptive_watermark_acceptance_2026-07-16.md).
+The Mapping/query-broker/cache convergence and current side-browser acceptance report is available at
+[`benchmarks/runtime_convergence_acceptance_2026-07-17.md`](benchmarks/runtime_convergence_acceptance_2026-07-17.md).
 
 ## Upstream Handoff
 
@@ -163,7 +165,7 @@ The layer selector is built from imported layer contracts. It is not a hard-code
 - AIS vessel positions when an active websocket/read-model route is available
 - EEZ boundary overlays when an active spatial route is available
 
-Primary data layers are activation-controlled and may all be off; disabled imported layers do not query or render. EEZ is an independent overlay.
+Primary data layers are activation-controlled and may all be off; disabled imported layers do not query or render. EEZ is an independent overlay. For nested sampled-grid coverages, Mapping owns the initial `default_coverage_id`, and each viewport request is routed to one physical coverage rather than an AOI union that can trigger a false coarse-LOD fallback.
 
 Layer rows can be drag-reordered in the selector. The order controls map stacking by Leaflet pane z-index. Each layer has a gear panel:
 
@@ -197,13 +199,13 @@ Time-capable sampled-grid layers currently support:
 - play/pause
 - playback speed
 
-Playback scheduling is timeline-driven. Playback speed is a timeline rate, not the old "wait after the previous frame completes" loop. The default delivery policy is analysis mode: every selected real snapshot is consumed in order, and `playbackRate` changes the target cadence for the next snapshot. Smooth and strict delivery policy ports are visible in Settings but explicitly marked as not implemented, so they do not control the playback clock yet. Query and render work do not add another full interval after each frame. A cold run enters `PREPARING`; when the current scope has too few trusted supply samples, it first fetches a two-frame probe, recomputes the adaptive policy, and then waits for the resulting startup watermark. During playback, only a genuinely missing target enters `BUFFERING`; the selected date stays fixed until the resume watermark is ready. Failed target requests are explicit frame-buffer failures, not endless `fetching` states; pause, replay, layer, and dataset changes invalidate stale queued preheat work without evicting completed frames.
+Playback scheduling is timeline-driven. Playback speed is a timeline rate, not the old "wait after the previous frame completes" loop. The default delivery policy is analysis mode: every selected real snapshot is consumed in order, and `playbackRate` changes the target cadence for the next snapshot. Smooth and strict delivery policy ports are visible in Settings but explicitly marked as not implemented, so they do not control the playback clock yet. Query and render work do not add another full interval after each frame. A cold run enters `PREPARING` and waits only for the next real target frame. Adaptive low/high watermarks govern background inventory and never become playback eligibility gates. During playback, only a genuinely missing target enters `BUFFERING`; the selected date stays fixed until that target is ready. Failed target requests are explicit frame-buffer failures, not endless `fetching` states; pause, replay, layer, and dataset changes invalidate stale queued preheat work without evicting completed frames.
 
 The settings page exposes playback as separate responsibility boxes instead of one mixed control group:
 
 - Playback timeline: delivery policy and `playbackRate` decide which real snapshot date the player is trying to show. Analysis mode is implemented; smooth and strict modes are reserved ports.
 - Frame buffer: analysis mode reports `fetching/missing/ready/waiting/failed` state boundaries. The timing box records `buffering`, `resumed`, and `shown` events separately from SQL/API/render work.
-- Data cache / preheat: an independent producer maintains startup, resume, and low/high ready-ahead watermarks. Trusted supply/consumption metrics are scoped to the active playback request and exclude Widget traffic. Cache-ready P95, remaining slices, and the RAM budget determine adaptive watermarks by default; fixed baseline watermarks remain available. The browser canonical-frame budget defaults to 512 MB and remains adjustable in Settings. The producer may desire a large cache inventory, but it schedules at most 12 outstanding frames and activates at most three background network requests by default.
+- Data cache / preheat: an independent producer maintains low/high ready-ahead inventory. Trusted supply/consumption metrics are scoped to the active playback request and exclude Widget traffic. Adaptive mode uses half of the configured RAM budget as playback inventory capacity, with low/high refill thresholds at one-third and two-thirds of that capacity; fixed 10/15 thresholds remain available. The browser canonical-frame budget defaults to 512 MB and remains adjustable in Settings. The producer may desire a large cache inventory, but it schedules at most 12 outstanding frames while the provider-level broker serializes work for each physical source.
 - Frame interpolation: playback can use the existing layer crossfade as a visual-only interpolation policy or switch directly between real snapshots; data blending remains reserved for a future `requestAnimationFrame` loop backed by render artifacts.
 - Visual effects: crossfade decorates layer replacement; Gaussian blur is limited to zoom / LOD reload masking.
 - Render pressure and timing: renderer policy and the dashboard timing box observe performance without owning the playback clock.
@@ -221,9 +223,9 @@ The guarded contracts are:
 - Progressive cold cache reports `fetching 0 / 1`; when the target packet is ready it records `BUFFER_RESUMED` and then `FRAME_VISIBLE`.
 - Progressive request failures report `failed`, emit a lifecycle error event, and stop playback after a real monotonic 30-second timeout instead of retrying forever.
 - Cancelled or replaced progressive preheats cannot apply late progress, status, or failure state to the current playback generation.
-- Cold playback enters `PREPARING` and waits for the startup watermark without counting that wait as a playback stall. During playback, the independent preheater fills individual missing frames to the high watermark while playback consumes ready frames.
-- A cold scope with insufficient metrics performs a small startup probe before choosing its effective watermark; a warm scope that already covers the remaining range does not probe again.
-- Only a missing target can enter `BUFFERING`; recovery waits for the resume watermark instead of resuming on a one-frame gate. Manual seek still promotes only its target and does not enter startup preparation.
+- Cold playback enters `PREPARING` and waits only for the next target frame without counting that wait as a playback stall. During playback, the independent preheater fills missing frames to the high watermark while playback consumes ready frames.
+- Insufficient supply samples keep the adaptive policy in `WARMING`; they do not trigger a probe or increase the playback readiness requirement.
+- Only a missing target can enter `BUFFERING`; recovery resumes as soon as that target frame is ready. Manual seek still promotes only its target and does not wait for a refill watermark.
 - `AdaptiveWatermarkController` reads only `RuntimePerformanceMetrics` and the `DataFrameStore` capacity snapshot. It performs no transport, changes no query concurrency, and never clears cache. UI paths may preview or display policy; only Preheater reconciliation applies it.
 - `fluid` is the only step mode allowed to map elapsed time to future dates. It remains reserved behind the disabled smooth delivery port.
 - Prefetch, render, interpolation, blur, and timing observations supply or decorate frames; none of them owns the playback date clock.
@@ -235,17 +237,21 @@ Current frontend module boundaries:
 | `static/js/core/clock-domain.js` | DI-injected monotonic, playback, and render clocks. Playback speed is accepted only by playback cadence and consumption-rate calculations. |
 | `static/js/playback/playback-delivery-policy.js` | Playback delivery policy: the single high-level owner for analysis/smooth/strict timeline semantics. Only analysis mode is enabled today; smooth and strict are exposed as reserved ports. |
 | `static/js/playback/playback-scheduler.js` | Pure timeline math: cadence, due frame, speed/rate mapping, and target date index. |
-| `static/js/playback/playback-frame-buffer.js` | Pure frame-readiness decisions. It consumes `PlaybackEngine.inspectTarget()` results and never rebuilds request context or reads `DataFrameStore` independently. |
+| `static/js/playback/playback-runtime-controller.js` | Public playback facade and the sole owner of timer, generation, timeline, and session callbacks. UI code does not address `PlaybackEngine` or `PlaybackPreheater` directly. |
+| `static/js/playback/playback-frame-buffer.js` | Pure frame-readiness decisions. It consumes injected frame inspection results and never rebuilds request context, mutates buffer state, or reads `DataFrameStore` independently. |
 | `static/js/playback/playback-time-policy.js` | Pure monotonic buffer-timeout policy; it never reads playback speed. |
 | `static/js/playback/playback-renderer.js` | Playback-to-render handoff: set selected date, sync controls, call the existing active-layer reload. |
 | `static/js/playback/playback-interpolation-controller.js` | Playback interpolation policy: choose layer crossfade or direct switching during playback; data blending is not enabled yet. |
 | `static/js/services/frame-identity.js` | The only builder for canonical BBOX signatures, request intent keys, scope keys, and returned frame keys. |
 | `static/js/services/data-frame-store.js` | Canonical RAM frame store, intent-to-frame aliases, compatible containing-BBOX materialization, pin/release ownership, byte-budgeted LRU eviction, and failure state. It defaults to a 512 MB browser budget and never performs transport. |
 | `static/js/services/layer-query-coordinator.js` | Priority scheduler with one execution per intent key, queued-task promotion, consumer-scoped cancellation, and a reserved foreground slot. |
+| `static/js/services/query-policy-controller.js` | DI-owned query-policy command boundary. It preserves total/background concurrency invariants and is the only UI-facing path that wakes the scheduler after a policy change. |
+| `static/js/services/query-broker.js` | Provider-level transport owner. It bakes compatible operations across datasets into one NDJSON batch, streams and demultiplexes results, and guarantees at most one active HTTP batch per physical provider key. The provider key never replaces the dataset/cache identity. |
 | `static/js/services/frame-demand-service.js` | The only sampled-grid transport boundary. It checks `DataFrameStore`, joins an exact or containing-BBOX in-flight request when compatible, schedules a real miss, normalizes the returned packet, and commits it once. |
-| `static/js/playback/playback-preheater.js` | Long-lived producer that independently maintains startup/resume/low/high ready-ahead watermarks. Desired inventory and the 12-request scheduling window are separate concerns; it does not own the playback clock. |
+| `static/js/services/frame-demand-decorators.js` | DI-composed observability decorator. It records demand boundary duration and outcome without changing cache, scheduling, transport, result, or error semantics. |
+| `static/js/playback/playback-preheater.js` | Long-lived producer that independently maintains low/high ready-ahead inventory. Desired inventory and the 12-request scheduling window are separate concerns; it does not own the playback clock or playback readiness. |
 | `static/js/playback/adaptive-watermark-controller.js` | DI-owned stateful policy owner. It derives effective watermarks from trusted supply, cache-ready P95, playback consumption, and RAM budget, with monotonic decrease hysteresis. |
-| `static/js/playback/playback-engine.js` | Frame consumer and playback lifecycle owner. It owns startup preparation, target-miss buffering, resume gates, visible-frame pins, and their lifecycle events. |
+| `static/js/playback/playback-engine.js` | Frame consumer and playback lifecycle owner. It owns next-target preparation, target-miss buffering, visible-frame pins, and their lifecycle events; readiness is always the requested next frame, not a refill watermark. |
 | `static/js/playback/playback-cache-service.js` | Playback cache settings/status facade. It exposes watermarks and RAM capacity but owns neither transport nor a batch pipeline. |
 | `static/js/services/lifecycle-event-log.js` | Bounded event log, linear Queue-to-Ready pairing, explicit run export, and user-perceived Queue/HTTP/cache/render/stall metrics. |
 | `static/js/services/runtime-performance-metrics.js` | The single trusted projection for supply, consumption, cache-ready tail latency, ready-ahead, and buffer-wait values. |
@@ -255,14 +261,17 @@ Current frontend module boundaries:
 
 ```mermaid
 flowchart LR
-  UI["Map and playback commands"] --> Engine["PlaybackEngine"]
-  Engine -->|"frame demand"| Demand["FrameDemandService"]
+  UI["Playback commands"] --> Runtime["PlaybackRuntime facade"]
+  Runtime --> Engine["PlaybackEngine"]
+  MapApp["Map application flow"] --> Demand["FrameDemandService + tracing decorator"]
+  Engine -->|"frame demand"| Demand
   Preheater["PlaybackPreheater"] -->|"watermark demand"| Demand
   Metrics["RuntimePerformanceMetrics"] --> Watermark["AdaptiveWatermarkController"]
   Store --> Watermark
   Watermark -->|"effective watermarks"| Preheater
   Demand --> Scheduler["QueryScheduler"]
-  Scheduler --> Adapter["Flask API + Mapping adapter"]
+  Scheduler --> Broker["QueryBroker: provider batch + stream split"]
+  Broker --> Adapter["Flask API + Mapping adapter"]
   Adapter --> Store["DataFrameStore: canonical RAM frames"]
   Store --> Renderer["Sampled-grid renderer: WebGL/Canvas draw"]
   Store --> Widgets["Widgets: playback-time cache-only consumers"]
@@ -316,7 +325,7 @@ A playback frame is a canonical records packet identified by:
 mapping-aware cache namespace + date + bbox + limit + columns + resolution/LOD context
 ```
 
-The cache namespace is derived from the active mapping contract, including source route, canonical field roles, grid profile, resolution policy, and query contract. Changing those semantics creates a new namespace; credentials and visualization-only settings do not. On a cold miss, `FrameDemandService` asks `QueryScheduler` for one source request and commits the canonical result to `DataFrameStore`. On a warm path, the map, playback, selection tools, and Widgets reuse the same packet.
+The cache namespace is derived from the active mapping contract, including source route, canonical field roles, grid profile, resolution policy, and query contract. Changing those semantics creates a new namespace; credentials and visualization-only settings do not. The Registry also derives a non-secret provider transport key from the physical source route. Datasets sharing that key may share a serialized batch lane, but they retain independent cache namespaces and canonical frames. On a cold miss, `FrameDemandService` asks `QueryScheduler` for one intent, `QueryBroker` bakes compatible provider operations into an NDJSON batch, and the returned result is committed once to `DataFrameStore`. On a warm path, the map, playback, selection tools, and Widgets reuse the same packet.
 
 Only the map/query layer owns ordinary source transport. Scheduler lanes are ordered as `map-current`, `playback-target`, `playback-window`, `widget-interactive`, then `widget-auto/background`; one foreground execution slot is always reserved. During `PREPARING`, `PLAYING`, or `BUFFERING`, Widgets are cache-only consumers. An explicit Tile interaction may request only the current missing slice through `widget-interactive`; an idle or paused chart may fill its configured history window through `widget-auto`. Active-date refreshes, table inspection, and Event Viewer rendering never start transport. Cancelling queued prewarm or Widget work never evicts completed packets.
 
@@ -329,6 +338,7 @@ sequenceDiagram
   autonumber
   actor User
   participant UI as Dashboard UI
+  participant Runtime as PlaybackRuntime
   participant Playback as PlaybackEngine
   participant Preload as PlaybackPreheater
   participant Demand as FrameDemandService
@@ -341,7 +351,8 @@ sequenceDiagram
   participant Map as Leaflet map
 
   User->>UI: Press Play
-  UI->>Playback: setPlayback(true)
+  UI->>Runtime: start(playback command)
+  Runtime->>Playback: configure + start
   Playback->>Playback: start timeline(delivery policy + display cadence + playback rate)
   Preload->>Preload: maintain low/high ready-ahead watermarks
   Preload->>Demand: demand missing window frames
@@ -710,28 +721,28 @@ python -m unittest discover -s tests
 node --test tests/*.test.mjs
 ```
 
-Audit a complete advertised date range with six cold-query workers, a 30-date warm window, viewport drag, selected-tile, and LOD probes:
+Audit a complete advertised date range with one bounded cold-query worker, a 30-date warm window, viewport drag, selected-tile, and LOD probes. The single-worker default measures the physical source without reproducing the provider contention already isolated by the runtime broker:
 
 ```powershell
 python scripts\full_year_cache_benchmark.py `
   --dataset pipeline_iceberg.fishing_hours `
-  --concurrency 6 `
+  --concurrency 1 `
   --warm-window 30 `
   --output "$env:TEMP\rrkal-full-year.json"
 ```
 
-Local checkpoint on 2026-07-15, using the finest advertised resolution and a cold server restart per dataset:
+Local checkpoint on 2026-07-17, using the finest Mapping resolution, one cold worker, and a 30-date warm pass:
 
-| Dataset | Advertised dates | Cold completed | Cold median / p95 | Warm hits | Selected tile |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `pipeline_iceberg.fishing_hours` | 366 | 366 | 2.90 s / 4.05 s | 29 / 30 | 27 ms, cache hit |
-| `pipeline_iceberg.chlor_a` | 355 | 355 | 2.92 s / 4.21 s | 29 / 30 | 26 ms, cache hit |
-| `pipeline_iceberg.ocean_productivity_score` | 355 | 355 | 3.58 s / 4.67 s | 30 / 30 | 32 ms, cache hit |
-| `pipeline_iceberg.sea_temperature` | 356 | 356 | 3.65 s / 5.02 s | 30 / 30 | 30 ms, cache hit |
-| `pipeline_iceberg.sustainability_pressure` | 355 | 355 | 3.32 s / 4.33 s | 30 / 30 | 24 ms, cache hit |
-| `gfw_full` | 31 | 31 | 68 ms / 106 ms | 30 / 30 | 16 ms server probe |
+| Dataset | Dates | Cold completed | Cold median / p95 | Warm hits / p95 | Selected tile | Actual resolution |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `pipeline_iceberg.fishing_hours` | 366 | 366 | 781 ms / 1,113 ms | 30 / 30 / 67 ms | 30 ms, cache hit | 4 km |
+| `pipeline_iceberg.chlor_a` | 355 | 355 | 793 ms / 1,088 ms | 30 / 30 / 61 ms | 13 ms, cache hit | 4 km |
+| `pipeline_iceberg.ocean_productivity_score` | 355 | 355 | 803 ms / 1,183 ms | 30 / 30 / 65 ms | 14 ms, cache hit | 4 km |
+| `pipeline_iceberg.sea_temperature` | 356 | 356 | 781 ms / 1,006 ms | 30 / 30 / 63 ms | 26 ms, cache hit | 4 km |
+| `pipeline_iceberg.sustainability_pressure` | 355 | 355 | 762 ms / 1,190 ms | 30 / 30 / 75 ms | 16 ms, cache hit | 4 km |
+| `gfw_full` | 31 | 31 | 31 ms / 56 ms | 30 / 30 / 31 ms | 7 ms source probe | 9.28 km |
 
-The Pipeline Iceberg source snapshot high-water stayed below `800,000` canonical rows. The Flask worker set dropped from about 1.53 GB to about 0.89 GB in the full-year audit. The GFW server probe is bbox-backed MySQL; browser containment reuse is separately protected by `tests/playback_contracts.test.mjs` and prevents a selected tile inside a cached viewport from issuing another transport request.
+All 1,818 advertised dates completed with zero failures. Pipeline Iceberg stayed at the requested 4 km route without LOD degradation, and its source snapshot high-water stayed below the global `800,000` canonical-row budget. The GFW probe remains bbox-backed MySQL; browser containment reuse is separately protected by the cache contract tests and prevents a selected tile inside a cached viewport from issuing another transport request.
 
 JavaScript syntax check:
 

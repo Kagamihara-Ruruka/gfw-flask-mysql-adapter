@@ -320,16 +320,4 @@ function sampledGridHitCellAt(targetMap, rows, containerPoint) {
   return null;
 }
 
-function gfwCellColorParts(row) {
-  return sampledGridCellColorParts(row);
-}
-
-function gfwCellColorCss(row) {
-  return sampledGridCellColorCss(row);
-}
-
-function aggregateGfwRowsForRender(rows) {
-  return sampledGridRowsForRender(rows);
-}
-
 window.SampledGridColorScale = SampledGridColorScale;

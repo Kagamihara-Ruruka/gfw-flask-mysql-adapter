@@ -221,6 +221,29 @@ class SnapshotCacheContractTests(unittest.TestCase):
         CANONICAL_SNAPSHOT_CACHE.clear()
         CANONICAL_SNAPSHOT_CACHE.configure(max_total_rows=None)
 
+    def test_schema_uses_mapping_default_coverage_instead_of_largest_area(self) -> None:
+        dataset = _dataset(resolutions=[4, 16])
+        dataset["sampled_grid"]["coverage_areas"] = [
+            {
+                "id": "small",
+                "bounds": {"west": -1, "south": -1, "east": 1, "north": 1},
+            },
+            {
+                "id": "large",
+                "bounds": {"west": -10, "south": -10, "east": 10, "north": 10},
+            },
+        ]
+        dataset["sampled_grid"]["default_coverage_id"] = "small"
+        client = _TimeSeriesClient()
+        adapter = SampledGridHttpQueryAdapter({}, dataset)
+        adapter.client = client
+
+        packet = adapter.schema_packet()
+
+        self.assertEqual("/availability", client.calls[0][0])
+        self.assertEqual("small", client.calls[0][1]["external_aoi"])
+        self.assertEqual("small", packet["sampled_grid"]["default_coverage_id"])
+
     def test_global_row_budget_evicts_lru_across_namespaces(self) -> None:
         policy = SnapshotCachePolicy.from_contract(_dataset(resolutions=[16])["sampled_grid"])
         CANONICAL_SNAPSHOT_CACHE.configure(max_total_rows=3)

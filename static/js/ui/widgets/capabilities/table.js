@@ -1,6 +1,28 @@
 (() => {
 const { DashboardWidget } = window.WidgetCore;
 const { lineChartEscape } = window.WidgetCapabilityShared;
+
+function tableFractionDigits(column) {
+  const semantic = String(column || "").toLowerCase();
+  return /(^|_)(lat|latitude|lon|lng|longitude|bounds?)(_|$)/.test(semantic) ? 6 : 2;
+}
+
+function formatTableCell(value, column, seen = new WeakSet()) {
+  if (value === undefined || value === null || value === "") return "-";
+  if (typeof value === "number") {
+    return formatDisplayNumber(value, { maximumFractionDigits: tableFractionDigits(column) });
+  }
+  if (typeof value !== "object") return String(value);
+  if (seen.has(value)) return "[循環參照]";
+  seen.add(value);
+  const formatNested = (item) => formatTableCell(item, column, seen);
+  const formatted = Array.isArray(value)
+    ? `[${value.map(formatNested).join(", ")}]`
+    : `{ ${Object.entries(value).map(([key, item]) => `${key}: ${formatTableCell(item, `${column}_${key}`, seen)}`).join(", ")} }`;
+  seen.delete(value);
+  return formatted;
+}
+
 class WidgetTableView {
   constructor({ container, model, expanded = false, onSelectTab }) {
     this.container = container;
@@ -9,10 +31,8 @@ class WidgetTableView {
     this.onSelectTab = onSelectTab;
   }
 
-  cellValue(value) {
-    if (value === undefined || value === null || value === "") return "-";
-    if (typeof value === "object") return JSON.stringify(value);
-    return String(value);
+  cellValue(value, column) {
+    return formatTableCell(value, column);
   }
 
   renderTabs() {
@@ -45,7 +65,10 @@ class WidgetTableView {
       return `<tr><td colspan="${Math.max(1, columns.length)}" class="widget-table-message">目前快照的快取沒有資料</td></tr>`;
     }
     return rows.map((row) => `
-      <tr>${columns.map((column) => `<td title="${lineChartEscape(this.cellValue(row?.[column]))}">${lineChartEscape(this.cellValue(row?.[column]))}</td>`).join("")}</tr>
+      <tr>${columns.map((column) => {
+        const displayValue = this.cellValue(row?.[column], column);
+        return `<td title="${lineChartEscape(displayValue)}">${lineChartEscape(displayValue)}</td>`;
+      }).join("")}</tr>
     `).join("");
   }
 
@@ -133,5 +156,9 @@ class TableWidget extends DashboardWidget {
 }
 
 
-Object.assign(window.WidgetCapabilities ||= {}, { WidgetTableView, TableWidget });
+Object.assign(window.WidgetCapabilities ||= {}, {
+  formatTableCell,
+  WidgetTableView,
+  TableWidget,
+});
 })();

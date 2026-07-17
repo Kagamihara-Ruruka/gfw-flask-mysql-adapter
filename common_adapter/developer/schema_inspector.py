@@ -11,7 +11,11 @@ from common_adapter.db.connect import (
 )
 from common_adapter.query.serialization import json_ready
 from common_adapter.developer.artifacts.layer_mappings import load_layer_mappings
-from common_adapter.endpoint.runtime import endpoint_datasets_from_routes, sampled_grid_catalog_mappings
+from common_adapter.endpoint.runtime import (
+    endpoint_datasets_from_routes,
+    resolved_mapping_for_dataset,
+    sampled_grid_catalog_mappings,
+)
 
 
 PROFILE_VERSION = "rrkal.schema_profile.relational.v1"
@@ -258,6 +262,7 @@ def inspect_sampled_grid_route(
             "type": "CATALOG_LAYER",
             "estimated_rows": None,
             "mapping_readonly": True,
+            "resolved_mapping": resolved_mapping_for_dataset(dataset_id, dataset),
             "columns": columns,
         }
         for dataset_id, dataset in sorted(datasets.items())

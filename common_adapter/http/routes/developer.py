@@ -40,7 +40,8 @@ from common_adapter.developer.config_service import (
     write_config_json_content,
 )
 from common_adapter.developer.schema_inspector import inspect_relational_routes
-from common_adapter.layers.runtime import active_layer_contract_rows
+from common_adapter.endpoint.supervisor import ManagedEndpointSupervisor
+from common_adapter.layers.registry import RuntimeLayerRegistry
 
 
 def runtime_config_ref(runtime_config: dict[str, Any] | None) -> str | None:
@@ -171,8 +172,8 @@ def active_config_files_by_group(group: str, runtime_config: dict[str, Any] | No
     return rows
 
 
-def route_provided_layer_rows(runtime_config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    return active_layer_contract_rows(runtime_config)
+def route_provided_layer_rows(layer_registry: RuntimeLayerRegistry) -> list[dict[str, Any]]:
+    return layer_registry.snapshot(force=True)["layers"]
 
 
 def database_router_status_rows(runtime_config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -247,7 +248,13 @@ def endpoint_router_status_rows(runtime_config: dict[str, Any] | None = None) ->
     return rows
 
 
-def register_developer_routes(app: Flask, runtime_config: dict[str, Any] | None = None) -> None:
+def register_developer_routes(
+    app: Flask,
+    runtime_config: dict[str, Any] | None = None,
+    *,
+    layer_registry: RuntimeLayerRegistry,
+    endpoint_supervisor: ManagedEndpointSupervisor | None = None,
+) -> None:
     @app.get("/api/developer/configs")
     def developer_configs():
         try:
@@ -357,6 +364,7 @@ def register_developer_routes(app: Flask, runtime_config: dict[str, Any] | None 
                 config_ref = next_ref
             normalized_content = json.dumps(parsed, ensure_ascii=False, indent=2) + "\n"
             saved = write_config_json_content(config_ref, normalized_content)
+            layer_registry.invalidate()
             return jsonify(
                 {
                     **saved,
@@ -403,6 +411,7 @@ def register_developer_routes(app: Flask, runtime_config: dict[str, Any] | None 
                     locked_refs_with_runtime(runtime_config),
                     runtime_config_refs(runtime_config),
                 )
+            layer_registry.invalidate()
             return jsonify(
                 {
                     **result,
@@ -438,6 +447,7 @@ def register_developer_routes(app: Flask, runtime_config: dict[str, Any] | None 
                     locked_refs_with_runtime(runtime_config),
                     runtime_config_refs(runtime_config),
                 )
+            layer_registry.invalidate()
             return jsonify({**result, "config": config_summary, "manifest": response_manifest(runtime_config)})
         except Exception as exc:
             return jsonify({"error": str(exc)}), 400
@@ -488,6 +498,7 @@ def register_developer_routes(app: Flask, runtime_config: dict[str, Any] | None 
                     "imported_layers": manifest.get("imported_layers") or [],
                 }
             )
+            layer_registry.invalidate()
             updated_manifest = response_manifest(runtime_config)
             return jsonify({"status": "ok", "manifest": updated_manifest})
         except Exception as exc:
@@ -522,7 +533,9 @@ def register_developer_routes(app: Flask, runtime_config: dict[str, Any] | None 
         try:
             payload = request.get_json(silent=True) or {}
             config_ref = str(payload.get("path") or "")
-            return jsonify({"status": "ok", **delete_managed_config(config_ref)})
+            result = delete_managed_config(config_ref)
+            layer_registry.invalidate()
+            return jsonify({"status": "ok", **result})
         except Exception as exc:
             return jsonify({"error": str(exc)}), 400
 
@@ -531,7 +544,23 @@ def register_developer_routes(app: Flask, runtime_config: dict[str, Any] | None 
         try:
             manifest = response_manifest(runtime_config)
             rows = database_router_status_rows(runtime_config)
-            return jsonify({"manifest": manifest, "rows": rows})
+            managed_endpoints = endpoint_supervisor.statuses() if endpoint_supervisor is not None else []
+            managed_by_ref = {row["config_ref"]: row for row in managed_endpoints}
+            for row in rows:
+                managed_runtime = managed_by_ref.get(str(row.get("config_path") or ""))
+                if managed_runtime is not None:
+                    row["managed_runtime"] = managed_runtime
+                    if not managed_runtime["ready"]:
+                        row["connected"] = False
+                        row["schema_inspectable"] = False
+                        row["detail"] = managed_runtime.get("error") or "managed endpoint is unavailable"
+            return jsonify(
+                {
+                    "manifest": manifest,
+                    "rows": rows,
+                    "managed_endpoints": managed_endpoints,
+                }
+            )
         except Exception as exc:
             return jsonify({"error": str(exc)}), 400
 
@@ -631,7 +660,7 @@ def register_developer_routes(app: Flask, runtime_config: dict[str, Any] | None 
     @app.get("/api/developer/layer-imports")
     def developer_layer_imports():
         try:
-            return jsonify({"manifest": response_manifest(runtime_config), "rows": route_provided_layer_rows(runtime_config)})
+            return jsonify({"manifest": response_manifest(runtime_config), "rows": route_provided_layer_rows(layer_registry)})
         except Exception as exc:
             return jsonify({"error": str(exc)}), 400
 
@@ -644,12 +673,13 @@ def register_developer_routes(app: Flask, runtime_config: dict[str, Any] | None 
             if imported:
                 available_layers = {
                     str(row.get("layer_id") or "").strip().lower()
-                    for row in route_provided_layer_rows(runtime_config)
+                    for row in route_provided_layer_rows(layer_registry)
                 }
                 if layer_id.strip().lower() not in available_layers:
                     raise ValueError("data layer is not provided by an active route contract")
             result = set_layer_import(layer_id, imported)
-            return jsonify({"rows": route_provided_layer_rows(runtime_config), **result})
+            layer_registry.invalidate()
+            return jsonify({"rows": route_provided_layer_rows(layer_registry), **result})
         except Exception as exc:
             return jsonify({"error": str(exc)}), 400
 
@@ -683,10 +713,11 @@ def register_developer_routes(app: Flask, runtime_config: dict[str, Any] | None 
         try:
             payload = request.get_json(silent=True) or {}
             result = upsert_layer_mapping(payload)
+            layer_registry.invalidate()
             return jsonify(
                 {
                     **result,
-                    "layer_rows": route_provided_layer_rows(runtime_config),
+                    "layer_rows": route_provided_layer_rows(layer_registry),
                 }
             )
         except Exception as exc:
@@ -699,10 +730,11 @@ def register_developer_routes(app: Flask, runtime_config: dict[str, Any] | None 
             mapping_id = str(payload.get("mapping_id") or "")
             enabled = bool(payload.get("enabled"))
             result = set_layer_mapping_enabled(mapping_id, enabled)
+            layer_registry.invalidate()
             return jsonify(
                 {
                     **result,
-                    "layer_rows": route_provided_layer_rows(runtime_config),
+                    "layer_rows": route_provided_layer_rows(layer_registry),
                 }
             )
         except Exception as exc:
@@ -711,6 +743,6 @@ def register_developer_routes(app: Flask, runtime_config: dict[str, Any] | None 
     @app.get("/api/developer/layer-contracts")
     def developer_layer_contracts():
         try:
-            return jsonify({"contracts": active_layer_contract_rows(runtime_config)})
+            return jsonify({"contracts": route_provided_layer_rows(layer_registry)})
         except Exception as exc:
             return jsonify({"error": str(exc)}), 400

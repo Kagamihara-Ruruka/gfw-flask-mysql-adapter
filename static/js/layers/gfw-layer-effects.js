@@ -1,20 +1,15 @@
 const SampledGridLayerEffects = (() => {
   function transitionMs(targetState) {
-    const baseMs = Math.max(0, Number(targetState.sampledGridTransitionMs ?? targetState.gfwTransitionMs ?? 0));
+    const baseMs = Math.max(0, Number(targetState.sampledGridTransitionMs ?? 0));
     if (typeof PlaybackInterpolationController !== "undefined") {
-      const playbackStatus = typeof PlaybackEngine === "undefined"
-        ? "IDLE"
-        : String(PlaybackEngine.snapshot?.()?.status || "IDLE");
-      const playbackActive = ["PREPARING", "PLAYING", "BUFFERING"].includes(
-        playbackStatus,
-      );
+      const playbackActive = typeof PlaybackRuntime !== "undefined" && PlaybackRuntime.isActive();
       return PlaybackInterpolationController.playbackTransitionMs(targetState, baseMs, { playbackActive });
     }
     return baseMs;
   }
 
   function blurPx(targetState) {
-    return Math.max(0, Number(targetState.sampledGridZoomBlurPx ?? targetState.gfwZoomBlurPx ?? 0));
+    return Math.max(0, Number(targetState.sampledGridZoomBlurPx ?? 0));
   }
 
   function layerElement(layer) {

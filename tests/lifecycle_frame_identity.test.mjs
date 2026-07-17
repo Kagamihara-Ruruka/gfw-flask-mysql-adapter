@@ -44,7 +44,10 @@ test("frame identity separates requested intent from actual returned resolution"
       },
     },
   });
-  const identity = vm.runInContext("FrameIdentity", context);
+  const identity = vm.runInContext(
+    "createFrameIdentity({ datasetResolver: (datasetId) => state.datasets?.[datasetId] || {} })",
+    context,
+  );
   const request = {
     datasetId: "ocean",
     date: "2020-01-01",
@@ -72,7 +75,10 @@ test("effective query resolution does not rewrite the requested scope identity",
       },
     },
   });
-  const identity = vm.runInContext("FrameIdentity", context);
+  const identity = vm.runInContext(
+    "createFrameIdentity({ datasetResolver: (datasetId) => state.datasets?.[datasetId] || {} })",
+    context,
+  );
   const requested = identity.normalizeRequest({
     datasetId: "ocean",
     date: "2020-01-01",
@@ -89,6 +95,27 @@ test("effective query resolution does not rewrite the requested scope identity",
   assert.match(identity.frameKey(routed), /\|16\|fixed$/);
 });
 
+test("frame identity carries provider transport truth without changing cache identity", () => {
+  const context = load("static/js/services/frame-identity.js", {
+    state: {
+      datasets: {
+        chlorophyll: { query_transport_key: "provider:8791", cache_namespace: "chlor-cache" },
+        temperature: { query_transport_key: "provider:8791", cache_namespace: "temp-cache" },
+      },
+    },
+  });
+  const identity = vm.runInContext(
+    "createFrameIdentity({ datasetResolver: (datasetId) => state.datasets?.[datasetId] || {} })",
+    context,
+  );
+  const chlorophyll = identity.normalizeRequest({ datasetId: "chlorophyll" });
+  const temperature = identity.normalizeRequest({ datasetId: "temperature" });
+
+  assert.equal(chlorophyll.transportKey, "provider:8791");
+  assert.equal(temperature.transportKey, "provider:8791");
+  assert.notEqual(chlorophyll.cacheNamespace, temperature.cacheNamespace);
+});
+
 test("lifecycle log computes user-perceived stall and cadence metrics", () => {
   const context = load("static/js/services/lifecycle-event-log.js", {
     state: { lifecycleEvents: { maxEntries: 1000 } },
@@ -103,8 +130,10 @@ test("lifecycle log computes user-perceived stall and cadence metrics", () => {
   log.record("BUFFER_ENTERED", { run_id: runId, intent_key: "i2" });
   log.record("CACHE_MISS", { run_id: runId, intent_key: "i2" });
   log.record("TASK_DISPATCHED", { run_id: runId, intent_key: "i2", wait_ms: 12, queue_depth: 4 });
-  log.record("HTTP_STARTED", { run_id: runId, intent_key: "i2" });
-  log.record("HTTP_FINISHED", { run_id: runId, intent_key: "i2", duration_ms: 18 });
+  log.record("QUERY_OPERATION_STARTED", { run_id: runId, intent_key: "i2" });
+  log.record("HTTP_BATCH_STARTED", { run_id: runId, batch_id: "b1" });
+  log.record("HTTP_BATCH_FINISHED", { run_id: runId, batch_id: "b1", duration_ms: 18 });
+  log.record("QUERY_OPERATION_FINISHED", { run_id: runId, intent_key: "i2" });
   log.record("CACHE_READY", { run_id: runId, intent_key: "i2" });
   log.record("BUFFER_RESUMED", { run_id: runId, intent_key: "i2", frame_key: "f2" });
   log.record("RENDER_STARTED", { run_id: runId, intent_key: "i2", frame_key: "f2" });
@@ -115,13 +144,15 @@ test("lifecycle log computes user-perceived stall and cadence metrics", () => {
   assert.equal(summary.frameCount, 2);
   assert.equal(summary.cacheMisses, 1);
   assert.equal(summary.stallCount, 1);
-  assert.equal(summary.totalStallMs, 60);
-  assert.equal(summary.cadenceP95Ms, 90);
+  assert.equal(summary.totalStallMs, 80);
+  assert.equal(summary.cadenceP95Ms, 110);
   assert.equal(summary.phases.queue.p95Ms, 12);
   assert.equal(summary.phases.network.p95Ms, 18);
   assert.equal(summary.phases.cacheCommit.p95Ms, 10);
   assert.equal(summary.phases.render.p95Ms, 7);
   assert.equal(summary.maxQueueDepth, 4);
+  assert.equal(summary.httpRequests, 1);
+  assert.equal(summary.queryOperations, 1);
   assert.equal(JSON.parse(log.exportRun(runId)).schema, "rrkal.lifecycle-events.v2");
 });
 

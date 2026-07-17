@@ -163,6 +163,18 @@ function loadVirtualGridContract({ zoom = 6, enabledLayerIds = ["gfw", "pipeline
   return context;
 }
 
+test("resolution labels preserve numeric truth without exposing raw floating-point tails", () => {
+  const context = {
+    document: { getElementById: () => null },
+  };
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(path.join(root, "static/js/core/dom.js"), "utf8"), context);
+
+  assert.equal(vm.runInContext("formatResolutionKm(4)", context), "4 km");
+  assert.equal(vm.runInContext("formatResolutionKm(9.276666666666666)", context), "9.28 km");
+  assert.equal(vm.runInContext("formatResolutionKm(null)", context), "-");
+});
+
 function loadWidgetQueryContext(packetRows) {
   const context = {
     console,
@@ -338,7 +350,7 @@ test("sampled-grid reuses a resolved source fallback without changing the config
       datasetId: "mapped-source",
       requestedResolutionKm: 4,
       actualResolutionKm: 16,
-      effectiveResolutionKm: 16,
+      selectionResolutionKm: 4,
       queryResolutionKm: 16,
       degraded: true,
       resolved: true,
@@ -390,8 +402,8 @@ test("virtual grid resolves an exact common cell from enabled mapping contracts"
   const snapshot = context.VirtualGridController.refresh("test");
   assert.equal(snapshot.status, "common");
   assert.equal(snapshot.participants.length, 2);
-  assert.equal(snapshot.geometry.cell_width_degrees, 1 / 12);
-  assert.equal(snapshot.geometry.cell_height_degrees, 1 / 12);
+  assert.ok(Math.abs(snapshot.geometry.cell_width_degrees - (1 / 12)) < 1e-12);
+  assert.ok(Math.abs(snapshot.geometry.cell_height_degrees - (1 / 12)) < 1e-12);
   assert.deepEqual(snapshot.participants.map((item) => item.layer_id), ["gfw", "pipeline.fishing"]);
 
   const cell = context.VirtualGridContract.cellAt(21.01, 120.01, snapshot);
@@ -408,11 +420,11 @@ test("virtual grid keeps the finest configured resolution independent of map zoo
   const context = loadVirtualGridContract({ zoom: 3 });
   const snapshot = context.VirtualGridController.refresh("test");
   assert.equal(snapshot.status, "common");
-  assert.equal(snapshot.geometry.cell_width_degrees, 1 / 12);
+  assert.ok(Math.abs(snapshot.geometry.cell_width_degrees - (1 / 12)) < 1e-12);
   assert.equal(snapshot.participants.find((item) => item.layer_id === "pipeline.fishing").requested_resolution_km, 4);
 });
 
-test("virtual grid follows the per-dataset actual resolution after a source fallback", () => {
+test("virtual grid keeps configured selection resolution when the query route falls back", () => {
   const context = loadVirtualGridContract({
     zoom: 6,
     enabledLayerIds: ["pipeline.fishing"],
@@ -424,11 +436,12 @@ test("virtual grid follows the per-dataset actual resolution after a source fall
   });
   const snapshot = context.VirtualGridController.refresh("test-fallback");
   assert.equal(snapshot.status, "single");
-  assert.equal(snapshot.geometry.cell_width_degrees, 1 / 6);
-  assert.equal(snapshot.resolutionKm, 16);
+  assert.ok(Math.abs(snapshot.geometry.cell_width_degrees - (1 / 24)) < 1e-12);
+  assert.equal(snapshot.resolutionKm, 4);
   assert.equal(snapshot.participants[0].requested_resolution_km, 4);
   assert.equal(snapshot.participants[0].actual_resolution_km, 16);
-  assert.equal(snapshot.participants[0].effective_resolution_km, 16);
+  assert.equal(snapshot.participants[0].selection_resolution_km, 4);
+  assert.equal(snapshot.participants[0].query_resolution_km, 16);
   assert.equal(snapshot.participants[0].lod_degraded, true);
 });
 
@@ -448,7 +461,7 @@ test("virtual grid exists only when at least one sampled-grid layer is imported"
   assert.equal(ownLod.status, "single");
   assert.equal(ownLod.participants.length, 1);
   assert.equal(ownLod.participants[0].layer_id, "gfw");
-  assert.equal(ownLod.geometry.cell_width_degrees, 1 / 12);
+  assert.ok(Math.abs(ownLod.geometry.cell_width_degrees - (1 / 12)) < 1e-12);
 });
 
 test("imported sampled-grid layers remain dormant until the data-layer drawer enables them", () => {
@@ -470,7 +483,7 @@ test("virtual grid accepts source origins aligned on native cell boundaries", ()
   aligned.state.datasets["pipeline.fishing"].sampled_grid.alignment.origin_lon = -180 + (1 / 24);
   const common = aligned.VirtualGridController.refresh("test-aligned-origin");
   assert.equal(common.status, "common");
-  assert.equal(common.geometry.cell_width_degrees, 1 / 12);
+  assert.ok(Math.abs(common.geometry.cell_width_degrees - (1 / 12)) < 1e-12);
 
   const misaligned = loadVirtualGridContract({ zoom: 6 });
   misaligned.state.datasets["pipeline.fishing"].sampled_grid.geometry.origin_lon = -180 + (1 / 48);
@@ -693,21 +706,37 @@ test("primary sampled-grid pipeline does not read source dataset columns", () =>
 test("bounded sampled-grid layers constrain viewport, queries, and rendered rows from Mapping coverage", () => {
   const dataset = {
     sampled_grid: {
+      default_coverage_id: "small",
       coverage_areas: [
-        { id: "small", bounds: { west: 118, south: 20, east: 124, north: 27 } },
+        { id: "small", bounds: { west: 118, south: 20, east: 122, north: 26 } },
         { id: "large", bounds: { west: 105, south: 15, east: 135, north: 35 } },
       ],
     },
   };
   const { context, mapState } = loadLayerViewportController(dataset);
   const model = context.createDatasetCoverageModel(dataset);
-  assert.equal(model.clipBboxString("100,10,140,40"), "105.000000,15.000000,135.000000,35.000000");
+  assert.equal(model.defaultCoverageId, "small");
+  assert.deepEqual(JSON.parse(JSON.stringify(model.initialBounds)), {
+    west: 118,
+    south: 20,
+    east: 122,
+    north: 26,
+  });
+  assert.equal(model.clipBboxString("100,10,140,40"), "118.000000,20.000000,122.000000,26.000000");
+  assert.equal(model.clipBboxString("125,20,140,30"), "125.000000,20.000000,135.000000,30.000000");
   assert.equal(model.clipBboxString("0,0,1,1"), null);
 
   const viewport = context.LayerViewportController.syncForDataset("bounded", { focus: true });
   assert.equal(viewport.mode, "coverage");
   assert.equal(viewport.minZoom, 5);
-  assert.deepEqual(JSON.parse(JSON.stringify(mapState.center)), { lat: 25, lng: 120 });
+  assert.equal(viewport.defaultCoverageId, "small");
+  assert.deepEqual(JSON.parse(JSON.stringify(viewport.initialBounds)), {
+    west: 118,
+    south: 20,
+    east: 122,
+    north: 26,
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(mapState.center)), { lat: 23, lng: 120 });
   assert.equal(mapState.zoom, 5);
   assert.ok(mapState.maxBounds);
 
@@ -758,6 +787,7 @@ test("schema candidates never become mapping roles automatically", () => {
   );
   assert.doesNotMatch(source, /guessedRole/);
   assert.match(source, /roleForColumn\([\s\S]*?return "ignore";/);
+  assert.match(source, /table\?\.resolved_mapping/);
 });
 
 test("database config wizard owns connections but not dataset mappings", () => {
@@ -1026,18 +1056,24 @@ test("developer control plane and dashboard share one layer-contract registry", 
     path.join(root, "common_adapter/http/routes/datasets.py"),
     "utf8",
   );
+  const server = fs.readFileSync(
+    path.join(root, "common_adapter/http/server.py"),
+    "utf8",
+  );
 
   assert.match(
     developerRoutes,
-    /def route_provided_layer_rows[\s\S]*?return active_layer_contract_rows\(runtime_config\)/,
+    /def route_provided_layer_rows\(layer_registry: RuntimeLayerRegistry\)[\s\S]*?layer_registry\.snapshot\(force=True\)\["layers"\]/,
   );
   assert.match(
     developerRoutes,
-    /def developer_layer_contracts[\s\S]*?active_layer_contract_rows\(runtime_config\)/,
+    /def developer_layer_contracts[\s\S]*?route_provided_layer_rows\(layer_registry\)/,
   );
-  assert.match(datasetRoutes, /layer_rows = active_layer_contract_rows\(/);
-  assert.match(datasetRoutes, /"layers": layer_rows/);
-  assert.match(datasetRoutes, /if row\.get\("imported"\)/);
+  assert.match(datasetRoutes, /class DatasetRoutes[\s\S]*?self\.layer_registry = layer_registry/);
+  assert.match(datasetRoutes, /registry = self\.layer_registry\.snapshot\(force=True\)/);
+  assert.match(server, /layer_registry = RuntimeLayerRegistry\(config\)/);
+  assert.match(server, /create_developer_app\([\s\S]*?layer_registry=layer_registry/);
+  assert.match(server, /create_app\(config, developer_url=developer_url, layer_registry=layer_registry\)/);
   assert.doesNotMatch(developerRoutes, /build_layer_contracts\(/);
 });
 

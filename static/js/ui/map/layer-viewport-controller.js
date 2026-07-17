@@ -21,7 +21,21 @@ function parseCoverageBbox(value) {
   });
 }
 
+function coverageBoundsArea(bounds) {
+  return Math.max(0, bounds.east - bounds.west) * Math.max(0, bounds.north - bounds.south);
+}
+
+function intersectCoverageBounds(left, right) {
+  return normalizeCoverageBounds({
+    west: Math.max(left.west, right.west),
+    south: Math.max(left.south, right.south),
+    east: Math.min(left.east, right.east),
+    north: Math.min(left.north, right.north),
+  });
+}
+
 function createDatasetCoverageModel(dataset = {}) {
+  const defaultCoverageId = String(dataset?.sampled_grid?.default_coverage_id || "").trim();
   const areas = (dataset?.sampled_grid?.coverage_areas || [])
     .map((coverage) => ({
       id: String(coverage?.id || "").trim(),
@@ -38,6 +52,8 @@ function createDatasetCoverageModel(dataset = {}) {
       north: Math.max(union.north, area.bounds.north),
     }), { ...areas[0].bounds })
     : null;
+  const defaultArea = areas.find((area) => area.id === defaultCoverageId) || null;
+  const initialBounds = defaultArea?.bounds || unionBounds;
 
   function contains(latValue, lonValue) {
     if (!bounded) return true;
@@ -53,19 +69,24 @@ function createDatasetCoverageModel(dataset = {}) {
   function clipBbox(value) {
     const requested = parseCoverageBbox(value);
     if (!requested || !bounded) return requested;
-    const intersections = areas.map(({ bounds }) => normalizeCoverageBounds({
-      west: Math.max(requested.west, bounds.west),
-      south: Math.max(requested.south, bounds.south),
-      east: Math.min(requested.east, bounds.east),
-      north: Math.min(requested.north, bounds.north),
-    })).filter(Boolean);
-    if (!intersections.length) return null;
-    return intersections.reduce((union, bounds) => ({
-      west: Math.min(union.west, bounds.west),
-      south: Math.min(union.south, bounds.south),
-      east: Math.max(union.east, bounds.east),
-      north: Math.max(union.north, bounds.north),
-    }), { ...intersections[0] });
+    const center = {
+      lat: (requested.south + requested.north) / 2,
+      lon: (requested.west + requested.east) / 2,
+    };
+    const centerMatches = areas
+      .filter(({ bounds }) => (
+        center.lon >= bounds.west && center.lon <= bounds.east
+        && center.lat >= bounds.south && center.lat <= bounds.north
+      ))
+      .sort((left, right) => coverageBoundsArea(left.bounds) - coverageBoundsArea(right.bounds));
+    if (centerMatches.length) {
+      return intersectCoverageBounds(requested, centerMatches[0].bounds);
+    }
+    const overlaps = areas
+      .map((area) => ({ area, bounds: intersectCoverageBounds(requested, area.bounds) }))
+      .filter((entry) => entry.bounds)
+      .sort((left, right) => coverageBoundsArea(right.bounds) - coverageBoundsArea(left.bounds));
+    return overlaps[0]?.bounds || null;
   }
 
   function clipBboxString(value) {
@@ -81,6 +102,8 @@ function createDatasetCoverageModel(dataset = {}) {
     areas: Object.freeze(areas.map((area) => Object.freeze({ ...area, bounds: Object.freeze(area.bounds) }))),
     bounded,
     unionBounds: unionBounds ? Object.freeze(unionBounds) : null,
+    defaultCoverageId: defaultArea?.id || "",
+    initialBounds: initialBounds ? Object.freeze({ ...initialBounds }) : null,
     contains,
     clipBbox,
     clipBboxString,
@@ -121,30 +144,38 @@ class DatasetViewportController {
     }
 
     const union = model.unionBounds;
-    const leafletBounds = L.latLngBounds(
+    const constraintBounds = L.latLngBounds(
       [union.south, union.west],
       [union.north, union.east],
     );
-    const minZoom = this.minimumInsideZoom(leafletBounds);
+    const initial = model.initialBounds;
+    const initialBounds = L.latLngBounds(
+      [initial.south, initial.west],
+      [initial.north, initial.east],
+    );
+    const minZoom = this.minimumInsideZoom(constraintBounds);
+    const initialZoom = Math.max(minZoom, this.minimumInsideZoom(initialBounds));
     const changed = this.activeDatasetId !== normalizedDatasetId
-      || this.state.layerViewport?.signature !== JSON.stringify(union);
+      || this.state.layerViewport?.signature !== JSON.stringify({ union, initial, defaultCoverageId: model.defaultCoverageId });
 
     this.activeDatasetId = normalizedDatasetId;
     this.map.setMinZoom(minZoom);
-    this.map.setMaxBounds(leafletBounds);
-    if (focus || changed || !leafletBounds.contains(this.map.getCenter())) {
-      this.map.setView(leafletBounds.getCenter(), minZoom, { animate: false });
+    this.map.setMaxBounds(constraintBounds);
+    if (focus || changed || !constraintBounds.contains(this.map.getCenter())) {
+      this.map.setView(initialBounds.getCenter(), initialZoom, { animate: false });
     } else if (this.map.getZoom() < minZoom) {
       this.map.setZoom(minZoom, { animate: false });
     }
-    this.map.panInsideBounds(leafletBounds, { animate: false });
+    this.map.panInsideBounds(constraintBounds, { animate: false });
 
     this.state.layerViewport = {
       mode: "coverage",
       datasetId: normalizedDatasetId,
-      signature: JSON.stringify(union),
+      signature: JSON.stringify({ union, initial, defaultCoverageId: model.defaultCoverageId }),
       bounds: union,
       minZoom,
+      initialBounds: initial,
+      defaultCoverageId: model.defaultCoverageId,
       coverageIds: model.areas.map((area) => area.id).filter(Boolean),
     };
     this.dispatch();
@@ -170,6 +201,8 @@ class DatasetViewportController {
       signature: "",
       bounds: null,
       minZoom: this.baseMinZoom,
+      initialBounds: null,
+      defaultCoverageId: "",
       coverageIds: [],
     };
     this.dispatch();

@@ -129,6 +129,10 @@ class MetricsWidget extends DashboardWidget {
     return Number.isFinite(value) ? value : 0;
   }
 
+  formatNumber(value, maximumFractionDigits = 2) {
+    return formatDisplayNumber(value, { maximumFractionDigits });
+  }
+
   latestPlaybackText(runtime) {
     if (!runtime) return "等待播放事件";
     const ready = Number(runtime.ready_ahead_slices || 0);
@@ -136,10 +140,10 @@ class MetricsWidget extends DashboardWidget {
     const supply = Number(runtime.supply_rate || 0);
     const watermark = runtime.watermark_policy || {};
     const policy = Number(watermark.high_watermark || 0) > 0
-      ? ` · 水位 ${Number(watermark.low_watermark || 0)}/${Number(watermark.high_watermark || 0)} · 啟動/恢復 ${Number(watermark.startup_watermark || 0)}/${Number(watermark.resume_watermark || 0)}`
+      ? ` · 水位 ${Number(watermark.low_watermark || 0)}→${Number(watermark.target_watermark || watermark.high_watermark || 0)}`
       : "";
     const degradation = watermark.degradation_reason ? ` · ${watermark.degradation_reason}` : "";
-    return `${runtime.playback_status || "IDLE"} · 前方 ${ready} 張 / ${seconds.toFixed(1)}s · 補給 ${supply.toFixed(2)}/s${policy}${degradation}`;
+    return `${runtime.playback_status || "IDLE"} · 前方 ${this.formatNumber(ready, 0)} 張 / ${this.formatNumber(seconds, 1)} s · 補給 ${this.formatNumber(supply, 2)} /s${policy}${degradation}`;
   }
 
   primaryMetric(packet) {
@@ -168,18 +172,18 @@ class MetricsWidget extends DashboardWidget {
   rowsText(packet) {
     const rows = packet?.details?.rows;
     if (rows === undefined || rows === null || rows === "" || rows === "-") return "- rows";
-    return `${rows} rows`;
+    return `${this.formatNumber(rows, 0)} rows`;
   }
 
   formatMsValue(value) {
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) return "-";
-    return `${numeric.toFixed(1)} ms`;
+    return `${this.formatNumber(numeric, 1)} ms`;
   }
 
   formatRate(value) {
     const numeric = Number(value);
-    return Number.isFinite(numeric) ? `${numeric.toFixed(2)} /s` : "-";
+    return Number.isFinite(numeric) ? `${this.formatNumber(numeric, 2)} /s` : "-";
   }
 
   historySamples(packet) {
@@ -276,8 +280,8 @@ class MetricsWidget extends DashboardWidget {
     setText("consumptionRate", this.formatRate(runtime?.consumption_rate));
     setText("supplyRate", this.formatRate(runtime?.supply_rate));
     setText("cacheReadyP95", this.formatMsValue(runtime?.cache_ready_latency_p95));
-    setText("readyAheadSlices", `${Number(runtime?.ready_ahead_slices || 0)} 張`);
-    setText("readyAheadSeconds", `${Number(runtime?.ready_ahead_seconds || 0).toFixed(1)} s`);
+    setText("readyAheadSlices", `${this.formatNumber(runtime?.ready_ahead_slices || 0, 0)} 張`);
+    setText("readyAheadSeconds", `${this.formatNumber(runtime?.ready_ahead_seconds || 0, 1)} s`);
     this.updateHistoryChart(container, packet, setText);
 
     const values = ["query", "api", "draw"].map((key) => this.metricNumber(packet, key));

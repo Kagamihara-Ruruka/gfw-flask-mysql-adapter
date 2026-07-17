@@ -143,7 +143,9 @@ function bindPageTabs() {
 function bindControls() {
   bindPageTabs();
   $("dataset-select")?.addEventListener("change", (event) => {
-    selectDataset(event.target.value).catch((err) => setStatus(err.message, true));
+    window.LayerActivationController
+      .selectDataset(event.target.value)
+      .catch((err) => setStatus(err.message, true));
   });
   bindDataLayerMenuDismiss();
   bindDataLayerControls();
@@ -242,8 +244,7 @@ function bindDeveloperBridge() {
   });
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
-      PlaybackPreheater?.stop?.("document_hidden");
-      stopPlayback({ reason: "document_hidden" });
+      stopPlayback({ clearPreheater: true, reason: "document_hidden" });
       return;
     }
     refreshDatasetRegistry().catch((err) => setStatus(err.message, true));

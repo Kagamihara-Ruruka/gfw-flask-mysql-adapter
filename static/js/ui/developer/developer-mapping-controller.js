@@ -155,6 +155,7 @@
       tableDetails.dataset.table = table.name || "";
       tableDetails.dataset.datasetId = mapping?.dataset_id || "";
       const columns = table.columns || [];
+      const mappingReadonly = Boolean(profile.mapping_readonly || table.mapping_readonly);
       tableDetails.innerHTML = `
         <summary>
           <span>
@@ -178,7 +179,7 @@
               </tr>
             </thead>
             <tbody>
-              ${columns.map((column) => this.renderColumnRow(mapping, column)).join("")}
+              ${columns.map((column) => this.renderColumnRow(mapping, column, mappingReadonly)).join("")}
             </tbody>
           </table>
         </div>
@@ -196,11 +197,11 @@
       `;
     }
 
-    renderColumnRow(mapping, column) {
+    renderColumnRow(mapping, column, readonly = false) {
       const role = this.roleForColumn(mapping, column);
       return `
         <tr>
-          <td>${this.roleSelectMarkup(column, role)}</td>
+          <td>${this.roleSelectMarkup(column, role, readonly)}</td>
           <td><strong>${escapeHtml(column.name || "-")}</strong><small>${column.nullable ? "nullable" : "not null"}</small></td>
           <td>${escapeHtml(column.column_type || column.data_type || "-")}</td>
           <td>${escapeHtml(column.key || "-")}</td>
@@ -289,6 +290,9 @@
     }
 
     mappingForTable(profile, table) {
+      if (table?.resolved_mapping && typeof table.resolved_mapping === "object") {
+        return table.resolved_mapping;
+      }
       return this.mappings.find((mapping) => (
         mapping.config_path === profile.config_path
         && mapping.connection_ref === profile.connection_ref
@@ -335,11 +339,11 @@
       return "ignore";
     }
 
-    roleSelectMarkup(column, role) {
+    roleSelectMarkup(column, role, readonly = false) {
       const options = Object.entries(ROLE_LABELS).map(([value, label]) => (
         `<option value="${value}" ${value === role ? "selected" : ""}>${escapeHtml(label)}</option>`
       )).join("");
-      return `<select class="developer-column-role-select" data-column-role="${escapeHtml(column.name)}">${options}</select>`;
+      return `<select class="developer-column-role-select" data-column-role="${escapeHtml(column.name)}" ${readonly ? "disabled" : ""}>${options}</select>`;
     }
 
     safeLayerId(value) {

@@ -85,11 +85,18 @@ def _bbox_mapping(bbox: tuple[float, float, float, float] | None) -> dict[str, f
 def _coverage_choice(
     coverages: list[dict[str, Any]],
     bbox: dict[str, float] | None,
+    default_coverage_id: str = "",
 ) -> tuple[dict[str, Any] | None, str]:
     valid = [row for row in coverages if isinstance(row.get("bounds"), dict)]
     if not valid:
         return None, "outside_coverage"
     if bbox is None:
+        configured = next(
+            (row for row in valid if str(row.get("id") or "") == default_coverage_id),
+            None,
+        )
+        if configured is not None:
+            return configured, "covered"
         return max(valid, key=lambda row: _area(row["bounds"])), "covered"
     containing = [row for row in valid if _contains(row["bounds"], bbox)]
     if containing:
@@ -273,6 +280,7 @@ class SampledGridHttpQueryAdapter:
         self.client = EndpointHttpClient.from_config(_mapping(dataset.get("endpoint_source")))
         self.available_resolutions = _positive_numbers(self.descriptor.get("available_resolutions_km"))
         self.coverages = [row for row in _list(self.descriptor.get("coverage_areas")) if isinstance(row, dict)]
+        self.default_coverage_id = str(self.descriptor.get("default_coverage_id") or "").strip()
         self.dataset_id = str(dataset.get("dataset_id") or dataset.get("data_layer") or "").strip()
         if not self.dataset_id:
             raise ValueError("sampled-grid dataset is missing its canonical dataset_id")
@@ -454,7 +462,11 @@ class SampledGridHttpQueryAdapter:
 
     def schema_packet(self) -> dict[str, Any]:
         started = time.perf_counter()
-        coverage, _status = _coverage_choice(self.coverages, None)
+        coverage, _status = _coverage_choice(
+            self.coverages,
+            None,
+            self.default_coverage_id,
+        )
         resolution = self.available_resolutions[-1] if self.available_resolutions else None
         dates = self._availability_dates(coverage=coverage, resolution=resolution)
         return {
@@ -468,6 +480,7 @@ class SampledGridHttpQueryAdapter:
             "sampled_grid": {
                 "contract_version": SAMPLED_GRID_CONTRACT_VERSION,
                 "grid_profile": deepcopy(self.grid_profile),
+                "default_coverage_id": self.default_coverage_id or None,
                 "available_resolutions_km": self.available_resolutions,
                 "coverage_areas": deepcopy(self.coverages),
                 "alignment": deepcopy(_mapping(self.descriptor.get("alignment"))),
@@ -515,7 +528,11 @@ class SampledGridHttpQueryAdapter:
         context = _mapping(query_context)
         requested_bbox = _bbox_mapping(bbox)
         requested_resolution = _resolution_for_request(self.available_resolutions, requested_bbox, context)
-        coverage, coverage_status = _coverage_choice(self.coverages, requested_bbox)
+        coverage, coverage_status = _coverage_choice(
+            self.coverages,
+            requested_bbox,
+            self.default_coverage_id,
+        )
 
         availability_started = time.perf_counter()
         available_dates = self._availability_dates(coverage=coverage, resolution=requested_resolution)
@@ -620,7 +637,11 @@ class SampledGridHttpQueryAdapter:
         context = _mapping(query_context)
         requested_bbox = _bbox_mapping(bbox)
         requested_resolution = _resolution_for_request(self.available_resolutions, requested_bbox, context)
-        coverage, coverage_status = _coverage_choice(self.coverages, requested_bbox)
+        coverage, coverage_status = _coverage_choice(
+            self.coverages,
+            requested_bbox,
+            self.default_coverage_id,
+        )
         if coverage is None:
             return self._empty_packet(
                 requested_bbox=requested_bbox,

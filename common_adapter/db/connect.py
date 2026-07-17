@@ -220,6 +220,7 @@ def query_policy(config: dict[str, Any]) -> dict[str, Any]:
     snapshot_cache_max_rows = policy.get("snapshot_cache_max_rows", 800000)
     if snapshot_cache_max_rows is not None:
         snapshot_cache_max_rows = max(1, int(snapshot_cache_max_rows))
+    batch_max_operations = max(1, min(32, int(policy.get("batch_max_operations", 3))))
     return {
         "default_limit": optional_query_limit(policy.get("default_limit", 1000)),
         "max_limit": optional_query_limit(policy.get("max_limit")),
@@ -227,6 +228,7 @@ def query_policy(config: dict[str, Any]) -> dict[str, Any]:
         "require_time_or_bbox_filter": bool(policy.get("require_time_or_bbox_filter", True)),
         "network_concurrency": network_concurrency,
         "background_network_concurrency": background_network_concurrency,
+        "batch_max_operations": batch_max_operations,
         "snapshot_cache_max_rows": snapshot_cache_max_rows,
     }
 

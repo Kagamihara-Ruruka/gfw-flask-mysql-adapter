@@ -216,12 +216,14 @@ const SampledGridContract = (() => {
     const metaActual = sampledGridNumberOrNull(meta?.actual_resolution_km);
     const actualResolutionKm = sampledGridNumberOrNull(route?.effective_resolution_km)
       ?? (sameResolution(metaRequested, requestedResolutionKm) ? metaActual : null);
+    const queryResolutionKm = sampledGridNumberOrNull(route?.effective_resolution_km)
+      ?? requestedResolutionKm;
     return {
       datasetId,
       requestedResolutionKm,
       actualResolutionKm,
-      effectiveResolutionKm: actualResolutionKm ?? requestedResolutionKm,
-      queryResolutionKm: actualResolutionKm ?? requestedResolutionKm,
+      selectionResolutionKm: requestedResolutionKm,
+      queryResolutionKm,
       degraded: Number.isFinite(actualResolutionKm)
         && Number.isFinite(requestedResolutionKm)
         && actualResolutionKm > requestedResolutionKm,

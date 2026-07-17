@@ -47,6 +47,10 @@ class DashboardLayerActivationController {
     return this.enqueue(() => this.deactivateNow(options));
   }
 
+  selectDataset(datasetId, options = {}) {
+    return this.enqueue(() => this.selectDatasetNow(datasetId, options));
+  }
+
   reconcile({ reload = false, reason = "registry_reconcile" } = {}) {
     return this.enqueue(async () => {
       const activeLayerId = this.normalizeLayerId(this.state.dataLayer);
@@ -91,7 +95,7 @@ class DashboardLayerActivationController {
       throw new Error(`Layer ${id} has no registered dataset contract.`);
     }
 
-    this.effects.stopPlayback();
+    this.effects.stopPlayback(reason);
     this.state.dataLayer = null;
     this.state.enabledLayerIds = [];
     this.effects.clearPrimaryRecords();
@@ -134,9 +138,47 @@ class DashboardLayerActivationController {
     this.effects.cancelScheduledPrimaryReload?.();
   }
 
+  async selectDatasetNow(datasetId, { reload = true, reason = "dataset_select" } = {}) {
+    const id = String(datasetId || "").trim();
+    if (!id || !this.state.datasets?.[id] || id === this.state.datasetId) {
+      return this.state.datasetId || null;
+    }
+    const previous = {
+      datasetId: this.state.datasetId,
+      schema: this.state.schema,
+      dates: [...(this.state.availableDates || [])],
+    };
+    this.effects.stopPlayback(reason);
+    this.effects.clearPrimaryRecords();
+    this.state.datasetId = id;
+    this.state.schema = null;
+    this.effects.setAvailableDates([]);
+    this.viewportController?.syncForDataset(id, { focus: false });
+    try {
+      await this.effects.loadSchema();
+      if (reload && this.effects.isSampledGrid(this.state.dataLayer)) {
+        await this.settleViewport(id, { focus: false });
+        await this.effects.reloadActiveLayer();
+      } else {
+        this.effects.renderInactiveDataset();
+      }
+      this.syncUi(reason);
+      this.dispatch(reason);
+      return id;
+    } catch (error) {
+      this.state.datasetId = previous.datasetId;
+      this.state.schema = previous.schema;
+      this.effects.setAvailableDates(previous.dates);
+      this.viewportController?.syncForDataset(previous.datasetId, { focus: false });
+      this.syncUi("dataset_selection_failed");
+      this.dispatch("dataset_selection_failed");
+      throw error;
+    }
+  }
+
   async deactivateNow({ closeMenu = false, stopPlayback = true, reason = "deactivate" } = {}) {
     if (stopPlayback) {
-      this.effects.stopPlayback();
+      this.effects.stopPlayback(reason);
     }
     this.state.dataLayer = null;
     this.state.enabledLayerIds = [];
@@ -185,10 +227,14 @@ function createLayerActivationController({ targetState, viewportController, virt
     isImported: (layerId) => isImportedLayer(layerId),
     isPrimary: (layerId) => isPrimaryDataLayer(layerId),
     isSampledGrid: (layerId) => isSampledGridLayer(layerId),
-    stopPlayback: () => stopPlayback(),
+    stopPlayback: (reason) => stopPlayback({ clearPreheater: true, reason }),
     clearPrimaryRecords: () => clearPrimaryLayerRecords(),
     loadSchema: () => loadSchema(),
     reloadActiveLayer: () => reloadActiveLayer({ reason: "layer_activation" }),
+    renderInactiveDataset: () => {
+      renderTable([], state.datasets[state.datasetId]?.display_columns || [], { layer: "none" });
+      updatePlaybackControls();
+    },
     cancelScheduledPrimaryReload: () => cancelScheduledPrimaryReload(),
     flushMapContainerSize: (reason) => flushMapContainerSize(reason),
     setAvailableDates: (dates) => setAvailableDates(dates),

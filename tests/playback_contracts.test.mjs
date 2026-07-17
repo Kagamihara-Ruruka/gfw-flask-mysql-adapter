@@ -107,16 +107,13 @@ function loadPlaybackCacheService({ waitForDates = async (dates) => ({
     },
     playbackCache: {
       windowBehind: 1,
-      highWatermark: 10,
-      lowWatermark: 5,
-      startupWatermark: 5,
-      resumeWatermark: 5,
+      highWatermark: 15,
+      lowWatermark: 10,
       isBackgroundPreloading: false,
       buffering: false,
       bufferStatus: "idle",
       bufferReady: 0,
       bufferRequired: 0,
-      bufferResume: 0,
       bufferCurrentDate: "",
       bufferTargetIndex: -1,
       bufferAttempts: 0,
@@ -168,6 +165,7 @@ function loadPlaybackCacheService({ waitForDates = async (dates) => ({
     },
   };
   const { context } = loadBrowserScripts([
+    "static/js/playback/adaptive-watermark-controller.js",
     "static/js/playback/playback-cache-service.js",
   ], globals);
   const createPlaybackCacheService = vm.runInContext("globalThis.createPlaybackCacheService", context);
@@ -176,6 +174,7 @@ function loadPlaybackCacheService({ waitForDates = async (dates) => ({
     dataFrameStore: globals.DataFrameStore,
     preheater: globals.PlaybackPreheater,
     watermarkController: globals.AdaptiveWatermarkController,
+    fixedPolicyNormalizer: vm.runInContext("normalizedFixedWatermarkPolicy", context),
     frameIdentity: globals.FrameIdentity,
     sampledGridLayerPredicate: globals.isSampledGridLayer,
   });
@@ -336,23 +335,20 @@ test("progressive cold cache produces a target-frame fetching decision", () => {
   assert.equal(decision.renderIndex, -1);
   assert.equal(decision.readyCount, 0);
   assert.equal(decision.requiredCount, 1);
-  assert.equal(decision.resumeCount, 1);
   assert.equal(decision.canRender, false);
 
-  PlaybackFrameBuffer.markWaiting({
+  service.setBufferState(PlaybackFrameBuffer.waitingState({
     decision,
     dates,
     targetIndex: 1,
-    cacheService: service,
     attempts: 2,
-  });
+  }));
 
   assert.deepEqual(plain(service.bufferState), {
     buffering: true,
     status: "waiting",
     ready: 0,
     required: 1,
-    resume: 1,
     currentDate: "2024-01-02",
     targetIndex: 1,
     attempts: 2,
@@ -381,12 +377,11 @@ test("a ready target renders immediately when no recovery gate is active", () =>
   assert.equal(decision.renderDate, "2024-01-02");
   assert.equal(decision.readyCount, 2);
   assert.equal(decision.requiredCount, 1);
-  assert.equal(decision.resumeCount, 1);
   assert.equal(decision.canRender, true);
   assert.equal(decision.isFallback, false);
 });
 
-test("an active recovery gate blocks a ready target until the resume watermark", () => {
+test("an unresolved engine buffer gate blocks a ready target", () => {
   const { PlaybackFrameBuffer } = loadPlaybackCore();
   const service = cacheService({ readyDates: ["2024-01-02"] });
   const decision = PlaybackFrameBuffer.inspectTarget({
@@ -395,15 +390,31 @@ test("an active recovery gate blocks a ready target until the resume watermark",
     targetIndex: 1,
     hasCacheLayer: true,
     inspectFrame: engineFrameInspector(service),
-    resumeGate: { active: true, readyCount: 1, required: 3 },
+    bufferGate: { active: true, ready: false, readyCount: 0, required: 1 },
   });
 
   assert.equal(decision.state, PlaybackFrameBuffer.FRAME_STATES.waiting);
   assert.equal(decision.renderIndex, -1);
-  assert.equal(decision.readyCount, 1);
-  assert.equal(decision.requiredCount, 3);
-  assert.equal(decision.resumeCount, 3);
+  assert.equal(decision.readyCount, 0);
+  assert.equal(decision.requiredCount, 1);
   assert.equal(decision.canRender, false);
+});
+
+test("a satisfied engine buffer gate releases the ready target immediately", () => {
+  const { PlaybackFrameBuffer } = loadPlaybackCore();
+  const service = cacheService({ readyDates: ["2024-01-02"] });
+  const decision = PlaybackFrameBuffer.inspectTarget({
+    dates,
+    currentIndex: 0,
+    targetIndex: 1,
+    hasCacheLayer: true,
+    inspectFrame: engineFrameInspector(service),
+    bufferGate: { active: true, ready: true, readyCount: 1, required: 1 },
+  });
+
+  assert.equal(decision.state, PlaybackFrameBuffer.FRAME_STATES.ready);
+  assert.equal(decision.renderIndex, 1);
+  assert.equal(decision.canRender, true);
 });
 
 test("progressive target failure becomes an explicit failed frame-buffer state", () => {
@@ -427,21 +438,19 @@ test("progressive target failure becomes an explicit failed frame-buffer state",
   assert.equal(decision.canRender, false);
   assert.equal(decision.errorMessage, "failed 2024-01-02");
 
-  PlaybackFrameBuffer.markFailed({
+  service.setBufferState(PlaybackFrameBuffer.failedState({
     decision,
     dates,
     targetIndex: 1,
-    cacheService: service,
     attempts: 9,
     errorMessage: decision.errorMessage,
-  });
+  }));
 
   assert.deepEqual(plain(service.bufferState), {
     buffering: false,
     status: "failed",
     ready: 0,
     required: 1,
-    resume: 1,
     currentDate: "2024-01-02",
     targetIndex: 1,
     attempts: 9,
@@ -452,16 +461,14 @@ test("progressive target failure becomes an explicit failed frame-buffer state",
 
 test("playback watermarks are explicit runtime policy", () => {
   const { PlaybackCacheService, state } = loadPlaybackCacheService();
-  assert.equal(PlaybackCacheService.options().lowWatermark, 5);
-  assert.equal(PlaybackCacheService.options().highWatermark, 10);
-  assert.equal(PlaybackCacheService.options().effectiveStartupWatermark, 5);
-  assert.equal(PlaybackCacheService.options().effectiveResumeWatermark, 5);
+  assert.equal(PlaybackCacheService.options().lowWatermark, 10);
+  assert.equal(PlaybackCacheService.options().highWatermark, 15);
+  assert.equal(PlaybackCacheService.options().effectiveTargetWatermark, 15);
   state.playbackCache.highWatermark = 4;
   state.playbackCache.lowWatermark = 8;
   assert.equal(PlaybackCacheService.options().highWatermark, 4);
   assert.equal(PlaybackCacheService.options().lowWatermark, 3);
-  assert.equal(PlaybackCacheService.options().effectiveStartupWatermark, 4);
-  assert.equal(PlaybackCacheService.options().effectiveResumeWatermark, 4);
+  assert.equal(PlaybackCacheService.options().effectiveTargetWatermark, 4);
 });
 
 test("playback settings preview policy without applying lifecycle state", () => {
@@ -477,7 +484,7 @@ test("playback settings preview policy without applying lifecycle state", () => 
   assert.doesNotMatch(body, /WatermarkController\.resolve/);
 });
 
-test("watermark playback awaits the engine-owned startup gate without calling the preheater from UI", () => {
+test("watermark playback delegates timing to the runtime and never calls the preheater from UI", () => {
   const source = readFileSync(
     path.join(repoRoot, "static/js/playback/playback-controls.js"),
     "utf8",
@@ -487,9 +494,10 @@ test("watermark playback awaits the engine-owned startup gate without calling th
   const body = source.slice(start, end);
 
   assert.ok(start >= 0 && end > start);
-  assert.match(body, /const startPromise = PlaybackEngine\.start/);
+  assert.match(body, /const startPromise = PlaybackRuntime\.start/);
   assert.match(body, /started = await startPromise/);
-  assert.match(body, /schedulePlaybackTick\(generation\);/);
+  assert.match(body, /onFrameDue:[\s\S]*advancePlaybackToTimelineTarget/);
+  assert.doesNotMatch(body, /schedulePlaybackTick|PlaybackEngine\.start/);
   assert.doesNotMatch(body, /state\.isPlaying/);
   assert.doesNotMatch(body, /PlaybackPreheater\.|preheatPlaybackCache|before_play/);
 });
@@ -514,7 +522,7 @@ test("PlaybackEngine is the only mutable playback lifecycle truth", () => {
   assert.match(app, /setPlayback\(!playbackIsActive\(\)\)/);
 });
 
-test("document visibility shutdown keeps its lifecycle reason and records preheater stop first", () => {
+test("document visibility shutdown sends one scoped runtime command", () => {
   const app = readFileSync(
     path.join(repoRoot, "static/app.js"),
     "utf8",
@@ -524,15 +532,11 @@ test("document visibility shutdown keeps its lifecycle reason and records prehea
   const body = app.slice(start, end);
 
   assert.ok(start >= 0 && end > start);
-  assert.match(body, /PlaybackPreheater\?\.stop\?\.\("document_hidden"\)/);
-  assert.match(body, /stopPlayback\(\{ reason: "document_hidden" \}\)/);
-  assert.ok(
-    body.indexOf("PlaybackPreheater") < body.indexOf("stopPlayback"),
-    "the preheater event must be attached to the active run before RUN_FINISHED clears it",
-  );
+  assert.match(body, /stopPlayback\(\{ clearPreheater: true, reason: "document_hidden" \}\)/);
+  assert.doesNotMatch(body, /PlaybackPreheater|PlaybackEngine/);
 });
 
-test("playback rendering advances the preheater through PlaybackEngine only", () => {
+test("playback rendering advances the engine through the PlaybackRuntime facade", () => {
   const source = readFileSync(
     path.join(repoRoot, "static/js/playback/playback-controls.js"),
     "utf8",
@@ -542,10 +546,10 @@ test("playback rendering advances the preheater through PlaybackEngine only", ()
   const body = source.slice(start, end);
 
   assert.ok(start >= 0 && end > start);
-  assert.match(body, /PlaybackEngine\.requireTarget\(targetIndex\)/);
-  assert.match(body, /PlaybackEngine\.markFrameVisible\(targetIndex/);
-  assert.doesNotMatch(body, /PlaybackPreheater\.|queueProgressivePreheat|afterRender/);
-  assert.doesNotMatch(source, /PlaybackPreheater\./);
+  assert.match(body, /PlaybackRuntime\.requireTarget\(targetIndex\)/);
+  assert.match(body, /PlaybackRuntime\.markFrameVisible\(targetIndex/);
+  assert.doesNotMatch(body, /PlaybackEngine\.|PlaybackPreheater\.|queueProgressivePreheat|afterRender/);
+  assert.doesNotMatch(source, /PlaybackEngine\.|PlaybackPreheater\./);
 });
 
 test("the independent preheater has no serialized batch gate", () => {
@@ -566,9 +570,9 @@ test("legacy batch cache and prefetch entrypoints are removed", () => {
   assert.doesNotMatch(cacheServiceSource, /function preheat\(|waitForDates|selectFullPlaybackDates|startupBufferPlan/);
 });
 
-test("map scope updates flow through PlaybackEngine instead of addressing the preheater directly", () => {
+test("map scope updates flow through PlaybackRuntime instead of core lifecycle owners", () => {
   const apiClient = readFileSync(path.join(repoRoot, "static/js/services/api-client.js"), "utf8");
-  assert.match(apiClient, /PlaybackEngine\.configure\(\{[\s\S]{0,220}requestContext,[\s\S]{0,120}currentDate: requestedDate/);
+  assert.match(apiClient, /PlaybackRuntime\.configure\(\{[\s\S]{0,220}requestContext,[\s\S]{0,120}currentDate: requestedDate/);
   assert.doesNotMatch(apiClient, /resolvedRequestContext|resolution:\s*actualResolution/);
-  assert.doesNotMatch(apiClient, /PlaybackPreheater\.setScope\(/);
+  assert.doesNotMatch(apiClient, /PlaybackEngine\.|PlaybackPreheater\./);
 });

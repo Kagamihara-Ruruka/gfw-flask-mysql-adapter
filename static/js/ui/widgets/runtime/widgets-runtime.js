@@ -628,12 +628,10 @@ function initWidgetsPanels(popover, applicationRuntime) {
   return panels;
 }
 
-function refreshLineChartWidgets({ networkMode = "window" } = {}) {
+function refreshLineChartWidgets({ cause = "context_changed" } = {}) {
   const source = widgetRuntimeOwner?.applicationRuntime.source("line-chart");
   if (!source) return;
-  source.clear();
-  if (networkMode === "current") source.ensureCurrentSlice();
-  if (networkMode === "window") source.ensureCurrentWindow();
+  source.refresh({ cause });
   renderLineChartWidgets();
 }
 
@@ -683,12 +681,7 @@ function refreshTableWidgets() {
 
 function refreshLineChartWidgetsForTileSelection(event) {
   if (!tileSelectionChangeAffectsWidgets(event)) return;
-  const status = typeof PlaybackEngine === "undefined"
-    ? "IDLE"
-    : String(PlaybackEngine.snapshot?.()?.status || "IDLE");
-  refreshLineChartWidgets({
-    networkMode: ["PREPARING", "PLAYING", "BUFFERING"].includes(status) ? "current" : "window",
-  });
+  refreshLineChartWidgets({ cause: "tile_selection" });
 }
 
 function refreshPieChartWidgetsForTileSelection(event) {
@@ -700,83 +693,121 @@ function tileSelectionChangeAffectsWidgets(event) {
   return ["selected", "disabled", "cleared", "mode_changed", "grid_changed"].includes(event?.detail?.reason);
 }
 
-function bindChartWidgetRefresh({ eventTarget, targetMap, signal, applicationRuntime } = {}) {
-  if (!eventTarget?.addEventListener) throw new TypeError("Widget refresh binding requires an event target");
-  if (!applicationRuntime) throw new TypeError("Widget refresh binding requires WidgetApplicationRuntime");
-  const listenerOptions = signal ? { signal } : undefined;
-  eventTarget.addEventListener("rrkal:tile-selection-changed", (event) => {
+class WidgetRefreshCoordinator {
+  constructor({ eventTarget, targetMap = null, applicationRuntime, elementById } = {}) {
+    if (!eventTarget?.addEventListener) throw new TypeError("WidgetRefreshCoordinator requires an event target");
+    if (!applicationRuntime) throw new TypeError("WidgetRefreshCoordinator requires WidgetApplicationRuntime");
+    if (typeof elementById !== "function") throw new TypeError("WidgetRefreshCoordinator requires elementById");
+    if (typeof applicationRuntime.schedule !== "function" || typeof applicationRuntime.cancelSchedule !== "function") {
+      throw new TypeError("WidgetRefreshCoordinator requires injected scheduling");
+    }
+    this.eventTarget = eventTarget;
+    this.targetMap = targetMap;
+    this.applicationRuntime = applicationRuntime;
+    this.elementById = elementById;
+    this.abortController = null;
+    this.mapMoveHandler = null;
+    this.timers = new Set();
+    this.bound = false;
+  }
+
+  queue(callback) {
+    let timerId = null;
+    timerId = this.applicationRuntime.schedule(() => {
+      this.timers.delete(timerId);
+      if (this.bound) callback();
+    }, 0);
+    this.timers.add(timerId);
+  }
+
+  bind() {
+    if (this.bound) return this;
+    this.bound = true;
+    this.abortController = new AbortController();
+    const listenerOptions = { signal: this.abortController.signal };
+    this.eventTarget.addEventListener("rrkal:tile-selection-changed", (event) => {
     refreshLineChartWidgetsForTileSelection(event);
     refreshPieChartWidgetsForTileSelection(event);
     if (tileSelectionChangeAffectsWidgets(event)) {
       refreshHorizontalBarWidgets();
-      applicationRuntime.source("eez-attribution")?.rememberTileSelection(event);
+      this.applicationRuntime.source("eez-attribution")?.rememberTileSelection(event);
       refreshEezAttributionWidgets();
       refreshTableWidgets();
     }
   }, listenerOptions);
-  eventTarget.addEventListener("rrkal:schema-loaded", () => {
-    if (!state.dataLayer) return;
+    this.eventTarget.addEventListener("rrkal:schema-loaded", () => {
+    if (!this.applicationRuntime.hasActiveLayer()) return;
     refreshLineChartWidgets();
     refreshPieChartWidgets();
     refreshTableWidgets();
     refreshHorizontalBarWidgets();
   }, listenerOptions);
-  eventTarget.addEventListener("rrkal:layer-activation-changed", (event) => {
+    this.eventTarget.addEventListener("rrkal:layer-activation-changed", (event) => {
     if (event?.detail?.reason === "activation_failed") return;
     refreshLineChartWidgets();
     refreshPieChartWidgets();
     refreshTableWidgets();
     refreshHorizontalBarWidgets();
   }, listenerOptions);
-  eventTarget.addEventListener("rrkal:records-updated", () => {
+    this.eventTarget.addEventListener("rrkal:records-updated", () => {
     refreshPieChartWidgets();
     refreshTableWidgets();
   }, listenerOptions);
-  eventTarget.addEventListener("rrkal:active-date-changed", () => {
+    this.eventTarget.addEventListener("rrkal:active-date-changed", () => {
     renderLineChartWidgets();
     refreshHorizontalBarWidgets();
     refreshTableWidgets();
   }, listenerOptions);
-  eventTarget.addEventListener("rrkal:line-chart-data-changed", () => {
+    this.eventTarget.addEventListener("rrkal:line-chart-data-changed", () => {
     for (const panel of window.WidgetsPanelInstances || []) {
       panel.refreshWidgetsByType?.("line-chart");
     }
     widgetRuntimeOwner?.popover.refreshOpenWidgetType("line-chart");
   }, listenerOptions);
-  eventTarget.addEventListener("rrkal:pie-chart-data-changed", () => {
+    this.eventTarget.addEventListener("rrkal:pie-chart-data-changed", () => {
     renderWidgetType("pie-chart");
   }, listenerOptions);
-  eventTarget.addEventListener("rrkal:horizontal-bar-data-changed", () => {
+    this.eventTarget.addEventListener("rrkal:horizontal-bar-data-changed", () => {
     renderWidgetType("horizontal-bar-chart");
   }, listenerOptions);
-  eventTarget.addEventListener("rrkal:eez-attribution-data-changed", () => {
+    this.eventTarget.addEventListener("rrkal:eez-attribution-data-changed", () => {
     refreshEezAttributionWidgets();
   }, listenerOptions);
-  eventTarget.addEventListener("rrkal:data-frame-store-changed", (event) => {
+    this.eventTarget.addEventListener("rrkal:data-frame-store-changed", (event) => {
     if (event?.detail?.type !== "committed") return;
-    if (applicationRuntime.source("line-chart")?.cacheEventAffectsCurrent(event)) renderLineChartWidgets();
-    if (applicationRuntime.source("table")?.cacheEventAffectsCurrent(event)) refreshTableWidgets();
-    if (applicationRuntime.source("horizontal-bar-chart")?.cacheEventAffectsCurrent(event)) {
+    if (this.applicationRuntime.source("line-chart")?.cacheEventAffectsCurrent(event)) renderLineChartWidgets();
+    if (this.applicationRuntime.source("table")?.cacheEventAffectsCurrent(event)) refreshTableWidgets();
+    if (this.applicationRuntime.source("horizontal-bar-chart")?.cacheEventAffectsCurrent(event)) {
       refreshHorizontalBarWidgets();
     }
   }, listenerOptions);
   for (const id of ["start-date", "end-date", "dataset-select"]) {
-    $(id)?.addEventListener("change", () => {
-      window.setTimeout(refreshLineChartWidgets, 0);
+      this.elementById(id)?.addEventListener("change", () => {
+      this.queue(refreshLineChartWidgets);
     }, listenerOptions);
   }
   for (const id of ["date", "dataset-select"]) {
-    $(id)?.addEventListener("change", () => {
-      window.setTimeout(refreshPieChartWidgets, 0);
-      if (id === "dataset-select") window.setTimeout(refreshHorizontalBarWidgets, 0);
-      window.setTimeout(refreshTableWidgets, 0);
+      this.elementById(id)?.addEventListener("change", () => {
+      this.queue(refreshPieChartWidgets);
+      if (id === "dataset-select") this.queue(refreshHorizontalBarWidgets);
+      this.queue(refreshTableWidgets);
     }, listenerOptions);
   }
-  const mapMoveHandler = () => refreshTableWidgets();
-  if (targetMap?.on) {
-    targetMap.on("moveend", mapMoveHandler);
+    this.mapMoveHandler = () => refreshTableWidgets();
+    this.targetMap?.on?.("moveend", this.mapMoveHandler);
+    return this;
   }
-  return () => targetMap?.off?.("moveend", mapMoveHandler);
+
+  dispose() {
+    if (!this.bound) return;
+    this.bound = false;
+    this.abortController?.abort();
+    this.targetMap?.off?.("moveend", this.mapMoveHandler);
+    for (const timerId of this.timers) this.applicationRuntime.cancelSchedule(timerId);
+    this.timers.clear();
+    this.abortController = null;
+    this.mapMoveHandler = null;
+  }
 }
 
 
@@ -806,14 +837,17 @@ window.WidgetPopoverController = WidgetPopoverController;
 window.WidgetsPanel = WidgetsPanel;
 
 class WidgetRuntimeController {
-  constructor({ eventTarget, targetMap = null, applicationRuntime } = {}) {
+  constructor({ eventTarget, targetMap = null, applicationRuntime, refreshCoordinatorFactory } = {}) {
     if (!eventTarget?.addEventListener) throw new TypeError("WidgetRuntimeController requires an event target");
     if (!applicationRuntime) throw new TypeError("WidgetRuntimeController requires WidgetApplicationRuntime");
+    if (typeof refreshCoordinatorFactory !== "function") {
+      throw new TypeError("WidgetRuntimeController requires refreshCoordinatorFactory");
+    }
     this.eventTarget = eventTarget;
     this.targetMap = targetMap;
     this.applicationRuntime = applicationRuntime;
-    this.abortController = null;
-    this.unbindMap = null;
+    this.refreshCoordinatorFactory = refreshCoordinatorFactory;
+    this.refreshCoordinator = null;
     this.panels = [];
     this.popover = null;
     this.mounted = false;
@@ -822,24 +856,22 @@ class WidgetRuntimeController {
   mount() {
     if (this.mounted) return this;
     this.mounted = true;
-    this.abortController = new AbortController();
     this.popover = new WidgetPopoverController();
     this.panels = initWidgetsPanels(this.popover, this.applicationRuntime);
-    this.unbindMap = bindChartWidgetRefresh({
+    widgetRuntimeOwner = this;
+    this.refreshCoordinator = this.refreshCoordinatorFactory({
       eventTarget: this.eventTarget,
       targetMap: this.targetMap,
-      signal: this.abortController.signal,
       applicationRuntime: this.applicationRuntime,
-    });
-    widgetRuntimeOwner = this;
+      elementById: (id) => document.getElementById(id),
+    }).bind();
     return this;
   }
 
   dispose() {
     if (!this.mounted) return;
     this.mounted = false;
-    this.abortController?.abort();
-    this.unbindMap?.();
+    this.refreshCoordinator?.dispose();
     this.panels.forEach((panel) => panel.dispose());
     this.popover?.dispose();
     if (window.WidgetsPanelInstances === this.panels) {
@@ -847,15 +879,24 @@ class WidgetRuntimeController {
       window.WidgetsPanelInstance = null;
     }
     if (widgetRuntimeOwner === this) widgetRuntimeOwner = null;
-    this.abortController = null;
-    this.unbindMap = null;
+    this.refreshCoordinator = null;
     this.panels = [];
     this.popover = null;
   }
 }
 
-function createWidgetRuntimeOwner({ eventTarget = window, targetMap = null, applicationRuntime } = {}) {
-  return new WidgetRuntimeController({ eventTarget, targetMap, applicationRuntime }).mount();
+function createWidgetRuntimeOwner({
+  eventTarget = window,
+  targetMap = null,
+  applicationRuntime,
+  refreshCoordinatorFactory,
+} = {}) {
+  return new WidgetRuntimeController({
+    eventTarget,
+    targetMap,
+    applicationRuntime,
+    refreshCoordinatorFactory,
+  }).mount();
 }
 
 widgetRuntimeOwner = window.AppRuntime.install(
@@ -864,12 +905,14 @@ widgetRuntimeOwner = window.AppRuntime.install(
     eventTarget,
     targetMap: typeof map === "undefined" ? null : map,
     applicationRuntime: services.WidgetApplicationRuntime,
+    refreshCoordinatorFactory: (dependencies) => new WidgetRefreshCoordinator(dependencies),
   }),
   { expose: false },
 );
 
 window.WidgetRuntime = Object.freeze({
   WidgetPopoverController,
+  WidgetRefreshCoordinator,
   WidgetRuntimeController,
   WidgetsPanel,
   createWidgetRuntimeOwner,

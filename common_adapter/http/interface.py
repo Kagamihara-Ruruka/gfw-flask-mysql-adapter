@@ -7,12 +7,14 @@ from typing import Any
 from flask import Flask, jsonify, render_template, request
 from flask_sock import Sock
 
+from common_adapter.endpoint.supervisor import ManagedEndpointSupervisor
 from common_adapter.http.routes.backdrop import register_backdrop_routes
 from common_adapter.http.routes.datasets import register_dataset_routes
 from common_adapter.http.routes.developer import register_developer_routes
 from common_adapter.http.routes.live import register_live_routes
 from common_adapter.http.routes.overlays import register_overlay_routes
 from common_adapter.http.routes.system import register_system_routes
+from common_adapter.layers.registry import RuntimeLayerRegistry
 
 ROOT = Path(__file__).resolve().parents[2]
 SERVER_PID_FILE = Path("flask_pid.txt")
@@ -26,7 +28,12 @@ def create_flask_app() -> Flask:
     )
 
 
-def create_app(config: dict[str, Any], *, developer_url: str | None = None) -> Flask:
+def create_app(
+    config: dict[str, Any],
+    *,
+    developer_url: str | None = None,
+    layer_registry: RuntimeLayerRegistry | None = None,
+) -> Flask:
     app = create_flask_app()
     app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
     sock = Sock(app)
@@ -54,7 +61,7 @@ def create_app(config: dict[str, Any], *, developer_url: str | None = None) -> F
 
     register_backdrop_routes(app, config)
 
-    register_dataset_routes(app, config)
+    register_dataset_routes(app, config, layer_registry=layer_registry or RuntimeLayerRegistry(config))
 
     register_overlay_routes(app, config)
 
@@ -63,7 +70,13 @@ def create_app(config: dict[str, Any], *, developer_url: str | None = None) -> F
     return app
 
 
-def create_developer_app(config: dict[str, Any], *, consumer_url: str) -> Flask:
+def create_developer_app(
+    config: dict[str, Any],
+    *,
+    consumer_url: str,
+    layer_registry: RuntimeLayerRegistry | None = None,
+    endpoint_supervisor: ManagedEndpointSupervisor | None = None,
+) -> Flask:
     app = create_flask_app()
     app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
@@ -82,5 +95,10 @@ def create_developer_app(config: dict[str, Any], *, consumer_url: str) -> Flask:
     def favicon():
         return "", 204
 
-    register_developer_routes(app, runtime_config=config)
+    register_developer_routes(
+        app,
+        runtime_config=config,
+        layer_registry=layer_registry or RuntimeLayerRegistry(config),
+        endpoint_supervisor=endpoint_supervisor,
+    )
     return app

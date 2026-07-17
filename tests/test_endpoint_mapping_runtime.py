@@ -3,7 +3,11 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from common_adapter.endpoint.runtime import endpoint_datasets_from_routes, endpoint_layer_contracts
+from common_adapter.endpoint.runtime import (
+    endpoint_datasets_from_routes,
+    endpoint_layer_contracts,
+    resolved_mapping_for_dataset,
+)
 
 
 class _CatalogClient:
@@ -21,6 +25,7 @@ def _mapping() -> dict:
         "connection_ref": "pipeline",
         "layer_id": "pipeline",
         "sampled_grid": {
+            "default_coverage_id": "taiwan",
             "catalog": {
                 "path": "catalog",
                 "layers_path": "metrics",
@@ -137,6 +142,7 @@ class EndpointMappingRuntimeTests(unittest.TestCase):
         profiles = {dataset["grid_profile_id"] for dataset in datasets.values()}
         self.assertEqual(1, len(profiles))
         self.assertEqual({"time": "date"}, datasets["pipeline.chlor_a"]["sampled_grid"]["request_fields"])
+        self.assertEqual("taiwan", datasets["pipeline.chlor_a"]["sampled_grid"]["default_coverage_id"])
         self.assertTrue(datasets["pipeline.chlor_a"]["sampled_grid"]["value_domain"]["higher_is_better"])
         self.assertFalse(datasets["pipeline.pressure"]["sampled_grid"]["value_domain"]["higher_is_better"])
         self.assertEqual(
@@ -150,7 +156,47 @@ class EndpointMappingRuntimeTests(unittest.TestCase):
             for contract in contracts
         }
         self.assertEqual(profiles, contract_profiles)
+        self.assertTrue(
+            all(
+                contract["mapping"]["sampled_grid"]["default_coverage_id"] == "taiwan"
+                for contract in contracts
+            )
+        )
         self.assertTrue(all(contract["source_route_group"] == "database" for contract in contracts))
+
+        resolved = resolved_mapping_for_dataset(
+            "pipeline.chlor_a",
+            datasets["pipeline.chlor_a"],
+        )
+        self.assertEqual("date", resolved["roles"]["time"])
+        self.assertEqual("value", resolved["roles"]["value"])
+        self.assertEqual("resolution_km", resolved["roles"]["resolution"])
+        self.assertIn("value", resolved["selected_columns"])
+
+    def test_unknown_default_coverage_is_rejected_as_mapping_drift(self) -> None:
+        route = {
+            "name": "pipeline",
+            "role": "database",
+            "backend": {"kind": "iceberg"},
+            "endpoint": {"base_url": "http://example.invalid"},
+        }
+        mapping = _mapping()
+        mapping["sampled_grid"]["default_coverage_id"] = "missing"
+        with patch(
+            "common_adapter.endpoint.runtime.sampled_grid_catalog_mappings",
+            return_value=[mapping],
+        ), patch(
+            "common_adapter.endpoint.runtime.EndpointHttpClient.from_config",
+            return_value=_CatalogClient(_catalog()),
+        ):
+            datasets, errors = endpoint_datasets_from_routes(
+                [("config/sources/database/pipeline.local.json", None, route)],
+                source_route_group="database",
+            )
+
+        self.assertEqual({}, datasets)
+        self.assertEqual(1, len(errors))
+        self.assertIn("default_coverage_id", errors[0]["error"])
 
 
 if __name__ == "__main__":

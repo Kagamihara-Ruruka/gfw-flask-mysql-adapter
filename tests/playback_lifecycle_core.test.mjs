@@ -16,6 +16,76 @@ function deferred() {
   return { promise, reject, resolve };
 }
 
+function batchFetch(sourceFetchJson) {
+  return async (url, options = {}) => {
+    assert.equal(url, "/api/query/batch");
+    const envelope = JSON.parse(options.body);
+    const encoder = new TextEncoder();
+    const requestController = new AbortController();
+    let cancelled = false;
+    const stream = new ReadableStream({
+      start(controller) {
+        const enqueue = (event) => {
+          if (!cancelled) controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+        };
+        const abort = () => {
+          cancelled = true;
+          requestController.abort();
+        };
+        options.signal?.addEventListener("abort", abort, { once: true });
+        queueMicrotask(async () => {
+          try {
+            enqueue({ type: "batch.started", batch_id: envelope.batch_id });
+            for (const operation of envelope.operations) {
+              if (cancelled) break;
+              const params = new URLSearchParams();
+              for (const [key, value] of Object.entries(operation.params || {})) {
+                if (value != null) params.set(key, String(value));
+              }
+              try {
+                const packet = await sourceFetchJson(
+                  `/api/datasets/${operation.dataset_id}/records?${params}`,
+                  { signal: requestController.signal },
+                );
+                enqueue({
+                  type: "batch.result",
+                  batch_id: envelope.batch_id,
+                  operation_id: operation.operation_id,
+                  status: "ok",
+                  packet,
+                });
+              } catch (error) {
+                if (error?.name === "AbortError") break;
+                enqueue({
+                  type: "batch.result",
+                  batch_id: envelope.batch_id,
+                  operation_id: operation.operation_id,
+                  status: "error",
+                  error: error?.message || String(error),
+                });
+              }
+            }
+            if (!cancelled) {
+              enqueue({ type: "batch.completed", batch_id: envelope.batch_id });
+              controller.close();
+            }
+          } finally {
+            options.signal?.removeEventListener("abort", abort);
+          }
+        });
+      },
+      cancel() {
+        cancelled = true;
+        requestController.abort();
+      },
+    });
+    return new Response(stream, {
+      status: 200,
+      headers: { "Content-Type": "application/x-ndjson" },
+    });
+  };
+}
+
 function contextFor(fetchJson) {
   const context = {
     AbortController,
@@ -30,12 +100,14 @@ function contextFor(fetchJson) {
     Promise,
     Set,
     String,
+    TextDecoder,
     URLSearchParams,
     console,
     performance,
     queueMicrotask,
     setTimeout,
     clearTimeout,
+    fetch: batchFetch(fetchJson),
     fetchJson,
     state: {
       datasets: { ocean: { backend: "endpoint", sampled_grid: { mapping_version: "v1" } } },
@@ -43,10 +115,8 @@ function contextFor(fetchJson) {
       dataFrameStore: { maxEntries: 0, maxBytes: 128 * 1024 * 1024, stats: {} },
       playbackCache: {
         watermarkStrategy: "fixed",
-        highWatermark: 10,
-        lowWatermark: 5,
-        startupWatermark: 1,
-        resumeWatermark: 2,
+        highWatermark: 15,
+        lowWatermark: 10,
         windowBehind: 1,
       },
       lifecycleEvents: { maxEntries: 5000 },
@@ -62,12 +132,17 @@ function contextFor(fetchJson) {
     "static/js/services/lifecycle-event-log.js",
     "static/js/services/frame-identity.js",
     "static/js/services/layer-query-coordinator.js",
+    "static/js/services/query-broker.js",
+    "static/js/services/query-policy-controller.js",
     "static/js/services/data-frame-store.js",
     "static/js/services/frame-demand-service.js",
+    "static/js/services/frame-demand-decorators.js",
     "static/js/playback/playback-preheater.js",
     "static/js/playback/playback-engine.js",
     "static/js/playback/adaptive-watermark-controller.js",
     "static/js/playback/playback-renderer.js",
+    "static/js/playback/playback-scheduler.js",
+    "static/js/playback/playback-runtime-controller.js",
     "static/js/services/runtime-performance-metrics.js",
     "static/js/runtime/runtime-composition-root.js",
   ]) {
@@ -104,7 +179,7 @@ async function waitFor(predicate, timeoutMs = 1000) {
   }
 }
 
-test("preheater replenishes individual frames to the high watermark without a batch gate", async () => {
+test("preheater refills from low 10 to high 15 without becoming a playback gate", async () => {
   let requestCount = 0;
   const context = contextFor(async (url) => {
     requestCount += 1;
@@ -113,14 +188,20 @@ test("preheater replenishes individual frames to the high watermark without a ba
   });
   const store = api(context, "DataFrameStore");
   const preheater = api(context, "PlaybackPreheater");
-  const allDates = dates();
+  const allDates = dates(25);
   store.put(requestContext(), { rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
   preheater.setScope({ dates: allDates, requestContext: requestContext(), anchorDate: allDates[0] });
 
-  await waitFor(() => preheater.snapshot().readyAhead >= 10);
-  assert.equal(preheater.snapshot().readyAhead, 10);
-  assert.equal(requestCount, 10);
+  await waitFor(() => preheater.snapshot().readyAhead >= 15);
+  assert.equal(preheater.snapshot().readyAhead, 15);
+  assert.equal(requestCount, 15);
   assert.equal(api(context, "LayerQueryCoordinator").snapshot().queued.length, 0);
+
+  preheater.setPlayhead({ date: allDates[6], index: 6 });
+  await waitFor(() => preheater.snapshot().readyAhead >= 15);
+  assert.equal(preheater.snapshot().readyAhead, 15);
+  assert.equal(requestCount, 21);
+  assert.equal(preheater.snapshot().status, "READY");
 });
 
 test("preheater caps outstanding playback-window work while filling a large watermark", async () => {
@@ -130,6 +211,7 @@ test("preheater caps outstanding playback-window work while filling a large wate
   const pending = [];
   let demands = 0;
   const preheater = new Preheater({
+    fixedPolicyNormalizer: api(context, "normalizedFixedWatermarkPolicy"),
     store: {
       subscribe: () => () => {},
       inspect: () => ({ status: "missing" }),
@@ -169,6 +251,7 @@ test("preheater prunes queued window consumers without aborting active work on r
   const cancellations = [];
   const policyContexts = [];
   const preheater = new Preheater({
+    fixedPolicyNormalizer: api(context, "normalizedFixedWatermarkPolicy"),
     store: {
       subscribe: () => () => {},
       inspect: () => ({ status: "missing" }),
@@ -207,10 +290,11 @@ test("preheater prunes queued window consumers without aborting active work on r
   preheater.stop("test_complete");
 });
 
-test("startup and resume gates are capped to one preheater work wave", () => {
+test("preheater watermarks govern replenishment and never expose playback readiness gates", () => {
   const context = contextFor(async () => ({ rows: [], row_count: 0 }));
   const Preheater = api(context, "PlaybackPreheaterController");
   const preheater = new Preheater({
+    fixedPolicyNormalizer: api(context, "normalizedFixedWatermarkPolicy"),
     store: {
       subscribe: () => () => {},
       inspect: () => ({ status: "missing" }),
@@ -230,18 +314,17 @@ test("startup and resume gates are capped to one preheater work wave", () => {
     watermarkPolicyProvider: () => ({
       highWatermark: 39,
       lowWatermark: 19,
-      startupWatermark: 30,
-      resumeWatermark: 29,
+      targetWatermark: 39,
     }),
   });
 
   const options = preheater.options();
-  assert.equal(options.candidateStartupWatermark, 30);
-  assert.equal(options.startupWatermark, 12);
-  assert.equal(options.startupWatermarkCapped, true);
-  assert.equal(options.candidateResumeWatermark, 29);
-  assert.equal(options.resumeWatermark, 12);
-  assert.equal(options.resumeWatermarkCapped, true);
+  assert.equal(options.highWatermark, 39);
+  assert.equal(options.lowWatermark, 19);
+  assert.equal(options.targetWatermark, 39);
+  assert.equal(options.maxPendingFrames, 12);
+  assert.equal(Object.hasOwn(options, "startupWatermark"), false);
+  assert.equal(Object.hasOwn(options, "resumeWatermark"), false);
   preheater.dispose();
 });
 
@@ -253,6 +336,7 @@ test("preheater updates a resolved query route without cancelling or changing sc
   const queryScopes = [];
   const cancelledScopes = [];
   const preheater = new Preheater({
+    fixedPolicyNormalizer: api(context, "normalizedFixedWatermarkPolicy"),
     store: {
       subscribe: () => () => {},
       inspect: () => ({ status: "missing" }),
@@ -314,6 +398,7 @@ test("rapid scope changes settle into one playback-window scope", async () => {
   const pending = [];
   const requestedBboxes = [];
   const preheater = new Preheater({
+    fixedPolicyNormalizer: api(context, "normalizedFixedWatermarkPolicy"),
     store: {
       subscribe: () => () => {},
       inspect: () => ({ status: "missing" }),
@@ -369,6 +454,7 @@ test("playback activation bypasses scope settling without reviving stale scopes"
   const Preheater = api(context, "PlaybackPreheaterController");
   const requestedBboxes = [];
   const preheater = new Preheater({
+    fixedPolicyNormalizer: api(context, "normalizedFixedWatermarkPolicy"),
     store: {
       subscribe: () => () => {},
       inspect: () => ({ status: "missing" }),
@@ -431,6 +517,7 @@ test("watermark policy status cannot overwrite the preheater lifecycle status", 
   const context = contextFor(async () => ({ rows: [], row_count: 0 }));
   const Preheater = api(context, "PlaybackPreheaterController");
   const preheater = new Preheater({
+    fixedPolicyNormalizer: api(context, "normalizedFixedWatermarkPolicy"),
     store: { subscribe: () => () => {}, inspect: () => ({ status: "missing" }) },
     demandService: { demand: () => new Promise(() => {}), cancelScope() {} },
     eventLog: api(context, "LifecycleEventLog"),
@@ -450,13 +537,14 @@ test("watermark policy status cannot overwrite the preheater lifecycle status", 
   preheater.stop("test_complete");
 });
 
-test("cold playback remains PREPARING until the startup watermark and does not record a stall", async () => {
+test("cold playback waits for only the next frame and does not record a stall", async () => {
   const context = contextFor(async () => ({ rows: [], row_count: 0 }));
   const Engine = api(context, "PlaybackEngineCore");
   const identity = api(context, "FrameIdentity");
   const log = api(context, "LifecycleEventLog");
-  const startup = deferred();
+  const nextFrame = deferred();
   let ready = 0;
+  const requestedWindows = [];
   const engine = new Engine({
     store: {
       inspect(request) { return { status: "missing", request }; },
@@ -468,15 +556,16 @@ test("cold playback remains PREPARING until the startup watermark and does not r
       setScope() {},
       setPlayhead() {},
       readyAhead() { return ready; },
-      waitForDates: async () => {
-        await startup.promise;
+      waitForDates: async (requestedDates) => {
+        requestedWindows.push([...requestedDates]);
+        await nextFrame.promise;
         return { failed: 0 };
       },
       snapshot() {
         return {
           status: "FETCHING",
-          startupWatermark: 3,
-          resumeWatermark: 2,
+          highWatermark: 30,
+          lowWatermark: 15,
           policyReason: "configured",
           degradationReason: "",
         };
@@ -491,12 +580,13 @@ test("cold playback remains PREPARING until the startup watermark and does not r
   const pending = engine.start({ consumption_rate: 1 });
 
   assert.equal(engine.snapshot().status, "PREPARING");
-  assert.equal(engine.snapshot().preparationRequired, 3);
+  assert.equal(engine.snapshot().preparationRequired, 1);
+  assert.deepEqual(requestedWindows, [[allDates[1]]]);
   assert.equal(log.query({ type: "PREPARE_STARTED" }).length, 1);
   assert.equal(log.query({ type: "BUFFER_ENTERED" }).length, 0);
 
-  ready = 3;
-  startup.resolve();
+  ready = 1;
+  nextFrame.resolve();
   assert.equal(await pending, true);
   assert.equal(engine.snapshot().status, "PLAYING");
   assert.equal(log.query({ type: "PREPARE_READY" }).length, 1);
@@ -504,14 +594,15 @@ test("cold playback remains PREPARING until the startup watermark and does not r
   engine.stop("test_complete");
 });
 
-test("an active startup gate follows a lower policy after playback speed changes", async () => {
+test("playback speed changes do not restart the one-frame preparation gate", async () => {
   const context = contextFor(async () => ({ rows: [], row_count: 0 }));
   const Engine = api(context, "PlaybackEngineCore");
   const identity = api(context, "FrameIdentity");
   const log = api(context, "LifecycleEventLog");
+  const nextFrame = deferred();
   let ready = 0;
-  let startupWatermark = 5;
   let waitCount = 0;
+  const reconcileCalls = [];
   const engine = new Engine({
     store: {
       inspect(request) { return { status: "missing", request }; },
@@ -522,25 +613,20 @@ test("an active startup gate follows a lower policy after playback speed changes
     preheater: {
       setScope() {},
       setPlayhead() {},
-      reconcile() {},
+      reconcile(options) { reconcileCalls.push(options); },
       readyAhead() { return ready; },
-      waitForDates(_dates, { signal }) {
+      async waitForDates() {
         waitCount += 1;
-        return new Promise((resolve, reject) => {
-          signal.addEventListener("abort", () => {
-            const error = new Error("gate changed");
-            error.name = "AbortError";
-            reject(error);
-          }, { once: true });
-        });
+        await nextFrame.promise;
+        return { failed: 0 };
       },
       snapshot() {
         return {
           status: "FETCHING",
-          startupWatermark,
-          resumeWatermark: 2,
+          highWatermark: 30,
+          lowWatermark: 15,
           policyReason: "trusted_metrics",
-          degradationReason: startupWatermark > 2 ? "supply_below_consumption" : "",
+          degradationReason: "supply_below_consumption",
         };
       },
     },
@@ -553,157 +639,30 @@ test("an active startup gate follows a lower policy after playback speed changes
   const pending = engine.start({ consumption_rate: 2 });
   await waitFor(() => waitCount === 1);
 
-  ready = 2;
-  startupWatermark = 2;
   engine.updatePlaybackRate({ rate: 1, interval_ms: 1400, consumption_rate: 1 / 1.4 });
-
-  assert.equal(await pending, true);
-  assert.equal(engine.snapshot().status, "PLAYING");
-  assert.equal(engine.snapshot().preparationRequired, 2);
-  assert.equal(engine.snapshot().preparationDegradationReason, "");
-  assert.equal(log.query({ type: "PLAYBACK_RATE_CHANGED" }).length, 1);
-  engine.stop("test_complete");
-});
-
-test("an active startup gate never chases a higher adaptive policy", async () => {
-  const context = contextFor(async () => ({ rows: [], row_count: 0 }));
-  const Engine = api(context, "PlaybackEngineCore");
-  const identity = api(context, "FrameIdentity");
-  const log = api(context, "LifecycleEventLog");
-  const startup = deferred();
-  let ready = 0;
-  let startupWatermark = 2;
-  let waitCount = 0;
-  const engine = new Engine({
-    store: {
-      inspect(request) { return { status: "missing", request }; },
-      pin() { return true; },
-      release() { return true; },
-    },
-    demandService: { cancelScope() {}, demand: async () => ({ frameKey: "unused" }) },
-    preheater: {
-      setScope() {},
-      setPlayhead() {},
-      readyAhead() { return ready; },
-      waitForDates: async () => {
-        waitCount += 1;
-        await startup.promise;
-        return { failed: 0 };
-      },
-      snapshot() {
-        return {
-          status: "FETCHING",
-          startupWatermark,
-          resumeWatermark: 2,
-          policyReason: "trusted_metrics",
-          degradationReason: startupWatermark > 2 ? "supply_below_consumption" : "",
-        };
-      },
-    },
-    eventLog: log,
-    frameIdentity: identity,
-    clock: api(context, "ClockDomain").playback,
-  });
-  const allDates = dates(8);
-  const request = requestContext();
-  engine.configure({ dates: allDates, requestContext: request, currentDate: allDates[0] });
-  const pending = engine.start({ consumption_rate: 1 });
-  await waitFor(() => waitCount === 1);
-
-  startupWatermark = 6;
-  log.record("CACHE_READY", {
-    scope_key: identity.scopeKey(request),
-    dataset: request.datasetId,
-    date: allDates[1],
-  });
-
-  assert.equal(engine.snapshot().preparationRequired, 2);
   assert.equal(waitCount, 1);
-  ready = 2;
-  startup.resolve();
-  assert.equal(await pending, true);
-  assert.equal(engine.snapshot().preparationRequired, 2);
-  assert.equal(engine.snapshot().status, "PLAYING");
+  assert.equal(engine.snapshot().status, "PREPARING");
+  assert.equal(engine.snapshot().preparationRequired, 1);
+  assert.equal(reconcileCalls.at(-1).bypassDecreaseHysteresis, true);
+  assert.equal(reconcileCalls.at(-1).pruneQueued, true);
+  assert.equal(log.query({ type: "PLAYBACK_RATE_CHANGED" }).length, 1);
   assert.equal(log.query({ type: "PLAYBACK_GATE_UPDATED" }).length, 0);
-  engine.stop("test_complete");
-});
 
-test("cache-ready telemetry releases an obsolete startup gate", async () => {
-  const context = contextFor(async () => ({ rows: [], row_count: 0 }));
-  const Engine = api(context, "PlaybackEngineCore");
-  const identity = api(context, "FrameIdentity");
-  const log = api(context, "LifecycleEventLog");
-  let ready = 0;
-  let startupWatermark = 6;
-  let waitCount = 0;
-  const engine = new Engine({
-    store: {
-      inspect(request) { return { status: "missing", request }; },
-      pin() { return true; },
-      release() { return true; },
-    },
-    demandService: { cancelScope() {}, demand: async () => ({ frameKey: "unused" }) },
-    preheater: {
-      setScope() {},
-      setPlayhead() {},
-      readyAhead() { return ready; },
-      waitForDates(_dates, { signal }) {
-        waitCount += 1;
-        return new Promise((resolve, reject) => {
-          signal.addEventListener("abort", () => {
-            const error = new Error("gate changed");
-            error.name = "AbortError";
-            reject(error);
-          }, { once: true });
-        });
-      },
-      snapshot() {
-        return {
-          status: "FETCHING",
-          startupWatermark,
-          resumeWatermark: 2,
-          policyReason: "trusted_metrics",
-          degradationReason: startupWatermark > 2 ? "supply_below_consumption" : "",
-        };
-      },
-    },
-    eventLog: log,
-    frameIdentity: identity,
-    clock: api(context, "ClockDomain").playback,
-  });
-  const allDates = dates(8);
-  const request = requestContext();
-  engine.configure({ dates: allDates, requestContext: request, currentDate: allDates[0] });
-  const pending = engine.start({ consumption_rate: 1 });
-  await waitFor(() => waitCount === 1);
-
-  ready = 2;
-  startupWatermark = 2;
-  log.record("CACHE_READY", {
-    scope_key: identity.scopeKey(request),
-    dataset: request.datasetId,
-    date: allDates[2],
-  });
-
+  ready = 1;
+  nextFrame.resolve();
   assert.equal(await pending, true);
-  assert.equal(engine.snapshot().preparationRequired, 2);
   assert.equal(engine.snapshot().status, "PLAYING");
-  const update = log.query({ type: "PLAYBACK_GATE_UPDATED" }).at(-1);
-  assert.equal(update?.previous_required_slices, 6);
-  assert.equal(update?.required_slices, 2);
-  assert.equal(update?.reason, "cache_ready");
   engine.stop("test_complete");
 });
 
-test("cold startup probes unknown supply without raising its active fallback gate", async () => {
+test("cold startup never probes extra frames for watermark metrics", async () => {
   const context = contextFor(async () => ({ rows: [], row_count: 0 }));
   const Engine = api(context, "PlaybackEngineCore");
   const identity = api(context, "FrameIdentity");
   const log = api(context, "LifecycleEventLog");
   const allDates = dates(40);
   const waits = [];
-  let ready = 10;
-  let probed = false;
+  let ready = 0;
   const engine = new Engine({
     store: {
       inspect(request) { return { status: "missing", request }; },
@@ -717,32 +676,18 @@ test("cold startup probes unknown supply without raising its active fallback gat
       readyAhead() { return ready; },
       async waitForDates(requestedDates) {
         waits.push([...requestedDates]);
-        if (!probed) {
-          probed = true;
-          ready = 12;
-        } else {
-          ready = 30;
-        }
+        ready = 1;
         return { failed: 0 };
       },
       snapshot() {
-        return probed
-          ? {
-            status: "FETCHING",
-            policyStatus: "ADAPTIVE",
-            policyReason: "trusted_metrics",
-            startupWatermark: 30,
-            resumeWatermark: 15,
-            supplySamples: 2,
-          }
-          : {
-            status: "FETCHING",
-            policyStatus: "WARMING",
-            policyReason: "insufficient_metrics",
-            startupWatermark: 10,
-            resumeWatermark: 5,
-            supplySamples: 0,
-          };
+        return {
+          status: "FETCHING",
+          policyStatus: "WARMING",
+          policyReason: "insufficient_metrics",
+          highWatermark: 30,
+          lowWatermark: 15,
+          supplySamples: 0,
+        };
       },
     },
     eventLog: log,
@@ -752,22 +697,22 @@ test("cold startup probes unknown supply without raising its active fallback gat
   engine.configure({ dates: allDates, requestContext: requestContext(), currentDate: allDates[0] });
 
   assert.equal(await engine.start({ consumption_rate: 1 }), true);
-  assert.deepEqual(waits[0], [allDates[11], allDates[12]]);
+  assert.deepEqual(waits[0], [allDates[1]]);
   assert.equal(waits.length, 1);
-  assert.equal(engine.snapshot().preparationRequired, 10);
-  assert.equal(log.query({ type: "PREPARE_PROBE_STARTED" }).length, 1);
-  assert.equal(log.query({ type: "PREPARE_PROBE_READY" }).length, 1);
+  assert.equal(engine.snapshot().preparationRequired, 1);
+  assert.equal(log.query({ type: "PREPARE_PROBE_STARTED" }).length, 0);
+  assert.equal(log.query({ type: "PREPARE_PROBE_READY" }).length, 0);
   engine.stop("test_complete");
 });
 
-test("buffer recovery waits for the resume watermark instead of one frame", async () => {
+test("buffer recovery resumes when the target frame becomes ready", async () => {
   const context = contextFor(async () => ({ rows: [], row_count: 0 }));
   const Engine = api(context, "PlaybackEngineCore");
   const identity = api(context, "FrameIdentity");
   const log = api(context, "LifecycleEventLog");
   const targetResponse = deferred();
-  const resumeWindow = deferred();
-  let ready = 5;
+  let ready = 1;
+  let waitCount = 0;
   const engine = new Engine({
     store: {
       inspect(request) { return { status: "missing", request }; },
@@ -783,14 +728,14 @@ test("buffer recovery waits for the resume watermark instead of one frame", asyn
       setPlayhead() {},
       readyAhead() { return ready; },
       waitForDates: async () => {
-        await resumeWindow.promise;
+        waitCount += 1;
         return { failed: 0 };
       },
       snapshot() {
         return {
           status: "FETCHING",
-          startupWatermark: 1,
-          resumeWatermark: 3,
+          highWatermark: 30,
+          lowWatermark: 15,
           policyReason: "configured",
           degradationReason: "",
         };
@@ -805,30 +750,28 @@ test("buffer recovery waits for the resume watermark instead of one frame", asyn
   await engine.start({ consumption_rate: 1 });
   ready = 0;
   const target = engine.requireTarget(1);
-  targetResponse.resolve({ frameKey: "target-frame" });
-  await Promise.resolve();
-  ready = 1;
-  assert.equal(engine.bufferGate().required, 3);
+  assert.equal(engine.bufferGate().required, 1);
   assert.equal(engine.bufferGate().ready, false);
   assert.equal(engine.snapshot().status, "BUFFERING");
 
-  ready = 3;
-  resumeWindow.resolve();
+  ready = 1;
+  targetResponse.resolve({ frameKey: "target-frame" });
   await target;
   assert.equal(engine.snapshot().status, "PLAYING");
   const resumed = log.query({ type: "BUFFER_RESUMED" }).at(-1);
-  assert.equal(resumed.required_slices, 3);
-  assert.equal(resumed.ready_slices, 3);
+  assert.equal(resumed.required_slices, 1);
+  assert.equal(resumed.ready_slices, 1);
+  assert.equal(waitCount, 0);
   engine.stop("test_complete");
 });
 
-test("an active resume gate is released when a slower rate lowers the current policy", async () => {
+test("playback speed changes do not restart one-frame buffer recovery", async () => {
   const context = contextFor(async () => ({ rows: [], row_count: 0 }));
   const Engine = api(context, "PlaybackEngineCore");
   const identity = api(context, "FrameIdentity");
   const targetResponse = deferred();
-  let ready = 5;
-  let resumeWatermark = 5;
+  const resumeFrame = deferred();
+  let ready = 1;
   let waitCount = 0;
   const reconcileCalls = [];
   const engine = new Engine({
@@ -846,23 +789,18 @@ test("an active resume gate is released when a slower rate lowers the current po
       setPlayhead() {},
       reconcile(options) { reconcileCalls.push(options); },
       readyAhead() { return ready; },
-      waitForDates(_dates, { signal }) {
+      async waitForDates() {
         waitCount += 1;
-        return new Promise((resolve, reject) => {
-          signal.addEventListener("abort", () => {
-            const error = new Error("gate changed");
-            error.name = "AbortError";
-            reject(error);
-          }, { once: true });
-        });
+        await resumeFrame.promise;
+        return { failed: 0 };
       },
       snapshot() {
         return {
           status: "FETCHING",
-          startupWatermark: 1,
-          resumeWatermark,
+          highWatermark: 30,
+          lowWatermark: 15,
           policyReason: "trusted_metrics",
-          degradationReason: resumeWatermark > 2 ? "supply_below_consumption" : "",
+          degradationReason: "supply_below_consumption",
         };
       },
     },
@@ -878,27 +816,28 @@ test("an active resume gate is released when a slower rate lowers the current po
   targetResponse.resolve({ frameKey: "target-frame" });
   await waitFor(() => waitCount === 1);
 
-  resumeWatermark = 8;
   engine.updatePlaybackRate({ rate: 2, interval_ms: 700, consumption_rate: 2 / 1.4 });
-  assert.equal(engine.bufferGate().required, 5);
+  assert.equal(engine.bufferGate().required, 1);
+  assert.equal(waitCount, 1);
 
-  ready = 2;
-  resumeWatermark = 2;
+  ready = 1;
   engine.updatePlaybackRate({ rate: 1, interval_ms: 1400, consumption_rate: 1 / 1.4 });
 
   assert.equal(reconcileCalls.at(-1).bypassDecreaseHysteresis, true);
   assert.equal(reconcileCalls.at(-1).pruneQueued, true);
+  assert.equal(waitCount, 1);
 
+  resumeFrame.resolve();
   await target;
   assert.equal(engine.snapshot().status, "PLAYING");
   assert.equal(engine.bufferGate().active, false);
   engine.stop("test_complete");
 });
 
-test("adaptive resume watermarks use tail risk instead of the replenishment low watermark", () => {
+test("adaptive policy exposes replenishment watermarks but no playback readiness gates", () => {
   const context = contextFor(async () => ({ rows: [], row_count: 0 }));
   const policy = vm.runInContext(`calculateAdaptiveWatermarkPolicy({
-    fixedPolicy: { highWatermark: 10, lowWatermark: 5, startupWatermark: 5, resumeWatermark: 5 },
+    fixedPolicy: { highWatermark: 10, lowWatermark: 5 },
     metrics: {
       consumption_rate: 1,
       supply_rate: 0.2,
@@ -911,10 +850,10 @@ test("adaptive resume watermarks use tail risk instead of the replenishment low 
     remainingSlices: 100,
   })`, context);
 
-  assert.equal(policy.highWatermark, 60);
-  assert.equal(policy.lowWatermark, 30);
-  assert.equal(policy.resumeWatermark, 24);
-  assert.ok(policy.resumeWatermark < policy.lowWatermark);
+  assert.ok(policy.highWatermark > policy.lowWatermark);
+  assert.equal(policy.targetWatermark, policy.highWatermark);
+  assert.equal(Object.hasOwn(policy, "startupWatermark"), false);
+  assert.equal(Object.hasOwn(policy, "resumeWatermark"), false);
 });
 
 test("playback target promotes an existing preheat request and resumes from the same result", async () => {
@@ -943,7 +882,6 @@ test("playback target promotes an existing preheat request and resumes from the 
   assert.equal(targetTask?.lane, "playback-target");
 
   responses.get(allDates[2]).resolve({ rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
-  responses.get(allDates[3]).resolve({ rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
   const result = await target;
   assert.equal(result.status, "ready");
   assert.equal(requests >= 1, true);
@@ -951,6 +889,8 @@ test("playback target promotes an existing preheat request and resumes from the 
   assert.equal(log.query({ type: "BUFFER_ENTERED" }).length, 1);
   assert.equal(log.query({ type: "BUFFER_RESUMED" }).length, 1);
 
+  await waitFor(() => responses.has(allDates[3]));
+  responses.get(allDates[3]).resolve({ rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
   for (const response of responses.values()) response.resolve({ rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
   engine.stop("test_complete");
 });
@@ -1071,8 +1011,8 @@ test("playback scope changes cancel stale targets and keep engine and preheater 
       snapshot() {
         return {
           status: "READY",
-          startupWatermark: 1,
-          resumeWatermark: 2,
+          highWatermark: 15,
+          lowWatermark: 10,
           policyReason: "configured",
         };
       },

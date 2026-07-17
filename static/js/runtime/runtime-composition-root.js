@@ -60,12 +60,16 @@ class RuntimeCompositionRoot {
       preheaterInflight: Number(snapshot.inflight || 0),
       effectiveLowWatermark: Number(snapshot.lowWatermark || 0),
       effectiveHighWatermark: Number(snapshot.highWatermark || 0),
+      effectiveTargetWatermark: Number(snapshot.targetWatermark || 0),
+      immediateReplenishment: Boolean(snapshot.immediateReplenishment),
+      tailMode: Boolean(snapshot.tailMode),
       effectiveWatermarkStrategy: snapshot.strategy || "fixed",
     });
   }
 
   composeCore() {
     if (this.composed) return this;
+    this.own("FrameIdentity", this.frameIdentity);
     const clockDomain = this.own("ClockDomain", this.clockDomain);
     const eventLog = this.own("LifecycleEventLog", new LifecycleEventLogCore({
       maxEntriesProvider: () => this.state.lifecycleEvents?.maxEntries,
@@ -88,7 +92,7 @@ class RuntimeCompositionRoot {
       }));
     }
     if (typeof RenderArtifactCache !== "undefined" && typeof RendererRegistry !== "undefined") {
-      this.own("GfwRenderArtifactCache", new RenderArtifactCache({
+      this.own("SampledGridRenderArtifactCache", new RenderArtifactCache({
         targetState: this.state,
         rendererRegistry: RendererRegistry,
         clock: clockDomain.monotonic,
@@ -103,27 +107,49 @@ class RuntimeCompositionRoot {
       snapshotSink: (snapshot) => this.syncQueryScheduler(snapshot),
       clock: clockDomain.monotonic,
     }), { expose: false });
+    this.own("QueryPolicyController", new QueryPolicyControllerCore({
+      targetState: this.state,
+      scheduler,
+    }));
     const queryCoordinator = this.own("LayerQueryCoordinator", createLayerQueryCoordinator({
       scheduler,
       fetchJson: this.fetchJson,
+    }));
+    const queryBroker = this.own("QueryBroker", new QueryBroker({
+      fetchFn: this.globalTarget.fetch.bind(this.globalTarget),
+      eventLog,
+      clock: clockDomain.monotonic,
+      priorityForLane: (lane) => scheduler.priorityFor(lane),
+      maxBatchSizeProvider: () => this.state.queryPolicy?.batch_max_operations ?? 3,
     }));
     const dataFrameStore = this.own("DataFrameStore", new DataFrameStoreCore({
       frameIdentity: this.frameIdentity,
       eventLog,
       optionsProvider: () => this.state.dataFrameStore || {},
       statsTargetProvider: () => this.dataFrameStatsTarget(),
+      retentionPartitionProvider: () => {
+        const datasetId = String(this.state.datasetId || "");
+        if (!datasetId) return {};
+        return {
+          datasetId,
+          cacheNamespace: this.frameIdentity.normalizeRequest({ datasetId }).cacheNamespace,
+        };
+      },
       eventTarget: this.eventTarget,
       clock: clockDomain.monotonic,
     }));
-    const frameDemandService = this.own("FrameDemandService", createFrameDemandService({
-      frameIdentity: this.frameIdentity,
-      queryCoordinator,
-      dataFrameStore,
-      eventLog,
-      fetchJson: this.fetchJson,
-      sampledGridContract: this.sampledGridContract,
-      clock: clockDomain.monotonic,
-    }));
+    const frameDemandService = this.own("FrameDemandService", decorateFrameDemandService(
+      new FrameDemandServiceCore({
+        frameIdentity: this.frameIdentity,
+        queryCoordinator,
+        queryBroker,
+        dataFrameStore,
+        eventLog,
+        sampledGridContract: this.sampledGridContract,
+        clock: clockDomain.monotonic,
+      }),
+      { eventLog, clock: clockDomain.monotonic },
+    ));
     let adaptiveWatermarkController = null;
     const playbackPreheater = this.own("PlaybackPreheater", new PlaybackPreheaterController({
       store: dataFrameStore,
@@ -132,6 +158,7 @@ class RuntimeCompositionRoot {
       frameIdentity: this.frameIdentity,
       clock: clockDomain.monotonic,
       optionsProvider: () => this.state.playbackCache || {},
+      fixedPolicyNormalizer: normalizedFixedWatermarkPolicy,
       watermarkPolicyProvider: (fixedPolicy, context) => (
         adaptiveWatermarkController?.resolve({ fixedPolicy, ...context }) || fixedPolicy
       ),
@@ -144,6 +171,12 @@ class RuntimeCompositionRoot {
       eventLog,
       frameIdentity: this.frameIdentity,
       clock: clockDomain.playback,
+    }));
+    const playbackRuntime = this.own("PlaybackRuntime", new PlaybackRuntimeController({
+      engine: playbackEngine,
+      preheater: playbackPreheater,
+      clock: clockDomain.playback,
+      scheduler: PlaybackScheduler,
     }));
     const unsubscribePlaybackQueryIsolation = eventLog.subscribe((event) => {
       if (event?.type !== "RUN_STARTED" || event.kind !== "playback") return;
@@ -172,7 +205,13 @@ class RuntimeCompositionRoot {
       "AdaptiveWatermarkController",
       new AdaptiveWatermarkControllerCore({
         metricsProvider: (context = {}) => runtimePerformanceMetrics.inputs(context),
-        cacheSnapshotProvider: () => dataFrameStore.snapshot(),
+        cacheSnapshotProvider: ({ cacheNamespace = "", datasetId = "" } = {}) => dataFrameStore.snapshot(
+          cacheNamespace
+            ? { cacheNamespace }
+            : datasetId
+              ? { datasetId }
+              : { datasetId: "unscoped" },
+        ),
         configProvider: () => this.state.playbackCache || {},
         eventLog,
         clock: clockDomain.monotonic,
@@ -184,6 +223,7 @@ class RuntimeCompositionRoot {
         dataFrameStore,
         preheater: playbackPreheater,
         watermarkController: adaptiveWatermarkController,
+        fixedPolicyNormalizer: normalizedFixedWatermarkPolicy,
         frameIdentity: this.frameIdentity,
         sampledGridLayerPredicate: (layerId) => (
           typeof isSampledGridLayer === "function" && isSampledGridLayer(layerId)
@@ -321,12 +361,16 @@ class RuntimeCompositionRoot {
   }
 }
 
+const runtimeFrameIdentity = createFrameIdentity({
+  datasetResolver: (datasetId) => state.datasets?.[datasetId] || {},
+});
+
 const AppRuntime = new RuntimeCompositionRoot({
   targetState: state,
   globalTarget: globalThis,
   eventTarget: window,
   targetMap: typeof map === "undefined" ? null : map,
-  frameIdentity: FrameIdentity,
+  frameIdentity: runtimeFrameIdentity,
   fetchJson,
   sampledGridContract: typeof SampledGridContract === "undefined" ? null : SampledGridContract,
 }).composeCore();

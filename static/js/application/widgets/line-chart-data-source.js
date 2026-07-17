@@ -229,6 +229,15 @@ class LineChartDataSource {
     return this.snapshotsToModel(request, snapshots);
   }
 
+  refresh({ cause = "context_changed" } = {}) {
+    this.clear();
+    const playbackOwnsQuery = this.queryContext.playbackOwnsQueryLifecycle?.() === true;
+    if (cause === "tile_selection") {
+      return playbackOwnsQuery ? this.ensureCurrentSlice() : this.ensureCurrentWindow();
+    }
+    return this.ensureCurrentWindow({ allowNetwork: !playbackOwnsQuery });
+  }
+
   ensureCurrentWindow({ allowNetwork = true } = {}) {
     const request = this.requestForCurrentState();
     if (request.blocked) return null;

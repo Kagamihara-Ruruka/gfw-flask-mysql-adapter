@@ -47,10 +47,31 @@ test("playback lifecycle owners cannot evict completed DataFrameStore entries", 
 
   const controls = read("static/js/playback/playback-controls.js");
   const manualClearStart = controls.indexOf('$("playback-cache-clear")?.addEventListener');
-  const manualClearEnd = controls.indexOf('$("gfw-transition-ms")?.addEventListener', manualClearStart);
+  const manualClearEnd = controls.indexOf('$("sampled-grid-transition-ms")?.addEventListener', manualClearStart);
   assert.ok(manualClearStart >= 0 && manualClearEnd > manualClearStart);
   const manualClear = controls.slice(manualClearStart, manualClearEnd);
   assert.match(manualClear, /DataFrameStore\.evictAll\?\.\(\)/);
+});
+
+test("sampled-grid runtime has no GFW state mirrors or compatibility entrypoints", () => {
+  const state = read("static/js/core/state.js");
+  const layer = read("static/js/layers/gfw-layer.js");
+  const effects = read("static/js/layers/gfw-layer-effects.js");
+  const registry = read("static/js/rendering/renderer-registry.js");
+  const artifacts = read("static/js/services/gfw-render-artifact-cache.js");
+  const controls = read("static/js/playback/playback-controls.js");
+
+  for (const source of [state, layer, effects, registry, artifacts, controls]) {
+    assert.doesNotMatch(
+      source,
+      /renderedGfwDate|gfwTransitionMs|gfwZoomBlurPx|gfwRenderArtifactCache|gfwRetiringLayers|GfwRenderArtifactCache/,
+    );
+  }
+  assert.doesNotMatch(registry, /chooseGfwLayer|recordGfwRender|gfwMode|gfwBackend/);
+  assert.doesNotMatch(layer, /reloadGfwRecords|removeGfwLayer|createGfwLayer|renderGfwMap|syncGfwTransitionStyle/);
+  assert.match(artifacts, /sampledGridRetiringLayers/);
+  assert.match(controls, /state\.sampledGridTransitionMs/);
+  assert.match(controls, /state\.sampledGridZoomBlurPx/);
 });
 
 test("generic frame pipeline contains no source-specific schema truth", () => {

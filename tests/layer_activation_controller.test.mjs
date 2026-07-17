@@ -19,6 +19,8 @@ function loadLayerActivationController({ schemaError = null } = {}) {
     schemaSnapshots: [],
     select: 0,
     stop: 0,
+    stopCommands: [],
+    stopReasons: [],
     reloadSnapshots: [],
     sequence: [],
     viewport: [],
@@ -28,6 +30,7 @@ function loadLayerActivationController({ schemaError = null } = {}) {
   const state = {
     datasets: {
       grid_dataset: { layer_id: "grid" },
+      alternate_dataset: { layer_id: "grid" },
     },
     datasetId: null,
     dataLayer: null,
@@ -49,7 +52,11 @@ function loadLayerActivationController({ schemaError = null } = {}) {
     isImportedLayer: (layerId) => Boolean(state.importedLayers[layerId]),
     isPrimaryDataLayer: (layerId) => layerId === "grid",
     isSampledGridLayer: (layerId) => layerId === "grid",
-    stopPlayback: () => { calls.stop += 1; },
+    stopPlayback: (command) => {
+      calls.stop += 1;
+      calls.stopCommands.push(command);
+      calls.stopReasons.push(typeof command === "string" ? command : command?.reason);
+    },
     clearPrimaryLayerRecords: () => { calls.clear += 1; },
     loadSchema: async () => {
       calls.sequence.push("schema");
@@ -74,6 +81,8 @@ function loadLayerActivationController({ schemaError = null } = {}) {
         availableDates: [...state.availableDates],
       });
     },
+    renderTable: () => {},
+    updatePlaybackControls: () => {},
     setAvailableDates: (dates) => {
       calls.dates = [...dates];
       state.availableDates = [...dates];
@@ -146,6 +155,9 @@ test("the data-layer drawer owns the complete activation and deactivation sequen
   assert.deepEqual(plain(state.enabledLayerIds), ["grid"]);
   assert.equal(calls.schema, 1);
   assert.equal(calls.reload, 1);
+  assert.equal(calls.stop, 1);
+  assert.deepEqual(plain(calls.stopReasons), ["drawer_toggle"]);
+  assert.equal(calls.stopCommands[0]?.clearPreheater, true);
   assert.deepEqual(plain(calls.schemaSnapshots[0]), {
     dataLayer: null,
     datasetId: "grid_dataset",
@@ -180,6 +192,34 @@ test("the data-layer drawer owns the complete activation and deactivation sequen
     options: { focus: false },
   });
   assert.equal(menu.open, false);
+  assert.equal(calls.stop, 2);
+  assert.deepEqual(plain(calls.stopReasons), ["drawer_toggle", "drawer_toggle"]);
+});
+
+test("primary-record cleanup does not own playback lifecycle", () => {
+  const source = fs.readFileSync(path.join(root, "static/js/services/api-client.js"), "utf8");
+  const start = source.indexOf("function clearPrimaryLayerRecords()");
+  const end = source.indexOf("function reloadActiveLayer", start);
+  const body = source.slice(start, end);
+
+  assert.ok(start >= 0 && end > start);
+  assert.doesNotMatch(body, /stopPlayback|PlaybackPreheater/);
+});
+
+test("dataset selection is serialized by the layer transition owner", async () => {
+  const { calls, controller, state } = loadLayerActivationController();
+  await controller.activate("grid", { reason: "initial" });
+  const stopBeforeSelection = calls.stop;
+  const clearBeforeSelection = calls.clear;
+
+  await controller.selectDataset("alternate_dataset", { reason: "dataset_select" });
+
+  assert.equal(state.datasetId, "alternate_dataset");
+  assert.equal(state.dataLayer, "grid");
+  assert.equal(calls.stop, stopBeforeSelection + 1);
+  assert.equal(calls.clear, clearBeforeSelection + 1);
+  assert.equal(calls.stopReasons.at(-1), "dataset_select");
+  assert.equal(calls.reloadSnapshots.at(-1).datasetId, "alternate_dataset");
 });
 
 test("a schema failure never publishes a half-activated layer", async () => {

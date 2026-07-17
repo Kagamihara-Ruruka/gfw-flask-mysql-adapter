@@ -7,7 +7,57 @@ import vm from "node:vm";
 const root = process.cwd();
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
+function batchFetch(sourceFetchJson) {
+  return async (url, options = {}) => {
+    assert.equal(url, "/api/query/batch");
+    const envelope = JSON.parse(options.body);
+    const events = [{
+      type: "batch.started",
+      batch_id: envelope.batch_id,
+      operation_count: envelope.operations.length,
+    }];
+    for (const operation of envelope.operations) {
+      const params = new URLSearchParams();
+      for (const [key, value] of Object.entries(operation.params || {})) {
+        if (value != null) params.set(key, String(value));
+      }
+      try {
+        const packet = await sourceFetchJson(
+          `/api/datasets/${operation.dataset_id}/records?${params}`,
+          { signal: options.signal },
+        );
+        events.push({
+          type: "batch.result",
+          batch_id: envelope.batch_id,
+          operation_id: operation.operation_id,
+          status: "ok",
+          packet,
+        });
+      } catch (error) {
+        if (error?.name === "AbortError") throw error;
+        events.push({
+          type: "batch.result",
+          batch_id: envelope.batch_id,
+          operation_id: operation.operation_id,
+          status: "error",
+          error: error?.message || String(error),
+        });
+      }
+    }
+    events.push({
+      type: "batch.completed",
+      batch_id: envelope.batch_id,
+      completed_count: envelope.operations.length,
+    });
+    return new Response(`${events.map((event) => JSON.stringify(event)).join("\n")}\n`, {
+      status: 200,
+      headers: { "Content-Type": "application/x-ndjson" },
+    });
+  };
+}
+
 function createContext({ fetchJson, statePatch = {} } = {}) {
+  const sourceFetchJson = fetchJson || (async () => ({ rows: [], row_count: 0 }));
   const context = {
     AbortController,
     CustomEvent: class CustomEvent { constructor(type, init) { this.type = type; this.detail = init?.detail; } },
@@ -21,12 +71,14 @@ function createContext({ fetchJson, statePatch = {} } = {}) {
     Promise,
     Set,
     String,
+    TextDecoder,
     URLSearchParams,
     clearTimeout,
     console,
     performance,
     setTimeout,
-    fetchJson: fetchJson || (async () => ({ rows: [], row_count: 0 })),
+    fetch: batchFetch(sourceFetchJson),
+    fetchJson: sourceFetchJson,
     state: {
       datasets: {
         ocean: {
@@ -53,12 +105,17 @@ function createContext({ fetchJson, statePatch = {} } = {}) {
     "static/js/services/frame-identity.js",
     "static/js/services/render-intent-service.js",
     "static/js/services/layer-query-coordinator.js",
+    "static/js/services/query-broker.js",
+    "static/js/services/query-policy-controller.js",
     "static/js/services/data-frame-store.js",
     "static/js/services/frame-demand-service.js",
+    "static/js/services/frame-demand-decorators.js",
     "static/js/playback/playback-preheater.js",
     "static/js/playback/playback-engine.js",
     "static/js/playback/adaptive-watermark-controller.js",
     "static/js/playback/playback-renderer.js",
+    "static/js/playback/playback-scheduler.js",
+    "static/js/playback/playback-runtime-controller.js",
     "static/js/services/runtime-performance-metrics.js",
     "static/js/runtime/runtime-composition-root.js",
   ]) {
@@ -130,12 +187,12 @@ test("frame demand stores actual frame identity behind requested intent alias", 
 
 test("resolved query route sends the effective resolution while preserving requested intent", () => {
   const context = createContext();
-  const demand = api(context, "FrameDemandService");
   const identity = api(context, "FrameIdentity");
+  const operationFor = api(context, "sampledGridBatchOperation");
   const routed = request("2020-01-02", { queryResolution: 16 });
-  const url = new URL(`http://local${demand.urlFor(routed)}`);
+  const operation = operationFor(routed, identity.intentKey(routed));
 
-  assert.equal(url.searchParams.get("resolution"), "16");
+  assert.equal(operation.params.resolution, 16);
   assert.match(identity.intentKey(routed), /\|4\|fixed$/);
   assert.equal(identity.scopeKey(routed), identity.scopeKey(request("2020-01-02")));
 });
@@ -216,8 +273,9 @@ test("scope cancellation is lifecycle cancellation instead of an HTTP failure", 
   await assert.rejects(pending, (error) => error?.name === "AbortError");
   await flush();
 
-  assert.equal(log.query({ type: "HTTP_CANCELLED" }).length, 1);
-  assert.equal(log.query({ type: "HTTP_FAILED" }).length, 0);
+  assert.equal(log.query({ type: "QUERY_OPERATION_CANCELLED" }).length, 1);
+  assert.equal(log.query({ type: "QUERY_OPERATION_FAILED" }).length, 0);
+  assert.equal(log.query({ type: "HTTP_BATCH_CANCELLED" }).length, 1);
   assert.equal(api(context, "DataFrameStore").snapshot().failures, 0);
 });
 
@@ -422,4 +480,36 @@ test("data frame store keeps pinned entries while enforcing LRU entry budget", (
   }
   assert.equal(store.snapshot().entries, 12);
   assert.equal(store.inspect(request("2020-01-01")).status, "ready");
+});
+
+test("shared frame memory evicts an inactive dataset before the active dataset LRU", () => {
+  const context = createContext({
+    statePatch: {
+      datasetId: "hot",
+      datasets: {
+        hot: { backend: "endpoint", sampled_grid: { mapping_version: "v1" } },
+        cold: { backend: "endpoint", sampled_grid: { mapping_version: "v1" } },
+      },
+      dataFrameStore: { maxEntries: 12, maxBytes: 128 * 1024 * 1024, stats: {} },
+    },
+  });
+  const store = api(context, "DataFrameStore");
+  const frame = (datasetId, date) => request(date, {
+    datasetId,
+    layerId: `${datasetId}.layer`,
+  });
+  const packet = { rows: [], row_count: 0, grid: { actual_resolution_km: 4 } };
+
+  store.put(frame("hot", "2020-01-01"), packet);
+  store.put(frame("cold", "2020-01-01"), packet);
+  for (let day = 2; day <= 11; day += 1) {
+    store.put(frame("hot", `2020-01-${String(day).padStart(2, "0")}`), packet);
+  }
+  store.put(frame("hot", "2020-01-12"), packet);
+
+  assert.equal(store.snapshot().entries, 12);
+  assert.equal(store.inspect(frame("cold", "2020-01-01")).status, "missing");
+  assert.equal(store.inspect(frame("hot", "2020-01-01")).status, "ready");
+  assert.equal("playbackSegmentLimitBytes" in context.state.dataFrameStore.stats, false);
+  assert.equal("lookupSegmentLimitBytes" in context.state.dataFrameStore.stats, false);
 });

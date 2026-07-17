@@ -4,6 +4,7 @@ class DataFrameStoreCore {
     eventLog = null,
     optionsProvider = null,
     statsTargetProvider = null,
+    retentionPartitionProvider = null,
     eventTarget = null,
     clock,
   } = {}) {
@@ -81,16 +82,32 @@ class DataFrameStoreCore {
     ));
   }
 
-  function frameSizeStats() {
-    const sizes = [...packetSizes.values()]
-      .map(Number)
+  function frameSizeStats(filter = {}) {
+    const requestedScopeKey = String(filter.scopeKey || "");
+    const requestedDatasetId = String(filter.datasetId || "");
+    const requestedCacheNamespace = String(filter.cacheNamespace || "");
+    const sizes = [...packetSizes.entries()]
+      .filter(([frameKey]) => {
+        const meta = metadata.get(frameKey) || {};
+        if (requestedDatasetId && meta.datasetId !== requestedDatasetId) return false;
+        if (requestedCacheNamespace && meta.cacheNamespace !== requestedCacheNamespace) return false;
+        if (requestedScopeKey && FrameIdentity.scopeKey(meta) !== requestedScopeKey) return false;
+        return true;
+      })
+      .map(([, value]) => Number(value))
       .filter((value) => Number.isFinite(value) && value > 0)
       .sort((left, right) => left - right);
     if (!sizes.length) {
-      return { averageFrameBytes: 0, estimatedFrameBytes: 0, largestFrameBytes: 0 };
+      return {
+        frameSizeSamples: 0,
+        averageFrameBytes: 0,
+        estimatedFrameBytes: 0,
+        largestFrameBytes: 0,
+      };
     }
     const p95Index = Math.min(sizes.length - 1, Math.max(0, Math.ceil(sizes.length * 0.95) - 1));
     return {
+      frameSizeSamples: sizes.length,
       averageFrameBytes: sizes.reduce((total, value) => total + value, 0) / sizes.length,
       estimatedFrameBytes: sizes[p95Index],
       largestFrameBytes: sizes[sizes.length - 1],
@@ -126,6 +143,7 @@ class DataFrameStoreCore {
   function removeFrame(frameKey, { force = false, reason = "evicted" } = {}) {
     if (!cache.has(frameKey)) return false;
     if (!force && (pins.get(frameKey)?.size || 0) > 0) return false;
+    const meta = metadata.get(frameKey) || {};
     cache.delete(frameKey);
     metadata.delete(frameKey);
     removeAliasesForFrame(frameKey);
@@ -133,8 +151,19 @@ class DataFrameStoreCore {
     packetSizes.delete(frameKey);
     pins.delete(frameKey);
     if (cacheBytes < 0) cacheBytes = 0;
-    LifecycleEventLog?.record?.("CACHE_EVICTED", { frame_key: frameKey, reason });
-    notify({ type: "evicted", frameKey, reason });
+    LifecycleEventLog?.record?.("CACHE_EVICTED", {
+      frame_key: frameKey,
+      dataset: meta.datasetId || "",
+      cache_namespace: meta.cacheNamespace || "",
+      reason,
+    });
+    notify({
+      type: "evicted",
+      frameKey,
+      datasetId: meta.datasetId || "",
+      cacheNamespace: meta.cacheNamespace || "",
+      reason,
+    });
     return true;
   }
 
@@ -151,18 +180,42 @@ class DataFrameStoreCore {
     return packet;
   }
 
+  function evictionQueues() {
+    const retention = retentionPartitionProvider?.() || {};
+    const retainedNamespace = String(retention.cacheNamespace || "");
+    const retainedDatasetId = String(retention.datasetId || "");
+    const hot = [];
+    const cold = [];
+    for (const key of cache.keys()) {
+      if ((pins.get(key)?.size || 0) > 0) continue;
+      const meta = metadata.get(key) || {};
+      const retained = retainedNamespace
+        ? meta.cacheNamespace === retainedNamespace
+        : retainedDatasetId
+          ? meta.datasetId === retainedDatasetId
+          : false;
+      (retained ? hot : cold).push(key);
+    }
+    return { hot, cold };
+  }
+
   function enforceBudget() {
     const { maxEntries, maxBytes } = options();
     let skippedPinned = 0;
     while ((maxEntries > 0 && cache.size > maxEntries) || (maxBytes > 0 && cacheBytes > maxBytes)) {
-      const candidate = [...cache.keys()].find((key) => (pins.get(key)?.size || 0) === 0);
+      const queues = evictionQueues();
+      const candidate = queues.cold[0] || queues.hot[0];
       if (!candidate) {
         skippedPinned = cache.size;
         break;
       }
-      removeFrame(candidate, { reason: "lru_budget" });
+      removeFrame(candidate, {
+        reason: queues.cold.length ? "inactive_dataset_budget" : "lru_budget",
+      });
     }
-    syncStats({ budgetBlockedByPins: skippedPinned });
+    syncStats({
+      budgetBlockedByPins: skippedPinned,
+    });
   }
 
   function boxFromRequest(request) {
@@ -512,13 +565,13 @@ class DataFrameStoreCore {
       .filter((entry) => !filter.layerId || entry.meta?.layerId === String(filter.layerId));
   }
 
-  function snapshot() {
+  function snapshot(filter = {}) {
     const { maxBytes, maxEntries } = options();
     return Object.freeze({
       entries: cache.size,
       aliases: aliases.size,
       bytes: cacheBytes,
-      ...frameSizeStats(),
+      ...frameSizeStats(filter),
       maxBytes,
       maxEntries,
       pinned: [...pins.values()].reduce((total, owners) => total + owners.size, 0),

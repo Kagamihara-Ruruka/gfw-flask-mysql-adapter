@@ -6,6 +6,7 @@ class PlaybackPreheaterController {
     frameIdentity,
     clock,
     optionsProvider = null,
+    fixedPolicyNormalizer,
     watermarkPolicyProvider = null,
     stateSink = null,
   } = {}) {
@@ -15,12 +16,16 @@ class PlaybackPreheaterController {
     if (typeof clock.now !== "function" || typeof clock.schedule !== "function" || typeof clock.cancel !== "function") {
       throw new TypeError("PlaybackPreheater requires a schedulable monotonic clock");
     }
+    if (typeof fixedPolicyNormalizer !== "function") {
+      throw new TypeError("PlaybackPreheater requires a fixed watermark policy normalizer");
+    }
     this.store = store;
     this.demandService = demandService;
     this.eventLog = eventLog;
     this.frameIdentity = frameIdentity;
     this.clock = clock;
     this.optionsProvider = optionsProvider || (() => ({}));
+    this.fixedPolicyNormalizer = fixedPolicyNormalizer;
     this.watermarkPolicyProvider = watermarkPolicyProvider;
     this.stateSink = stateSink;
     this.scope = null;
@@ -34,26 +39,16 @@ class PlaybackPreheaterController {
 
   options(policyContext = {}) {
     const cache = this.optionsProvider() || {};
-    const highWatermark = Math.max(2, Number(cache.highWatermark ?? cache.windowAhead ?? 10));
-    const lowWatermark = Math.max(1, Math.min(highWatermark - 1, Number(cache.lowWatermark ?? 5)));
+    const basePolicy = this.fixedPolicyNormalizer(cache);
     const fixedPolicy = {
-      highWatermark,
-      lowWatermark,
+      ...basePolicy,
       maxPendingFrames: Math.max(1, Math.min(32, Number(cache.maxPendingFrames ?? 12))),
-      startupWatermark: Math.max(1, Math.min(
-        highWatermark,
-        Number(cache.startupWatermark ?? lowWatermark),
-      )),
-      resumeWatermark: Math.max(2, Math.min(
-        highWatermark,
-        Number(cache.resumeWatermark ?? lowWatermark),
-      )),
-      windowBehind: Math.max(0, Number(cache.windowBehind ?? 1)),
       scopeSettleMs: Math.max(0, Number(cache.scopeSettleMs ?? 0)),
     };
     const requestContext = this.scope?.requestContext || {};
     const policy = this.watermarkPolicyProvider?.(fixedPolicy, {
       datasetId: requestContext.datasetId || "",
+      cacheNamespace: requestContext.cacheNamespace || "",
       scopeKey: this.scope ? this.frameIdentity.scopeKey(requestContext) : "",
       bbox: requestContext.bbox || "",
       resolution: requestContext.resolution ?? null,
@@ -63,45 +58,42 @@ class PlaybackPreheaterController {
         : 0,
       ...policyContext,
     }) || fixedPolicy;
-    const effectiveHigh = Math.max(2, Number(policy.highWatermark ?? highWatermark));
-    const candidateStartupWatermark = Math.max(1, Number(
-      policy.startupWatermark ?? fixedPolicy.startupWatermark,
+    const effectiveHigh = Math.max(2, Number(policy.highWatermark ?? basePolicy.highWatermark));
+    const effectiveLow = Math.max(1, Math.min(
+      effectiveHigh - 1,
+      Number(policy.lowWatermark ?? basePolicy.lowWatermark),
     ));
-    const effectiveStartupWatermark = Math.max(1, Math.min(
-      effectiveHigh,
-      fixedPolicy.maxPendingFrames,
-      candidateStartupWatermark,
-    ));
-    const candidateResumeWatermark = Math.max(2, Number(
-      policy.resumeWatermark ?? fixedPolicy.resumeWatermark,
-    ));
-    const effectiveResumeWatermark = Math.max(2, Math.min(
-      effectiveHigh,
-      fixedPolicy.maxPendingFrames,
-      candidateResumeWatermark,
-    ));
+    const remainingSlices = this.scope
+      ? Math.max(0, this.scope.dates.length - this.scope.cursorIndex - 1)
+      : Math.max(0, Number(policy.remainingSlices || 0));
+    const tailMode = Boolean(this.scope) && remainingSlices < effectiveLow;
+    const candidateTarget = tailMode
+      ? remainingSlices
+      : Math.max(0, Number(policy.targetWatermark ?? effectiveHigh));
+    const targetWatermark = this.scope
+      ? Math.min(remainingSlices, candidateTarget)
+      : candidateTarget;
     return {
       ...fixedPolicy,
       highWatermark: effectiveHigh,
-      lowWatermark: Math.max(1, Math.min(
-        effectiveHigh - 1,
-        Number(policy.lowWatermark ?? lowWatermark),
-      )),
+      lowWatermark: effectiveLow,
       windowBehind: fixedPolicy.windowBehind,
-      startupWatermark: effectiveStartupWatermark,
-      candidateStartupWatermark,
-      startupWatermarkCapped: effectiveStartupWatermark < candidateStartupWatermark,
-      resumeWatermark: effectiveResumeWatermark,
-      candidateResumeWatermark,
-      resumeWatermarkCapped: effectiveResumeWatermark < candidateResumeWatermark,
+      targetWatermark,
+      immediateReplenishment: Boolean(policy.immediateReplenishment),
+      tailMode,
+      supplyRatio: Number.isFinite(Number(policy.supplyRatio))
+        ? Number(policy.supplyRatio)
+        : null,
       strategy: policy.strategy || "fixed",
       policyStatus: policy.status || "FIXED",
       policyReason: policy.reason || "configured",
-      candidateLowWatermark: Number(policy.candidateLowWatermark ?? lowWatermark),
-      candidateHighWatermark: Number(policy.candidateHighWatermark ?? highWatermark),
+      candidateLowWatermark: Number(policy.candidateLowWatermark ?? basePolicy.lowWatermark),
+      candidateHighWatermark: Number(policy.candidateHighWatermark ?? basePolicy.highWatermark),
       ramBudgetFrames: Number.isFinite(Number(policy.ramBudgetFrames))
         ? Number(policy.ramBudgetFrames)
         : null,
+      playbackRamBudgetBytes: Math.max(0, Number(policy.playbackRamBudgetBytes || 0)),
+      hasObservedFrameSize: Boolean(policy.hasObservedFrameSize),
       estimatedFrameBytes: Math.max(0, Number(policy.estimatedFrameBytes || 0)),
       consumptionRate: Math.max(0, Number(policy.consumptionRate || 0)),
       supplyRate: Math.max(0, Number(policy.supplyRate || 0)),
@@ -109,7 +101,7 @@ class PlaybackPreheaterController {
       latencyP95Ms: Math.max(0, Number(policy.latencyP95Ms || 0)),
       latencySamples: Math.max(0, Number(policy.latencySamples || 0)),
       minimumSupplySamples: Math.max(2, Number(policy.minimumSupplySamples || 2)),
-      remainingSlices: Math.max(0, Number(policy.remainingSlices || 0)),
+      remainingSlices,
       sustainable: policy.sustainable ?? null,
       degradationReason: String(policy.degradationReason || ""),
     };
@@ -230,7 +222,8 @@ class PlaybackPreheaterController {
       readyAhead: 0,
       scheduledTotal: 0,
       failed: 0,
-      replenishing: true,
+      replenishing: false,
+      replenishmentReason: "",
       queryScopeIds: new Set([id]),
     };
     this.eventLog?.record?.("PREHEATER_SCOPE_CHANGED", {
@@ -301,9 +294,9 @@ class PlaybackPreheaterController {
 
   windowRequests(options = this.options()) {
     if (!this.scope) return [];
-    const { highWatermark, windowBehind } = options;
+    const { targetWatermark, windowBehind } = options;
     const start = Math.max(0, this.scope.cursorIndex - windowBehind);
-    const end = Math.min(this.scope.dates.length, this.scope.cursorIndex + highWatermark + 1);
+    const end = Math.min(this.scope.dates.length, this.scope.cursorIndex + targetWatermark + 1);
     return this.scope.dates.slice(start, end).map((date) => this.requestForDate(date));
   }
 
@@ -316,7 +309,16 @@ class PlaybackPreheaterController {
     if (!this.scope?.dates.length || !this.scope.requestContext.bbox) return this.snapshot();
     if (this.scopeSettleTimer && !bypassSettle) return this.snapshot();
     const options = this.options({ bypassDecreaseHysteresis });
-    const { highWatermark, lowWatermark, maxPendingFrames } = options;
+    const {
+      highWatermark,
+      lowWatermark,
+      targetWatermark,
+      maxPendingFrames,
+      immediateReplenishment,
+      tailMode,
+      supplyRatio,
+      remainingSlices,
+    } = options;
     if (pruneQueued) {
       const cancelled = this.cancelQueryScopes(this.scope, { includeActive: false });
       if (cancelled > 0) {
@@ -333,8 +335,50 @@ class PlaybackPreheaterController {
     }
     const readyAhead = this.readyAhead();
     this.scope.readyAhead = readyAhead;
-    if (force || readyAhead < lowWatermark) this.scope.replenishing = true;
-    if (readyAhead >= highWatermark) this.scope.replenishing = false;
+    const wasReplenishing = this.scope.replenishing;
+    let trigger = this.scope.replenishmentReason || "";
+    if (targetWatermark <= 0 || readyAhead >= targetWatermark) {
+      this.scope.replenishing = false;
+      trigger = "";
+    } else if (force) {
+      this.scope.replenishing = true;
+      trigger = "forced";
+    } else if (tailMode) {
+      this.scope.replenishing = true;
+      trigger = "terminal_tail";
+    } else if (immediateReplenishment) {
+      this.scope.replenishing = true;
+      trigger = "supply_deficit";
+    } else if (readyAhead <= lowWatermark) {
+      this.scope.replenishing = true;
+      trigger = "low_watermark";
+    }
+    this.scope.replenishmentReason = trigger;
+    if (!wasReplenishing && this.scope.replenishing) {
+      this.eventLog?.record?.("PREHEATER_REFILL_STARTED", {
+        scope_id: this.scope.id,
+        scope_key: this.frameIdentity.scopeKey(this.scope.requestContext),
+        dataset: this.scope.requestContext.datasetId,
+        date: this.scope.anchorDate,
+        trigger,
+        ready_ahead: readyAhead,
+        low_watermark: lowWatermark,
+        high_watermark: highWatermark,
+        target_watermark: targetWatermark,
+        remaining_slices: remainingSlices,
+        supply_ratio: supplyRatio,
+      });
+    } else if (wasReplenishing && !this.scope.replenishing) {
+      this.eventLog?.record?.("PREHEATER_REFILL_COMPLETED", {
+        scope_id: this.scope.id,
+        scope_key: this.frameIdentity.scopeKey(this.scope.requestContext),
+        dataset: this.scope.requestContext.datasetId,
+        date: this.scope.anchorDate,
+        ready_ahead: readyAhead,
+        target_watermark: targetWatermark,
+        remaining_slices: remainingSlices,
+      });
+    }
     if (!this.scope.replenishing) {
       this.syncState("READY");
       return this.snapshot();
