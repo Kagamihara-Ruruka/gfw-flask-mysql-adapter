@@ -81,6 +81,7 @@ const state = {
     datasetId: null,
     signature: "",
     bounds: null,
+    queryBounds: null,
     minZoom: 2,
     coverageIds: [],
   },

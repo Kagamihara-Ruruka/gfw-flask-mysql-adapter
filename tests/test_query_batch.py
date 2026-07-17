@@ -8,6 +8,7 @@ from unittest.mock import Mock
 from flask import Flask
 
 from common_adapter.http.routes.datasets import DatasetRoutes
+from common_adapter.query.batch import QueryBatchExecutor
 
 
 def batch_payload(*operation_ids: str) -> dict:
@@ -35,9 +36,19 @@ def batch_payload(*operation_ids: str) -> dict:
 class QueryBatchRouteTests(unittest.TestCase):
     def setUp(self) -> None:
         self.app = Flask(__name__)
+        self.batch_executor = QueryBatchExecutor(max_workers=2)
+        self.addCleanup(self.batch_executor.close)
+        layer_registry = Mock()
+        layer_registry.get_dataset.return_value = {
+            "data_layer": "ocean",
+            "__runtime_source": "mapping_controller_contract",
+            "__runtime_query_transport_key": "source-test",
+            "endpoint_source": {"query_policy": {"max_in_flight": 2}},
+        }
         self.routes = DatasetRoutes(
             {"query_policy": {"batch_max_operations": 3}},
-            layer_registry=Mock(),
+            layer_registry=layer_registry,
+            batch_executor=self.batch_executor,
         )
         self.routes.register(self.app)
         self.client = self.app.test_client()
@@ -66,8 +77,6 @@ class QueryBatchRouteTests(unittest.TestCase):
         first = json.loads(next(chunks))
         self.assertEqual(first["operation_id"], "first")
         self.assertEqual(first["status"], "ok")
-        self.assertEqual(calls, ["2020-01-01"])
-
         second = json.loads(next(chunks))
         self.assertEqual(second["operation_id"], "second")
         self.assertEqual(second["status"], "error")
@@ -79,7 +88,7 @@ class QueryBatchRouteTests(unittest.TestCase):
         completed = json.loads(next(chunks))
         self.assertEqual(completed["type"], "batch.completed")
         self.assertEqual(completed["completed_count"], 3)
-        self.assertEqual(calls, ["2020-01-01", "2020-01-02", "2020-01-03"])
+        self.assertCountEqual(calls, ["2020-01-01", "2020-01-02", "2020-01-03"])
 
     def test_batch_rejects_duplicate_operation_identity(self) -> None:
         payload = batch_payload("duplicate", "duplicate")

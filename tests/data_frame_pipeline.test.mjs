@@ -234,6 +234,11 @@ test("render intent separates configured resolution from the effective source ro
   const service = createService({
     targetState: { ...context.state, datasetId: "ocean", dataLayer: "ocean.layer" },
     bboxProvider: () => "120,10,130,20",
+    viewportController: { queryBbox: () => "105,15,135,35" },
+    targetMap: {
+      getZoom: () => 9,
+      getCenter: () => ({ lat: 23.5, lng: 121 }),
+    },
     frameIdentity: identity,
     sampledGridContract: {
       requestResolution: () => 4,
@@ -245,6 +250,10 @@ test("render intent separates configured resolution from the effective source ro
 
   assert.equal(requestPacket.resolution, 4);
   assert.equal(requestPacket.queryResolution, 16);
+  assert.equal(requestPacket.bbox, "105.000000,15.000000,135.000000,35.000000");
+  assert.equal("zoom" in requestPacket, false);
+  assert.equal("latitude" in requestPacket, false);
+  assert.equal("center" in requestPacket, false);
   assert.match(identity.intentKey(requestPacket), /\|4\|fixed$/);
 });
 

@@ -7,6 +7,7 @@ from typing import Any
 from flask import Flask, jsonify, render_template, request
 from flask_sock import Sock
 
+from common_adapter.db.connect import query_policy
 from common_adapter.endpoint.supervisor import ManagedEndpointSupervisor
 from common_adapter.http.routes.backdrop import register_backdrop_routes
 from common_adapter.http.routes.datasets import register_dataset_routes
@@ -15,6 +16,7 @@ from common_adapter.http.routes.live import register_live_routes
 from common_adapter.http.routes.overlays import register_overlay_routes
 from common_adapter.http.routes.system import register_system_routes
 from common_adapter.layers.registry import RuntimeLayerRegistry
+from common_adapter.query.batch import QueryBatchExecutor
 
 ROOT = Path(__file__).resolve().parents[2]
 SERVER_PID_FILE = Path("flask_pid.txt")
@@ -61,7 +63,16 @@ def create_app(
 
     register_backdrop_routes(app, config)
 
-    register_dataset_routes(app, config, layer_registry=layer_registry or RuntimeLayerRegistry(config))
+    batch_executor = QueryBatchExecutor(
+        max_workers=query_policy(config)["network_concurrency"],
+    )
+    app.extensions["query_batch_executor"] = batch_executor
+    register_dataset_routes(
+        app,
+        config,
+        layer_registry=layer_registry or RuntimeLayerRegistry(config),
+        batch_executor=batch_executor,
+    )
 
     register_overlay_routes(app, config)
 

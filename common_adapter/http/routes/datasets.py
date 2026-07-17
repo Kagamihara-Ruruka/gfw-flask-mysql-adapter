@@ -19,19 +19,27 @@ from common_adapter.db.connect import (
 )
 from common_adapter.layers.registry import RuntimeLayerRegistry
 from common_adapter.layers.runtime import dataset_layer_id
-from common_adapter.spatial.overlay import elapsed_ms
+from common_adapter.query.batch import QueryBatchExecutor, dataset_query_concurrency
+from common_adapter.query.identity import dataset_cache_namespace, dataset_query_transport_key
 from common_adapter.query.sampled_grid import (
     sampled_grid_public_contract,
     sampled_grid_public_fields,
 )
-from common_adapter.query.identity import dataset_cache_namespace, dataset_query_transport_key
 from common_adapter.query.snapshot_cache import CANONICAL_SNAPSHOT_CACHE
+from common_adapter.spatial.overlay import elapsed_ms
 
 
 class DatasetRoutes:
-    def __init__(self, config: dict[str, Any], layer_registry: RuntimeLayerRegistry) -> None:
+    def __init__(
+        self,
+        config: dict[str, Any],
+        layer_registry: RuntimeLayerRegistry,
+        *,
+        batch_executor: QueryBatchExecutor,
+    ) -> None:
         self.config = config
         self.layer_registry = layer_registry
+        self.batch_executor = batch_executor
         self.batch_handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {}
         self.register_batch_handler("sampled_grid.records", self.sampled_grid_records_operation)
         CANONICAL_SNAPSHOT_CACHE.configure(
@@ -62,6 +70,25 @@ class DatasetRoutes:
         if handler is None:
             raise ValueError(f"unsupported query batch operation: {kind or '<missing>'}")
         return handler(operation)
+
+    def batch_operation_source_key(self, operation: dict[str, Any]) -> str:
+        dataset_id = str(operation.get("dataset_id") or "").strip()
+        if not dataset_id:
+            return f"{operation.get('kind') or 'unknown'}|<missing-dataset>"
+        try:
+            dataset = self.get_dataset(dataset_id)
+        except Exception:  # The operation handler will expose the canonical error.
+            return f"{operation.get('kind') or 'unknown'}|{dataset_id}"
+        return str(dataset.get("__runtime_query_transport_key") or dataset_query_transport_key(dataset))
+
+    def batch_operation_source_limit(self, operation: dict[str, Any]) -> int:
+        dataset_id = str(operation.get("dataset_id") or "").strip()
+        if not dataset_id:
+            return 1
+        try:
+            return dataset_query_concurrency(self.get_dataset(dataset_id))
+        except Exception:
+            return 1
 
     def get_dataset(self, dataset_id: str) -> dict[str, Any]:
         dataset = self.layer_registry.get_dataset(dataset_id)
@@ -258,18 +285,24 @@ class DatasetRoutes:
                     separators=(",", ":"),
                 ) + "\n"
                 completed = 0
-                for operation in operations:
+                results = self.batch_executor.execute(
+                    operations,
+                    execute_operation=self.execute_batch_operation,
+                    source_key_for=self.batch_operation_source_key,
+                    source_limit_for=self.batch_operation_source_limit,
+                )
+                for result in results:
+                    operation = result.operation
                     event: dict[str, Any] = {
                         "type": "batch.result",
                         "batch_id": batch_id,
                         "operation_id": operation["operation_id"],
                     }
-                    try:
-                        event["status"] = "ok"
-                        event["packet"] = self.execute_batch_operation(operation)
-                    except Exception as exc:
-                        event["status"] = "error"
-                        event["error"] = str(exc)
+                    event["status"] = result.status
+                    if result.error is None:
+                        event["packet"] = result.packet
+                    else:
+                        event["error"] = result.error
                     completed += 1
                     yield json.dumps(event, ensure_ascii=True, separators=(",", ":")) + "\n"
                 yield json.dumps(
@@ -356,5 +389,10 @@ def register_dataset_routes(
     config: dict[str, Any],
     *,
     layer_registry: RuntimeLayerRegistry,
+    batch_executor: QueryBatchExecutor,
 ) -> None:
-    DatasetRoutes(config, layer_registry).register(app)
+    DatasetRoutes(
+        config,
+        layer_registry,
+        batch_executor=batch_executor,
+    ).register(app)

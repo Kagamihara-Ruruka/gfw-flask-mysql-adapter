@@ -19,12 +19,14 @@
 ```mermaid
 flowchart LR
   CFG["Config / runtime adapters"] --> ROOT["RuntimeCompositionRoot"]
+  CFG --> FLASKROOT["Flask create_app composition root"]
   REG["Registry + capability matrix"] --> ROOT
   ROOT --> CLOCK["ClockDomain"]
   ROOT --> EVENTS["LifecycleEventLog"]
   ROOT --> SCHED["QueryScheduler"]
   ROOT --> QUERYPOLICY["QueryPolicyController"]
   ROOT --> STORE["DataFrameStore"]
+  ROOT --> BROKER["QueryBroker"]
   ROOT --> CORE["FrameDemandServiceCore"]
   ROOT --> DECORATOR["FrameDemand tracing decorator"]
   ROOT --> PREHEAT["PlaybackPreheater"]
@@ -34,12 +36,15 @@ flowchart LR
   ROOT --> WIDGETAPP["WidgetApplicationRuntime"]
   ROOT --> VIEWPORT["LayerViewportController"]
   ROOT --> GRID["VirtualGridController"]
+  FLASKROOT --> BATCH["QueryBatchExecutor"]
 
   DECORATOR --> CORE
   QUERYPOLICY --> SCHED
-  CORE --> SCHED
+  CORE --> BROKER
   CORE --> STORE
   CORE --> EVENTS
+  BROKER -. "POST /api/query/batch" .-> BATCH
+  BATCH --> ADAPTER["Mapping-backed query adapter"]
   PREHEAT --> DECORATOR
   PREHEAT --> STORE
   ENGINE --> PREHEAT
@@ -68,7 +73,8 @@ flowchart LR
 | 預熱 scope、inflight、retry/settle timer、Store subscription | `PlaybackPreheaterController` | `RuntimeCompositionRoot` | `stop / dispose` 取消 owned query scopes、timer 與 subscription |
 | 有效水位、下降 hold、最近 policy | `AdaptiveWatermarkControllerCore` | `RuntimeCompositionRoot` | `reset / dispose`；不擁有 query、cache 或播放 clock |
 | queued/active task、consumer、lane promotion | `QueryScheduler` | `RuntimeCompositionRoot` | `dispose` abort 未完成 task |
-| provider batch、stream demultiplex、來源級序列化 | `QueryBroker` | `RuntimeCompositionRoot` | `dispose` abort active batches 並拒絕 queued operation |
+| provider batch、lane promotion、stream demultiplex、每個 provider 一條 active HTTP batch | `QueryBroker` | `RuntimeCompositionRoot` | `dispose` abort active batches 並拒絕 queued operation |
+| Flask batch worker pool、跨 request 的 provider in-flight 計數 | `QueryBatchExecutor` | Flask `create_app()` composition root，保存於 `app.extensions` | 跟隨服務 process 生命週期，`close()` shutdown executor |
 | network/background concurrency policy 與不變量 | `QueryPolicyControllerCore` | `RuntimeCompositionRoot` | `dispose` 無資源；UI 只能透過 command 更新 policy |
 | demand inflight、owned scope ids、transport lifecycle | `FrameDemandServiceCore` | `RuntimeCompositionRoot`，再交給 decorator | `dispose` 取消 owned scopes 並清空 inflight |
 | canonical frames、alias、pin、failure、LRU | `DataFrameStoreCore` | `RuntimeCompositionRoot` | `dispose` 清空 RAM 與 listener |
@@ -106,7 +112,7 @@ Registry 與能力矩陣是能力與相容關係的唯一真相，不以 inherit
 
 ## DI 與 Decorator
 
-- Runtime class 只能由 `RuntimeCompositionRoot` 或其 `install()` factory 建立。
+- 前端 Runtime class 只能由 `RuntimeCompositionRoot` 或其 `install()` factory 建立；後端長駐 Runtime class 由 Flask `create_app()` 建立並放入 `app.extensions`。
 - Constructor 不讀全域 Config，不自行 `new` 其他 service。
 - 自身擁有的 timer、AbortController、DOM/GPU resource 可以建立，但必須在 `dispose()` 釋放。
 - `decorateFrameDemandService()` 只記錄需求開始、完成、取消、失敗與 monotonic duration；它不發 HTTP、不查 Store、不改 lane、不正規化 packet。
@@ -131,8 +137,10 @@ Playback UI
 ## Query、Cache 與 Widget 邊界
 
 - 地圖 application flow 建立 `map-current` demand，這是一般 source transport 的最高優先入口。
-- `FrameDemandServiceCore` 先查 `DataFrameStore`，cache miss 才交給 `QueryScheduler`；相同 intent 共用一個 HTTP。
-- `QueryBroker` 使用 Registry 衍生的 provider transport key 合併跨資料集 operation；相同 provider 同時最多一條 HTTP batch，不同資料集仍保有不同 cache identity。
+- `FrameDemandServiceCore` 先查 `DataFrameStore`，cache miss 才直接交給 `QueryBroker`；相同 intent 在 Demand 層共用同一份 logical request。
+- `QueryBroker` 是 sampled-grid 唯一瀏覽器 transport owner。它使用 Registry 衍生的 provider transport key 合併跨資料集 operation；相同 provider 同時最多一條 HTTP batch，不同資料集仍保有不同 cache identity。
+- Flask `QueryBatchExecutor` 是 batch 解包後的唯一執行 owner；全域 worker 上限來自 runtime query policy，各 provider capacity 來自 source `query_policy.max_in_flight`，而且跨瀏覽器 request 共用同一份 in-flight 計數。Provider permit 必須在提交 worker 前取得，等待來源容量不得占用全域 worker。
+- `QueryScheduler` 保留給其他 query family；不得再包住 sampled-grid Demand/Broker 鏈形成第二個 queued/active owner。
 - tracing decorator 不參與 cache hit、dedupe、promotion 或 cancellation 決策。
 - 插隊與 scope cancellation 只影響 queued/active consumer，不清除已完成 canonical frame。
 - 播放中 Widget 日期刷新只讀 Store；明確 Tile 選取缺當日資料時，才允許一張 `widget-interactive` demand。
@@ -153,6 +161,7 @@ Render Clock         -> requestAnimationFrame、draw、FRAME_VISIBLE
 
 - UI、Renderer、圖層效果不得直接呼叫 `PlaybackEngine` 或 `PlaybackPreheater`。
 - Widget Capability、表格、事件檢視器不得呼叫 Adapter、HTTP、`FrameDemandService` 或 `LayerQueryCoordinator`。
+- sampled-grid `FrameDemandService` 不得呼叫 `QueryScheduler`；瀏覽器實體 HTTP 只由 `QueryBroker` 發送，Flask 解包 operation 只由 `QueryBatchExecutor` 執行。
 - Renderer 不發 query；Playback 不清除 completed `DataFrameStore` entries。
 - Runtime class 不使用 service locator，不建立 mutable static singleton。
 - 新程式不得依賴已刪除的 wrapper、IIFE singleton、`.shared()` 或相容 shim。
@@ -166,6 +175,7 @@ Render Clock         -> requestAnimationFrame、draw、FRAME_VISIBLE
 - lifecycle owner 有對稱 `dispose()`。
 - Widget、Renderer、Playback、Query 與 Cache 的禁止依賴。
 - cache hit 不重發 HTTP；同 key 不同 consumer 共用 request。
+- sampled-grid 不得形成 Demand/Scheduler/Broker 雙重排程；同 provider 的 HTTP batch 與解包 operation 分別受 Broker 與 Executor 的唯一容量 owner 約束。
 - scope 取消、倍率切換、圖層切換與 map interaction 不清除已完成快取。
 - 1x/2x/4x 的真實等待與 timeout 不受播放倍率污染。
 - Registry/Matrix/Pure Function 不被 inheritance 或 class 內硬編碼取代。

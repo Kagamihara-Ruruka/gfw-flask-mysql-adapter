@@ -856,6 +856,94 @@ test("adaptive policy exposes replenishment watermarks but no playback readiness
   assert.equal(Object.hasOwn(policy, "resumeWatermark"), false);
 });
 
+test("replenishment policy is repeatable across refill completion and a later deficit", () => {
+  const context = contextFor(async () => ({ rows: [], row_count: 0 }));
+  const evaluate = api(context, "evaluatePlaybackReplenishment");
+
+  const belowLow = evaluate({
+    readyAhead: 9,
+    lowWatermark: 10,
+    targetWatermark: 15,
+  });
+  assert.deepEqual({ ...belowLow }, { replenishing: true, trigger: "low_watermark" });
+
+  const filling = evaluate({
+    readyAhead: 12,
+    lowWatermark: 10,
+    targetWatermark: 15,
+    wasReplenishing: belowLow.replenishing,
+    previousTrigger: belowLow.trigger,
+  });
+  assert.deepEqual({ ...filling }, { replenishing: true, trigger: "low_watermark" });
+
+  const full = evaluate({
+    readyAhead: 15,
+    lowWatermark: 10,
+    targetWatermark: 15,
+    wasReplenishing: filling.replenishing,
+    previousTrigger: filling.trigger,
+  });
+  assert.deepEqual({ ...full }, { replenishing: false, trigger: "" });
+
+  const laterDeficit = evaluate({
+    readyAhead: 10,
+    lowWatermark: 10,
+    targetWatermark: 15,
+    wasReplenishing: full.replenishing,
+  });
+  assert.deepEqual({ ...laterDeficit }, { replenishing: true, trigger: "low_watermark" });
+});
+
+test("an LRU eviction below the low watermark re-enters the same replenishment lifecycle", () => {
+  const context = contextFor(async () => ({ rows: [], row_count: 0 }));
+  const Preheater = api(context, "PlaybackPreheaterController");
+  const allDates = dates(3);
+  const readyDates = new Set(allDates);
+  const demands = [];
+  let storeListener = null;
+  const preheater = new Preheater({
+    fixedPolicyNormalizer: api(context, "normalizedFixedWatermarkPolicy"),
+    store: {
+      subscribe(listener) {
+        storeListener = listener;
+        return () => { storeListener = null; };
+      },
+      inspect(request) {
+        return { status: readyDates.has(request.date) ? "ready" : "missing" };
+      },
+    },
+    demandService: {
+      cancelScope() {},
+      demand(request) {
+        demands.push(request.date);
+        return new Promise(() => {});
+      },
+    },
+    eventLog: api(context, "LifecycleEventLog"),
+    frameIdentity: api(context, "FrameIdentity"),
+    clock: api(context, "ClockDomain").monotonic,
+    optionsProvider: () => ({
+      highWatermark: 2,
+      lowWatermark: 1,
+      maxPendingFrames: 2,
+      windowBehind: 0,
+    }),
+  });
+
+  preheater.setScope({ dates: allDates, requestContext: requestContext(), anchorDate: allDates[0] });
+  assert.equal(preheater.snapshot().readyAhead, 2);
+  assert.equal(preheater.snapshot().replenishing, false);
+  assert.deepEqual(demands, []);
+
+  readyDates.delete(allDates[1]);
+  storeListener({ type: "evicted", datasetId: "ocean", date: allDates[1] });
+
+  assert.equal(preheater.snapshot().readyAhead, 0);
+  assert.equal(preheater.snapshot().replenishing, true);
+  assert.deepEqual(demands, [allDates[1]]);
+  preheater.stop("test_complete");
+});
+
 test("playback target promotes an existing preheat request and resumes from the same result", async () => {
   const responses = new Map();
   let requests = 0;
@@ -876,10 +964,14 @@ test("playback target promotes an existing preheat request and resumes from the 
   responses.get(allDates[1]).resolve({ rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
   await starting;
   const target = engine.requireTarget(2);
-  const queuedOrActive = api(context, "LayerQueryCoordinator").snapshot();
-  const targetTask = [...queuedOrActive.active, ...queuedOrActive.queued]
-    .find((task) => task.metadata?.date === allDates[2]);
-  assert.equal(targetTask?.lane, "playback-target");
+  const promoted = log.query({ type: "TASK_PROMOTED" })
+    .find((event) => event.date === allDates[2]);
+  assert.equal(promoted?.previous_lane, "playback-window");
+  assert.equal(promoted?.requested_lane, "playback-target");
+  assert.notEqual(
+    api(context, "AppRuntime.services().QueryBroker").operationStatus(promoted.intent_key),
+    "missing",
+  );
 
   responses.get(allDates[2]).resolve({ rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
   const result = await target;

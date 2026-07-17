@@ -46,8 +46,6 @@ function sampledGridBatchOperation(request, operationId) {
       limit: request?.limit == null ? "max" : request.limit,
       columns: String(request?.columns || "render"),
       resolution: request?.queryResolution ?? request?.resolution ?? null,
-      zoom: request?.zoom ?? null,
-      latitude: request?.latitude ?? null,
     }),
   });
 }
@@ -106,6 +104,67 @@ class QueryBroker {
     this.eventLog.record?.(type, detail);
   }
 
+  taskDetail(item, extra = {}) {
+    return {
+      task_id: item?.id || "",
+      intent_key: String(item?.operation?.operation_id || ""),
+      lane: item?.lane || "",
+      queue_depth: this.pending.filter((candidate) => !candidate.settled).length,
+      active_count: this.activeBatches.size,
+      source_key: this.sourceKey(item?.operation),
+      ...(item?.metadata || {}),
+      ...extra,
+    };
+  }
+
+  shouldPreemptForPromotion(batch, operationId, nextPriority) {
+    if (!batch || batch.preemptRequested || nextPriority >= batch.priority) return false;
+    const normalizedId = String(operationId || "");
+    const remainingOperationIds = (batch.envelope?.operations || [])
+      .map((operation) => String(operation.operation_id || ""))
+      .filter((id) => id && !batch.completedOperations.has(id));
+    if (!remainingOperationIds.length) return false;
+    return remainingOperationIds[0] !== normalizedId;
+  }
+
+  promoteOperation(operationId, lane) {
+    const normalizedId = String(operationId || "");
+    const nextLane = String(lane || "background");
+    const nextPriority = Number(this.priorityForLane(nextLane));
+    if (!normalizedId || !Number.isFinite(nextPriority)) return false;
+    const candidates = [
+      ...this.pending,
+      ...[...this.activeBatches.values()].flatMap((batch) => batch.items),
+    ];
+    let promoted = false;
+    for (const item of candidates) {
+      if (item.settled || String(item.operation?.operation_id || "") !== normalizedId) continue;
+      if (nextPriority >= item.priority) continue;
+      const previousLane = item.lane;
+      item.lane = nextLane;
+      item.priority = nextPriority;
+      promoted = true;
+      const activeBatch = item.batchId
+        ? this.activeBatches.get(item.batchId)
+        : this.activeBatchForSource(this.sourceKey(item.operation));
+      const preemptRequired = this.shouldPreemptForPromotion(
+        activeBatch,
+        item.operation?.operation_id,
+        nextPriority,
+      );
+      this.record("TASK_PROMOTED", this.taskDetail(item, {
+        previous_lane: previousLane,
+        requested_lane: nextLane,
+        preempt_required: preemptRequired,
+      }));
+      if (preemptRequired) {
+        activeBatch.preemptRequested = true;
+      }
+    }
+    if (promoted) this.scheduleFlush();
+    return promoted;
+  }
+
   settle(item, method, value) {
     if (!item || item.settled) return;
     item.settled = true;
@@ -144,11 +203,13 @@ class QueryBroker {
         reject,
         settled: false,
         batchId: "",
+        queuedMonotonicMs: this.clock.now(),
         abortListener: null,
       };
       item.abortListener = () => this.abortItem(item);
       signal?.addEventListener("abort", item.abortListener, { once: true });
       this.pending.push(item);
+      this.record("TASK_QUEUED", this.taskDetail(item));
       const activeBatch = this.activeBatchForSource(this.sourceKey(operation));
       if (activeBatch && item.priority < activeBatch.priority && !activeBatch.preemptRequested) {
         activeBatch.preemptRequested = true;
@@ -165,6 +226,22 @@ class QueryBroker {
 
   requestSampledGrid(request, { operationId, ...options } = {}) {
     return this.request(sampledGridBatchOperation(request, operationId), options);
+  }
+
+  promoteSampledGrid(operationId, lane) {
+    return this.promoteOperation(operationId, lane);
+  }
+
+  operationStatus(operationId) {
+    const normalizedId = String(operationId || "");
+    if (!normalizedId) return "missing";
+    if (this.pending.some((item) => (
+      !item.settled && String(item.operation?.operation_id || "") === normalizedId
+    ))) return "queued";
+    if ([...this.activeBatches.values()].some((batch) => batch.items.some((item) => (
+      !item.settled && String(item.operation?.operation_id || "") === normalizedId
+    )))) return "active";
+    return "missing";
   }
 
   scheduleFlush() {
@@ -272,6 +349,12 @@ class QueryBroker {
     };
     this.activeBatches.set(batchId, batch);
     this.activeSources.add(batch.sourceKey);
+    for (const item of items) {
+      this.record("TASK_DISPATCHED", this.taskDetail(item, {
+        batch_id: batchId,
+        wait_ms: Math.max(0, this.clock.now() - Number(item.queuedMonotonicMs || 0)),
+      }));
+    }
     this.record("HTTP_BATCH_STARTED", {
       batch_id: batchId,
       lane: batch.lane,

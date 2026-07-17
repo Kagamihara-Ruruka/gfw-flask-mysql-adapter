@@ -52,13 +52,9 @@ function createRenderIntentService({
         columns: DEFAULT_COLUMNS,
         requestedResolutionKm: sampledGridContract.requestResolution({
           datasetId: targetState.datasetId,
-          zoom: viewport.zoom,
-          latitude: viewport.center?.lat,
         }),
         effectiveQueryResolutionKm: sampledGridContract.queryResolution({
           datasetId: targetState.datasetId,
-          zoom: viewport.zoom,
-          latitude: viewport.center?.lat,
         }),
         mappingVersion: dataset.sampled_grid?.mapping_version || dataset.mapping_version || "",
       },
@@ -107,20 +103,16 @@ function createRenderIntentService({
       bbox: intent?.viewport?.bbox,
       limit: intent?.query?.limit,
       columns: intent?.query?.columns || DEFAULT_COLUMNS,
-      center: intent?.viewport?.center,
-      zoom: intent?.viewport?.zoom,
       layerId: intent?.layerId,
       renderProfile: intent?.renderProfile,
       outsideCoverage: Boolean(intent?.viewport?.outsideCoverage),
       resolution: intent?.query?.requestedResolutionKm,
       queryResolution: intent?.query?.effectiveQueryResolutionKm,
-      latitude: intent?.viewport?.center?.lat,
       mappingVersion: intent?.query?.mappingVersion || "",
     };
     const normalized = frameIdentity.normalizeRequest(request);
     return {
       ...normalized,
-      center: request.center,
       outsideCoverage: request.outsideCoverage,
       renderProfile: request.renderProfile,
     };
@@ -139,8 +131,6 @@ function createRenderIntentService({
       outsideCoverage: Boolean(intent?.viewport?.outsideCoverage),
       resolution: intent?.query?.requestedResolutionKm,
       queryResolution: intent?.query?.effectiveQueryResolutionKm,
-      zoom: intent?.viewport?.zoom,
-      latitude: intent?.viewport?.center?.lat,
       mappingVersion: intent?.query?.mappingVersion || "",
     };
     const normalized = frameIdentity.normalizeRequest({
@@ -152,7 +142,6 @@ function createRenderIntentService({
       date: undefined,
       dates: request.dates,
       anchorDate: request.anchorDate,
-      center: intent?.viewport?.center,
       outsideCoverage: request.outsideCoverage,
       renderProfile: request.renderProfile,
     };

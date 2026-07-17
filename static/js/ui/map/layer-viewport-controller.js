@@ -21,10 +21,6 @@ function parseCoverageBbox(value) {
   });
 }
 
-function coverageBoundsArea(bounds) {
-  return Math.max(0, bounds.east - bounds.west) * Math.max(0, bounds.north - bounds.south);
-}
-
 function intersectCoverageBounds(left, right) {
   return normalizeCoverageBounds({
     west: Math.max(left.west, right.west),
@@ -66,33 +62,17 @@ function createDatasetCoverageModel(dataset = {}) {
     ));
   }
 
-  function clipBbox(value) {
+  function sourceBbox(value) {
     const requested = parseCoverageBbox(value);
     if (!requested || !bounded) return requested;
-    const center = {
-      lat: (requested.south + requested.north) / 2,
-      lon: (requested.west + requested.east) / 2,
-    };
-    const centerMatches = areas
-      .filter(({ bounds }) => (
-        center.lon >= bounds.west && center.lon <= bounds.east
-        && center.lat >= bounds.south && center.lat <= bounds.north
-      ))
-      .sort((left, right) => coverageBoundsArea(left.bounds) - coverageBoundsArea(right.bounds));
-    if (centerMatches.length) {
-      return intersectCoverageBounds(requested, centerMatches[0].bounds);
-    }
-    const overlaps = areas
-      .map((area) => ({ area, bounds: intersectCoverageBounds(requested, area.bounds) }))
-      .filter((entry) => entry.bounds)
-      .sort((left, right) => coverageBoundsArea(right.bounds) - coverageBoundsArea(left.bounds));
-    return overlaps[0]?.bounds || null;
+    const intersectsSource = areas.some(({ bounds }) => intersectCoverageBounds(requested, bounds));
+    return intersectsSource ? unionBounds : null;
   }
 
-  function clipBboxString(value) {
-    const clipped = clipBbox(value);
-    return clipped
-      ? [clipped.west, clipped.south, clipped.east, clipped.north]
+  function sourceBboxString(value) {
+    const source = sourceBbox(value);
+    return source
+      ? [source.west, source.south, source.east, source.north]
         .map((number) => number.toFixed(6))
         .join(",")
       : null;
@@ -105,8 +85,8 @@ function createDatasetCoverageModel(dataset = {}) {
     defaultCoverageId: defaultArea?.id || "",
     initialBounds: initialBounds ? Object.freeze({ ...initialBounds }) : null,
     contains,
-    clipBbox,
-    clipBboxString,
+    sourceBbox,
+    sourceBboxString,
   });
 }
 
@@ -154,7 +134,6 @@ class DatasetViewportController {
       [initial.north, initial.east],
     );
     const minZoom = this.minimumInsideZoom(constraintBounds);
-    const initialZoom = Math.max(minZoom, this.minimumInsideZoom(initialBounds));
     const changed = this.activeDatasetId !== normalizedDatasetId
       || this.state.layerViewport?.signature !== JSON.stringify({ union, initial, defaultCoverageId: model.defaultCoverageId });
 
@@ -162,7 +141,7 @@ class DatasetViewportController {
     this.map.setMinZoom(minZoom);
     this.map.setMaxBounds(constraintBounds);
     if (focus || changed || !constraintBounds.contains(this.map.getCenter())) {
-      this.map.setView(initialBounds.getCenter(), initialZoom, { animate: false });
+      this.map.setView(initialBounds.getCenter(), minZoom, { animate: false });
     } else if (this.map.getZoom() < minZoom) {
       this.map.setZoom(minZoom, { animate: false });
     }
@@ -173,6 +152,7 @@ class DatasetViewportController {
       datasetId: normalizedDatasetId,
       signature: JSON.stringify({ union, initial, defaultCoverageId: model.defaultCoverageId }),
       bounds: union,
+      queryBounds: union,
       minZoom,
       initialBounds: initial,
       defaultCoverageId: model.defaultCoverageId,
@@ -200,6 +180,7 @@ class DatasetViewportController {
       datasetId: null,
       signature: "",
       bounds: null,
+      queryBounds: null,
       minZoom: this.baseMinZoom,
       initialBounds: null,
       defaultCoverageId: "",
@@ -211,7 +192,7 @@ class DatasetViewportController {
 
   queryBbox(value, datasetId = this.state.datasetId) {
     const model = this.model(datasetId);
-    return model.bounded ? model.clipBboxString(value) : value;
+    return model.bounded ? model.sourceBboxString(value) : value;
   }
 
   filterRows(rows, datasetId = this.state.datasetId) {

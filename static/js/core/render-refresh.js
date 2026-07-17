@@ -17,6 +17,14 @@ function viewportReloadSettleMs() {
   return Math.max(250, Number(state.rendering?.viewportReloadSettleMs ?? 700));
 }
 
+function primaryLayerDependsOnViewport() {
+  if (!state.dataLayer) return false;
+  if (typeof isSampledGridLayer === "function" && isSampledGridLayer(state.dataLayer)) {
+    return state.layerViewport?.mode !== "coverage";
+  }
+  return true;
+}
+
 function invalidatePrimaryRenderForViewport({ lodChanging = false } = {}) {
   if (typeof isSampledGridLayer === "function" && isSampledGridLayer(state.dataLayer)) {
     state.fetchSeq += 1;
@@ -51,7 +59,7 @@ function bindMapRefresh() {
   }
 
   function preparePrimaryRender({ lodChanging = false } = {}) {
-    if (state.isBootstrapping) return;
+    if (state.isBootstrapping || !primaryLayerDependsOnViewport()) return;
     clearScheduledReloads();
     if (lodChanging && !primaryLodPrepared) {
       primaryPrepared = true;

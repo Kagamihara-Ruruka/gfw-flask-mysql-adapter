@@ -118,6 +118,18 @@ test("broker bakes compatible operations into one physical request and demultipl
   assert.equal(events.filter((event) => event.type === "HTTP_BATCH_FINISHED").length, 1);
 });
 
+test("sampled-grid source transport is independent of camera zoom and latitude", () => {
+  const { context } = loadBroker(async () => new Response());
+  const compiled = context.sampledGridBatchOperation(operation("2020-01-01", {
+    zoom: 9,
+    latitude: 23.5,
+  }), "frame-1");
+
+  assert.equal(compiled.params.resolution, 4);
+  assert.equal("zoom" in compiled.params, false);
+  assert.equal("latitude" in compiled.params, false);
+});
+
 test("datasets sharing one physical provider use one serialized batch lane", async () => {
   const envelopes = [];
   const { broker } = loadBroker(async (_url, options) => {
@@ -454,4 +466,93 @@ test("foreground demand preempts at an operation boundary and requeues unfinishe
   ]);
   assert.equal(events.filter((event) => event.type === "HTTP_BATCH_PREEMPT_REQUESTED").length, 1);
   assert.equal(events.filter((event) => event.type === "HTTP_BATCH_PREEMPTED").length, 1);
+});
+
+test("promoting an existing operation changes the single broker queue without duplicating transport", async () => {
+  let streamController;
+  let streamCancelled = false;
+  const envelopes = [];
+  const { broker, events } = loadBroker(async (_url, options) => {
+    const envelope = JSON.parse(options.body);
+    envelopes.push(envelope);
+    if (envelopes.length === 1) {
+      return new Response(new ReadableStream({
+        start(controller) { streamController = controller; },
+        cancel() { streamCancelled = true; },
+      }), { status: 200 });
+    }
+    return responseFor(envelope, (item) => ({
+      status: "ok",
+      packet: { rows: [item.operation_id] },
+    }));
+  });
+  const first = broker.requestSampledGrid(operation("2020-01-01"), {
+    operationId: "frame-1",
+    lane: "playback-window",
+  });
+  const promotedFrame = broker.requestSampledGrid(operation("2020-01-02"), {
+    operationId: "frame-2",
+    lane: "playback-window",
+  });
+  await flush();
+
+  assert.equal(broker.promoteSampledGrid("frame-2", "playback-target"), true);
+  streamController.enqueue(encoder.encode(`${JSON.stringify({
+    type: "batch.result",
+    batch_id: envelopes[0].batch_id,
+    operation_id: "frame-1",
+    status: "ok",
+    packet: { rows: ["frame-1"] },
+  })}\n`));
+
+  assert.equal((await first).rows[0], "frame-1");
+  assert.equal((await promotedFrame).rows[0], "frame-2");
+  assert.equal(streamCancelled, true);
+  assert.deepEqual(envelopes.map((envelope) => envelope.operations.map((item) => item.operation_id)), [
+    ["frame-1", "frame-2"],
+    ["frame-2"],
+  ]);
+  const promoted = events.find((event) => event.type === "TASK_PROMOTED");
+  assert.equal(promoted?.detail.previous_lane, "playback-window");
+  assert.equal(promoted?.detail.requested_lane, "playback-target");
+});
+
+test("promoting the first unfinished operation keeps the active batch intact", async () => {
+  let streamController;
+  const envelopes = [];
+  const { broker, events } = loadBroker(async (_url, options) => {
+    const envelope = JSON.parse(options.body);
+    envelopes.push(envelope);
+    return new Response(new ReadableStream({
+      start(controller) { streamController = controller; },
+    }), { status: 200 });
+  });
+  const first = broker.requestSampledGrid(operation("2020-01-01"), {
+    operationId: "frame-1",
+    lane: "playback-window",
+  });
+  const second = broker.requestSampledGrid(operation("2020-01-02"), {
+    operationId: "frame-2",
+    lane: "playback-window",
+  });
+  await flush();
+
+  assert.equal(broker.promoteSampledGrid("frame-1", "playback-target"), true);
+  for (const operationId of ["frame-1", "frame-2"]) {
+    streamController.enqueue(encoder.encode(`${JSON.stringify({
+      type: "batch.result",
+      batch_id: envelopes[0].batch_id,
+      operation_id: operationId,
+      status: "ok",
+      packet: { rows: [operationId] },
+    })}\n`));
+  }
+
+  assert.equal((await first).rows[0], "frame-1");
+  assert.equal((await second).rows[0], "frame-2");
+  assert.equal(envelopes.length, 1);
+  assert.equal(events.filter((event) => event.type === "HTTP_BATCH_PREEMPT_REQUESTED").length, 0);
+  assert.equal(events.filter((event) => event.type === "HTTP_BATCH_PREEMPTED").length, 0);
+  const promoted = events.find((event) => event.type === "TASK_PROMOTED");
+  assert.equal(promoted?.detail.preempt_required, false);
 });

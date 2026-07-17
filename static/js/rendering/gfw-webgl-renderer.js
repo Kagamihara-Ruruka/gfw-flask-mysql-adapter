@@ -19,6 +19,10 @@ function unbindSampledGridViewportRedraw(layer, targetMap) {
   layer._scheduleViewportReset = null;
 }
 
+function releaseWebglContext(gl) {
+  gl?.getExtension?.("WEBGL_lose_context")?.loseContext?.();
+}
+
 const SampledGridWebglLayer = L.Layer.extend({
   initialize({ renderClock } = {}) {
     if (!renderClock || typeof renderClock.now !== "function") {
@@ -52,6 +56,7 @@ const SampledGridWebglLayer = L.Layer.extend({
   onRemove(targetMap) {
     unbindSampledGridViewportRedraw(this, targetMap);
     this.releaseGpuResources();
+    releaseWebglContext(this._gl);
     if (this._canvas) {
       L.DomUtil.remove(this._canvas);
     }
@@ -256,9 +261,15 @@ const SampledGridWebglLayer = L.Layer.extend({
   },
 });
 
+let sampledGridWebglSupported = null;
+
 SampledGridWebglLayer.isSupported = function isSupported() {
+  if (sampledGridWebglSupported !== null) return sampledGridWebglSupported;
   const canvas = document.createElement("canvas");
-  return Boolean(canvas.getContext("webgl2", { powerPreference: "high-performance" }));
+  const gl = canvas.getContext("webgl2", { powerPreference: "high-performance" });
+  sampledGridWebglSupported = Boolean(gl);
+  releaseWebglContext(gl);
+  return sampledGridWebglSupported;
 };
 
 window.SampledGridWebglLayer = SampledGridWebglLayer;

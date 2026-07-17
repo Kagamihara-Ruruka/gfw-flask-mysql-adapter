@@ -218,7 +218,7 @@ function loadWidgetQueryContext(packetRows) {
   });
 }
 
-function loadLayerViewportController(dataset) {
+function loadLayerViewportController(dataset, { boundsZoom = () => 5 } = {}) {
   const mapState = {
     invalidations: 0,
     minZoom: 2,
@@ -232,6 +232,7 @@ function loadLayerViewportController(dataset) {
     const north = Number(northEast[0]);
     const east = Number(northEast[1]);
     return {
+      bounds: { west, south, east, north },
       getCenter: () => ({ lat: (south + north) / 2, lng: (west + east) / 2 }),
       contains: (point) => (
         Number(point.lat) >= south && Number(point.lat) <= north
@@ -249,7 +250,7 @@ function loadLayerViewportController(dataset) {
     map: {
       getMinZoom: () => 2,
       getMaxZoom: () => 18,
-      getBoundsZoom: () => 5,
+      getBoundsZoom: (bounds, inside) => boundsZoom(bounds, inside),
       setMinZoom: (value) => { mapState.minZoom = value; },
       setMaxBounds: (value) => { mapState.maxBounds = value; },
       getCenter: () => mapState.center,
@@ -722,9 +723,9 @@ test("bounded sampled-grid layers constrain viewport, queries, and rendered rows
     east: 122,
     north: 26,
   });
-  assert.equal(model.clipBboxString("100,10,140,40"), "118.000000,20.000000,122.000000,26.000000");
-  assert.equal(model.clipBboxString("125,20,140,30"), "125.000000,20.000000,135.000000,30.000000");
-  assert.equal(model.clipBboxString("0,0,1,1"), null);
+  assert.equal(model.sourceBboxString("100,10,140,40"), "105.000000,15.000000,135.000000,35.000000");
+  assert.equal(model.sourceBboxString("125,20,140,30"), "105.000000,15.000000,135.000000,35.000000");
+  assert.equal(model.sourceBboxString("0,0,1,1"), null);
 
   const viewport = context.LayerViewportController.syncForDataset("bounded", { focus: true });
   assert.equal(viewport.mode, "coverage");
@@ -739,6 +740,10 @@ test("bounded sampled-grid layers constrain viewport, queries, and rendered rows
   assert.deepEqual(JSON.parse(JSON.stringify(mapState.center)), { lat: 23, lng: 120 });
   assert.equal(mapState.zoom, 5);
   assert.ok(mapState.maxBounds);
+  assert.equal(
+    context.LayerViewportController.queryBbox("118,20,122,26", "bounded"),
+    "105.000000,15.000000,135.000000,35.000000",
+  );
 
   const visible = context.LayerViewportController.filterRows([
     { id: "inside", bounds: { west: 119, south: 23, east: 120, north: 24 } },
@@ -751,7 +756,7 @@ test("bounded sampled-grid layers constrain viewport, queries, and rendered rows
     "utf8",
   );
   assert.match(source, /coverage_areas/);
-  assert.match(source, /clipBboxString/);
+  assert.match(source, /sourceBboxString/);
   assert.match(source, /setMaxBounds/);
   assert.match(source, /filterRows/);
   assert.doesNotMatch(source, /coverage_mask|destination-out|sampledGridMaskPane/);
@@ -761,6 +766,43 @@ test("bounded sampled-grid layers constrain viewport, queries, and rendered rows
   assert.match(template, /layer-viewport-controller\.js/);
   assert.doesNotMatch(template, /sampled-grid-coverage-mask\.js/);
   assert.equal(fs.existsSync(path.join(root, "static/js/layers/sampled-grid-coverage-mask.js")), false);
+});
+
+test("coverage CC starts at the union minimum zoom while queries keep one full source scope", () => {
+  const dataset = {
+    sampled_grid: {
+      default_coverage_id: "taiwan",
+      coverage_areas: [
+        { id: "taiwan", bounds: { west: 118, south: 20, east: 124, north: 27 } },
+        { id: "northwest_pacific", bounds: { west: 105, south: 15, east: 135, north: 35 } },
+      ],
+    },
+  };
+  const { context, mapState } = loadLayerViewportController(dataset, {
+    boundsZoom: (bounds) => (
+      bounds.bounds.east - bounds.bounds.west >= 20 ? 6 : 8
+    ),
+  });
+
+  const viewport = context.LayerViewportController.syncForDataset("bounded", { focus: true });
+
+  assert.equal(viewport.minZoom, 6);
+  assert.equal(mapState.zoom, 6);
+  assert.deepEqual(JSON.parse(JSON.stringify(mapState.center)), { lat: 23.5, lng: 121 });
+  assert.deepEqual(JSON.parse(JSON.stringify(viewport.queryBounds)), {
+    west: 105,
+    south: 15,
+    east: 135,
+    north: 35,
+  });
+  assert.equal(
+    context.LayerViewportController.queryBbox("118.9,21.8,123.1,25.1", "bounded"),
+    "105.000000,15.000000,135.000000,35.000000",
+  );
+  assert.equal(
+    context.LayerViewportController.queryBbox("112.8,19.2,129.1,27.6", "bounded"),
+    "105.000000,15.000000,135.000000,35.000000",
+  );
 });
 
 test("dataset activation settles layout before deriving its first query viewport", async () => {
@@ -1037,11 +1079,28 @@ test("sampled-grid renderers redraw once after viewport interaction settles", ()
   assert.doesNotMatch(ais.match(/function renderAisMap[\s\S]*?\n}/)?.[0] || "", /invalidateSize/);
 });
 
-test("sampled-grid viewport queries wait for one configurable idle window", () => {
+test("sampled-grid WebGL contexts are explicitly released and support probing is cached", () => {
+  const webgl = fs.readFileSync(
+    path.join(root, "static/js/rendering/gfw-webgl-renderer.js"),
+    "utf8",
+  );
+
+  assert.match(webgl, /function releaseWebglContext\(gl\)/);
+  assert.match(webgl, /WEBGL_lose_context/);
+  assert.match(webgl, /releaseGpuResources\(\);\s*releaseWebglContext\(this\._gl\)/);
+  assert.match(webgl, /let sampledGridWebglSupported = null/);
+  assert.match(webgl, /if \(sampledGridWebglSupported !== null\) return sampledGridWebglSupported/);
+  assert.match(webgl, /releaseWebglContext\(gl\);\s*return sampledGridWebglSupported/);
+});
+
+test("sampled-grid viewport changes redraw locally while viewport-dependent layers keep a settle window", () => {
   const stateSource = fs.readFileSync(path.join(root, "static/js/core/state.js"), "utf8");
   const refresh = fs.readFileSync(path.join(root, "static/js/core/render-refresh.js"), "utf8");
   assert.match(stateSource, /viewportReloadSettleMs:\s*700/);
   assert.match(refresh, /function viewportReloadSettleMs\(\)/);
+  assert.match(refresh, /function primaryLayerDependsOnViewport\(\)/);
+  assert.match(refresh, /isSampledGridLayer\(state\.dataLayer\)[\s\S]*?state\.layerViewport\?\.mode !== "coverage"/);
+  assert.match(refresh, /state\.isBootstrapping \|\| !primaryLayerDependsOnViewport\(\)/);
   assert.match(refresh, /state\.rendering\?\.viewportReloadSettleMs/);
   assert.match(refresh, /schedulePrimaryReload\(viewportReloadSettleMs\(\)\)/);
   assert.doesNotMatch(refresh, /schedulePrimaryReload\(250\)/);

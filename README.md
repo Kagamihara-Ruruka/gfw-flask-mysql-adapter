@@ -63,7 +63,7 @@ The frontend is deliberately split by responsibility:
 
 - `static/app.js`: bootstraps the app and wires UI events.
 - `static/js/core`: shared state, DOM, map, and geographic helpers.
-- `static/js/services`: render intent, the central query coordinator, canonical sampled-grid cache, API calls, and shared service helpers.
+- `static/js/services`: render intent, sampled-grid `QueryBroker`, general query scheduling, canonical frame cache, API calls, and shared service helpers.
 - `static/js/layers`: sampled-grid, AIS, and EEZ rendering behavior, plus layer visual effects such as zoom blur and crossfade handoff.
 - `static/js/rendering`: renderer capability checks, renderer selection, WebGL/canvas paint helpers, virtual-grid contracts, and data-driven paint configuration.
 - `static/js/playback`: playback controls, delivery policy, pure timeline scheduler, frame readiness buffer, playback renderer handoff, playback interpolation policy, the independent preheater, the adaptive-watermark controller, and snapshot splitting helpers.
@@ -165,7 +165,7 @@ The layer selector is built from imported layer contracts. It is not a hard-code
 - AIS vessel positions when an active websocket/read-model route is available
 - EEZ boundary overlays when an active spatial route is available
 
-Primary data layers are activation-controlled and may all be off; disabled imported layers do not query or render. EEZ is an independent overlay. For nested sampled-grid coverages, Mapping owns the initial `default_coverage_id`, and each viewport request is routed to one physical coverage rather than an AOI union that can trigger a false coarse-LOD fallback.
+Primary data layers are activation-controlled and may all be off; disabled imported layers do not query or render. EEZ is an independent overlay. For bounded sampled-grid datasets, Mapping owns the coverage union and `default_coverage_id`: the default coverage supplies the initial center, the union supplies CC bounds and the legal minimum zoom, and the source query keeps one complete coverage scope independent of camera zoom. A real source cell-limit fallback remains explicit as requested versus actual resolution; it is not camera LOD.
 
 Layer rows can be drag-reordered in the selector. The order controls map stacking by Leaflet pane z-index. Each layer has a gear panel:
 
@@ -205,7 +205,7 @@ The settings page exposes playback as separate responsibility boxes instead of o
 
 - Playback timeline: delivery policy and `playbackRate` decide which real snapshot date the player is trying to show. Analysis mode is implemented; smooth and strict modes are reserved ports.
 - Frame buffer: analysis mode reports `fetching/missing/ready/waiting/failed` state boundaries. The timing box records `buffering`, `resumed`, and `shown` events separately from SQL/API/render work.
-- Data cache / preheat: an independent producer maintains low/high ready-ahead inventory. Trusted supply/consumption metrics are scoped to the active playback request and exclude Widget traffic. Adaptive mode uses half of the configured RAM budget as playback inventory capacity, with low/high refill thresholds at one-third and two-thirds of that capacity; fixed 10/15 thresholds remain available. The browser canonical-frame budget defaults to 512 MB and remains adjustable in Settings. The producer may desire a large cache inventory, but it schedules at most 12 outstanding frames while the provider-level broker serializes work for each physical source.
+- Data cache / preheat: an independent producer maintains low/high ready-ahead inventory. Trusted supply/consumption metrics are scoped to the active playback request and exclude Widget traffic. Adaptive mode uses half of the configured RAM budget as playback inventory capacity, with low/high refill thresholds at one-third and two-thirds of that capacity; fixed 10/15 thresholds remain available. The browser canonical-frame budget defaults to 512 MB and remains adjustable in Settings. The producer may desire a large cache inventory, but it exposes at most 12 outstanding frame demands to `QueryBroker`. The broker owns one HTTP batch lane per physical provider; the Flask `QueryBatchExecutor` separately applies the measured per-provider operation capacity after decompression.
 - Frame interpolation: playback can use the existing layer crossfade as a visual-only interpolation policy or switch directly between real snapshots; data blending remains reserved for a future `requestAnimationFrame` loop backed by render artifacts.
 - Visual effects: crossfade decorates layer replacement; Gaussian blur is limited to zoom / LOD reload masking.
 - Render pressure and timing: renderer policy and the dashboard timing box observe performance without owning the playback clock.
@@ -244,10 +244,11 @@ Current frontend module boundaries:
 | `static/js/playback/playback-interpolation-controller.js` | Playback interpolation policy: choose layer crossfade or direct switching during playback; data blending is not enabled yet. |
 | `static/js/services/frame-identity.js` | The only builder for canonical BBOX signatures, request intent keys, scope keys, and returned frame keys. |
 | `static/js/services/data-frame-store.js` | Canonical RAM frame store, intent-to-frame aliases, compatible containing-BBOX materialization, pin/release ownership, byte-budgeted LRU eviction, and failure state. It defaults to a 512 MB browser budget and never performs transport. |
-| `static/js/services/layer-query-coordinator.js` | Priority scheduler with one execution per intent key, queued-task promotion, consumer-scoped cancellation, and a reserved foreground slot. |
-| `static/js/services/query-policy-controller.js` | DI-owned query-policy command boundary. It preserves total/background concurrency invariants and is the only UI-facing path that wakes the scheduler after a policy change. |
+| `static/js/services/layer-query-coordinator.js` | Priority scheduler for query families outside the sampled-grid transport chain, with one execution per intent key, queued-task promotion, consumer-scoped cancellation, and a reserved foreground slot. |
+| `static/js/services/query-policy-controller.js` | DI-owned policy command boundary for that general scheduler. It does not own sampled-grid provider capacity or playback watermarks. |
 | `static/js/services/query-broker.js` | Provider-level transport owner. It bakes compatible operations across datasets into one NDJSON batch, streams and demultiplexes results, and guarantees at most one active HTTP batch per physical provider key. The provider key never replaces the dataset/cache identity. |
-| `static/js/services/frame-demand-service.js` | The only sampled-grid transport boundary. It checks `DataFrameStore`, joins an exact or containing-BBOX in-flight request when compatible, schedules a real miss, normalizes the returned packet, and commits it once. |
+| `static/js/services/frame-demand-service.js` | The sampled-grid demand boundary. It checks `DataFrameStore`, joins an exact or containing-BBOX in-flight request when compatible, delegates a real miss directly to `QueryBroker`, normalizes the returned packet, and commits it once. |
+| `common_adapter/query/batch.py` | Flask-side batch execution owner. `QueryBatchExecutor` keeps one global worker pool and a shared per-provider capacity pool, acquires provider permits before worker submission so capacity waits cannot starve other sources, preserves response order, and isolates sibling failures. |
 | `static/js/services/frame-demand-decorators.js` | DI-composed observability decorator. It records demand boundary duration and outcome without changing cache, scheduling, transport, result, or error semantics. |
 | `static/js/playback/playback-preheater.js` | Long-lived producer that independently maintains low/high ready-ahead inventory. Desired inventory and the 12-request scheduling window are separate concerns; it does not own the playback clock or playback readiness. |
 | `static/js/playback/adaptive-watermark-controller.js` | DI-owned stateful policy owner. It derives effective watermarks from trusted supply, cache-ready P95, playback consumption, and RAM budget, with monotonic decrease hysteresis. |
@@ -269,10 +270,15 @@ flowchart LR
   Metrics["RuntimePerformanceMetrics"] --> Watermark["AdaptiveWatermarkController"]
   Store --> Watermark
   Watermark -->|"effective watermarks"| Preheater
-  Demand --> Scheduler["QueryScheduler"]
-  Scheduler --> Broker["QueryBroker: provider batch + stream split"]
-  Broker --> Adapter["Flask API + Mapping adapter"]
-  Adapter --> Store["DataFrameStore: canonical RAM frames"]
+  Demand --> Broker["QueryBroker: provider batch + stream split"]
+  Broker --> API["Flask /api/query/batch"]
+  API --> Batch["QueryBatchExecutor: global + provider capacity"]
+  Batch --> Adapter["Mapping-backed query adapter"]
+  Adapter --> API
+  API --> Broker
+  Broker --> Demand
+  Demand --> Store["DataFrameStore: canonical RAM frames"]
+  Other["Other query families"] --> Scheduler["QueryScheduler"]
   Store --> Renderer["Sampled-grid renderer: WebGL/Canvas draw"]
   Store --> Widgets["Widgets: playback-time cache-only consumers"]
   Engine --> Renderer
@@ -280,7 +286,7 @@ flowchart LR
   Effects["Visual effects: decorate only, no scheduling"] -.-> Renderer
   Renderer --> Map["Visible Leaflet layer"]
   Events["LifecycleEventLog + Event Viewer Widget"] -.-> Engine
-  Events -.-> Scheduler
+  Events -.-> Broker
   Events -.-> Store
   Events -.-> Renderer
 ```
@@ -306,10 +312,11 @@ The timing drawer reports:
 
 The app asks `/api/render/capability` for backend policy and inspects browser WebGL support. Sampled-grid rendering prefers WebGL when available and falls back to the canvas layer when not.
 
-Sampled-grid records use a mapping-, viewport-, resolution-, and date-aware cache:
+Sampled-grid records use a mapping-, source-scope-, resolution-, and date-aware cache:
 
-- Panning can reuse a complete packet whose bounds contain the requested viewport.
-- Zoom or resolution changes request the matching grid packet without evicting completed packets at other LODs.
+- A bounded dataset declared with complete Mapping coverage uses that stable coverage bbox for every camera position; pan and zoom redraw the existing canonical frame without changing its query or cache identity.
+- A viewport-native source without bounded coverage, such as a bbox-backed database route, still refreshes when the viewport leaves its cached packet.
+- An explicit resolution setting may request a different source packet without evicting completed packets at other resolutions. Camera zoom is renderer state and is not sent as sampled-grid source LOD.
 - Date-to-date playback frame changes do not use Gaussian blur; they rely on cache readiness, renderer work, and layer crossfade.
 - Once a sampled-grid scope is known, the independent Preheater maintains its configured ready-ahead window; it does not wait for a render callback to begin its lifecycle.
 - Prewarm is opportunistic. It must not change the visible map, clear completed snapshots, or outrank a map request.
@@ -322,14 +329,14 @@ EEZ is treated closer to a basemap overlay: local vector data and PostGIS vector
 A playback frame is a canonical records packet identified by:
 
 ```text
-mapping-aware cache namespace + date + bbox + limit + columns + resolution/LOD context
+mapping-aware cache namespace + date + source-scope bbox + limit + columns + resolution context
 ```
 
-The cache namespace is derived from the active mapping contract, including source route, canonical field roles, grid profile, resolution policy, and query contract. Changing those semantics creates a new namespace; credentials and visualization-only settings do not. The Registry also derives a non-secret provider transport key from the physical source route. Datasets sharing that key may share a serialized batch lane, but they retain independent cache namespaces and canonical frames. On a cold miss, `FrameDemandService` asks `QueryScheduler` for one intent, `QueryBroker` bakes compatible provider operations into an NDJSON batch, and the returned result is committed once to `DataFrameStore`. On a warm path, the map, playback, selection tools, and Widgets reuse the same packet.
+The cache namespace is derived from the active mapping contract, including source route, canonical field roles, grid profile, resolution policy, and query contract. Changing those semantics creates a new namespace; credentials and visualization-only settings do not. The Registry also derives a non-secret provider transport key from the physical source route. Datasets sharing that key may share one provider batch lane, but they retain independent cache namespaces and canonical frames. On a cold miss, `FrameDemandService` joins the logical intent and delegates it directly to `QueryBroker`; the broker bakes compatible operations into one NDJSON request. Flask then decompresses the request through `QueryBatchExecutor`, which applies the global worker bound and each source's `query_policy.max_in_flight`. Each returned operation is normalized and committed once to `DataFrameStore`. On a warm path, the map, playback, selection tools, and Widgets reuse the same packet.
 
-Only the map/query layer owns ordinary source transport. Scheduler lanes are ordered as `map-current`, `playback-target`, `playback-window`, `widget-interactive`, then `widget-auto/background`; one foreground execution slot is always reserved. During `PREPARING`, `PLAYING`, or `BUFFERING`, Widgets are cache-only consumers. An explicit Tile interaction may request only the current missing slice through `widget-interactive`; an idle or paused chart may fill its configured history window through `widget-auto`. Active-date refreshes, table inspection, and Event Viewer rendering never start transport. Cancelling queued prewarm or Widget work never evicts completed packets.
+Only the map/query application layer may create sampled-grid demand. `QueryBroker` orders those operations as `map-current`, `playback-target`, `playback-window`, `widget-interactive`, then `widget-auto/background`; `QueryScheduler` remains a separate owner for other query families and is not nested inside this chain. During `PREPARING`, `PLAYING`, or `BUFFERING`, Widgets are cache-only consumers. An explicit Tile interaction may request only the current missing slice through `widget-interactive`; an idle or paused chart may fill its configured history window through `widget-auto`. Active-date refreshes, table inspection, and Event Viewer rendering never start transport. Cancelling queued prewarm or Widget work never evicts completed packets.
 
-Background concurrency is an end-to-end adapter setting, not a mirror of source-server thread capacity. Increasing direct source concurrency can improve provider throughput while simultaneously saturating canonical normalization and JSON serialization in the 5081 adapter. Keep the exposed background limit bounded and validate changes against Queue P95, adapter latency, and visible-frame cadence together.
+There are two independent capacity controls. Runtime `query_policy.network_concurrency` bounds the Flask `QueryBatchExecutor` worker pool, while a source config's `query_policy.max_in_flight` bounds decompressed operations against that physical provider. The latter defaults conservatively to `1`; the tracked Pipeline Iceberg example uses `2` because a controlled one-versus-two-worker benchmark improved throughput. Browser batch size and playback watermarks do not change either capacity. Validate source changes against Queue P95, adapter latency, provider latency, and visible-frame cadence together.
 
 Source error semantics belong to Mapping. A mapping may declare `snapshot.no_data` to translate a source-specific missing partition into an empty, negatively cached canonical snapshot; `snapshot.retry` handles finite retries for transient source failures; `resolution_policy` is reserved for a real coarser-LOD fallback. These outcomes are not interchangeable.
 
@@ -343,8 +350,9 @@ sequenceDiagram
   participant Preload as PlaybackPreheater
   participant Demand as FrameDemandService
   participant BrowserCache as DataFrameStore
-  participant Coordinator as QueryScheduler
-  participant API as Flask records API
+  participant Broker as QueryBroker
+  participant API as Flask query batch API
+  participant Batch as QueryBatchExecutor
   participant ServerCache as Flask records cache
   participant Adapter as Query adapter
   participant Renderer as Sampled-grid renderer
@@ -374,17 +382,22 @@ sequenceDiagram
       Renderer->>Map: draw via WebGL or Canvas
     else Target frame is missing
       Playback->>Demand: promote only the missing target
-      Demand->>Coordinator: promote or enqueue playback-target
-      Coordinator->>API: GET /api/datasets/{datasetId}/records
-      API->>ServerCache: lookup records cache
+      Demand->>BrowserCache: inspect canonical frame
+      BrowserCache-->>Demand: missing
+      Demand->>Broker: enqueue or promote playback-target operation
+      Broker->>API: POST /api/query/batch
+      API->>Batch: execute decompressed operations
+      Batch->>ServerCache: lookup canonical source snapshot
       alt Server cache hit
-        ServerCache-->>API: cached packet
+        ServerCache-->>Batch: cached packet
       else Server cache miss
-        API->>Adapter: canonical date + bbox query
-        Adapter-->>API: rows
-        API->>ServerCache: remember packet
+        Batch->>Adapter: canonical date + bbox + resolution
+        Adapter-->>Batch: rows
+        Batch->>ServerCache: remember packet
       end
-      API-->>Demand: packet(rows + timing)
+      Batch-->>API: ordered operation result
+      API-->>Broker: NDJSON batch.result
+      Broker-->>Demand: demultiplexed packet(rows + timing)
       Demand->>BrowserCache: commit canonical frame
       BrowserCache-->>Playback: shared frame result
       Playback->>UI: buffer only while no ready target exists
@@ -398,11 +411,13 @@ Frame source resolution:
 flowchart TD
   A["Frame request: datasetId + date + bbox + columns"] --> B{"Browser cache hit?"}
   B -->|yes| C["Return packet(rows)"]
-  B -->|no| D["Call Flask /records API"]
+  B -->|no| D["Join demand and enqueue QueryBroker operation"]
 
-  D --> E{"Flask records cache hit?"}
-  E -->|yes| F["Return cached packet"]
-  E -->|no| G["Resolve registered query adapter"]
+  D --> E["POST one provider /api/query/batch request"]
+  E --> F0["QueryBatchExecutor applies global and provider capacity"]
+  F0 --> F1{"Flask records cache hit?"}
+  F1 -->|yes| F["Return cached packet"]
+  F1 -->|no| G["Resolve registered query adapter"]
 
   G --> H["Translate canonical date/bbox/resolution into source contract"]
   H --> I["Return rows"]
@@ -679,6 +694,7 @@ GET /api/datasets
 GET /api/datasets/<dataset_id>/schema
 GET /api/datasets/<dataset_id>/records?date=YYYY-MM-DD&bbox=west,south,east,north&limit=max
 GET /api/datasets/<dataset_id>/records/range?start=YYYY-MM-DD&end=YYYY-MM-DD&bbox=west,south,east,north&limit=max
+POST /api/query/batch
 ```
 
 EEZ:

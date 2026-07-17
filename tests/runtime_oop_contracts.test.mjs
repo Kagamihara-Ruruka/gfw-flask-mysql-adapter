@@ -152,6 +152,7 @@ test("sampled-grid transport has one DI-owned batch boundary", () => {
   assert.match(broker, /splitQueryBatchEvent/);
   assert.match(broker, /"\/api\/query\/batch"/);
   assert.doesNotMatch(demand, /\bfetch\s*\(|fetchJson|\/api\/datasets\//);
+  assert.doesNotMatch(demand, /queryCoordinator|queryCoordinator\.schedule/);
   assert.match(demand, /this\.queryBroker\.requestSampledGrid/);
   assert.match(compositionRoot, /this\.own\("QueryBroker", new QueryBroker\(\{/);
   assert.match(broker, /operation\?\.source_key/);

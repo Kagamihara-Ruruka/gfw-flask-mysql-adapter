@@ -1,3 +1,31 @@
+function evaluatePlaybackReplenishment({
+  readyAhead = 0,
+  lowWatermark = 0,
+  targetWatermark = 0,
+  force = false,
+  tailMode = false,
+  immediateReplenishment = false,
+  wasReplenishing = false,
+  previousTrigger = "",
+} = {}) {
+  const ready = Math.max(0, Number(readyAhead || 0));
+  const low = Math.max(0, Number(lowWatermark || 0));
+  const target = Math.max(0, Number(targetWatermark || 0));
+  if (target <= 0 || ready >= target) {
+    return Object.freeze({ replenishing: false, trigger: "" });
+  }
+  if (force) return Object.freeze({ replenishing: true, trigger: "forced" });
+  if (tailMode) return Object.freeze({ replenishing: true, trigger: "terminal_tail" });
+  if (immediateReplenishment) {
+    return Object.freeze({ replenishing: true, trigger: "supply_deficit" });
+  }
+  if (wasReplenishing) {
+    return Object.freeze({ replenishing: true, trigger: previousTrigger || "watermark_refill" });
+  }
+  if (ready <= low) return Object.freeze({ replenishing: true, trigger: "low_watermark" });
+  return Object.freeze({ replenishing: false, trigger: "" });
+}
+
 class PlaybackPreheaterController {
   constructor({
     store,
@@ -336,23 +364,18 @@ class PlaybackPreheaterController {
     const readyAhead = this.readyAhead();
     this.scope.readyAhead = readyAhead;
     const wasReplenishing = this.scope.replenishing;
-    let trigger = this.scope.replenishmentReason || "";
-    if (targetWatermark <= 0 || readyAhead >= targetWatermark) {
-      this.scope.replenishing = false;
-      trigger = "";
-    } else if (force) {
-      this.scope.replenishing = true;
-      trigger = "forced";
-    } else if (tailMode) {
-      this.scope.replenishing = true;
-      trigger = "terminal_tail";
-    } else if (immediateReplenishment) {
-      this.scope.replenishing = true;
-      trigger = "supply_deficit";
-    } else if (readyAhead <= lowWatermark) {
-      this.scope.replenishing = true;
-      trigger = "low_watermark";
-    }
+    const decision = evaluatePlaybackReplenishment({
+      readyAhead,
+      lowWatermark,
+      targetWatermark,
+      force,
+      tailMode,
+      immediateReplenishment,
+      wasReplenishing,
+      previousTrigger: this.scope.replenishmentReason,
+    });
+    this.scope.replenishing = decision.replenishing;
+    const trigger = decision.trigger;
     this.scope.replenishmentReason = trigger;
     if (!wasReplenishing && this.scope.replenishing) {
       this.eventLog?.record?.("PREHEATER_REFILL_STARTED", {
@@ -492,9 +515,9 @@ class PlaybackPreheaterController {
   }
 
   handleStoreChange(change) {
-    if (!this.scope || change?.type !== "committed") return;
+    if (!this.scope || !["committed", "evicted"].includes(change?.type)) return;
     if (String(change.datasetId || "") !== this.scope.requestContext.datasetId) return;
-    if (!this.scope.dates.includes(String(change.date || ""))) return;
+    if (change.date && !this.scope.dates.includes(String(change.date))) return;
     this.scope.readyAhead = this.readyAhead();
     this.reconcile();
   }
@@ -554,5 +577,6 @@ class PlaybackPreheaterController {
 }
 
 if (typeof globalThis !== "undefined") {
+  globalThis.evaluatePlaybackReplenishment = evaluatePlaybackReplenishment;
   globalThis.PlaybackPreheaterController = PlaybackPreheaterController;
 }

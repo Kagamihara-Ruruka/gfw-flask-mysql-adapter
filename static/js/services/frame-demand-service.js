@@ -1,28 +1,26 @@
 class FrameDemandServiceCore {
   constructor({
     frameIdentity,
-    queryCoordinator,
     queryBroker,
     dataFrameStore,
     eventLog,
     sampledGridContract = null,
     clock,
   } = {}) {
-    if (!frameIdentity || !queryCoordinator || !queryBroker || !dataFrameStore || !eventLog) {
-      throw new TypeError("FrameDemandService requires identity, coordinator, broker, store and event log");
+    if (!frameIdentity || !queryBroker || !dataFrameStore || !eventLog) {
+      throw new TypeError("FrameDemandService requires identity, broker, store and event log");
     }
     if (!clock || typeof clock.now !== "function") {
       throw new TypeError("FrameDemandService requires a monotonic clock");
     }
     this.frameIdentity = frameIdentity;
-    this.queryCoordinator = queryCoordinator;
     this.queryBroker = queryBroker;
     this.dataFrameStore = dataFrameStore;
     this.eventLog = eventLog;
     this.sampledGridContract = sampledGridContract;
     this.clock = clock;
     this.inflight = new Map();
-    this.scopeIds = new Set();
+    this.consumerSequence = 0;
     this.disposed = false;
   }
 
@@ -34,18 +32,6 @@ class FrameDemandServiceCore {
     const error = new Error(reason);
     error.name = "AbortError";
     return error;
-  }
-
-  waitWithSignal(promise, signal) {
-    if (!signal) return promise;
-    if (signal.aborted) return Promise.reject(this.abortError());
-    return new Promise((resolve, reject) => {
-      const handleAbort = () => reject(this.abortError());
-      signal.addEventListener("abort", handleAbort, { once: true });
-      Promise.resolve(promise)
-        .then(resolve, reject)
-        .finally(() => signal.removeEventListener("abort", handleAbort));
-    });
   }
 
   eventDetail(request, extra = {}) {
@@ -94,50 +80,103 @@ class FrameDemandServiceCore {
     };
   }
 
-  fetchRequest(request, { lane, signal, scopeId, consumerId } = {}) {
+  async fetchRequest(entry) {
+    const { request, controller, intentKey, physicalScopeId } = entry;
+    const startedAt = this.clock.now();
+    this.eventLog.record?.("QUERY_OPERATION_STARTED", this.eventDetail(request, {
+      lane: entry.lane,
+      scope_id: physicalScopeId,
+    }));
+    try {
+      const sourcePacket = await this.queryBroker.requestSampledGrid(request, {
+        operationId: intentKey,
+        lane: entry.lane,
+        signal: controller.signal,
+        metadata: this.eventDetail(request, {
+          resource: "sampled-grid",
+          scope_id: physicalScopeId,
+        }),
+      });
+      const packet = this.canonicalPacket(request, sourcePacket);
+      const elapsedMs = this.clock.now() - startedAt;
+      this.eventLog.record?.("QUERY_OPERATION_FINISHED", this.eventDetail(request, {
+        lane: entry.lane,
+        scope_id: physicalScopeId,
+        duration_ms: elapsedMs,
+        row_count: Number(packet?.row_count || packet?.rows?.length || 0),
+      }));
+      this.sampledGridContract?.recordResolvedResolution?.(request.datasetId, packet?.grid || null);
+      return this.dataFrameStore.put(request, packet, {
+        lane: entry.lane,
+        scopeId: physicalScopeId,
+      });
+    } catch (error) {
+      const cancelled = error?.name === "AbortError" || controller.signal.aborted;
+      this.eventLog.record?.(
+        cancelled ? "QUERY_OPERATION_CANCELLED" : "QUERY_OPERATION_FAILED",
+        this.eventDetail(request, {
+          lane: entry.lane,
+          scope_id: physicalScopeId,
+          error: error?.message || String(error),
+          reason: cancelled ? "query_cancelled" : "request_failed",
+        }),
+      );
+      if (!cancelled) this.dataFrameStore.markFailed(request, error);
+      throw error;
+    }
+  }
+
+  createEntry(request, lane) {
     const intentKey = this.frameIdentity.intentKey(request);
-    return this.queryCoordinator.schedule({
-      key: `sampled-grid:${intentKey}`,
-      lane,
-      signal,
-      scopeId,
-      consumerId,
-      metadata: this.eventDetail(request, { resource: "sampled-grid", scope_id: scopeId }),
-      execute: async (taskSignal) => {
-        const startedAt = this.clock.now();
-        this.eventLog.record?.("QUERY_OPERATION_STARTED", this.eventDetail(request, { lane, scope_id: scopeId }));
-        try {
-          const sourcePacket = await this.queryBroker.requestSampledGrid(request, {
-            operationId: intentKey,
-            lane,
-            signal: taskSignal,
-            metadata: this.eventDetail(request, { scope_id: scopeId }),
-          });
-          const packet = this.canonicalPacket(request, sourcePacket);
-          const elapsedMs = this.clock.now() - startedAt;
-          this.eventLog.record?.("QUERY_OPERATION_FINISHED", this.eventDetail(request, {
-            lane,
-            scope_id: scopeId,
-            duration_ms: elapsedMs,
-            row_count: Number(packet?.row_count || packet?.rows?.length || 0),
-          }));
-          this.sampledGridContract?.recordResolvedResolution?.(request.datasetId, packet?.grid || null);
-          return this.dataFrameStore.put(request, packet, { lane, scopeId });
-        } catch (error) {
-          const cancelled = error?.name === "AbortError" || taskSignal?.aborted;
-          this.eventLog.record?.(
-            cancelled ? "QUERY_OPERATION_CANCELLED" : "QUERY_OPERATION_FAILED",
-            this.eventDetail(request, {
-            lane,
-            scope_id: scopeId,
-            error: error?.message || String(error),
-            reason: cancelled ? "query_cancelled" : "request_failed",
-            }),
-          );
-          if (!cancelled) this.dataFrameStore.markFailed(request, error);
-          throw error;
-        }
-      },
+    const entry = {
+      request,
+      intentKey,
+      lane: String(lane || "background"),
+      physicalScopeId: `frame-demand:${intentKey}`,
+      controller: new AbortController(),
+      consumers: new Map(),
+      promise: null,
+      settled: false,
+    };
+    this.inflight.set(intentKey, entry);
+    entry.promise = this.fetchRequest(entry).finally(() => {
+      entry.settled = true;
+      if (this.inflight.get(intentKey) === entry) this.inflight.delete(intentKey);
+    });
+    return entry;
+  }
+
+  settleConsumer(entry, consumer, method, value) {
+    if (!consumer || consumer.settled) return;
+    consumer.settled = true;
+    consumer.signal?.removeEventListener("abort", consumer.abortListener);
+    entry.consumers.delete(consumer.id);
+    method(value);
+    if (!entry.settled && entry.consumers.size === 0) entry.controller.abort();
+  }
+
+  attachConsumer(entry, { signal = null, scopeId = "", consumerId = "", lane = "background" } = {}) {
+    if (!entry) return Promise.reject(new Error("Frame demand entry is unavailable"));
+    if (signal?.aborted) return Promise.reject(this.abortError());
+    if (this.queryBroker.promoteSampledGrid?.(entry.intentKey, lane)) entry.lane = String(lane);
+    const id = `${String(consumerId || "consumer")}:${++this.consumerSequence}`;
+    return new Promise((resolve, reject) => {
+      const consumer = {
+        id,
+        scopeId: String(scopeId || ""),
+        signal,
+        settled: false,
+        abortListener: null,
+        resolve,
+        reject,
+      };
+      consumer.abortListener = () => this.settleConsumer(entry, consumer, reject, this.abortError());
+      signal?.addEventListener("abort", consumer.abortListener, { once: true });
+      entry.consumers.set(id, consumer);
+      entry.promise.then(
+        (value) => this.settleConsumer(entry, consumer, resolve, value),
+        (error) => this.settleConsumer(entry, consumer, reject, error),
+      );
     });
   }
 
@@ -149,7 +188,6 @@ class FrameDemandServiceCore {
     allowPartial = false,
   } = {}) {
     this.assertActive();
-    if (scopeId) this.scopeIds.add(String(scopeId));
     const request = this.frameIdentity.normalizeRequest(rawRequest);
     if (signal?.aborted) throw this.abortError();
     if (!request.datasetId || !request.date || !request.bbox) {
@@ -170,14 +208,19 @@ class FrameDemandServiceCore {
     ));
     if (covering) {
       if (this.frameIdentity.intentKey(covering.request) === this.frameIdentity.intentKey(request)) {
-        return this.fetchRequest(request, { lane, signal, scopeId, consumerId });
+        return this.attachConsumer(covering, { lane, signal, scopeId, consumerId });
       }
       this.eventLog.record?.("CACHE_WAIT", this.eventDetail(request, {
         lane,
         covering_intent_key: this.frameIdentity.intentKey(covering.request),
       }));
       try {
-        await this.waitWithSignal(covering.promise, signal);
+        await this.attachConsumer(covering, {
+          lane,
+          signal,
+          scopeId,
+          consumerId: `${consumerId || "covering"}:covering`,
+        });
         if (signal?.aborted) throw this.abortError();
         const reused = this.dataFrameStore.inspect(request);
         if (reused.status === "ready") {
@@ -205,13 +248,8 @@ class FrameDemandServiceCore {
       }
     }
     const intentKey = this.frameIdentity.intentKey(request);
-    const promise = this.fetchRequest(request, { lane, signal, scopeId, consumerId });
-    this.inflight.set(intentKey, { request, promise });
-    try {
-      return await promise;
-    } finally {
-      if (this.inflight.get(intentKey)?.promise === promise) this.inflight.delete(intentKey);
-    }
+    const entry = this.inflight.get(intentKey) || this.createEntry(request, lane);
+    return this.attachConsumer(entry, { lane, signal, scopeId, consumerId });
   }
 
   async demandMany(requests, {
@@ -259,8 +297,27 @@ class FrameDemandServiceCore {
 
   cancelScope(scopeId, options) {
     const normalized = String(scopeId || "");
-    this.scopeIds.delete(normalized);
-    return this.queryCoordinator.cancelScope(normalized, options);
+    if (!normalized) return 0;
+    let cancelled = 0;
+    for (const entry of this.inflight.values()) {
+      if (
+        options?.includeActive === false
+        && this.queryBroker.operationStatus?.(entry.intentKey) === "active"
+      ) continue;
+      for (const consumer of [...entry.consumers.values()]) {
+        if (consumer.scopeId !== normalized) continue;
+        cancelled += 1;
+        this.settleConsumer(entry, consumer, consumer.reject, this.abortError(`Frame demand scope cancelled: ${normalized}`));
+      }
+    }
+    if (cancelled > 0) {
+      this.eventLog.record?.("QUERY_SCOPE_CANCELLED", {
+        scope_id: normalized,
+        cancelled_consumers: cancelled,
+        include_active: options?.includeActive !== false,
+      });
+    }
+    return cancelled;
   }
 
   inspect(request) {
@@ -270,10 +327,7 @@ class FrameDemandServiceCore {
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
-    for (const scopeId of this.scopeIds) {
-      this.queryCoordinator.cancelScope(scopeId, { includeActive: true });
-    }
-    this.scopeIds.clear();
+    for (const entry of this.inflight.values()) entry.controller.abort();
     this.inflight.clear();
   }
 }

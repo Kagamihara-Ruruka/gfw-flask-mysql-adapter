@@ -1,0 +1,31 @@
+{
+  "schema": "rrkal.source.database.v1",
+  "role": "database",
+  "name": "pipeline_iceberg",
+  "backend": {
+    "kind": "iceberg"
+  },
+  "adapter": {
+    "kind": "http_endpoint"
+  },
+  "query_policy": {
+    "max_in_flight": 2
+  },
+  "endpoint": {
+    "scheme": "http",
+    "host": "<host-ip>",
+    "port": 30801,
+    "base_path": "/api/v1",
+    "catalog_paths": [
+      "catalog"
+    ],
+    "health_paths": [
+      "/healthz"
+    ],
+    "discovery_paths": [],
+    "timeout_seconds": 3
+  },
+  "auth": {
+    "type": "none"
+  }
+}

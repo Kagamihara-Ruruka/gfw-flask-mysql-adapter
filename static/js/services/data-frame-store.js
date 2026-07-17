@@ -162,6 +162,7 @@ class DataFrameStoreCore {
       frameKey,
       datasetId: meta.datasetId || "",
       cacheNamespace: meta.cacheNamespace || "",
+      date: meta.date || "",
       reason,
     });
     return true;

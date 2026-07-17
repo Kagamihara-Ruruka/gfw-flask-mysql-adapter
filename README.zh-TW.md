@@ -83,7 +83,7 @@ Runtime 只引用 `common_adapter/` 的正式模組。舊 root modules 與 `data
 
 - `static/app.js`：啟動 app，綁定 UI 與事件。
 - `static/js/core`：共用 state、DOM、map、geo、render-state。
-- `static/js/services`：render intent、中央 query coordinator、sampled-grid canonical cache、API client 與共用 service helper。
+- `static/js/services`：render intent、sampled-grid `QueryBroker`、一般 query scheduler、canonical frame cache、API client 與共用 service helper。
 - `static/js/playback`：播放控制、純時間線 scheduler、frame readiness buffer、playback renderer handoff、playback interpolation policy、獨立水位預熱器、自適應水位控制器與 snapshot splitter。
 - `static/js/layers`：GFW、AIS、EEZ、graticule 圖層行為，以及 GFW zoom blur / crossfade 視覺效果邊界。
 - `static/js/rendering`：WebGL/Canvas 能力檢查、renderer registry、GFW paint 設定。
@@ -142,7 +142,7 @@ Hive 與 Spark 目前只是明確保留的 unsupported stub。這代表架構上
 - active websocket/read-model route 提供的 AIS 船舶位置
 - active spatial route 提供的 EEZ 經濟海域邊界
 
-主資料圖層由啟用狀態控制，可以全部關閉；未勾選的 imported layer 不得查詢也不得渲染。EEZ 是獨立 overlay。圖層可拖拉排序，齒輪會依 Layer Contract 暴露 metric、resolution、顏色、alpha 與顯示模式。若 sampled-grid 有巢狀 coverage，Mapping 的 `default_coverage_id` 決定初始視角，viewport request 則只路由到一個實際 coverage，不能把多個 AOI 聯集後造成錯誤 LOD 降級。
+主資料圖層由啟用狀態控制，可以全部關閉；未勾選的 imported layer 不得查詢也不得渲染。EEZ 是獨立 overlay。圖層可拖拉排序，齒輪會依 Layer Contract 暴露 metric、resolution、顏色、alpha 與顯示模式。對有完整 coverage 的 sampled-grid，Mapping 的 `default_coverage_id` 只決定初始中心；coverage union 決定 CC 邊界與合法最低縮放層級，來源查詢則固定使用完整 coverage scope，不跟相機 zoom 改變。若來源因 cell limit 降到較粗解析度，必須以 requested／actual resolution 明確回報，不能偽裝成相機 LOD。
 
 ## 時間與播放
 
@@ -211,10 +211,11 @@ python scripts/playback_contract_smoke.py
 | `static/js/playback/playback-interpolation-controller.js` | 播放補間 policy：播放時選擇 layer crossfade 或直接切換；資料 blend 尚未啟用。 |
 | `static/js/services/frame-identity.js` | canonical BBOX signature、request intent key、scope key 與回傳 frame key 的唯一建構器。 |
 | `static/js/services/data-frame-store.js` | Canonical RAM frame store：intent/frame alias、局部 coverage 合成、pin/release、LRU 淘汰與 failure state；不執行 transport。 |
-| `static/js/services/layer-query-coordinator.js` | QueryScheduler：相同 intent 單次執行、queued task 提升、consumer scope 取消與前景保留槽。 |
-| `static/js/services/query-policy-controller.js` | DI 建立的 query policy 命令邊界；維持總並行／背景並行不變量，也是 UI 改動策略後喚醒 scheduler 的唯一入口。 |
+| `static/js/services/layer-query-coordinator.js` | sampled-grid 傳輸鏈以外查詢族群使用的 QueryScheduler：相同 intent 單次執行、queued task 提升、consumer scope 取消與前景保留槽。 |
+| `static/js/services/query-policy-controller.js` | 一般 QueryScheduler 的 DI policy 命令邊界；不擁有 sampled-grid provider capacity 或播放水位。 |
 | `static/js/services/query-broker.js` | 實體來源級 transport owner：跨資料集合併相容 operation、串流分流結果，並保證同一 provider key 同時最多一條 HTTP batch。provider key 不取代 dataset/cache identity。 |
-| `static/js/services/frame-demand-service.js` | sampled-grid 唯一 transport 邊界；先查 `DataFrameStore`，miss 才排程，回傳後只提交一次 canonical packet。 |
+| `static/js/services/frame-demand-service.js` | sampled-grid demand 邊界；先查 `DataFrameStore`、合併相容 inflight，真正 miss 才直接交給 `QueryBroker`，回傳後只提交一次 canonical packet。 |
+| `common_adapter/query/batch.py` | Flask 端 batch 執行 owner；`QueryBatchExecutor` 維護全域 worker pool 與跨 request 共用的 provider capacity，在提交 worker 前取得來源 permit，避免等待中的來源占滿 worker 使其他來源飢餓，同時保持回傳順序並隔離同批失敗。 |
 | `static/js/services/frame-demand-decorators.js` | 由 DI 組裝的 observability decorator；只記錄 demand 邊界耗時與結果，不改變快取、排程、transport、回傳值或錯誤語意。 |
 | `static/js/playback/playback-preheater.js` | 長時間存在的生產者，獨立維護 ready-ahead 高低水位，不擁有播放 clock。 |
 | `static/js/playback/adaptive-watermark-controller.js` | DI 建立的有狀態 policy owner；依可信供需、cache-ready P95、播放消耗率與 RAM 預算決定有效水位，並以 monotonic hysteresis 防止頻繁下降。 |
@@ -236,10 +237,15 @@ flowchart LR
   Metrics["RuntimePerformanceMetrics"] --> Watermark["AdaptiveWatermarkController"]
   Store --> Watermark
   Watermark -->|"有效高低水位"| Preheater
-  Demand --> Scheduler["QueryScheduler"]
-  Scheduler --> Broker["QueryBroker：來源級合批與串流分流"]
-  Broker --> Adapter["Flask API + Mapping adapter"]
-  Adapter --> Store["DataFrameStore：canonical RAM frames"]
+  Demand --> Broker["QueryBroker：來源級合批與串流分流"]
+  Broker --> API["Flask /api/query/batch"]
+  API --> Batch["QueryBatchExecutor：全域與 provider capacity"]
+  Batch --> Adapter["Mapping-backed query adapter"]
+  Adapter --> API
+  API --> Broker
+  Broker --> Demand
+  Demand --> Store["DataFrameStore：canonical RAM frames"]
+  Other["其他 query family"] --> Scheduler["QueryScheduler"]
   Store --> Renderer["Sampled-grid renderer：WebGL/Canvas draw"]
   Store --> Widgets["Widgets：cache-first 消費者"]
   Engine --> Renderer
@@ -247,7 +253,7 @@ flowchart LR
   Effects["視覺效果：只修飾，不排程"] -.-> Renderer
   Renderer --> Map["可見 Leaflet 圖層"]
   Events["LifecycleEventLog + 事件檢視器 Widget"] -.-> Engine
-  Events -.-> Scheduler
+  Events -.-> Broker
   Events -.-> Store
   Events -.-> Renderer
 ```
@@ -263,7 +269,7 @@ AIS live 模式目前不走日期播放器。
 - 預熱器在圖層、日期範圍與查詢 scope 確定後獨立運作；低於低水位時非同步補到高水位。
 - `AdaptiveWatermarkController` 在尚無 frame-size 樣本時使用固定低 10 / 高 15；有樣本後取設定 RAM 上限的 50% 換算播放庫存容量，低水位為容量 1/3、高水位為 2/3。供需比低於 1 只觸發提前補貨，不改變播放 gate。
 - 有效高水位受 `DataFrameStore` RAM／entry 預算共同限制。水位提高可立即生效；降低使用 monotonic hold 與有限步長，避免短期波動造成來回震盪。
-- 高水位代表目標 ready-ahead，不代表開相同數量的 HTTP。網路並行數與前景保留槽仍由 `QueryScheduler` 單獨管理。
+- 高水位代表目標 ready-ahead，不代表開相同數量的 HTTP。sampled-grid 瀏覽器傳輸由 `QueryBroker` 限制每個 provider 一條 HTTP batch；Flask 解包後的全域與來源 operation capacity 分別由 runtime `query_policy.network_concurrency` 與 source `query_policy.max_in_flight` 管理。
 - 設定頁可在自適應與固定水位間切換；切換只重算 policy，不會清除已完成的 Canonical frame。
 - 預熱器 `FETCHING` 與播放器 `PLAYING` 可同時成立。冷啟動 `PREPARING` 與中途 `BUFFERING` 都只等待下一 target；背景水位不構成播放資格門檻。
 - 快取有容量上限，瀏覽器預設 512 MB，可在播放設定中調整。
@@ -277,12 +283,14 @@ AIS live 模式目前不走日期播放器。
 每一個 frame 是 canonical records packet，主要由下面這組 key 決定：
 
 ```text
-mapping-aware cache namespace + date + bbox + limit + columns + resolution/LOD context
+mapping-aware cache namespace + date + source-scope bbox + limit + columns + resolution context
 ```
 
-cache namespace 由目前 mapping contract 推導，包含 source route、canonical 欄位角色、grid profile、resolution policy 與 query contract。只要 mapping 語意改變，就會使用新的 namespace；密碼與純視覺設定不影響資料快取身分。Registry 另從實體來源路由推導不含密鑰的 provider transport key；共用 provider key 的資料集可共用序列化 batch lane，但仍保有各自的 cache namespace 與 canonical frame。冷路徑由 `FrameDemandService` 要求 `QueryScheduler` 排入 intent，再由 `QueryBroker` 合批並串流分流，最後由 `DataFrameStore` 保存 canonical 結果；暖路徑讓地圖、播放、選取工具與 Widgets 共用同一份 packet。
+cache namespace 由目前 mapping contract 推導，包含 source route、canonical 欄位角色、grid profile、resolution policy 與 query contract。只要 mapping 語意改變，就會使用新的 namespace；密碼與純視覺設定不影響資料快取身分。Registry 另從實體來源路由推導不含密鑰的 provider transport key；共用 provider key 的資料集可共用同一條 batch lane，但仍保有各自的 cache namespace 與 canonical frame。冷路徑由 `FrameDemandService` 合併 logical intent 並直接委派給 `QueryBroker`，Broker 把相容 operation 壓成一份 NDJSON request；Flask 再由 `QueryBatchExecutor` 解包，在全域 worker 上限與來源 `query_policy.max_in_flight` 之內執行。每份 operation 結果各自正規化並只提交一次到 `DataFrameStore`；暖路徑讓地圖、播放、選取工具與 Widgets 共用同一份 packet。
 
-只有地圖/query layer 擁有 source transport。地圖 request 的 scheduler 優先序最高；Widget 先查 canonical cache，miss 時只能透過 coordinator 排入較低優先序的 fill。表格工具是嚴格唯讀的目前快照快取檢閱器，不能向 source 發 request。
+只有地圖/query application layer 可以建立 sampled-grid demand。`QueryBroker` 依 `map-current`、`playback-target`、`playback-window`、`widget-interactive`、`widget-auto/background` 排序；`QueryScheduler` 是其他 query family 的獨立 owner，不得再巢狀包住這條鏈。Widget 先查 canonical cache，只有明確允許的 miss 才能經 demand 邊界補一張；表格工具是嚴格唯讀的目前快照快取檢閱器，不能向 source 發 request。
+
+容量有兩個獨立維度：runtime `query_policy.network_concurrency` 限制 Flask `QueryBatchExecutor` 的總 worker 數，source config 的 `query_policy.max_in_flight` 限制同一實體 provider 同時執行的解包 operation。後者未宣告時保守採 `1`；追蹤的 Pipeline Iceberg 範例採 `2`，是依相同日期集合的一路／兩路量測決定。瀏覽器 batch 大小與播放水位不得改變這兩個容量。
 
 來源錯誤語意由 Mapping 翻譯。`snapshot.no_data` 把來源特有的缺 partition 錯誤轉成空的 canonical snapshot 並做負快取；`snapshot.retry` 只處理有限次的瞬時錯誤重試；`resolution_policy` 只在來源確實有較粗 LOD 時降級。三者不能混用。
 
@@ -296,8 +304,9 @@ sequenceDiagram
   participant Preload as PlaybackPreheater
   participant Demand as FrameDemandService
   participant BrowserCache as DataFrameStore
-  participant Coordinator as QueryScheduler
-  participant API as Flask Records API
+  participant Broker as QueryBroker
+  participant API as Flask Query Batch API
+  participant Batch as QueryBatchExecutor
   participant ServerCache as Flask Records Cache
   participant Adapter as Query Adapter
   participant Renderer as Sampled-grid Renderer
@@ -327,17 +336,22 @@ sequenceDiagram
       Renderer->>Map: WebGL 或 Canvas 畫到地圖
     else target frame 缺少
       Playback->>Demand: 只提升缺少的 target
-      Demand->>Coordinator: promote 或排入 playback-target
-      Coordinator->>API: GET /api/datasets/{datasetId}/records
-      API->>ServerCache: 查 server-side records cache
+      Demand->>BrowserCache: inspect canonical frame
+      BrowserCache-->>Demand: missing
+      Demand->>Broker: enqueue 或 promote playback-target operation
+      Broker->>API: POST /api/query/batch
+      API->>Batch: 執行解包 operations
+      Batch->>ServerCache: 查 canonical source snapshot
       alt Server cache 命中
-        ServerCache-->>API: cached packet
+        ServerCache-->>Batch: cached packet
       else Server cache 未命中
-        API->>Adapter: canonical date + bbox query
-        Adapter-->>API: rows
-        API->>ServerCache: remember packet
+        Batch->>Adapter: canonical date + bbox + resolution
+        Adapter-->>Batch: rows
+        Batch->>ServerCache: remember packet
       end
-      API-->>Demand: packet(rows + timing)
+      Batch-->>API: ordered operation result
+      API-->>Broker: NDJSON batch.result
+      Broker-->>Demand: 分流 packet(rows + timing)
       Demand->>BrowserCache: commit canonical frame
       BrowserCache-->>Playback: shared frame result
       Playback->>UI: 只有 target 不存在時 buffering
@@ -351,11 +365,13 @@ Frame 來源判斷：
 flowchart TD
   A["Frame request: datasetId + date + bbox + columns"] --> B{"瀏覽器快取有嗎？"}
   B -->|有| C["直接回 packet(rows)"]
-  B -->|沒有| D["呼叫 Flask /records API"]
+  B -->|沒有| D["合併 demand 並排入 QueryBroker operation"]
 
-  D --> E{"Flask records cache 有嗎？"}
-  E -->|有| F["回 cached packet"]
-  E -->|沒有| G["解析已註冊 Query Adapter"]
+  D --> E["對 provider POST 一份 /api/query/batch"]
+  E --> F0["QueryBatchExecutor 套用全域與來源容量"]
+  F0 --> F1{"Flask records cache 有嗎？"}
+  F1 -->|有| F["回 cached packet"]
+  F1 -->|沒有| G["解析已註冊 Query Adapter"]
 
   G --> H["把 canonical date/bbox/resolution 翻譯為 source contract"]
   H --> I["回 rows"]
@@ -387,17 +403,15 @@ flowchart LR
   F --> G["Query Adapter 翻譯成 source contract"]
 ```
 
-## 渲染與 LOD
+## 渲染與來源解析度
 
-GFW 渲染優先走 WebGL，無法使用時回退 Canvas。GFW record cache 會依 viewport、zoom、date、dataset 與粒度建立快取。
+Sampled-grid 渲染優先走 WebGL，無法使用時回退 Canvas。相機縮放與來源解析度是兩個獨立邊界：
 
-目前行為：
-
-- 同 zoom 平移時盡量沿用既有 LOD packet。
-- zoom 改變時會標記 GFW loading、套用可選的縮放模糊遮罩、清除舊 LOD key，並重新抓取 LOD packet。
-- 日期播放換幀不再套用高斯模糊；它依賴快取 readiness、renderer 工作與 layer crossfade。
-- 成功渲染後會在背景預熱其他設定過的 zoom / LOD packet。
-- GFW 支援漸層色票、alpha、最大強度與粒度控制。
+- Mapping 宣告完整 coverage 的資料集，以固定 coverage bbox 建立 frame/cache 身分；平移與縮放只觸發 Renderer 重繪，不重發來源 query。
+- 沒有 bounded coverage、且來源契約本來就是 bbox-backed 的資料集，仍由 viewport 決定查詢範圍，離開已快取範圍時才補查。
+- 使用者明確調整 resolution 時可以取得另一份 source packet；camera zoom 不得作為 sampled-grid query 參數。
+- 日期播放換幀依賴 canonical cache readiness、renderer 工作與 layer crossfade，不因相機層級建立另一條播放生命週期。
+- 漸層色票、alpha、最大強度與粒度控制只改各自擁有的視覺或來源契約，不互相冒充。
 
 EEZ 被視為接近底圖的 overlay，應盡量重用向量 tile / local vector cache，而不是每次平移都重新載入。
 
@@ -492,6 +506,7 @@ GET /api/datasets
 GET /api/datasets/<dataset_id>/schema
 GET /api/datasets/<dataset_id>/records?date=YYYY-MM-DD&bbox=west,south,east,north&limit=max
 GET /api/datasets/<dataset_id>/records/range?start=YYYY-MM-DD&end=YYYY-MM-DD&bbox=west,south,east,north&limit=max
+POST /api/query/batch
 GET /api/overlays/eez
 GET /api/overlays/eez/tiles/<z>/<x>/<y>.pbf
 GET /api/overlays/eez/boundary/tiles/<z>/<x>/<y>.pbf

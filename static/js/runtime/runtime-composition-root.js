@@ -141,7 +141,6 @@ class RuntimeCompositionRoot {
     const frameDemandService = this.own("FrameDemandService", decorateFrameDemandService(
       new FrameDemandServiceCore({
         frameIdentity: this.frameIdentity,
-        queryCoordinator,
         queryBroker,
         dataFrameStore,
         eventLog,
