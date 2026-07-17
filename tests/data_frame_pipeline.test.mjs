@@ -7,6 +7,59 @@ import vm from "node:vm";
 const root = process.cwd();
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
+function canonicalTransport(rows = []) {
+  const values = Array.isArray(rows) ? rows : [];
+  const frameFields = {};
+  for (const field of ["date", "resolution_km"]) {
+    if (values.length && values.every((row) => Object.hasOwn(row || {}, field))) {
+      const first = values[0][field];
+      if (values.every((row) => row[field] === first)) frameFields[field] = first;
+    }
+  }
+  const rowFields = [];
+  for (const row of values) {
+    for (const field of Object.keys(row || {})) {
+      if (field === "bounds" || Object.hasOwn(frameFields, field) || rowFields.includes(field)) continue;
+      rowFields.push(field);
+    }
+    if (row?.bounds) {
+      for (const direction of ["west", "south", "east", "north"]) {
+        const field = `bounds.${direction}`;
+        if (!rowFields.includes(field)) rowFields.push(field);
+      }
+    }
+  }
+  return {
+    schema: "rrkal.canonical_grid_frame.v1",
+    row_fields: rowFields,
+    frame_fields: frameFields,
+    columns: rowFields.map((field) => values.map((row) => (
+      field.startsWith("bounds.") ? row?.bounds?.[field.slice(7)] ?? null : row?.[field] ?? null
+    ))),
+    row_count: values.length,
+  };
+}
+
+function internalPacket(packet = {}) {
+  if (packet.canonical_frame) return packet;
+  const normalized = {
+    ...packet,
+    row_contract_version: "rrkal.sampled_grid.v1",
+    canonical_frame: canonicalTransport(packet.rows),
+    row_count: Array.isArray(packet.rows) ? packet.rows.length : 0,
+  };
+  delete normalized.rows;
+  return normalized;
+}
+
+function framePacket(context, rows = [], patch = {}) {
+  return {
+    ...patch,
+    frame: new context.CanonicalGridFrame(canonicalTransport(rows)),
+    row_count: rows.length,
+  };
+}
+
 function batchFetch(sourceFetchJson) {
   return async (url, options = {}) => {
     assert.equal(url, "/api/query/batch");
@@ -22,10 +75,10 @@ function batchFetch(sourceFetchJson) {
         if (value != null) params.set(key, String(value));
       }
       try {
-        const packet = await sourceFetchJson(
+        const packet = internalPacket(await sourceFetchJson(
           `/api/datasets/${operation.dataset_id}/records?${params}`,
           { signal: options.signal },
-        );
+        ));
         events.push({
           type: "batch.result",
           batch_id: envelope.batch_id,
@@ -103,6 +156,7 @@ function createContext({ fetchJson, statePatch = {} } = {}) {
     "static/TimingMetrics.js",
     "static/js/services/lifecycle-event-log.js",
     "static/js/services/frame-identity.js",
+    "static/js/core/canonical-grid-frame.js",
     "static/js/services/render-intent-service.js",
     "static/js/services/layer-query-coordinator.js",
     "static/js/services/query-broker.js",
@@ -345,7 +399,7 @@ test("an in-flight viewport request satisfies a covered widget bbox without dupl
   assert.equal(requests, 1);
   assert.equal(mapFrame.packet.row_count, 1);
   assert.equal(widgetFrame.packet.row_count, 1);
-  assert.equal(widgetFrame.packet.rows[0].cell_id, "selected");
+  assert.equal(widgetFrame.packet.frame.valueAt("cell_id", 0), "selected");
 });
 
 test("partially overlapping viewport fetches the new bbox once instead of fragmenting HTTP work", async () => {
@@ -358,11 +412,10 @@ test("partially overlapping viewport fetches the new bbox once instead of fragme
   });
   const demand = api(context, "FrameDemandService");
   const store = api(context, "DataFrameStore");
-  store.put(request("2020-01-01", { bbox: "120,10,130,20" }), {
-    rows: [],
-    row_count: 0,
-    grid: { actual_resolution_km: 4 },
-  });
+  store.put(
+    request("2020-01-01", { bbox: "120,10,130,20" }),
+    framePacket(context, [], { grid: { actual_resolution_km: 4 } }),
+  );
 
   await demand.demand(request("2020-01-01", { bbox: "125,10,135,20" }), {
     lane: "playback-window",
@@ -375,8 +428,7 @@ test("partially overlapping viewport fetches the new bbox once instead of fragme
 test("covered bbox reuse excludes a neighboring cell that only touches the selected boundary", () => {
   const context = createContext();
   const store = api(context, "DataFrameStore");
-  store.put(request("2020-01-01", { bbox: "119.6,25.6,120.1,25.9" }), {
-    rows: [
+  store.put(request("2020-01-01", { bbox: "119.6,25.6,120.1,25.9" }), framePacket(context, [
       {
         cell_id: "left",
         lat: 25.75,
@@ -389,17 +441,14 @@ test("covered bbox reuse excludes a neighboring cell that only touches the selec
         lon: 119.91666666666666,
         bounds: { west: 119.83333333333331, south: 25.66666666666666, east: 120, north: 25.83333333333333 },
       },
-    ],
-    row_count: 2,
-    grid: { actual_resolution_km: 16 },
-  });
+    ], { grid: { actual_resolution_km: 16 } }));
 
   const selected = store.inspect(request("2020-01-01", {
     bbox: "119.833333,25.666667,120.000000,25.833333",
   }));
 
   assert.equal(selected.status, "ready");
-  assert.deepEqual(selected.packet.rows.map((row) => row.cell_id), ["selected"]);
+  assert.deepEqual([...selected.packet.frame.rows()].map((row) => row.cell_id), ["selected"]);
 });
 
 test("covered bbox inspection is read-only and does not notify cache subscribers", () => {
@@ -407,11 +456,11 @@ test("covered bbox inspection is read-only and does not notify cache subscribers
   const store = api(context, "DataFrameStore");
   const sourceRequest = request("2020-01-01", { bbox: "120,10,130,20" });
   const selectedRequest = request("2020-01-01", { bbox: "122,12,124,14" });
-  const source = store.put(sourceRequest, {
-    rows: [{ cell_id: "selected", lat: 13, lon: 123, value: 7 }],
-    row_count: 1,
-    grid: { actual_resolution_km: 4 },
-  });
+  const source = store.put(sourceRequest, framePacket(
+    context,
+    [{ cell_id: "selected", lat: 13, lon: 123, value: 7 }],
+    { grid: { actual_resolution_km: 4 } },
+  ));
   const changes = [];
   const unsubscribe = store.subscribe((change) => changes.push(change));
   const before = store.snapshot();
@@ -423,7 +472,7 @@ test("covered bbox inspection is read-only and does not notify cache subscribers
   assert.equal(selected.status, "ready");
   assert.equal(selected.frameKey, source.frameKey);
   assert.equal(selected.reusedFrom, source.frameKey);
-  assert.deepEqual(selected.packet.rows.map((row) => row.cell_id), ["selected"]);
+  assert.deepEqual([...selected.packet.frame.rows()].map((row) => row.cell_id), ["selected"]);
   assert.equal(after.entries, before.entries);
   assert.equal(after.aliases, before.aliases);
   assert.deepEqual(changes, []);
@@ -437,8 +486,7 @@ test("canonical store clips a query response to its exact requested bbox before 
     resolution: 16,
   });
 
-  store.put(tileRequest, {
-    rows: [
+  store.put(tileRequest, framePacket(context, [
       {
         cell_id: "north-neighbor",
         lat: 26.75,
@@ -461,15 +509,11 @@ test("canonical store clips a query response to its exact requested bbox before 
           north: 26.666666666666664,
         },
       },
-    ],
-    row_count: 2,
-    grid: { actual_resolution_km: 16 },
-    timing: {},
-  });
+    ], { grid: { actual_resolution_km: 16 }, timing: {} }));
 
   const selected = store.inspect(tileRequest);
   assert.equal(selected.status, "ready");
-  assert.deepEqual(selected.packet.rows.map((row) => row.cell_id), ["selected"]);
+  assert.deepEqual([...selected.packet.frame.rows()].map((row) => row.cell_id), ["selected"]);
   assert.equal(selected.packet.row_count, 1);
   assert.equal(selected.packet.timing.canonical_bbox_clipped, true);
   assert.equal(selected.packet.timing.canonical_bbox_dropped_rows, 1);
@@ -478,14 +522,13 @@ test("canonical store clips a query response to its exact requested bbox before 
 test("data frame store keeps pinned entries while enforcing LRU entry budget", () => {
   const context = createContext();
   const store = api(context, "DataFrameStore");
-  store.put(request("2020-01-01"), { rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
+  store.put(request("2020-01-01"), framePacket(context, [], { grid: { actual_resolution_km: 4 } }));
   assert.equal(store.pin(request("2020-01-01"), "renderer"), true);
   for (let day = 2; day <= 14; day += 1) {
-    store.put(request(`2020-01-${String(day).padStart(2, "0")}`), {
-      rows: [],
-      row_count: 0,
-      grid: { actual_resolution_km: 4 },
-    });
+    store.put(
+      request(`2020-01-${String(day).padStart(2, "0")}`),
+      framePacket(context, [], { grid: { actual_resolution_km: 4 } }),
+    );
   }
   assert.equal(store.snapshot().entries, 12);
   assert.equal(store.inspect(request("2020-01-01")).status, "ready");
@@ -507,7 +550,7 @@ test("shared frame memory evicts an inactive dataset before the active dataset L
     datasetId,
     layerId: `${datasetId}.layer`,
   });
-  const packet = { rows: [], row_count: 0, grid: { actual_resolution_km: 4 } };
+  const packet = framePacket(context, [], { grid: { actual_resolution_km: 4 } });
 
   store.put(frame("hot", "2020-01-01"), packet);
   store.put(frame("cold", "2020-01-01"), packet);

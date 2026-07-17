@@ -103,7 +103,7 @@ class FrameDemandServiceCore {
         lane: entry.lane,
         scope_id: physicalScopeId,
         duration_ms: elapsedMs,
-        row_count: Number(packet?.row_count || packet?.rows?.length || 0),
+        row_count: Number(packet?.row_count ?? packet?.frame?.rowCount ?? 0),
       }));
       this.sampledGridContract?.recordResolvedResolution?.(request.datasetId, packet?.grid || null);
       return this.dataFrameStore.put(request, packet, {

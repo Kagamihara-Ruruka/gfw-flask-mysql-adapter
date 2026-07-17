@@ -6,6 +6,45 @@ import vm from "node:vm";
 
 const root = process.cwd();
 
+function canonicalTransport(rows = []) {
+  const values = Array.isArray(rows) ? rows : [];
+  const rowFields = [...new Set(values.flatMap((row) => Object.keys(row || {}).filter((field) => (
+    field !== "bounds" && field !== "date" && field !== "resolution_km"
+  ))))];
+  const frameFields = {};
+  for (const field of ["date", "resolution_km"]) {
+    if (values.length && values.every((row) => Object.hasOwn(row || {}, field) && row[field] === values[0][field])) {
+      frameFields[field] = values[0][field];
+    }
+  }
+  return {
+    schema: "rrkal.canonical_grid_frame.v1",
+    row_fields: rowFields,
+    frame_fields: frameFields,
+    columns: rowFields.map((field) => values.map((row) => row?.[field] ?? null)),
+    row_count: values.length,
+  };
+}
+
+function internalPacket(packet = {}) {
+  const normalized = {
+    ...packet,
+    row_contract_version: "rrkal.sampled_grid.v1",
+    canonical_frame: packet.canonical_frame || canonicalTransport(packet.rows),
+    row_count: Array.isArray(packet.rows) ? packet.rows.length : Number(packet.row_count || 0),
+  };
+  delete normalized.rows;
+  return normalized;
+}
+
+function framePacket(context, rows = [], patch = {}) {
+  return {
+    ...patch,
+    frame: new context.CanonicalGridFrame(canonicalTransport(rows)),
+    row_count: rows.length,
+  };
+}
+
 function deferred() {
   let resolve;
   let reject;
@@ -52,7 +91,7 @@ function batchFetch(sourceFetchJson) {
                   batch_id: envelope.batch_id,
                   operation_id: operation.operation_id,
                   status: "ok",
-                  packet,
+                  packet: internalPacket(packet),
                 });
               } catch (error) {
                 if (error?.name === "AbortError") break;
@@ -131,6 +170,7 @@ function contextFor(fetchJson) {
     "static/TimingMetrics.js",
     "static/js/services/lifecycle-event-log.js",
     "static/js/services/frame-identity.js",
+    "static/js/core/canonical-grid-frame.js",
     "static/js/services/layer-query-coordinator.js",
     "static/js/services/query-broker.js",
     "static/js/services/query-policy-controller.js",
@@ -189,7 +229,7 @@ test("preheater refills from low 10 to high 15 without becoming a playback gate"
   const store = api(context, "DataFrameStore");
   const preheater = api(context, "PlaybackPreheater");
   const allDates = dates(25);
-  store.put(requestContext(), { rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
+  store.put(requestContext(), framePacket(context, [], { grid: { actual_resolution_km: 4 } }));
   preheater.setScope({ dates: allDates, requestContext: requestContext(), anchorDate: allDates[0] });
 
   await waitFor(() => preheater.snapshot().readyAhead >= 15);
@@ -957,7 +997,7 @@ test("playback target promotes an existing preheat request and resumes from the 
   const engine = api(context, "PlaybackEngine");
   const log = api(context, "LifecycleEventLog");
   const allDates = dates(4);
-  store.put(requestContext(), { rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
+  store.put(requestContext(), framePacket(context, [], { grid: { actual_resolution_km: 4 } }));
   engine.configure({ dates: allDates, requestContext: requestContext(), currentDate: allDates[0] });
   await waitFor(() => responses.has(allDates[1]));
   const starting = engine.start();
@@ -1144,7 +1184,7 @@ test("a target that becomes ready while paused does not restart playback", async
   const store = api(context, "DataFrameStore");
   const engine = api(context, "PlaybackEngine");
   const allDates = dates(3);
-  store.put(requestContext(), { rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
+  store.put(requestContext(), framePacket(context, [], { grid: { actual_resolution_km: 4 } }));
   engine.configure({ dates: allDates, requestContext: requestContext(), currentDate: allDates[0] });
   await waitFor(() => responses.has(allDates[1]));
   const starting = engine.start();

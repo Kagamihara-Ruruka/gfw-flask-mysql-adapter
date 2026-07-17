@@ -78,6 +78,7 @@ flowchart LR
 | network/background concurrency policy 與不變量 | `QueryPolicyControllerCore` | `RuntimeCompositionRoot` | `dispose` 無資源；UI 只能透過 command 更新 policy |
 | demand inflight、owned scope ids、transport lifecycle | `FrameDemandServiceCore` | `RuntimeCompositionRoot`，再交給 decorator | `dispose` 取消 owned scopes 並清空 inflight |
 | canonical frames、alias、pin、failure、LRU | `DataFrameStoreCore` | `RuntimeCompositionRoot` | `dispose` 清空 RAM 與 listener |
+| sampled-grid column storage 與 selection view | `CanonicalGridFrame` immutable value | Mapping builder 建立，經 transport 交給 `DataFrameStoreCore` | 無獨立 lifecycle；只能共用或由 Store 淘汰，不得由 consumer 修改 |
 | lifecycle events、run、listener | `LifecycleEventLogCore` | `RuntimeCompositionRoot` | `dispose` 清空 bounded log 與 subscription |
 | active date 到 renderer 的 handoff | `PlaybackRendererController` | `RuntimeCompositionRoot` | `dispose` 清除 active date；不擁有 WebGL resource |
 | 圖層 transition queue | `DashboardLayerActivationController` | `AppRuntime.install` | `dispose` 停止接受 command；單一路徑停播放、切 dataset、載 schema、reload |
@@ -138,6 +139,7 @@ Playback UI
 
 - 地圖 application flow 建立 `map-current` demand，這是一般 source transport 的最高優先入口。
 - `FrameDemandServiceCore` 先查 `DataFrameStore`，cache miss 才直接交給 `QueryBroker`；相同 intent 在 Demand 層共用同一份 logical request。
+- Mapping 使用預編譯 context 對 source rows 做單一 pass，直接建立 columnar `CanonicalGridFrame`。Server cache、transport、browser Store、Renderer 與 Widgets 不得再膨脹或深拷貝 sampled-grid row graph；表格只在可見列的展示邊界 materialize row。
 - `QueryBroker` 是 sampled-grid 唯一瀏覽器 transport owner。它使用 Registry 衍生的 provider transport key 與 capacity 合併跨資料集 operation，依可用槽位限制 batch 與 in-flight operation；每筆 completion-order result 都會立即釋放槽位並補入最高優先工作。不同資料集仍保有不同 cache identity。
 - Flask `QueryBatchExecutor` 是 batch 解包後的唯一執行 owner；全域 worker 上限來自 runtime query policy，各 provider capacity 來自 source `query_policy.max_in_flight`，而且跨瀏覽器 request 共用同一份 in-flight 計數。Provider permit 必須在提交 worker 前取得，等待來源容量不得占用全域 worker。
 - `QueryScheduler` 保留給其他 query family；不得再包住 sampled-grid Demand/Broker 鏈形成第二個 queued/active owner。

@@ -166,6 +166,7 @@ const state = {
     gpu: false,
   },
   rows: [],
+  recordsFrame: null,
   columns: [],
   renderedSampledGridDate: null,
   sampledGridTransitionMs: 180,

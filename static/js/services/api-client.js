@@ -406,7 +406,7 @@ async function reloadSampledGridRecords() {
   state.primaryFetchController = null;
   const seq = ++state.fetchSeq;
   if (!requestedDate) {
-    renderSampledGridMap([]);
+    renderSampledGridMap(CanonicalGridFrame.empty());
     renderTable([], state.datasets[state.datasetId].display_columns, {
       layer: requestedLayer,
       date: "",
@@ -428,7 +428,7 @@ async function reloadSampledGridRecords() {
   const requestContext = RenderIntentService.toSampledGridPacketRequest(renderIntent);
   renderTable([], state.datasets[state.datasetId].display_columns, { layer: requestedLayer, date: requestedDate, loading: true });
   if (requestContext.outsideCoverage || !requestContext.bbox) {
-    renderSampledGridMap([]);
+    renderSampledGridMap(CanonicalGridFrame.empty());
     renderTable([], state.datasets[state.datasetId].display_columns, { layer: requestedLayer, date: requestedDate });
     RenderState.ready(requestedLayer, "0 rows / outside coverage");
     setStatus(`${requestedLayerLabel} 視窗位於資料範圍外`);
@@ -448,9 +448,8 @@ async function reloadSampledGridRecords() {
     if (seq !== state.fetchSeq) return;
     const metricsSource = currentDatasetBackendDetail(packet);
     TimingMetrics.markRenderStart?.(metricsSource ? `${requestedLayerLabel} ${metricsSource}` : requestedLayerLabel);
-    const visibleRows = sampledGridRowsWithinCoverage(packet.rows, requestedDataset);
-    const renderResult = renderSampledGridMap(visibleRows);
-    renderTable(visibleRows, state.datasets[state.datasetId].display_columns, { layer: requestedLayer, date: requestedDate });
+    const renderResult = renderSampledGridMap(packet.frame);
+    renderTable(renderResult.frame, state.datasets[state.datasetId].display_columns, { layer: requestedLayer, date: requestedDate });
     const serverCacheHit = Boolean(packet.timing?.cache_hit);
     if (cacheHit || serverCacheHit) {
       TimingMetrics.setText("query-ms", "快取命中", { source: metricsSource });
@@ -461,7 +460,7 @@ async function reloadSampledGridRecords() {
       TimingMetrics.setMs("serialize-ms", packet.timing.serialize_ms, { source: metricsSource });
       TimingMetrics.setMs("api-ms", packet.timing.api_total_ms, { source: metricsSource });
     }
-    TimingMetrics.setCount("row-count", visibleRows.length);
+    TimingMetrics.setCount("row-count", renderResult.rowCount);
     TimingMetrics.setMs("client-ms", timing.elapsed(), { source: metricsSource });
     TimingMetrics.updateSummary();
     const sourceDetail = cacheHit

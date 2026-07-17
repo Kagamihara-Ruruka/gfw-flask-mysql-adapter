@@ -29,7 +29,7 @@ const SampledGridWebglLayer = L.Layer.extend({
       throw new TypeError("SampledGridWebglLayer requires a render clock");
     }
     this._renderClock = renderClock;
-    this._rows = [];
+    this._frame = CanonicalGridFrame.empty();
     this._drawMs = 0;
     this._vertexData = new Float32Array(0);
     this._gpuBufferFloats = 0;
@@ -76,8 +76,9 @@ const SampledGridWebglLayer = L.Layer.extend({
       this._program = null;
     }
   },
-  setRows(rows) {
-    this._rows = rows;
+  setFrame(frame) {
+    if (!CanonicalGridFrame.isFrame(frame)) throw new TypeError("Sampled-grid WebGL layer requires CanonicalGridFrame");
+    this._frame = frame;
     return this._draw();
   },
   _reset() {
@@ -187,13 +188,12 @@ const SampledGridWebglLayer = L.Layer.extend({
     const alpha = Math.max(0, Math.min(1, Number(
       state.layerAlpha[state.dataLayer] ?? state.sampledGridPaint?.alpha ?? 1
     )));
-    const paintFrame = sampledGridPaintFrame(this._rows);
-    const renderRows = paintFrame.rows;
-    const vertices = this._ensureVertexCapacity(renderRows.length * 36);
+    const paintFrame = sampledGridPaintFrame(this._frame);
+    const vertices = this._ensureVertexCapacity(paintFrame.indices.length * 36);
     let vertexFloatCount = 0;
-    const model = paintFrame.model;
-    for (const row of renderRows) {
-      const bounds = model.bounds(row);
+    const boundsScratch = {};
+    for (const index of paintFrame.indices) {
+      const bounds = this._frame.boundsAt(index, boundsScratch);
       if (!bounds) continue;
       const nw = this._map.latLngToContainerPoint([bounds.north, bounds.west]);
       const se = this._map.latLngToContainerPoint([bounds.south, bounds.east]);
@@ -202,7 +202,7 @@ const SampledGridWebglLayer = L.Layer.extend({
       const w = Math.max(1, Math.ceil(Math.abs(se.x - nw.x)));
       const h = Math.max(1, Math.ceil(Math.abs(se.y - nw.y)));
       if (x > size.x || y > size.y || x + w < 0 || y + h < 0) continue;
-      const value = model.value(row);
+      const value = Number(this._frame.valueAt("value", index));
       const cellOpacity = paintFrame.opacityForValue(value);
       if (cellOpacity > 0) {
         vertexFloatCount = this._writeRect(
@@ -257,7 +257,7 @@ const SampledGridWebglLayer = L.Layer.extend({
     }
   },
   hitTest(containerPoint) {
-    return sampledGridHitCellAt(this._map, this._rows, containerPoint);
+    return sampledGridHitCellAt(this._map, this._frame, containerPoint);
   },
 });
 

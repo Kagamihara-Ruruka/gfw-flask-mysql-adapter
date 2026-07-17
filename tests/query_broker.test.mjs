@@ -25,6 +25,10 @@ function loadBroker(fetchFn, { maxBatchSize = 3, sourceCapacity = 2 } = {}) {
   };
   vm.createContext(context);
   vm.runInContext(
+    fs.readFileSync(path.join(root, "static/js/core/canonical-grid-frame.js"), "utf8"),
+    context,
+  );
+  vm.runInContext(
     fs.readFileSync(path.join(root, "static/js/services/query-broker.js"), "utf8"),
     context,
   );
@@ -131,25 +135,28 @@ test("sampled-grid source transport is independent of camera zoom and latitude",
   assert.equal("latitude" in compiled.params, false);
 });
 
-test("render transport projection inflates before consumers receive canonical rows", () => {
+test("canonical frame transport decodes without inflating a row graph", () => {
   const { context } = loadBroker(async () => new Response());
-  const packet = context.inflateSampledGridRenderPacket({
+  const packet = context.decodeCanonicalGridFramePacket({
     row_contract_version: "rrkal.sampled_grid.v1",
-    rows: [["cell-a", 3]],
-    transport_projection: {
-      schema: "rrkal.sampled_grid.render.v1",
+    canonical_frame: {
+      schema: "rrkal.canonical_grid_frame.v1",
       row_fields: ["cell_id", "value"],
       frame_fields: { date: "2020-01-01", resolution_km: 4 },
+      columns: [["cell-a"], [3]],
+      row_count: 1,
     },
   });
 
-  assert.deepEqual(JSON.parse(JSON.stringify(packet.rows)), [{
+  assert.equal(context.CanonicalGridFrame.isFrame(packet.frame), true);
+  assert.deepEqual(JSON.parse(JSON.stringify(packet.frame.rowAt(0))), {
     date: "2020-01-01",
     resolution_km: 4,
     cell_id: "cell-a",
     value: 3,
-  }]);
-  assert.equal("transport_projection" in packet, false);
+  });
+  assert.equal("rows" in packet, false);
+  assert.equal("canonical_frame" in packet, false);
 });
 
 test("datasets sharing one physical provider combine within its capacity", async () => {

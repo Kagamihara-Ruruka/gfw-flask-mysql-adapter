@@ -22,8 +22,8 @@ const RendererRegistry = (() => {
     return Boolean(browserWebgl().available && window.SampledGridWebglLayer?.isSupported?.());
   }
 
-  function chooseSampledGridLayer(rows, canvasLayerClass) {
-    const rowCount = Array.isArray(rows) ? rows.length : 0;
+  function chooseSampledGridLayer(frame, canvasLayerClass) {
+    const rowCount = CanonicalGridFrame.isFrame(frame) ? frame.rowCount : 0;
     if (webglAllowed(rowCount) && window.SampledGridWebglLayer?.isSupported?.()) {
       return { backend: "webgl", LayerClass: window.SampledGridWebglLayer };
     }

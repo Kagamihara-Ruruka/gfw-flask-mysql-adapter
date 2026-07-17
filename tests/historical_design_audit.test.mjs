@@ -105,3 +105,23 @@ test("configured, routed and actual resolution remain separate pipeline roles", 
   assert.match(demand, /effective_query_resolution_km/);
   assert.doesNotMatch(apiClient, /resolvedRequestContext|resolution:\s*actualResolution/);
 });
+
+test("sampled-grid runtime cannot reconstruct the removed row graph", () => {
+  const frameOwners = [
+    "static/js/services/query-broker.js",
+    "static/js/services/data-frame-store.js",
+    "static/js/services/frame-demand-service.js",
+    "static/js/layers/gfw-layer.js",
+    "static/js/rendering/gfw-paint.js",
+    "static/js/rendering/gfw-webgl-renderer.js",
+    "static/js/ui/map/layer-viewport-controller.js",
+    "static/js/application/widgets/widget-query-context.js",
+    "static/js/application/widgets/line-chart-data-source.js",
+    "static/js/application/widgets/table-widget-data-source.js",
+  ];
+  for (const relativePath of frameOwners) {
+    const source = read(relativePath);
+    assert.doesNotMatch(source, /packet\??\.rows|packet\[?['"]rows|sampledGridRowsForRender|inflateSampledGrid/, relativePath);
+  }
+  assert.doesNotMatch(read("static/js/core/canonical-grid-frame.js"), /get\s+rows\s*\(/);
+});

@@ -144,22 +144,21 @@ class WidgetQueryContext {
           scopeId: `widget:${layer.layerId}:${selection?.selection_id || "selected"}`,
           consumerId: `value:${request.date}`,
         });
-      const rows = Array.isArray(result.packet?.rows) ? result.packet.rows : [];
-      const values = rows
-        .map((row) => row?.value)
-        .filter((value) => value !== null && value !== undefined && value !== "")
-        .map(Number)
-        .filter(Number.isFinite);
-      if (!values.length) {
-        return { status: "missing", layer, selection, request, value: null, rowCount: rows.length, packet: result.packet };
+      const frame = result.packet?.frame;
+      if (!globalThis.CanonicalGridFrame?.isFrame(frame)) {
+        return { status: "missing", layer, selection, request, value: null, rowCount: 0, packet: result.packet };
+      }
+      const summary = frame.numericSummary("value");
+      if (!summary.count) {
+        return { status: "missing", layer, selection, request, value: null, rowCount: frame.rowCount, packet: result.packet };
       }
       return {
-        status: values.some((value) => value !== 0) ? "observed" : "zero",
+        status: summary.min !== 0 || summary.max !== 0 ? "observed" : "zero",
         layer,
         selection,
         request,
-        value: values.reduce((total, value) => total + value, 0),
-        rowCount: rows.length,
+        value: summary.sum,
+        rowCount: frame.rowCount,
         packet: result.packet,
         cacheHit: Boolean(result.cacheHit),
       };

@@ -6,6 +6,42 @@ import vm from "node:vm";
 
 const root = process.cwd();
 
+function canonicalTransport(rows = []) {
+  const values = Array.isArray(rows) ? rows : [];
+  const fields = [];
+  for (const row of values) {
+    for (const field of Object.keys(row || {})) {
+      if (field !== "bounds" && !fields.includes(field)) fields.push(field);
+    }
+    if (row?.bounds) {
+      for (const direction of ["west", "south", "east", "north"]) {
+        const field = `bounds.${direction}`;
+        if (!fields.includes(field)) fields.push(field);
+      }
+    }
+  }
+  return {
+    schema: "rrkal.canonical_grid_frame.v1",
+    row_fields: fields,
+    frame_fields: {},
+    columns: fields.map((field) => values.map((row) => (
+      field.startsWith("bounds.") ? row?.bounds?.[field.slice(7)] ?? null : row?.[field] ?? null
+    ))),
+    row_count: values.length,
+  };
+}
+
+function installCanonicalFrame(context) {
+  vm.runInContext(
+    fs.readFileSync(path.join(root, "static/js/core/canonical-grid-frame.js"), "utf8"),
+    context,
+  );
+}
+
+function frameFromRows(context, rows) {
+  return new context.CanonicalGridFrame(canonicalTransport(rows));
+}
+
 function loadContract(dataset) {
   const context = {
     console,
@@ -34,6 +70,7 @@ function loadContract(dataset) {
   };
   context.window = context;
   vm.createContext(context);
+  installCanonicalFrame(context);
   const source = fs.readFileSync(
     path.join(root, "static/js/rendering/sampled-grid-contract.js"),
     "utf8",
@@ -70,7 +107,7 @@ function loadColorScale(dataset) {
   return {
     ...loaded,
     colorScale: vm.runInContext("SampledGridColorScale", loaded.context),
-    rowsForRender: vm.runInContext("sampledGridRowsForRender", loaded.context),
+    frameFromRows: (rows) => frameFromRows(loaded.context, rows),
   };
 }
 
@@ -188,6 +225,7 @@ function loadWidgetQueryContext(packetRows) {
   };
   context.window = context;
   vm.createContext(context);
+  installCanonicalFrame(context);
   for (const file of ["widget-model-functions.js", "widget-query-context.js"]) {
     vm.runInContext(
       fs.readFileSync(path.join(root, "static/js/application/widgets", file), "utf8"),
@@ -207,12 +245,20 @@ function loadWidgetQueryContext(packetRows) {
     renderIntentService: { unlimitedLimit: () => "max" },
     dataFrameStore: {
       inspect() {
-        return { status: "ready", packet: { rows: packetRows }, cacheHit: true };
+        return {
+          status: "ready",
+          packet: { frame: frameFromRows(context, packetRows) },
+          cacheHit: true,
+        };
       },
     },
     frameDemandService: {
       async demand() {
-        return { status: "ready", packet: { rows: packetRows }, cacheHit: false };
+        return {
+          status: "ready",
+          packet: { frame: frameFromRows(context, packetRows) },
+          cacheHit: false,
+        };
       },
     },
   });
@@ -278,6 +324,7 @@ function loadLayerViewportController(dataset, { boundsZoom = () => 5 } = {}) {
   };
   context.window = context;
   vm.createContext(context);
+  installCanonicalFrame(context);
   vm.runInContext(
     fs.readFileSync(path.join(root, "static/js/ui/map/layer-viewport-controller.js"), "utf8"),
     context,
@@ -495,7 +542,7 @@ test("virtual grid accepts source origins aligned on native cell boundaries", ()
 });
 
 test("non-zero sampled-grid extent expands a narrow distribution across multiple color stops", () => {
-  const { colorScale } = loadColorScale({
+  const { colorScale, frameFromRows: makeFrame } = loadColorScale({
     layer_id: "pipeline_iceberg.fishing_hours",
     sampled_grid: {
       contract_version: "rrkal.sampled_grid.v1",
@@ -524,7 +571,7 @@ test("non-zero sampled-grid extent expands a narrow distribution across multiple
     value,
     bounds: { west: 120, south: 20, east: 121, north: 21 },
   }));
-  colorScale.prepare(rows, profile);
+  colorScale.frame(makeFrame(rows), profile);
 
   const domain = colorScale.domain(profile);
   assert.equal(domain.mode, "nonzero_extent");
@@ -535,13 +582,16 @@ test("non-zero sampled-grid extent expands a narrow distribution across multiple
   assert.equal(colors[0], "22,59,74");
   assert.equal(colors[2], "216,90,48");
 
-  colorScale.prepare([{ value: 10 }, { value: 20 }], profile);
+  colorScale.frame(makeFrame([
+    { value: 10, bounds: { west: 120, south: 20, east: 121, north: 21 } },
+    { value: 20, bounds: { west: 121, south: 20, east: 122, north: 21 } },
+  ]), profile);
   assert.equal(colorScale.domain(profile).min, 10);
   assert.equal(colorScale.domain(profile).max, 20);
 });
 
 test("mapping can hide zero-value paint without removing zero from the grid contract", () => {
-  const { contract, colorScale, rowsForRender } = loadColorScale({
+  const { contract, colorScale, frameFromRows: makeFrame } = loadColorScale({
     layer_id: "mapped-grid",
     sampled_grid: {
       contract_version: "rrkal.sampled_grid.v1",
@@ -557,15 +607,15 @@ test("mapping can hide zero-value paint without removing zero from the grid cont
   assert.equal(contract.model().value({ value: 0 }), 0);
   assert.equal(colorScale.opacity({ value: 0 }, profile), 0);
   assert.equal(colorScale.opacity({ value: 1 }, profile), 1);
-  assert.equal(rowsForRender([{
+  assert.equal(colorScale.frame(makeFrame([{
     value: 0,
     coverage_ratio: 1,
     bounds: { west: 120, south: 20, east: 121, north: 21 },
-  }]).length, 0);
+  }])).indices.length, 0);
 });
 
 test("sampled-grid paint excludes no-coverage fill values before computing the color domain", () => {
-  const { contract, colorScale, rowsForRender } = loadColorScale({
+  const { contract, colorScale, frameFromRows: makeFrame } = loadColorScale({
     layer_id: "coverage-grid",
     sampled_grid: {
       contract_version: "rrkal.sampled_grid.v1",
@@ -585,7 +635,9 @@ test("sampled-grid paint excludes no-coverage fill values before computing the c
 
   assert.equal(contract.model().renderable(rows[0]), false);
   assert.equal(contract.model().renderable(rows[1]), true);
-  assert.deepEqual(Array.from(rowsForRender(rows), (row) => row.value), [11, 13]);
+  const frame = makeFrame(rows);
+  const plan = colorScale.frame(frame);
+  assert.deepEqual(Array.from(plan.indices, (index) => frame.valueAt("value", index)), [11, 13]);
   assert.equal(colorScale.domain().min, 11);
   assert.equal(colorScale.domain().max, 13);
 });
@@ -609,15 +661,15 @@ test("sampled-grid paint skips zero by default while preserving an explicit over
 
   assert.equal(defaultScale.colorScale.opacity({ value: 0 }), 0);
   assert.equal(visibleZeroScale.colorScale.opacity({ value: 0 }), 0.4);
-  assert.equal(visibleZeroScale.rowsForRender([{
+  assert.equal(visibleZeroScale.colorScale.frame(visibleZeroScale.frameFromRows([{
     value: 0,
     coverage_ratio: 1,
     bounds: { west: 120, south: 20, east: 121, north: 21 },
-  }]).length, 1);
+  }])).indices.length, 1);
 });
 
 test("sampled-grid frame plan reuses one compiled paint context per frame", () => {
-  const { colorScale } = loadColorScale({
+  const { colorScale, frameFromRows: makeFrame } = loadColorScale({
     layer_id: "planned-grid",
     sampled_grid: {
       contract_version: "rrkal.sampled_grid.v1",
@@ -626,14 +678,15 @@ test("sampled-grid frame plan reuses one compiled paint context per frame", () =
     },
   });
   const bounds = { west: 120, south: 20, east: 121, north: 21 };
-  const plan = colorScale.frame([
+  const frame = makeFrame([
     { value: 0, coverage_ratio: 1, bounds },
     { value: 10, coverage_ratio: 1, bounds },
     { value: 20, coverage_ratio: 1, bounds },
   ]);
+  const plan = colorScale.frame(frame);
   const scratch = [0, 0, 0];
 
-  assert.deepEqual(Array.from(plan.rows, (row) => row.value), [10, 20]);
+  assert.deepEqual(Array.from(plan.indices, (index) => frame.valueAt("value", index)), [10, 20]);
   assert.deepEqual({ min: plan.domain.min, max: plan.domain.max }, { min: 10, max: 20 });
   assert.equal(plan.opacityForValue(0), 0);
   assert.equal(plan.colorPartsForValue(10, scratch), scratch);
@@ -668,7 +721,7 @@ test("sampled-grid settings expose contract-driven multi-stop controls", () => {
 });
 
 test("non-zero extent includes negative values instead of silently meaning positive-only", () => {
-  const { colorScale } = loadColorScale({
+  const { colorScale, frameFromRows: makeFrame } = loadColorScale({
     layer_id: "signed-grid",
     sampled_grid: {
       contract_version: "rrkal.sampled_grid.v1",
@@ -677,7 +730,8 @@ test("non-zero extent includes negative values instead of silently meaning posit
     },
   });
   const profile = colorScale.profile("signed-grid");
-  colorScale.prepare([{ value: -4 }, { value: 0 }, { value: 2 }], profile);
+  const bounds = { west: 120, south: 20, east: 121, north: 21 };
+  colorScale.frame(makeFrame([{ value: -4, bounds }, { value: 0, bounds }, { value: 2, bounds }]), profile);
   assert.deepEqual(
     { min: colorScale.domain(profile).min, max: colorScale.domain(profile).max },
     { min: -4, max: 2 },
@@ -745,11 +799,12 @@ test("bounded sampled-grid layers constrain viewport, queries, and rendered rows
     "105.000000,15.000000,135.000000,35.000000",
   );
 
-  const visible = context.LayerViewportController.filterRows([
+  const frame = frameFromRows(context, [
     { id: "inside", bounds: { west: 119, south: 23, east: 120, north: 24 } },
     { id: "outside", bounds: { west: 1, south: 1, east: 2, north: 2 } },
-  ], "bounded");
-  assert.deepEqual(visible.map((row) => row.id), ["inside"]);
+  ]);
+  const visible = context.LayerViewportController.filterFrame(frame, "bounded");
+  assert.deepEqual([...visible.rows()].map((row) => row.id), ["inside"]);
 
   const source = fs.readFileSync(
     path.join(root, "static/js/ui/map/layer-viewport-controller.js"),
@@ -758,7 +813,7 @@ test("bounded sampled-grid layers constrain viewport, queries, and rendered rows
   assert.match(source, /coverage_areas/);
   assert.match(source, /sourceBboxString/);
   assert.match(source, /setMaxBounds/);
-  assert.match(source, /filterRows/);
+  assert.match(source, /filterFrame/);
   assert.doesNotMatch(source, /coverage_mask|destination-out|sampledGridMaskPane/);
   assert.doesNotMatch(source, /pipeline_iceberg|fishing_hours|northwest_pacific/);
 
@@ -987,7 +1042,7 @@ test("pie and horizontal bar widgets query dynamic canonical layer matrices", ()
   const charts = fs.readFileSync(path.join(root, "static/js/application/widgets/slice-chart-data-sources.js"), "utf8");
   assert.match(queryContext, /registry\?\.sampledGridLayers\?\.\(\{ enabledOnly: true \}\)/);
   assert.match(queryContext, /columns:\s*"render"/);
-  assert.match(queryContext, /row\?\.value/);
+  assert.match(queryContext, /numericSummary\("value"\)/);
   assert.match(charts, /this\.queryContext\.sampledGridLayers/);
   assert.match(charts, /this\.queryContext\.selections/);
   const horizontal = charts;

@@ -20,8 +20,11 @@ from common_adapter.query.identity import dataset_cache_namespace
 from common_adapter.query.sampled_grid import (
     canonicalize_sampled_grid_packet,
     canonicalize_sampled_grid_range_packet,
+    canonicalize_sampled_grid_rows,
     canonicalize_sampled_grid_schema_packet,
     canonicalize_sampled_grid_time_series_packet,
+    compile_sampled_grid_mapping,
+    sampled_grid_contract,
     sampled_grid_render_columns,
     sampled_grid_source_fields,
 )
@@ -1019,18 +1022,48 @@ def records_packet(
         column_profile=column_profile,
         query_context=query_context,
     )
+    output_profile = str((query_context or {}).get("output_profile") or "rows").strip().lower()
+    direct_frame = (
+        output_profile == "canonical_frame"
+        and sampled_grid_contract(dataset) is not None
+        and not isinstance(packet.get("canonical_frame"), dict)
+    )
     canonical_started = time.perf_counter()
-    normalized = canonicalize_sampled_grid_packet(packet, dataset)
-    canonical_ms = elapsed_ms(canonical_started)
-    timing = dict(normalized.get("timing") or {})
-    if packet.get("row_contract_version") == "rrkal.sampled_grid.v1":
-        timing["canonical_packet_copy_ms"] = canonical_ms
-    else:
+    if direct_frame:
+        frame = canonicalize_sampled_grid_rows(
+            packet.get("rows") or [],
+            compile_sampled_grid_mapping(dataset),
+            context=query_context,
+        )
+        normalized = canonicalize_sampled_grid_packet({**packet, "rows": []}, dataset)
+        normalized.pop("rows", None)
+        normalized["row_count"] = frame.row_count
+        canonical_ms = elapsed_ms(canonical_started)
+        timing = dict(normalized.get("timing") or {})
         timing["canonical_packet_copy_ms"] = 0.0
         timing["canonicalize_rows_ms"] = round(
             float(timing.get("canonicalize_rows_ms") or 0) + canonical_ms,
             3,
         )
+        projection_started = time.perf_counter()
+        normalized["canonical_frame"] = frame.view().transport()
+        projection_ms = elapsed_ms(projection_started)
+        timing["packet_projection_ms"] = round(
+            float(timing.get("packet_projection_ms") or 0) + projection_ms,
+            3,
+        )
+    else:
+        normalized = canonicalize_sampled_grid_packet(packet, dataset)
+        canonical_ms = elapsed_ms(canonical_started)
+        timing = dict(normalized.get("timing") or {})
+        if packet.get("row_contract_version") == "rrkal.sampled_grid.v1":
+            timing["canonical_packet_copy_ms"] = canonical_ms
+        else:
+            timing["canonical_packet_copy_ms"] = 0.0
+            timing["canonicalize_rows_ms"] = round(
+                float(timing.get("canonicalize_rows_ms") or 0) + canonical_ms,
+                3,
+            )
     normalized["timing"] = timing
     return normalized
 

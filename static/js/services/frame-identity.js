@@ -120,7 +120,8 @@ function createFrameIdentity({ datasetResolver } = {}) {
       packet?.grid?.actual_resolution_km,
       packet?.grid?.resolution_km,
       packet?.actual_resolution_km,
-      packet?.rows?.[0]?.resolution_km,
+      packet?.frame?.frameFields?.resolution_km,
+      packet?.frame?.rowCount > 0 ? packet.frame.valueAt("resolution_km", 0) : null,
       queryResolution(request),
     ];
     for (const candidate of candidates) {

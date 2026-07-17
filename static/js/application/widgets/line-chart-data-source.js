@@ -272,15 +272,14 @@ class LineChartDataSource {
   }
 
   packetValue(packet) {
-    const rows = Array.isArray(packet?.rows) ? packet.rows : [];
-    const values = rows
-      .map((row) => row?.value)
-      .filter((value) => value !== null && value !== undefined && value !== "")
-      .map(Number)
-      .filter(Number.isFinite);
+    const frame = packet?.frame;
+    if (!globalThis.CanonicalGridFrame?.isFrame(frame)) {
+      return { value: null, rowCount: 0 };
+    }
+    const summary = frame.numericSummary("value");
     return {
-      value: values.length ? values.reduce((total, value) => total + value, 0) : null,
-      rowCount: rows.length,
+      value: summary.count ? summary.sum : null,
+      rowCount: frame.rowCount,
     };
   }
 

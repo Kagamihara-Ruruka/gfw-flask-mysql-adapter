@@ -23,6 +23,7 @@ function loadWidgetClasses() {
   context.globalThis = context;
   vm.createContext(context);
   for (const file of [
+    "static/js/core/canonical-grid-frame.js",
     "static/js/application/widgets/widget-model-functions.js",
     "static/js/application/widgets/widget-query-context.js",
     "static/js/application/widgets/line-chart-data-source.js",
@@ -30,6 +31,7 @@ function loadWidgetClasses() {
     vm.runInContext(fs.readFileSync(path.join(root, file), "utf8"), context);
   }
   return {
+    CanonicalGridFrame: vm.runInContext("CanonicalGridFrame", context),
     LineChartDataSource: vm.runInContext("LineChartDataSource", context),
     WidgetQueryContext: vm.runInContext("WidgetQueryContext", context),
   };
@@ -50,7 +52,14 @@ const layer = Object.freeze({
 });
 
 test("slice widgets stay cache-only while playback owns the active query lifecycle", async () => {
-  const { WidgetQueryContext } = loadWidgetClasses();
+  const { CanonicalGridFrame, WidgetQueryContext } = loadWidgetClasses();
+  const frame = new CanonicalGridFrame({
+    schema: "rrkal.canonical_grid_frame.v1",
+    row_fields: ["value"],
+    frame_fields: {},
+    columns: [[3]],
+    row_count: 1,
+  });
   let networkRequests = 0;
   let playbackStatus = "PLAYING";
   const queryContext = new WidgetQueryContext({
@@ -62,7 +71,7 @@ test("slice widgets stay cache-only while playback owns the active query lifecyc
     frameDemandService: {
       async demand() {
         networkRequests += 1;
-        return { packet: { rows: [{ value: 3 }] }, cacheHit: false };
+        return { packet: { frame }, cacheHit: false };
       },
     },
     playbackSnapshotProvider: () => ({ status: playbackStatus }),

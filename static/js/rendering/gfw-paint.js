@@ -101,39 +101,6 @@ const SampledGridColorScale = (() => {
     return created;
   }
 
-  function prepare(rows, targetProfile = profile()) {
-    const model = SampledGridContract.model(targetProfile.datasetId);
-    return prepareWithModel(rows, targetProfile, model);
-  }
-
-  function prepareWithModel(rows, targetProfile, model) {
-    let minimum = null;
-    let maximum = null;
-    let nonzeroMinimum = null;
-    let nonzeroMaximum = null;
-    for (const row of rows || []) {
-      const value = model.value(row);
-      if (!Number.isFinite(value)) continue;
-      minimum = minimum == null ? value : Math.min(minimum, value);
-      maximum = maximum == null ? value : Math.max(maximum, value);
-      if (value !== 0) {
-        nonzeroMinimum = nonzeroMinimum == null ? value : Math.min(nonzeroMinimum, value);
-        nonzeroMaximum = nonzeroMaximum == null ? value : Math.max(nonzeroMaximum, value);
-      }
-    }
-    if (minimum == null || maximum == null) return targetProfile;
-    targetProfile.observedMin = minimum;
-    targetProfile.observedMax = maximum;
-    if (nonzeroMinimum != null && nonzeroMaximum != null) {
-      targetProfile.observedNonzeroMin = nonzeroMinimum;
-      targetProfile.observedNonzeroMax = nonzeroMaximum;
-    } else {
-      targetProfile.observedNonzeroMin = null;
-      targetProfile.observedNonzeroMax = null;
-    }
-    return targetProfile;
-  }
-
   function domain(targetProfile = profile(), targetModel = null) {
     const modelDomain = (targetModel || SampledGridContract.model(targetProfile.datasetId)).valueDomain;
     let minimum;
@@ -211,17 +178,42 @@ const SampledGridColorScale = (() => {
     return opacityForValue(value, zeroOpacity(targetProfile));
   }
 
-  function frame(rows, targetProfile = profile()) {
+  function frame(canonicalFrame, targetProfile = profile()) {
+    if (!CanonicalGridFrame.isFrame(canonicalFrame)) {
+      throw new TypeError("Sampled-grid paint requires CanonicalGridFrame");
+    }
     const model = SampledGridContract.model(targetProfile.datasetId);
     const configuredZeroOpacity = zeroOpacity(targetProfile);
-    const renderRows = [];
-    for (const row of rows || []) {
-      if (!model.renderable(row)) continue;
-      const value = model.value(row);
+    const renderIndices = [];
+    let minimum = null;
+    let maximum = null;
+    let nonzeroMinimum = null;
+    let nonzeroMaximum = null;
+    const boundsScratch = {};
+    for (let index = 0; index < canonicalFrame.rowCount; index += 1) {
+      const bounds = canonicalFrame.boundsAt(index, boundsScratch);
+      const rawValue = canonicalFrame.valueAt("value", index);
+      const value = rawValue === null || rawValue === undefined || rawValue === "" ? null : Number(rawValue);
+      const coverage = canonicalFrame.valueAt("coverage_ratio", index);
+      const coverageRatio = coverage === null || coverage === undefined || coverage === "" ? null : Number(coverage);
+      const status = String(canonicalFrame.valueAt("data_status", index) || "").trim().toLowerCase();
+      if (!bounds || !Number.isFinite(value) || status === "no_data") continue;
+      if (Number.isFinite(coverageRatio) && coverageRatio <= 0) continue;
       if (opacityForValue(value, configuredZeroOpacity) <= 0) continue;
-      renderRows.push(row);
+      renderIndices.push(index);
+      minimum = minimum == null ? value : Math.min(minimum, value);
+      maximum = maximum == null ? value : Math.max(maximum, value);
+      if (value !== 0) {
+        nonzeroMinimum = nonzeroMinimum == null ? value : Math.min(nonzeroMinimum, value);
+        nonzeroMaximum = nonzeroMaximum == null ? value : Math.max(nonzeroMaximum, value);
+      }
     }
-    prepareWithModel(renderRows, targetProfile, model);
+    if (minimum != null && maximum != null) {
+      targetProfile.observedMin = minimum;
+      targetProfile.observedMax = maximum;
+      targetProfile.observedNonzeroMin = nonzeroMinimum;
+      targetProfile.observedNonzeroMax = nonzeroMaximum;
+    }
     const activeDomain = domain(targetProfile, model);
     const compiledStops = compileStops(targetProfile.colorStops);
     const colorPartsForValue = (value, target = [0, 0, 0]) => {
@@ -231,7 +223,8 @@ const SampledGridColorScale = (() => {
       return interpolateCompiled(compiledStops, ratio, target);
     };
     return {
-      rows: renderRows,
+      frame: canonicalFrame,
+      indices: renderIndices,
       model,
       domain: activeDomain,
       opacityForValue: (value) => opacityForValue(value, configuredZeroOpacity),
@@ -249,7 +242,6 @@ const SampledGridColorScale = (() => {
     datasetIdForLayer,
     layerId,
     profile,
-    prepare,
     domain,
     colorParts,
     opacity,
@@ -270,26 +262,21 @@ function sampledGridCellOpacity(row) {
   return SampledGridColorScale.opacity(row);
 }
 
-function sampledGridRowsForRender(rows) {
-  return sampledGridPaintFrame(rows).rows;
+function sampledGridPaintFrame(frame) {
+  return SampledGridColorScale.frame(frame);
 }
 
-function sampledGridPaintFrame(rows) {
-  return SampledGridColorScale.frame(rows);
-}
-
-function sampledGridHitCellAt(targetMap, rows, containerPoint) {
+function sampledGridHitCellAt(targetMap, frame, containerPoint) {
   if (!targetMap || !containerPoint) return null;
+  if (!CanonicalGridFrame.isFrame(frame)) return null;
   const latLng = targetMap.containerPointToLatLng(L.point(containerPoint));
   const latitude = Number(latLng?.lat);
   const longitude = normalizeLongitude(Number(latLng?.lng));
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
 
-  const model = SampledGridContract.model();
-  const values = Array.isArray(rows) ? rows : [];
-  for (let index = values.length - 1; index >= 0; index -= 1) {
-    const row = values[index];
-    const bounds = model.bounds(row);
+  const boundsScratch = {};
+  for (let index = frame.rowCount - 1; index >= 0; index -= 1) {
+    const bounds = frame.boundsAt(index, boundsScratch);
     if (!bounds || latitude < bounds.south || latitude > bounds.north) continue;
     const west = normalizeLongitude(bounds.west);
     const east = normalizeLongitude(bounds.east);
@@ -305,7 +292,7 @@ function sampledGridHitCellAt(targetMap, rows, containerPoint) {
     const w = Math.max(1, Math.ceil(Math.abs(se.x - nw.x)));
     const h = Math.max(1, Math.ceil(Math.abs(se.y - nw.y)));
     return {
-      row,
+      row: frame.rowAt(index),
       rect: { x, y, w, h },
       bounds: {
         ...bounds,

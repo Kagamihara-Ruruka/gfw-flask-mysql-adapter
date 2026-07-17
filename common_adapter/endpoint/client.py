@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import dataclass
 from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
@@ -25,6 +26,14 @@ class EndpointTarget:
     timeout_seconds: float
     max_response_bytes: int
     headers: dict[str, str]
+
+
+@dataclass(frozen=True)
+class EndpointJsonResponse:
+    body: Any
+    response_bytes: int
+    http_read_ms: float
+    json_decode_ms: float
 
 
 class EndpointRequestError(RuntimeError):
@@ -185,6 +194,19 @@ class EndpointHttpClient:
         params: dict[str, Any] | None = None,
         max_response_bytes: int | None = None,
     ) -> Any:
+        return self.get_json_timed(
+            path,
+            params=params,
+            max_response_bytes=max_response_bytes,
+        ).body
+
+    def get_json_timed(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        max_response_bytes: int | None = None,
+    ) -> EndpointJsonResponse:
         url = endpoint_url(self.target, path)
         query = {
             str(key): value
@@ -199,6 +221,7 @@ class EndpointHttpClient:
             method="GET",
         )
         limit = max_response_bytes or self.target.max_response_bytes
+        http_started = time.perf_counter()
         try:
             with urlopen(request, timeout=self.target.timeout_seconds) as response:
                 raw = response.read(limit + 1)
@@ -220,6 +243,7 @@ class EndpointHttpClient:
                 url=url,
                 reachable=False,
             ) from exc
+        http_read_ms = (time.perf_counter() - http_started) * 1000
         if len(raw) > limit:
             raise EndpointRequestError(
                 f"endpoint response exceeds {limit} bytes",
@@ -227,7 +251,9 @@ class EndpointHttpClient:
                 status_code=status_code,
                 reachable=True,
             )
+        decode_started = time.perf_counter()
         body = _decode_json(raw)
+        json_decode_ms = (time.perf_counter() - decode_started) * 1000
         if body is None:
             raise EndpointRequestError(
                 f"HTTP {status_code}, non-json response",
@@ -235,7 +261,12 @@ class EndpointHttpClient:
                 status_code=status_code,
                 reachable=True,
             )
-        return body
+        return EndpointJsonResponse(
+            body=body,
+            response_bytes=len(raw),
+            http_read_ms=round(http_read_ms, 3),
+            json_decode_ms=round(json_decode_ms, 3),
+        )
 
     def first_json(self, paths: Iterable[str], *, max_response_bytes: int | None = None) -> tuple[str, Any]:
         last_error: EndpointRequestError | None = None

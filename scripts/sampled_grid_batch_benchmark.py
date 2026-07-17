@@ -211,6 +211,8 @@ def summarize_batch_pass(
     phase_names = (
         "source_capacity_wait_ms",
         "source_http_ms",
+        "source_json_decode_ms",
+        "source_response_bytes",
         "canonicalize_rows_ms",
         "canonical_packet_copy_ms",
         "cache_lookup_ms",
@@ -233,6 +235,7 @@ def summarize_batch_pass(
         "cache_lookup_ms",
         "cache_wait_ms",
         "source_http_ms",
+        "source_json_decode_ms",
         "canonicalize_rows_ms",
         "canonical_packet_copy_ms",
         "cache_commit_ms",

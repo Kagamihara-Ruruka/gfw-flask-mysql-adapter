@@ -28,6 +28,8 @@ The Mapping/query-broker/cache convergence and current side-browser acceptance r
 [`benchmarks/runtime_convergence_acceptance_2026-07-17.md`](benchmarks/runtime_convergence_acceptance_2026-07-17.md).
 The current 5081 sampled-grid throughput, completion-order batching, and five-dataset playback acceptance report is available at
 [`benchmarks/sampled_grid_throughput_acceptance_2026-07-17.md`](benchmarks/sampled_grid_throughput_acceptance_2026-07-17.md).
+The one-pass Mapping and end-to-end columnar Canonical Frame acceptance report is available at
+[`benchmarks/sampled_grid_canonical_frame_acceptance_2026-07-18.md`](benchmarks/sampled_grid_canonical_frame_acceptance_2026-07-18.md).
 
 ## Upstream Handoff
 
@@ -244,6 +246,7 @@ Current frontend module boundaries:
 | `static/js/playback/playback-time-policy.js` | Pure monotonic buffer-timeout policy; it never reads playback speed. |
 | `static/js/playback/playback-renderer.js` | Playback-to-render handoff: set selected date, sync controls, call the existing active-layer reload. |
 | `static/js/playback/playback-interpolation-controller.js` | Playback interpolation policy: choose layer crossfade or direct switching during playback; data blending is not enabled yet. |
+| `static/js/core/canonical-grid-frame.js` | Immutable browser-side columnar sampled-grid frame and zero-copy indexed/BBOX views. Row objects are created only at explicit presentation boundaries. |
 | `static/js/services/frame-identity.js` | The only builder for canonical BBOX signatures, request intent keys, scope keys, and returned frame keys. |
 | `static/js/services/data-frame-store.js` | Canonical RAM frame store, intent-to-frame aliases, compatible containing-BBOX materialization, pin/release ownership, byte-budgeted LRU eviction, and failure state. It defaults to a 512 MB browser budget and never performs transport. |
 | `static/js/services/layer-query-coordinator.js` | Priority scheduler for query families outside the sampled-grid transport chain, with one execution per intent key, queued-task promotion, consumer-scoped cancellation, and a reserved foreground slot. |
@@ -251,6 +254,7 @@ Current frontend module boundaries:
 | `static/js/services/query-broker.js` | Provider-level transport owner. It bakes compatible operations across datasets into NDJSON batches, caps effective batch size and in-flight operations by Registry capacity, releases capacity per streamed result, and immediately backfills the highest-priority queued work. The provider key never replaces the dataset/cache identity. |
 | `static/js/services/frame-demand-service.js` | The sampled-grid demand boundary. It checks `DataFrameStore`, joins an exact or containing-BBOX in-flight request when compatible, delegates a real miss directly to `QueryBroker`, normalizes the returned packet, and commits it once. |
 | `common_adapter/query/batch.py` | Flask-side batch execution owner. `QueryBatchExecutor` keeps one global worker pool and a shared per-provider capacity pool, acquires provider permits before worker submission so capacity waits cannot starve other sources, yields results in completion order by `operation_id`, and isolates sibling failures. |
+| `common_adapter/query/grid_frame.py` | Immutable server-side columnar sampled-grid frame, builder, transport projection, and zero-copy selection views. |
 | `static/js/services/frame-demand-decorators.js` | DI-composed observability decorator. It records demand boundary duration and outcome without changing cache, scheduling, transport, result, or error semantics. |
 | `static/js/playback/playback-preheater.js` | Long-lived producer that independently maintains low/high ready-ahead inventory. Desired inventory and the 12-request scheduling window are separate concerns; it does not own the playback clock or playback readiness. |
 | `static/js/playback/adaptive-watermark-controller.js` | DI-owned stateful policy owner. It derives effective watermarks from trusted supply, cache-ready P95, playback consumption, and RAM budget, with monotonic decrease hysteresis. |
@@ -334,7 +338,7 @@ A playback frame is a canonical records packet identified by:
 mapping-aware cache namespace + date + source-scope bbox + limit + columns + resolution context
 ```
 
-The cache namespace is derived from the active mapping contract, including source route, canonical field roles, grid profile, resolution policy, and query contract. Changing those semantics creates a new namespace; credentials and visualization-only settings do not. The Registry also derives a non-secret provider transport key and capacity from the physical source route. Datasets sharing that key share one provider capacity pool, but they retain independent cache namespaces and canonical frames. On a cold miss, `FrameDemandService` joins the logical intent and delegates it directly to `QueryBroker`; the broker bakes compatible operations into NDJSON requests whose effective size is bounded by available provider slots. Flask then decompresses the request through `QueryBatchExecutor`, which applies the global worker bound and each source's `query_policy.max_in_flight`, streams completion-order results, and identifies them by `operation_id`. Each returned operation is normalized and committed once to `DataFrameStore`. On a warm path, the map, playback, selection tools, and Widgets reuse the same immutable packet.
+The cache namespace is derived from the active mapping contract, including source route, canonical field roles, grid profile, resolution policy, and query contract. Changing those semantics creates a new namespace; credentials and visualization-only settings do not. The Registry also derives a non-secret provider transport key and capacity from the physical source route. Datasets sharing that key share one provider capacity pool, but they retain independent cache namespaces and canonical frames. On a cold miss, `FrameDemandService` joins the logical intent and delegates it directly to `QueryBroker`; the broker bakes compatible operations into NDJSON requests whose effective size is bounded by available provider slots. Flask then decompresses the request through `QueryBatchExecutor`, which applies the global worker bound and each source's `query_policy.max_in_flight`, streams completion-order results, and identifies them by `operation_id`. Mapping writes each source row once into an immutable columnar `CanonicalGridFrame`; the same frame representation crosses the server cache, transport, browser store, Renderer, and Widget boundaries without inflating a second row graph. Each returned operation is committed once to `DataFrameStore`. On a warm path, the map, playback, selection tools, and Widgets reuse the same immutable frame.
 
 Only the map/query application layer may create sampled-grid demand. `QueryBroker` orders those operations as `map-current`, `playback-target`, `playback-window`, `widget-interactive`, then `widget-auto/background`; `QueryScheduler` remains a separate owner for other query families and is not nested inside this chain. During `PREPARING`, `PLAYING`, or `BUFFERING`, Widgets are cache-only consumers. An explicit Tile interaction may request only the current missing slice through `widget-interactive`; an idle or paused chart may fill its configured history window through `widget-auto`. Active-date refreshes, table inspection, and Event Viewer rendering never start transport. Cancelling queued prewarm or Widget work never evicts completed packets.
 
@@ -377,9 +381,9 @@ sequenceDiagram
 
     Playback->>BrowserCache: inspect target frame
     alt Target frame is ready
-      BrowserCache-->>Playback: canonical packet(rows)
+      BrowserCache-->>Playback: canonical columnar frame
       Playback->>UI: date = target frame date
-      Playback->>Renderer: render canonical rows
+      Playback->>Renderer: render canonical frame view
       Renderer->>Renderer: apply mapped metric and grid profile
       Renderer->>Map: draw via WebGL or Canvas
     else Target frame is missing
@@ -394,12 +398,12 @@ sequenceDiagram
         ServerCache-->>Batch: cached packet
       else Server cache miss
         Batch->>Adapter: canonical date + bbox + resolution
-        Adapter-->>Batch: rows
-        Batch->>ServerCache: remember packet
+        Adapter-->>Batch: CanonicalGridFrame
+        Batch->>ServerCache: remember immutable frame
       end
       Batch-->>API: completion-order result(operation_id)
       API-->>Broker: NDJSON batch.result
-      Broker-->>Demand: demultiplexed packet(rows + timing)
+      Broker-->>Demand: demultiplexed frame packet + timing
       Demand->>BrowserCache: commit canonical frame
       BrowserCache-->>Playback: shared frame result
       Playback->>UI: buffer only while no ready target exists
@@ -412,7 +416,7 @@ Frame source resolution:
 ```mermaid
 flowchart TD
   A["Frame request: datasetId + date + bbox + columns"] --> B{"Browser cache hit?"}
-  B -->|yes| C["Return packet(rows)"]
+  B -->|yes| C["Return canonical frame"]
   B -->|no| D["Join demand and enqueue QueryBroker operation"]
 
   D --> E["POST one provider /api/query/batch request"]
@@ -422,13 +426,13 @@ flowchart TD
   F1 -->|no| G["Resolve registered query adapter"]
 
   G --> H["Translate canonical date/bbox/resolution into source contract"]
-  H --> I["Return rows"]
-  I --> J["Remember server cache packet"]
-  J --> K["Return packet to browser"]
+  H --> I["Build one-pass CanonicalGridFrame"]
+  I --> J["Remember immutable server frame"]
+  J --> K["Return columnar frame to browser"]
 
   F --> L["Store or reuse browser packet"]
   K --> L
-  C --> M["Render canonical sampled-grid rows"]
+  C --> M["Render canonical sampled-grid frame view"]
   L --> M
 
   M --> N["Apply mapped grid and metric semantics"]
@@ -771,7 +775,13 @@ python scripts\sampled_grid_batch_benchmark.py `
   --output "$env:TEMP\sampled-grid-batch.json"
 ```
 
-The final 2026-07-17 cold-cache checkpoint measured `8791` at 1.419 fps with one request and 2.569 fps with two. The complete `5081` batch path reached 1.095 fps with source capacity 2, with a 2.278 s batch P95 for two frames. Warm batch throughput was 4.512 fps and warm service lookup P95 was 0.026 ms. A three-operation batch against capacity 2 is rejected with HTTP 400. Canonical source packets are compiled once, frozen at cache commit, shared without a second row-graph copy, and projected only at the render transport boundary. The detailed timing reconciliation and user-level playback results are recorded in the sampled-grid throughput acceptance report linked above.
+The 2026-07-18 canonical-frame checkpoint measured `8791` at 1.470 fps with one request and 2.594 fps with two. The complete `5081` batch=2 cold path reached **1.377 fps**, a 25.8% increase over the previous 1.095 fps checkpoint, with a 1.468 s batch P95 for two frames. Warm batch=2 throughput was 6.787 fps. A three-operation batch against capacity 2 is rejected with HTTP 400. Mapping now writes directly into an immutable columnar frame in one pass; server cache, transport, browser store, Renderer, and Widgets no longer build, inflate, or deep-copy a sampled-grid row graph. The detailed equivalence, timing reconciliation, and residual 2x boundary are recorded in the canonical-frame acceptance report linked above.
+
+For a Mapping-only equivalence and CPU benchmark:
+
+```powershell
+python scripts\sampled_grid_mapping_microbenchmark.py --rows 24192 --repeats 5
+```
 
 JavaScript syntax check:
 

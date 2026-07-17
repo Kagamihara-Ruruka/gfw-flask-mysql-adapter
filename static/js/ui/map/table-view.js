@@ -8,10 +8,14 @@ function renderTableWindow() {
   const rowHeight = 30;
   const viewportRows = Math.ceil(scroll.clientHeight / rowHeight) + 8;
   const start = Math.max(0, Math.floor(scroll.scrollTop / rowHeight) - 4);
-  const end = Math.min(state.rows.length, start + viewportRows);
+  const rowCount = state.recordsFrame?.rowCount ?? state.rows.length;
+  const end = Math.min(rowCount, start + viewportRows);
   const topPad = start * rowHeight;
-  const bottomPad = Math.max(0, (state.rows.length - end) * rowHeight);
-  const cells = state.rows.slice(start, end).map((row) =>
+  const bottomPad = Math.max(0, (rowCount - end) * rowHeight);
+  const visibleRows = state.recordsFrame
+    ? state.recordsFrame.rows(start, end - start)
+    : state.rows.slice(start, end);
+  const cells = visibleRows.map((row) =>
     `<tr>${state.columns.map((column) => `<td>${escapeHtml(row[column])}</td>`).join("")}</tr>`
   ).join("");
   tbody.innerHTML = [
@@ -38,18 +42,22 @@ function tableContextLabel(context) {
   return "視窗資料";
 }
 
-function renderTable(rows, columns = state.datasets[state.datasetId].display_columns, context = {}) {
+function renderTable(source, columns = state.datasets[state.datasetId].display_columns, context = {}) {
+  const frame = CanonicalGridFrame.isFrame(source) ? source : null;
+  const rows = Array.isArray(source) ? source : [];
+  const rowCount = frame?.rowCount ?? rows.length;
+  state.recordsFrame = frame;
   state.rows = rows;
-  state.columns = columns;
+  state.columns = Array.isArray(columns) && columns.length ? columns : (frame?.fieldNames() || []);
   state.recordsContext = {
     ...context,
     datasetId: state.datasetId,
-    rowCount: rows.length,
+    rowCount,
   };
   $("records").querySelector("thead").innerHTML = state.columns.length
     ? `<tr>${state.columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}</tr>`
     : "";
-  $("table-note").textContent = `${tableContextLabel(context)} - 已載入 ${rows.length.toLocaleString()} 筆`;
+  $("table-note").textContent = `${tableContextLabel(context)} - 已載入 ${rowCount.toLocaleString()} 筆`;
   renderTableWindow();
   if (!context.loading && context.notify !== false) {
     window.dispatchEvent(new CustomEvent("rrkal:records-updated", {

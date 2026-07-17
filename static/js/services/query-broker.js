@@ -34,32 +34,6 @@ function splitQueryBatchEvent(rawEvent, expectedBatchId) {
   return Object.freeze({ ...event, batch_id: batchId, type });
 }
 
-function inflateSampledGridRenderPacket(packet) {
-  const projection = packet?.transport_projection;
-  if (!projection) return packet;
-  if (projection.schema !== "rrkal.sampled_grid.render.v1") {
-    throw new Error(`Unsupported sampled-grid transport projection: ${projection.schema || "<missing>"}`);
-  }
-  const rowFields = projection.row_fields;
-  const frameFields = projection.frame_fields;
-  const projectedRows = packet.rows;
-  if (!Array.isArray(rowFields) || !frameFields || typeof frameFields !== "object"
-    || !Array.isArray(projectedRows)) {
-    throw new Error("Invalid sampled-grid render projection metadata");
-  }
-  const rows = projectedRows.map((values) => {
-    if (!Array.isArray(values) || values.length !== rowFields.length) {
-      throw new Error("Sampled-grid render projection row width mismatch");
-    }
-    const row = { ...frameFields };
-    rowFields.forEach((field, index) => { row[field] = values[index]; });
-    return row;
-  });
-  const inflated = { ...packet, rows };
-  delete inflated.transport_projection;
-  return inflated;
-}
-
 function sampledGridBatchOperation(request, operationId) {
   return Object.freeze({
     operation_id: String(operationId || ""),
@@ -363,7 +337,7 @@ class QueryBroker {
       completedOperations: new Set(),
       startedAt: this.clock.now(),
       transportMetrics: null,
-      projectionDecodeMs: 0,
+      frameDecodeMs: 0,
     };
     this.activeBatches.set(batchId, batch);
     for (const item of items) {
@@ -394,8 +368,8 @@ class QueryBroker {
       const consumers = operationItems.get(operationId) || [];
       if (event.status === "ok") {
         const decodeStartedAt = this.clock.now();
-        const packet = inflateSampledGridRenderPacket(event.packet);
-        batch.projectionDecodeMs += Math.max(0, this.clock.now() - decodeStartedAt);
+        const packet = decodeCanonicalGridFramePacket(event.packet);
+        batch.frameDecodeMs += Math.max(0, this.clock.now() - decodeStartedAt);
         for (const item of consumers) this.settle(item, item.resolve, packet);
       } else {
         const error = new Error(String(event.error || "Query batch operation failed"));
@@ -426,7 +400,7 @@ class QueryBroker {
           operation_count: envelope.operations.length,
           duration_ms: Math.max(0, this.clock.now() - batch.startedAt),
           source_key: batch.sourceKey,
-          packet_projection_decode_ms: batch.projectionDecodeMs,
+          canonical_frame_decode_ms: batch.frameDecodeMs,
           ...(batch.transportMetrics || {}),
         });
       })
@@ -490,5 +464,4 @@ if (typeof globalThis !== "undefined") {
   globalThis.compileQueryBatch = compileQueryBatch;
   globalThis.sampledGridBatchOperation = sampledGridBatchOperation;
   globalThis.splitQueryBatchEvent = splitQueryBatchEvent;
-  globalThis.inflateSampledGridRenderPacket = inflateSampledGridRenderPacket;
 }

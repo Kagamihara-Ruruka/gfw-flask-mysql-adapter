@@ -195,12 +195,15 @@ class DatasetViewportController {
     return model.bounded ? model.sourceBboxString(value) : value;
   }
 
-  filterRows(rows, datasetId = this.state.datasetId) {
+  filterFrame(frame, datasetId = this.state.datasetId) {
+    if (!CanonicalGridFrame.isFrame(frame)) {
+      throw new TypeError("DatasetViewportController requires CanonicalGridFrame");
+    }
     const model = this.model(datasetId);
-    if (!model.bounded) return Array.isArray(rows) ? rows : [];
-    const contract = SampledGridContract.model(datasetId);
-    return (Array.isArray(rows) ? rows : []).filter((row) => {
-      const bounds = contract.bounds(row);
+    if (!model.bounded) return frame;
+    const boundsScratch = {};
+    return frame.select((candidate, index) => {
+      const bounds = candidate.boundsAt(index, boundsScratch);
       if (!bounds) return false;
       return model.contains(
         (bounds.south + bounds.north) / 2,

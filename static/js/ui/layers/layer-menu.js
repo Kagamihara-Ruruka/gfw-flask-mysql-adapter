@@ -169,7 +169,7 @@ function applyLayerOrder() {
 function applyLayerAlpha(layerId) {
   const id = String(layerId || "").trim().toLowerCase();
   if (isSampledGridLayer(id) && state.gridLayer) {
-    state.gridLayer.setRows(state.rows);
+    state.gridLayer.setFrame(state.gridLayer._frame);
     return;
   }
   if (id === "ais" && state.aisLayer) {

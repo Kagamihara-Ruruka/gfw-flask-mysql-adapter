@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from unittest.mock import patch
 
+from common_adapter.db.connect import records_packet as database_records_packet
 from common_adapter.endpoint.client import EndpointRequestError
 from common_adapter.endpoint.sampled_grid import SampledGridHttpQueryAdapter, _bounds_intersect
 from common_adapter.query.snapshot_cache import (
@@ -14,19 +15,21 @@ from common_adapter.query.snapshot_cache import (
     SnapshotCachePolicy,
     SnapshotLoad,
 )
+from common_adapter.query.grid_frame import (
+    canonical_grid_frame_from_rows,
+    canonical_grid_frame_from_transport,
+)
 from common_adapter.query.sampled_grid import (
     SAMPLED_GRID_CONTRACT_VERSION,
     canonicalize_sampled_grid_packet,
     canonicalize_sampled_grid_row,
+    canonicalize_sampled_grid_rows,
     compile_sampled_grid_mapping,
     sampled_grid_public_fields,
 )
 from common_adapter.query.identity import dataset_cache_namespace
 from common_adapter.query.immutable import freeze_json
-from common_adapter.query.transport import (
-    inflate_sampled_grid_render_packet,
-    project_sampled_grid_render_packet,
-)
+from common_adapter.query.transport import project_sampled_grid_render_packet
 
 
 def _dataset(*, resolutions: list[int]) -> dict[str, Any]:
@@ -364,6 +367,57 @@ class SnapshotCacheContractTests(unittest.TestCase):
         self.assertEqual(100, len(rows))
         source_fields.assert_not_called()
 
+    def test_bulk_mapping_matches_the_single_row_reference(self) -> None:
+        dataset = _dataset(resolutions=[16])
+        dataset["sampled_grid"]["request_fields"] = {"time": "snapshot.date"}
+        context = compile_sampled_grid_mapping(dataset)
+        request_context = {"snapshot": {"date": "2024-01-02"}}
+        source_rows = _source_rows(16)
+
+        expected = [
+            dict(canonicalize_sampled_grid_row(row, context, context=request_context))
+            for row in source_rows
+        ]
+        actual = canonicalize_sampled_grid_rows(
+            source_rows,
+            context,
+            context=request_context,
+        ).view().rows()
+
+        self.assertEqual(expected, actual)
+
+    def test_internal_database_batch_builds_the_frame_without_a_canonical_row_graph(self) -> None:
+        dataset = _dataset(resolutions=[16])
+
+        class Backend:
+            @staticmethod
+            def records_packet(**_kwargs: Any) -> dict[str, Any]:
+                return {"rows": _source_rows(16), "timing": {}}
+
+        with (
+            patch("common_adapter.db.connect.register_builtin_query_adapters"),
+            patch("common_adapter.db.connect.read_backend", return_value=Backend()),
+            patch(
+                "common_adapter.query.sampled_grid.canonicalize_sampled_grid_row",
+                side_effect=AssertionError("internal frame path inflated canonical rows"),
+            ),
+        ):
+            packet = database_records_packet(
+                {},
+                dataset,
+                date_value="2024-01-01",
+                bbox=None,
+                limit=100,
+                offset=0,
+                query_context={"output_profile": "canonical_frame"},
+            )
+
+        frame = canonical_grid_frame_from_transport(packet["canonical_frame"])
+        self.assertNotIn("rows", packet)
+        self.assertEqual(2, frame.row_count)
+        self.assertEqual([3, 7], list(frame.column("value") or ()))
+        self.assertEqual(0.0, packet["timing"]["canonical_packet_copy_ms"])
+
     def test_canonical_mapping_is_idempotent(self) -> None:
         dataset = _dataset(resolutions=[16])
         dataset["sampled_grid"]["source_fields"].update(
@@ -409,25 +463,29 @@ class SnapshotCacheContractTests(unittest.TestCase):
                 },
             ]
         )
+        frame = canonical_grid_frame_from_rows(rows)
         packet = {
             "row_contract_version": SAMPLED_GRID_CONTRACT_VERSION,
             "column_profile": "render",
-            "rows": rows,
+            "canonical_frame": frame.view().transport(),
             "row_count": 2,
             "timing": {"api_total_ms": 10, "api_accounted_ms": 10},
         }
 
         projected = project_sampled_grid_render_packet(packet)
-        inflated = inflate_sampled_grid_render_packet(projected)
+        materialized = canonical_grid_frame_from_transport(
+            projected["canonical_frame"]
+        ).view().rows()
 
-        self.assertIs(packet["rows"], rows)
+        self.assertIs(projected, packet)
         self.assertEqual(
             {"date": "2024-01-01", "resolution_km": 4},
-            projected["transport_projection"]["frame_fields"],
+            projected["canonical_frame"]["frame_fields"],
         )
-        self.assertNotIn("date", projected["transport_projection"]["row_fields"])
-        self.assertNotIn("resolution_km", projected["transport_projection"]["row_fields"])
-        self.assertEqual([dict(row) for row in rows], inflated["rows"])
+        self.assertNotIn("date", projected["canonical_frame"]["row_fields"])
+        self.assertNotIn("resolution_km", projected["canonical_frame"]["row_fields"])
+        self.assertNotIn("rows", projected)
+        self.assertEqual([dict(row) for row in rows], materialized)
         with self.assertRaises(TypeError):
             rows[0]["value"] = 99
 
@@ -476,7 +534,7 @@ class SnapshotCacheContractTests(unittest.TestCase):
         self.assertTrue(second["timing"]["cache_hit"])
         self.assertEqual(0, second["timing"]["query_ms"])
 
-    def test_cache_consumers_share_immutable_rows(self) -> None:
+    def test_public_row_views_cannot_mutate_the_cached_frame(self) -> None:
         dataset = _dataset(resolutions=[16])
         client = _ConcurrentClient()
         adapter = SampledGridHttpQueryAdapter({}, dataset)
@@ -486,10 +544,12 @@ class SnapshotCacheContractTests(unittest.TestCase):
         second = _records(adapter, (-1, -1, 1, 1), 16)
 
         self.assertEqual(1, client.call_count)
-        self.assertIs(first["rows"][0], second["rows"][0])
-        with self.assertRaises(TypeError):
-            second["rows"][0]["value"] = 99
+        self.assertIsNot(first["rows"][0], second["rows"][0])
+        second["rows"][0]["value"] = 99
+        third = _records(adapter, (-1, -1, 1, 1), 16)
+        self.assertEqual(1, client.call_count)
         self.assertEqual(3, first["rows"][0]["value"])
+        self.assertEqual(3, third["rows"][0]["value"])
 
     def test_concurrent_internal_bboxes_share_one_source_request(self) -> None:
         dataset = _dataset(resolutions=[16])

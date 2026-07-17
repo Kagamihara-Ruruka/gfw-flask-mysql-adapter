@@ -74,6 +74,12 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertNotIn("GfwRecordCache", playback_source)
         self.assertNotIn("SampledGridRecordCache", cache_source)
 
+    def test_sampled_grid_batch_transport_has_no_row_inflation_shim(self) -> None:
+        source = (ROOT / "common_adapter/query/transport.py").read_text(encoding="utf-8")
+        self.assertNotIn("inflate_sampled_grid", source)
+        self.assertNotIn("canonical_grid_frame_from_rows", source)
+        self.assertIn("has no canonical_frame", source)
+
     def test_config_layout_has_no_runtime_migration_shim(self) -> None:
         source = (ROOT / "common_adapter/config/paths.py").read_text(encoding="utf-8")
         self.assertNotIn("LEGACY_", source)

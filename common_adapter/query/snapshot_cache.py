@@ -28,7 +28,11 @@ def _freeze(value: Any) -> Hashable:
 
 
 def _payload_row_weight(payload: Any) -> int:
-    rows = _mapping(payload).get("rows")
+    mapped = _mapping(payload)
+    frame = mapped.get("frame")
+    if frame is not None and hasattr(frame, "row_count"):
+        return max(1, int(frame.row_count))
+    rows = mapped.get("rows")
     if isinstance(rows, (list, tuple)):
         return max(1, len(rows))
     return 1

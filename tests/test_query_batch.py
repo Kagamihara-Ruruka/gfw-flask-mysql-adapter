@@ -10,6 +10,17 @@ from flask import Flask
 
 from common_adapter.http.routes.datasets import DatasetRoutes
 from common_adapter.query.batch import QueryBatchExecutor
+from common_adapter.query.grid_frame import canonical_grid_frame_from_rows
+
+
+def canonical_packet(date: str) -> dict:
+    frame = canonical_grid_frame_from_rows([{"date": date}])
+    return {
+        "row_contract_version": "rrkal.sampled_grid.v1",
+        "column_profile": "render",
+        "canonical_frame": frame.view().transport(),
+        "row_count": 1,
+    }
 
 
 def batch_payload(*operation_ids: str) -> dict:
@@ -57,13 +68,13 @@ class QueryBatchRouteTests(unittest.TestCase):
     def test_batch_streams_results_in_completion_order_and_isolates_failures(self) -> None:
         calls: list[str] = []
 
-        def records_result(_dataset_id: str, params: dict) -> dict:
+        def records_result(_dataset_id: str, params: dict, **_kwargs) -> dict:
             calls.append(params["date"])
             if params["date"] == "2020-01-01":
                 time.sleep(0.03)
             if params["date"] == "2020-01-02":
                 raise RuntimeError("source unavailable")
-            return {"rows": [{"date": params["date"]}], "row_count": 1}
+            return canonical_packet(params["date"])
 
         self.routes.records_result = records_result  # type: ignore[method-assign]
         response = self.client.post(
@@ -108,10 +119,9 @@ class QueryBatchRouteTests(unittest.TestCase):
         self.assertIn("operation_id must be unique", response.get_json()["error"])
 
     def test_unsupported_operation_is_isolated_from_supported_results(self) -> None:
-        self.routes.records_result = lambda _dataset_id, params: {  # type: ignore[method-assign]
-            "rows": [{"date": params["date"]}],
-            "row_count": 1,
-        }
+        self.routes.records_result = lambda _dataset_id, params, **_kwargs: canonical_packet(  # type: ignore[method-assign]
+            params["date"]
+        )
         payload = batch_payload("unsupported", "supported")
         payload["operations"][0]["kind"] = "future.unsupported"
         response = self.client.post("/api/query/batch", json=payload)
@@ -124,10 +134,9 @@ class QueryBatchRouteTests(unittest.TestCase):
         self.assertEqual(by_id["supported"]["status"], "ok")
 
     def test_batch_stream_supports_incremental_gzip(self) -> None:
-        self.routes.records_result = lambda _dataset_id, params: {  # type: ignore[method-assign]
-            "rows": [{"date": params["date"]}],
-            "row_count": 1,
-        }
+        self.routes.records_result = lambda _dataset_id, params, **_kwargs: canonical_packet(  # type: ignore[method-assign]
+            params["date"]
+        )
         response = self.client.post(
             "/api/query/batch",
             json=batch_payload("first"),

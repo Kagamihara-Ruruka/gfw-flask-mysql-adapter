@@ -66,6 +66,7 @@ class DatasetRoutes:
         "cache_lookup_ms",
         "cache_wait_ms",
         "source_http_ms",
+        "source_json_decode_ms",
         "canonicalize_rows_ms",
         "canonical_packet_copy_ms",
         "cache_commit_ms",
@@ -107,7 +108,11 @@ class DatasetRoutes:
         dataset_id = str(operation.get("dataset_id") or "").strip()
         if not dataset_id:
             raise ValueError("sampled_grid.records requires dataset_id")
-        return self.records_result(dataset_id, operation["params"])
+        return self.records_result(
+            dataset_id,
+            operation["params"],
+            output_profile="canonical_frame",
+        )
 
     def execute_batch_operation(self, operation: dict[str, Any]) -> dict[str, Any]:
         kind = str(operation.get("kind") or "")
@@ -206,9 +211,17 @@ class DatasetRoutes:
         timing["api_accounted_ms"] = round(tracked + timing["api_unattributed_ms"], 3)
         packet["timing"] = timing
 
-    def records_result(self, dataset_id: str, values: Mapping[str, Any]) -> dict[str, Any]:
+    def records_result(
+        self,
+        dataset_id: str,
+        values: Mapping[str, Any],
+        *,
+        output_profile: str = "rows",
+    ) -> dict[str, Any]:
         request_start = time.perf_counter()
         dataset = self.get_dataset(dataset_id)
+        query_context = self.query_context_from(values)
+        query_context["output_profile"] = output_profile
         packet = records_packet(
             self.config,
             dataset,
@@ -217,7 +230,7 @@ class DatasetRoutes:
             limit=values.get("limit", query_policy(self.config)["default_limit"]),
             offset=int(values.get("offset", 0)),
             column_profile=values.get("columns"),
-            query_context=self.query_context_from(values),
+            query_context=query_context,
         )
         packet["dataset_id"] = dataset_id
         packet["runtime"] = self.runtime_packet(dataset_id, dataset)

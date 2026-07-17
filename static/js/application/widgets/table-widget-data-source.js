@@ -146,24 +146,16 @@ class TableWidgetDataSource {
   }
 
   columnsFor(packet, request) {
-    const rows = Array.isArray(packet?.rows) ? packet.rows : [];
-    const rowColumns = [];
-    const seen = new Set();
-    for (const row of rows.slice(0, 50)) {
-      for (const column of Object.keys(row || {})) {
-        if (seen.has(column)) continue;
-        seen.add(column);
-        rowColumns.push(column);
-      }
-    }
+    const frame = packet?.frame;
+    const frameColumns = globalThis.CanonicalGridFrame?.isFrame(frame) ? frame.fieldNames() : [];
     const declared = [
       ...(Array.isArray(packet?.columns) ? packet.columns : []),
       ...(Array.isArray(request?.dataset?.display_columns) ? request.dataset.display_columns : []),
     ];
     const declaredPresent = declared.filter((column, index) => (
-      declared.indexOf(column) === index && (!rows.length || rows.some((row) => Object.hasOwn(row || {}, column)))
+      declared.indexOf(column) === index && frameColumns.includes(column)
     ));
-    return [...declaredPresent, ...rowColumns.filter((column) => !declaredPresent.includes(column))];
+    return [...declaredPresent, ...frameColumns.filter((column) => !declaredPresent.includes(column))];
   }
 
   cacheEventAffectsCurrent(event) {
@@ -191,11 +183,15 @@ class TableWidgetDataSource {
         isLoadingCurrentSnapshot ? "地圖正在取得目前快照" : "目前快照尚無快取資料",
       );
     }
-    const rows = Array.isArray(cached.packet.rows) ? cached.packet.rows : [];
+    const frame = cached.packet.frame;
+    if (!globalThis.CanonicalGridFrame?.isFrame(frame)) {
+      return this.statusModel(request, "uncached", "目前快照尚無可讀取的格網快取");
+    }
+    const rows = frame.rows(0, this.previewLimit());
     return this.statusModel(request, "ready", "目前快照快取", {
       rows,
       columns: this.columnsFor(cached.packet, request),
-      rowCount: Number(cached.packet.row_count ?? rows.length),
+      rowCount: frame.rowCount,
       timing: cached.packet.timing || {},
     });
   }

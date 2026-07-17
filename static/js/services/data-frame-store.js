@@ -72,13 +72,13 @@ class DataFrameStoreCore {
   }
 
   function estimatePacketBytes(packet) {
-    const rows = Array.isArray(packet?.rows) ? packet.rows : [];
+    const frameBytes = CanonicalGridFrame.isFrame(packet?.frame) ? packet.frame.estimatedBytes : 0;
     return Math.max(512, Math.ceil(
       512
       + estimateValueBytes(packet?.bounds)
       + estimateValueBytes(packet?.timing)
       + estimateValueBytes(packet?.columns)
-      + rows.reduce((total, row) => total + estimateValueBytes(row), 0)
+      + frameBytes
     ));
   }
 
@@ -260,20 +260,6 @@ class DataFrameStoreCore {
     return FrameIdentity.bboxSignature(box);
   }
 
-  function rowInBbox(row, box) {
-    const bounds = row?.bounds;
-    if (bounds && [bounds.west, bounds.south, bounds.east, bounds.north].every((value) => Number.isFinite(Number(value)))) {
-      return Number(bounds.west) < box.east - BBOX_EPSILON
-        && Number(bounds.east) > box.west + BBOX_EPSILON
-        && Number(bounds.south) < box.north - BBOX_EPSILON
-        && Number(bounds.north) > box.south + BBOX_EPSILON;
-    }
-    const lat = Number(row?.lat);
-    const lon = Number(row?.lon);
-    return Number.isFinite(lat) && Number.isFinite(lon)
-      && lon >= box.west && lon <= box.east && lat >= box.south && lat <= box.north;
-  }
-
   function compatibleMeta(meta, request) {
     const normalized = FrameIdentity.normalizeRequest(request);
     return meta
@@ -309,49 +295,31 @@ class DataFrameStoreCore {
     }, target) && containsBbox(sourceBox, targetBox);
   }
 
-  function rowsKey(row) {
-    return [row?.cell_id ?? row?.lat ?? "", row?.lon ?? "", row?.resolution_km ?? "", row?.date ?? ""].join("|");
-  }
-
-  function mergeRows(packets, requestBox) {
-    const seen = new Set();
-    const rows = [];
-    for (const packet of packets) {
-      for (const row of packet?.rows || []) {
-        if (!rowInBbox(row, requestBox)) continue;
-        const key = rowsKey(row);
-        if (seen.has(key)) continue;
-        seen.add(key);
-        rows.push(row);
-      }
-    }
-    return rows;
-  }
-
-  function clonePacketForRows(sourcePacket, request, rows, timingPatch = {}) {
+  function clonePacketForFrame(sourcePacket, request, frame, timingPatch = {}) {
     const box = boxFromRequest(request);
-    return {
+    return Object.freeze({
       ...sourcePacket,
-      rows,
-      row_count: rows.length,
+      frame,
+      row_count: frame.rowCount,
       bounds: box ? { min_lon: box.west, min_lat: box.south, max_lon: box.east, max_lat: box.north } : sourcePacket?.bounds,
       timing: {
         ...(sourcePacket?.timing || {}),
         cache_hit: true,
         ...timingPatch,
       },
-    };
+    });
   }
 
   function scopePacketToRequest(packet, request) {
     const requestBox = boxFromRequest(request);
-    if (!requestBox || !Array.isArray(packet?.rows)) return packet;
-    const rows = packet.rows.filter((row) => rowInBbox(row, requestBox));
-    if (rows.length === packet.rows.length) return packet;
-    return {
+    const frame = packet?.frame;
+    if (!requestBox || !CanonicalGridFrame.isFrame(frame)) return packet;
+    const scopedFrame = frame.filterBbox(requestBox, BBOX_EPSILON);
+    if (scopedFrame.rowCount === frame.rowCount) return packet;
+    return Object.freeze({
       ...packet,
-      rows,
-      row_count: rows.length,
+      frame: scopedFrame,
+      row_count: scopedFrame.rowCount,
       bounds: {
         min_lon: requestBox.west,
         min_lat: requestBox.south,
@@ -361,9 +329,9 @@ class DataFrameStoreCore {
       timing: {
         ...(packet.timing || {}),
         canonical_bbox_clipped: true,
-        canonical_bbox_dropped_rows: packet.rows.length - rows.length,
+        canonical_bbox_dropped_rows: frame.rowCount - scopedFrame.rowCount,
       },
-    };
+    });
   }
 
   function exactFrameKey(request) {
@@ -376,9 +344,9 @@ class DataFrameStoreCore {
     if (!requestBox) return null;
     const best = compatibleEntries(request).find((entry) => containsBbox(entry.meta.box, requestBox));
     if (!best) return null;
-    const rows = (best.packet.rows || []).filter((row) => rowInBbox(row, requestBox));
+    const frame = best.packet.frame.filterBbox(requestBox, BBOX_EPSILON);
     return {
-      packet: clonePacketForRows(best.packet, request, rows, {
+      packet: clonePacketForFrame(best.packet, request, frame, {
         browser_cache_reuse: "covered_bbox",
         browser_cache_source: best.frameKey,
       }),
@@ -412,8 +380,11 @@ class DataFrameStoreCore {
     const requestBox = boxFromRequest(normalized);
     const entries = compatibleEntries(normalized).filter((entry) => intersectBbox(entry.meta.box, requestBox));
     if (!entries.length) return null;
-    const rows = mergeRows(entries.map((entry) => entry.packet), requestBox);
-    const packet = clonePacketForRows(entries[0].packet, normalized, rows, {
+    const frame = CanonicalGridFrame.merge(entries.map((entry) => entry.packet.frame)).filterBbox(
+      requestBox,
+      BBOX_EPSILON,
+    );
+    const packet = clonePacketForFrame(entries[0].packet, normalized, frame, {
       browser_cache_reuse: "composed_bbox",
       browser_cache_sources: entries.length,
     });
@@ -451,6 +422,9 @@ class DataFrameStoreCore {
   function put(request, packet, { reason = "query", lane = "", scopeId = "" } = {}) {
     const normalized = FrameIdentity.normalizeRequest(request);
     const intentKey = FrameIdentity.intentKey(normalized);
+    if (!CanonicalGridFrame.isFrame(packet?.frame)) {
+      throw new TypeError("DataFrameStore accepts only canonical grid frame packets");
+    }
     const storedPacket = scopePacketToRequest(packet, normalized);
     const frameKey = FrameIdentity.frameKey(normalized, storedPacket);
     const actualResolution = FrameIdentity.actualResolutionFrom(storedPacket, normalized);
@@ -465,7 +439,12 @@ class DataFrameStoreCore {
       return { status: "oversize", packet: storedPacket, cacheHit: false, intentKey, frameKey };
     }
     removeFrame(frameKey, { force: true, reason: "replace" });
-    cache.set(frameKey, storedPacket);
+    const immutablePacket = Object.freeze({
+      ...storedPacket,
+      timing: Object.freeze({ ...(storedPacket.timing || {}) }),
+      grid: Object.freeze({ ...(storedPacket.grid || {}) }),
+    });
+    cache.set(frameKey, immutablePacket);
     packetSizes.set(frameKey, size);
     cacheBytes += size;
     aliases.set(intentKey, frameKey);
@@ -513,7 +492,7 @@ class DataFrameStoreCore {
       actual_resolution_km: change.actualResolution,
     });
     notify(change);
-    return { status: "ready", packet: storedPacket, cacheHit: false, intentKey, frameKey };
+    return { status: "ready", packet: immutablePacket, cacheHit: false, intentKey, frameKey };
   }
 
   function markFailed(request, error) {

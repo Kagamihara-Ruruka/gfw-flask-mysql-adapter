@@ -4,6 +4,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
+from common_adapter.query.grid_frame import CanonicalGridFrame, CanonicalGridFrameBuilder
 from common_adapter.query.immutable import freeze_json, thaw_json
 
 
@@ -23,6 +24,19 @@ CANONICAL_COLUMN_BY_ROLE = dict(CANONICAL_ROLE_COLUMNS)
 
 
 @dataclass(frozen=True)
+class CompiledSampledGridRowPlan:
+    role_candidates: Mapping[str, tuple[str, ...]]
+    request_paths: Mapping[str, str]
+    geometry_encoding: str
+    origin_lat: float | None
+    origin_lon: float | None
+    index_units_per_degree: float | None
+    base_resolution_km: float | None
+    cell_width_degrees: float | None
+    cell_height_degrees: float | None
+
+
+@dataclass(frozen=True)
 class CompiledSampledGridMapping:
     """Immutable dataset mapping context shared by every row in one adapter."""
 
@@ -39,6 +53,7 @@ class CompiledSampledGridMapping:
     visualization: Mapping[str, Any]
     default_coverage_id: str | None
     zero_is_data: bool
+    row_plan: CompiledSampledGridRowPlan
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -117,6 +132,51 @@ def _canonical_columns(
     return tuple(columns)
 
 
+def _role_candidates(fields: Mapping[str, str], role: str) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(
+        str(value)
+        for value in (
+            fields.get(role),
+            CANONICAL_COLUMN_BY_ROLE.get(role),
+            role,
+        )
+        if value
+    ))
+
+
+def _compile_row_plan(
+    fields: Mapping[str, str],
+    request_fields: Mapping[str, str],
+    geometry: Mapping[str, Any],
+    available_resolutions: tuple[float, ...],
+) -> CompiledSampledGridRowPlan:
+    base_resolution = _number(geometry.get("base_resolution_km"))
+    if base_resolution is None and available_resolutions:
+        base_resolution = available_resolutions[0]
+    width = _number(geometry.get("cell_width_degrees") or geometry.get("cell_size_degrees"))
+    height = _number(geometry.get("cell_height_degrees") or geometry.get("cell_size_degrees"))
+    roles = tuple(dict.fromkeys((
+        *(role for role, _column in CANONICAL_ROLE_COLUMNS),
+        "row",
+        "column",
+        "west",
+        "south",
+        "east",
+        "north",
+    )))
+    return CompiledSampledGridRowPlan(
+        role_candidates=freeze_json({role: _role_candidates(fields, role) for role in roles}),
+        request_paths=freeze_json(dict(request_fields)),
+        geometry_encoding=str(geometry.get("encoding") or "center").strip().lower(),
+        origin_lat=_number(geometry.get("origin_lat")),
+        origin_lon=_number(geometry.get("origin_lon")),
+        index_units_per_degree=_number(geometry.get("index_units_per_degree")),
+        base_resolution_km=base_resolution,
+        cell_width_degrees=width,
+        cell_height_degrees=height,
+    )
+
+
 def compile_sampled_grid_mapping(dataset: dict[str, Any]) -> CompiledSampledGridMapping:
     """Compile a sampled-grid contract once before mapping any source rows."""
 
@@ -129,10 +189,11 @@ def compile_sampled_grid_mapping(dataset: dict[str, Any]) -> CompiledSampledGrid
     frozen_source_fields = freeze_json(source_fields)
     frozen_request_fields = freeze_json(request_fields)
     coverage_areas = freeze_json(contract.get("coverage_areas") or [])
+    frozen_geometry = freeze_json(_mapping(contract.get("geometry")))
     return CompiledSampledGridMapping(
         source_fields=frozen_source_fields,
         request_fields=frozen_request_fields,
-        geometry=freeze_json(_mapping(contract.get("geometry"))),
+        geometry=frozen_geometry,
         alignment=freeze_json(_mapping(contract.get("alignment"))),
         available_resolutions_km=available,
         canonical_columns=_canonical_columns(frozen_source_fields, available),
@@ -147,6 +208,12 @@ def compile_sampled_grid_mapping(dataset: dict[str, Any]) -> CompiledSampledGrid
             else None
         ),
         zero_is_data=bool(contract.get("zero_is_data", True)),
+        row_plan=_compile_row_plan(
+            frozen_source_fields,
+            frozen_request_fields,
+            frozen_geometry,
+            available,
+        ),
     )
 
 
@@ -218,6 +285,8 @@ def _row_value(row: dict[str, Any], fields: dict[str, str], role: str) -> Any:
 
 
 def _context_value(context: dict[str, Any], path: str | None) -> Any:
+    if not str(path or "").strip():
+        return None
     current: Any = context
     for part in str(path or "").split("."):
         if not part:
@@ -357,6 +426,119 @@ def canonicalize_sampled_grid_row(
     if canonical["resolution_km"] is None and len(available) == 1:
         canonical["resolution_km"] = available[0]
     return freeze_json(canonical)
+
+
+def _compiled_value(
+    row: Mapping[str, Any],
+    candidates: tuple[str, ...],
+    context_value: Any = None,
+) -> Any:
+    for field_name in candidates:
+        if field_name in row:
+            return row.get(field_name)
+    return context_value
+
+
+def canonicalize_sampled_grid_rows(
+    rows: Iterable[Mapping[str, Any]],
+    mapping: CompiledSampledGridMapping,
+    *,
+    context: Mapping[str, Any] | None = None,
+) -> CanonicalGridFrame:
+    """Map a source snapshot to one immutable frame in a single row pass."""
+
+    plan = mapping.row_plan
+    request_context = dict(context or {})
+    context_values = {
+        role: _context_value(request_context, path)
+        for role, path in plan.request_paths.items()
+    }
+    candidates = plan.role_candidates
+    available = mapping.available_resolutions_km
+    single_resolution = available[0] if len(available) == 1 else None
+    builder = CanonicalGridFrameBuilder()
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        nested_bounds = row.get("bounds")
+        bounds: dict[str, float] | None = None
+        if isinstance(nested_bounds, Mapping):
+            explicit_values = tuple(_number(nested_bounds.get(name)) for name in ("west", "south", "east", "north"))
+            if all(value is not None for value in explicit_values):
+                bounds = dict(zip(("west", "south", "east", "north"), explicit_values, strict=True))
+        if bounds is None:
+            explicit_values = tuple(
+                _number(_compiled_value(row, candidates[name]))
+                for name in ("west", "south", "east", "north")
+            )
+            if all(value is not None for value in explicit_values):
+                bounds = dict(zip(("west", "south", "east", "north"), explicit_values, strict=True))
+
+        resolution = _number(_compiled_value(
+            row,
+            candidates["resolution"],
+            context_values.get("resolution"),
+        ))
+        if resolution is None:
+            resolution = single_resolution
+        lat = _number(_compiled_value(row, candidates["lat"], context_values.get("lat")))
+        lon = _number(_compiled_value(row, candidates["lon"], context_values.get("lon")))
+        if bounds is None and plan.geometry_encoding == "global_index":
+            row_index = _number(_compiled_value(row, candidates["row"], context_values.get("row")))
+            column_index = _number(_compiled_value(row, candidates["column"], context_values.get("column")))
+            if (
+                row_index is not None
+                and column_index is not None
+                and resolution is not None
+                and resolution > 0
+                and plan.index_units_per_degree is not None
+                and plan.index_units_per_degree > 0
+                and plan.base_resolution_km is not None
+                and plan.base_resolution_km > 0
+                and plan.origin_lat is not None
+                and plan.origin_lon is not None
+            ):
+                span = (resolution / plan.base_resolution_km) / plan.index_units_per_degree
+                north = plan.origin_lat - (row_index / plan.index_units_per_degree)
+                west = plan.origin_lon + (column_index / plan.index_units_per_degree)
+                bounds = {
+                    "west": west,
+                    "south": north - span,
+                    "east": west + span,
+                    "north": north,
+                }
+        elif bounds is None and plan.geometry_encoding == "center":
+            if (
+                lat is not None
+                and lon is not None
+                and plan.cell_width_degrees is not None
+                and plan.cell_height_degrees is not None
+            ):
+                bounds = {
+                    "west": lon - (plan.cell_width_degrees / 2),
+                    "south": lat - (plan.cell_height_degrees / 2),
+                    "east": lon + (plan.cell_width_degrees / 2),
+                    "north": lat + (plan.cell_height_degrees / 2),
+                }
+        if bounds is not None:
+            lat = (bounds["south"] + bounds["north"]) / 2
+            lon = (bounds["west"] + bounds["east"]) / 2
+
+        builder.append((
+            _compiled_value(row, candidates["id"], context_values.get("id")),
+            lat,
+            lon,
+            _compiled_value(row, candidates["value"], context_values.get("value")),
+            _number(_compiled_value(row, candidates["coverage"], context_values.get("coverage"))),
+            _compiled_value(row, candidates["status"], context_values.get("status")),
+            bounds.get("west") if bounds else None,
+            bounds.get("south") if bounds else None,
+            bounds.get("east") if bounds else None,
+            bounds.get("north") if bounds else None,
+            _compiled_value(row, candidates["time"], context_values.get("time")),
+            resolution,
+        ))
+    return builder.build()
 
 
 def _actual_resolution(

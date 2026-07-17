@@ -1,6 +1,6 @@
 function repaintSampledGridLayer() {
-  if ((typeof isSampledGridLayer !== "function" || !isSampledGridLayer(state.dataLayer)) || !state.gridLayer?.setRows) return;
-  state.gridLayer.setRows(state.gridLayer._rows || state.rows || []);
+  if ((typeof isSampledGridLayer !== "function" || !isSampledGridLayer(state.dataLayer)) || !state.gridLayer?.setFrame) return;
+  state.gridLayer.setFrame(state.gridLayer._frame);
 }
 
 class SampledGridResolutionController {
