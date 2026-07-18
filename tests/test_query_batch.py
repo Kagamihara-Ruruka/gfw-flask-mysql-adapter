@@ -65,6 +65,30 @@ class QueryBatchRouteTests(unittest.TestCase):
         self.routes.register(self.app)
         self.client = self.app.test_client()
 
+    def test_api_timing_reconciles_only_declared_non_overlapping_phases(self) -> None:
+        packet = {
+            "timing": {
+                "snapshot_load_ms": 5.0,
+                "filter_ms": 2.0,
+                "packet_projection_ms": 1.0,
+                "source_http_ms": 4.5,
+                "canonicalize_rows_ms": 3.5,
+                "api_phase_names": [
+                    "snapshot_load_ms",
+                    "filter_ms",
+                    "packet_projection_ms",
+                ],
+            }
+        }
+
+        DatasetRoutes.finalize_api_timing(packet, 12.0)
+
+        timing = packet["timing"]
+        self.assertEqual(8.0, timing["api_accounted_ms"] - timing["api_unattributed_ms"])
+        self.assertEqual(4.0, timing["api_unattributed_ms"])
+        self.assertEqual(12.0, timing["api_accounted_ms"])
+        self.assertEqual(0.0, timing["api_reconciliation_error_ms"])
+
     def test_batch_streams_results_in_completion_order_and_isolates_failures(self) -> None:
         calls: list[str] = []
 
@@ -102,6 +126,8 @@ class QueryBatchRouteTests(unittest.TestCase):
         self.assertEqual(metrics["type"], "batch.metrics")
         self.assertIn("batch_encode_ms", metrics["metrics"])
         self.assertEqual(metrics["metrics"]["batch_codec"], "orjson")
+        self.assertEqual(metrics["metrics"]["metrics_scope"], "events_before_batch_metrics")
+        self.assertTrue(metrics["metrics"]["metrics_event_excluded"])
         self.assertIn("response_bytes", metrics["metrics"])
         self.assertCountEqual(calls, ["2020-01-01", "2020-01-02"])
 

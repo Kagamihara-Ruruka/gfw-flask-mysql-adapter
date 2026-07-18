@@ -1,5 +1,73 @@
+class PlaybackBufferEpisode {
+  constructor({ id, runId, intentKey, targetIndex, scopeId, startedAt, required, ready, policyReason } = {}) {
+    this.id = String(id || "");
+    this.runId = String(runId || "");
+    this.intentKey = String(intentKey || "");
+    this.targetIndex = Number(targetIndex ?? -1);
+    this.scopeId = String(scopeId || "");
+    this.startedAt = Number(startedAt ?? 0);
+    this.required = Math.max(0, Number(required || 0));
+    this.ready = Math.max(0, Number(ready || 0));
+    this.policyReason = String(policyReason || "");
+    this.waitController = null;
+    this.closedReason = "";
+  }
+
+  updateGate({ required = 0, ready = 0, policyReason = "" } = {}) {
+    const nextRequired = Math.max(0, Number(required || 0));
+    this.required = this.required > 0 ? Math.min(this.required, nextRequired) : nextRequired;
+    this.ready = Math.max(0, Number(ready || 0));
+    this.policyReason = String(policyReason || "");
+    return this.ready >= this.required;
+  }
+
+  attachWait(controller) {
+    this.waitController = controller || null;
+  }
+
+  releaseWait(controller) {
+    if (this.waitController === controller) this.waitController = null;
+  }
+
+  close(reason = "closed") {
+    if (this.closedReason) return false;
+    this.closedReason = String(reason || "closed");
+    this.waitController?.abort?.();
+    this.waitController = null;
+    return true;
+  }
+
+  waitMs(now) {
+    return Math.max(0, Number(now || 0) - this.startedAt);
+  }
+
+  snapshot() {
+    return Object.freeze({
+      id: this.id,
+      runId: this.runId,
+      intentKey: this.intentKey,
+      targetIndex: this.targetIndex,
+      scopeId: this.scopeId,
+      startedAt: this.startedAt,
+      required: this.required,
+      ready: this.ready,
+      policyReason: this.policyReason,
+      closedReason: this.closedReason,
+    });
+  }
+}
+
 class PlaybackEngineCore {
-  constructor({ store, demandService, preheater, eventLog, frameIdentity, clock } = {}) {
+  constructor({
+    store,
+    demandService,
+    preheater,
+    eventLog,
+    frameIdentity,
+    clock,
+    frameBufferPolicy = null,
+    bufferTimeoutMs = Number.POSITIVE_INFINITY,
+  } = {}) {
     if (!store || !demandService || !preheater || !eventLog || !frameIdentity || !clock) {
       throw new TypeError("PlaybackEngine requires store, demand service, preheater, event log, identity and clock");
     }
@@ -10,6 +78,8 @@ class PlaybackEngineCore {
     this.eventLog = eventLog;
     this.frameIdentity = frameIdentity;
     this.clock = clock;
+    this.frameBufferPolicy = frameBufferPolicy;
+    this.bufferTimeoutMs = Math.max(1, Number(bufferTimeoutMs || Number.POSITIVE_INFINITY));
     this.dates = [];
     this.requestContext = null;
     this.currentIndex = -1;
@@ -17,13 +87,8 @@ class PlaybackEngineCore {
     this.consumptionRate = 0;
     this.runId = "";
     this.targetRuns = new Map();
-    this.bufferStartedAt = null;
-    this.bufferIntentKey = "";
-    this.bufferTargetIndex = -1;
-    this.bufferScopeId = "";
-    this.bufferRequired = 0;
-    this.bufferReady = 0;
-    this.bufferPolicyReason = "";
+    this.bufferSequence = 0;
+    this.bufferEpisode = null;
     this.prepareSequence = 0;
     this.prepareStartedAt = null;
     this.prepareScopeId = "";
@@ -31,7 +96,6 @@ class PlaybackEngineCore {
     this.prepareReady = 0;
     this.preparePolicyReason = "";
     this.prepareWaitController = null;
-    this.bufferWaitController = null;
     this.displayedFrameKey = "";
     this.unsubscribeEventLog = this.eventLog.subscribe?.((event) => {
       this.handleLifecycleEvent(event);
@@ -99,10 +163,11 @@ class PlaybackEngineCore {
       }
       return true;
     }
-    if (this.status === "BUFFERING" && this.bufferTargetIndex >= 0) {
-      this.bufferReady = this.preheater.readyAhead?.(this.bufferTargetIndex) || 0;
-      if (this.bufferReady >= this.bufferRequired) {
-        this.bufferWaitController?.abort?.();
+    const episode = this.bufferEpisode;
+    if (this.status === "BUFFERING" && episode?.targetIndex >= 0) {
+      episode.ready = this.preheater.readyAhead?.(episode.targetIndex) || 0;
+      if (episode.ready >= episode.required) {
+        episode.waitController?.abort?.();
       }
       return true;
     }
@@ -316,30 +381,94 @@ class PlaybackEngineCore {
   }
 
   cancelBuffer(reason = "cancelled", detail = {}) {
-    if (this.bufferStartedAt === null) return false;
+    const episode = this.bufferEpisode;
+    if (!episode) return false;
     const endedAt = this.clock.now();
-    if (this.bufferScopeId) {
-      this.demandService.cancelScope?.(this.bufferScopeId, { includeActive: true });
+    this.bufferEpisode = null;
+    if (episode.scopeId) {
+      this.demandService.cancelScope?.(episode.scopeId, { includeActive: true });
     }
-    this.bufferWaitController?.abort?.();
-    this.bufferWaitController = null;
+    episode.close(reason);
     this.eventLog.record("BUFFER_CANCELLED", {
       run_id: this.runId,
-      intent_key: this.bufferIntentKey,
+      buffer_episode_id: episode.id,
+      intent_key: episode.intentKey,
       dataset: detail.dataset || this.requestContext?.datasetId || "",
       date: detail.date || this.dates[this.currentIndex + 1] || this.dates[this.currentIndex] || "",
-      duration_ms: Math.max(0, endedAt - this.bufferStartedAt),
+      duration_ms: episode.waitMs(endedAt),
       reason,
       ...detail,
       monotonic_ms: endedAt,
     });
-    this.bufferStartedAt = null;
-    this.bufferIntentKey = "";
-    this.bufferTargetIndex = -1;
-    this.bufferScopeId = "";
-    this.bufferRequired = 0;
-    this.bufferReady = 0;
-    this.bufferPolicyReason = "";
+    return true;
+  }
+
+  beginBufferEpisode({ intentKey, index, request } = {}) {
+    const current = this.bufferEpisode;
+    if (current?.intentKey === intentKey && current.targetIndex === index) return current;
+    if (current) {
+      this.cancelBuffer("target_superseded", {
+        dataset: request?.datasetId || "",
+        date: this.dates[current.targetIndex] || "",
+        superseded_by_intent_key: intentKey,
+      });
+    }
+    const startedAt = this.clock.now();
+    const id = `${this.runId || "idle"}:buffer:${++this.bufferSequence}`;
+    const gate = this.readinessGate("resume", index);
+    const episode = new PlaybackBufferEpisode({
+      id,
+      runId: this.runId,
+      intentKey,
+      targetIndex: index,
+      scopeId: `playback-buffer:${id}`,
+      startedAt,
+      required: gate.required,
+      ready: this.preheater.readyAhead?.(index) || 0,
+      policyReason: gate.degradationReason,
+    });
+    this.bufferEpisode = episode;
+    this.status = "BUFFERING";
+    this.eventLog.record("BUFFER_ENTERED", {
+      run_id: this.runId,
+      buffer_episode_id: episode.id,
+      intent_key: intentKey,
+      dataset: request?.datasetId || "",
+      date: request?.date || this.dates[index] || "",
+      ready_slices: episode.ready,
+      required_slices: episode.required,
+      policy_reason: gate.policyReason,
+      degradation_reason: episode.policyReason,
+      monotonic_ms: startedAt,
+    });
+    return episode;
+  }
+
+  isCurrentBufferEpisode(episode) {
+    return Boolean(episode?.id && this.bufferEpisode?.id === episode.id && !episode.closedReason);
+  }
+
+  resolveBufferEpisode(episode, { result, request, date } = {}) {
+    if (!this.isCurrentBufferEpisode(episode)) return false;
+    const resumedAt = this.clock.now();
+    this.bufferEpisode = null;
+    episode.close("ready");
+    const resumedPlayback = this.status === "BUFFERING";
+    if (resumedPlayback) this.status = "PLAYING";
+    this.eventLog.record("BUFFER_RESUMED", {
+      run_id: this.runId,
+      buffer_episode_id: episode.id,
+      intent_key: episode.intentKey,
+      frame_key: result?.frameKey || "",
+      dataset: request?.datasetId || "",
+      date: date || request?.date || "",
+      ready_slices: episode.ready,
+      required_slices: episode.required,
+      degradation_reason: episode.policyReason,
+      resumed_playback: resumedPlayback,
+      duration_ms: episode.waitMs(resumedAt),
+      monotonic_ms: resumedAt,
+    });
     return true;
   }
 
@@ -380,17 +509,62 @@ class PlaybackEngineCore {
   }
 
   bufferGate() {
-    const active = this.bufferStartedAt !== null && this.bufferTargetIndex >= 0;
+    const episode = this.bufferEpisode;
+    const active = Boolean(episode && episode.targetIndex >= 0);
     if (!active) return Object.freeze({ active: false, ready: true, readyCount: 0, required: 0 });
-    this.bufferReady = this.preheater.readyAhead?.(this.bufferTargetIndex) || 0;
+    episode.ready = this.preheater.readyAhead?.(episode.targetIndex) || 0;
     return Object.freeze({
       active: true,
-      ready: this.bufferReady >= this.bufferRequired,
-      readyCount: this.bufferReady,
-      required: this.bufferRequired,
-      targetIndex: this.bufferTargetIndex,
-      degradationReason: this.bufferPolicyReason,
+      episodeId: episode.id,
+      ready: episode.ready >= episode.required,
+      readyCount: episode.ready,
+      required: episode.required,
+      targetIndex: episode.targetIndex,
+      degradationReason: episode.policyReason,
     });
+  }
+
+  frameDecision({ targetIndex, hasCacheLayer = true } = {}) {
+    if (typeof this.frameBufferPolicy?.inspectTarget !== "function") {
+      throw new TypeError("PlaybackEngine requires an injected frame-buffer policy for frame decisions");
+    }
+    const decision = this.frameBufferPolicy.inspectTarget({
+      dates: this.dates,
+      currentIndex: this.currentIndex,
+      targetIndex: Number(targetIndex ?? -1),
+      hasCacheLayer: Boolean(hasCacheLayer),
+      inspectFrame: (index) => this.inspectTarget(index),
+      bufferGate: this.bufferGate(),
+    });
+    const episode = this.bufferEpisode;
+    if (
+      !decision.canRender
+      && episode
+      && episode.targetIndex === Number(targetIndex)
+      && episode.waitMs(this.clock.now()) >= this.bufferTimeoutMs
+    ) {
+      const errorMessage = `buffer wait timeout ${Math.round(this.bufferTimeoutMs / 1000)}s`;
+      this.cancelBuffer("timeout", {
+        dataset: this.requestContext?.datasetId || "",
+        date: this.dates[episode.targetIndex] || "",
+      });
+      this.status = "FAILED";
+      this.eventLog.record("PLAYBACK_TARGET_FAILED", {
+        run_id: this.runId,
+        buffer_episode_id: episode.id,
+        intent_key: episode.intentKey,
+        dataset: this.requestContext?.datasetId || "",
+        date: this.dates[episode.targetIndex] || "",
+        error: errorMessage,
+        reason: "buffer_timeout",
+      });
+      return Object.freeze({
+        ...decision,
+        state: this.frameBufferPolicy.FRAME_STATES.failed,
+        errorMessage,
+      });
+    }
+    return decision;
   }
 
   requestForIndex(index) {
@@ -414,34 +588,18 @@ class PlaybackEngineCore {
     if (!intentKey) return Promise.reject(new Error("Playback target is outside the configured scope"));
 
     const controller = new AbortController();
+    const episode = this.beginBufferEpisode({
+      intentKey,
+      index,
+      request: inspected.request,
+    });
     this.eventLog.record("TARGET_REQUIRED", {
       run_id: this.runId,
+      buffer_episode_id: episode.id,
       intent_key: intentKey,
       dataset: inspected.request.datasetId,
       date: inspected.date,
     });
-    if (this.status !== "BUFFERING") {
-      this.status = "BUFFERING";
-      this.bufferStartedAt = this.clock.now();
-      this.bufferIntentKey = intentKey;
-      this.bufferTargetIndex = index;
-      this.bufferScopeId = `playback-buffer:${this.runId || "idle"}:${inspected.date}`;
-      const gate = this.readinessGate("resume", index);
-      this.bufferRequired = gate.required;
-      this.bufferReady = this.preheater.readyAhead?.(index) || 0;
-      this.bufferPolicyReason = gate.degradationReason;
-      this.eventLog.record("BUFFER_ENTERED", {
-        run_id: this.runId,
-        intent_key: intentKey,
-        dataset: inspected.request.datasetId,
-        date: inspected.date,
-        ready_slices: this.bufferReady,
-        required_slices: this.bufferRequired,
-        policy_reason: gate.policyReason,
-        degradation_reason: gate.degradationReason,
-        monotonic_ms: this.bufferStartedAt,
-      });
-    }
     const targetPromise = this.demandService.demand(inspected.request, {
       lane: "playback-target",
       signal: controller.signal,
@@ -450,79 +608,63 @@ class PlaybackEngineCore {
     });
     const promise = (async () => {
       const result = await targetPromise;
-      while (this.bufferStartedAt !== null && this.bufferIntentKey === intentKey) {
+      while (this.isCurrentBufferEpisode(episode)) {
         const gate = this.readinessGate("resume", index);
-        this.bufferRequired = this.bufferRequired > 0
-          ? Math.min(this.bufferRequired, gate.required)
-          : gate.required;
-        this.bufferPolicyReason = gate.degradationReason;
-        this.bufferReady = this.preheater.readyAhead?.(index) || 0;
-        if (this.bufferReady >= this.bufferRequired) break;
+        const ready = this.preheater.readyAhead?.(index) || 0;
+        if (episode.updateGate({
+          required: gate.required,
+          ready,
+          policyReason: gate.degradationReason,
+        })) break;
         const waitController = new AbortController();
-        this.bufferWaitController = waitController;
+        episode.attachWait(waitController);
         let progress;
         try {
           progress = await this.preheater.waitForDates(
-            this.dates.slice(index, index + this.bufferRequired),
+            this.dates.slice(index, index + episode.required),
             {
               lane: "playback-window",
-              scopeId: this.bufferScopeId,
+              scopeId: episode.scopeId,
               signal: waitController.signal,
             },
           );
         } catch (error) {
-          if (
-            error?.name === "AbortError"
-            && this.bufferStartedAt !== null
-            && this.bufferIntentKey === intentKey
-          ) {
-            continue;
+          if (error?.name === "AbortError" && this.isCurrentBufferEpisode(episode)) continue;
+          if (error?.name === "AbortError" && !this.isCurrentBufferEpisode(episode)) {
+            return { ...result, request: inspected.request, date: inspected.date, index };
           }
           throw error;
         } finally {
-          if (this.bufferWaitController === waitController) this.bufferWaitController = null;
+          episode.releaseWait(waitController);
         }
-        this.bufferReady = this.preheater.readyAhead?.(index) || 0;
-        if (Number(progress?.failed || 0) > 0 && this.bufferReady < this.bufferRequired) {
+        episode.ready = this.preheater.readyAhead?.(index) || 0;
+        if (Number(progress?.failed || 0) > 0 && episode.ready < episode.required) {
           throw new Error(`Resume buffer failed for ${Number(progress.failed)} frame(s)`);
         }
       }
-      const resumedAt = this.clock.now();
-      if (this.status === "BUFFERING") this.status = "PLAYING";
-      this.eventLog.record("BUFFER_RESUMED", {
-        run_id: this.runId,
-        intent_key: intentKey,
-        frame_key: result.frameKey,
-        dataset: inspected.request.datasetId,
+      this.resolveBufferEpisode(episode, {
+        result,
+        request: inspected.request,
         date: inspected.date,
-        ready_slices: this.bufferReady,
-        required_slices: this.bufferRequired,
-        degradation_reason: this.bufferPolicyReason,
-        duration_ms: this.bufferStartedAt === null ? 0 : Math.max(0, resumedAt - this.bufferStartedAt),
-        monotonic_ms: resumedAt,
       });
-      this.bufferStartedAt = null;
-      this.bufferIntentKey = "";
-      this.bufferTargetIndex = -1;
-      this.bufferScopeId = "";
-      this.bufferRequired = 0;
-      this.bufferReady = 0;
-      this.bufferPolicyReason = "";
       return { ...result, request: inspected.request, date: inspected.date, index };
     })().catch((error) => {
       if (error?.name !== "AbortError") {
-        this.cancelBuffer("target_failed", {
-          dataset: inspected.request.datasetId,
-          date: inspected.date,
-        });
-        this.status = "FAILED";
-        this.eventLog.record("PLAYBACK_TARGET_FAILED", {
-          run_id: this.runId,
-          intent_key: intentKey,
-          dataset: inspected.request.datasetId,
-          date: inspected.date,
-          error: error?.message || String(error),
-        });
+        if (this.isCurrentBufferEpisode(episode)) {
+          this.cancelBuffer("target_failed", {
+            dataset: inspected.request.datasetId,
+            date: inspected.date,
+          });
+          this.status = "FAILED";
+          this.eventLog.record("PLAYBACK_TARGET_FAILED", {
+            run_id: this.runId,
+            buffer_episode_id: episode.id,
+            intent_key: intentKey,
+            dataset: inspected.request.datasetId,
+            date: inspected.date,
+            error: error?.message || String(error),
+          });
+        }
       }
       throw error;
     }).finally(() => {
@@ -575,7 +717,7 @@ class PlaybackEngineCore {
   }
 
   bufferWaitMs() {
-    return this.bufferStartedAt === null ? 0 : Math.max(0, this.clock.now() - this.bufferStartedAt);
+    return this.bufferEpisode ? this.bufferEpisode.waitMs(this.clock.now()) : 0;
   }
 
   preparationWaitMs() {
@@ -600,8 +742,9 @@ class PlaybackEngineCore {
       frameCount: this.dates.length,
       targetInflight: this.targetRuns.size,
       displayedFrameKey: this.displayedFrameKey,
-      bufferStartedMonotonicMs: this.bufferStartedAt,
-      bufferIntentKey: this.bufferIntentKey,
+      bufferEpisodeId: this.bufferEpisode?.id || "",
+      bufferStartedMonotonicMs: this.bufferEpisode?.startedAt ?? null,
+      bufferIntentKey: this.bufferEpisode?.intentKey || "",
       bufferWaitMs: this.bufferWaitMs(),
       bufferGate: this.bufferGate(),
       preparationStartedMonotonicMs: this.prepareStartedAt,
@@ -621,4 +764,7 @@ class PlaybackEngineCore {
   }
 }
 
-if (typeof globalThis !== "undefined") globalThis.PlaybackEngineCore = PlaybackEngineCore;
+if (typeof globalThis !== "undefined") {
+  globalThis.PlaybackBufferEpisode = PlaybackBufferEpisode;
+  globalThis.PlaybackEngineCore = PlaybackEngineCore;
+}

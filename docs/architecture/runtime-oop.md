@@ -75,6 +75,7 @@ flowchart LR
 | 裝置／視覺偏好、storage 狀態 | `BrowserProfileStoreCore` | `RuntimeCompositionRoot` | `dispose` 解除 profile change listener；storage 失敗只降級 session |
 | timer、generation、timeline、播放 session callback | `PlaybackRuntimeController` | `RuntimeCompositionRoot` | `stop / dispose` 取消 timer，先停 Preheater 再停 Engine |
 | 播放日期、狀態、下一 target readiness、visible-frame pin | `PlaybackEngineCore` | `RuntimeCompositionRoot` | `stop / dispose` 取消 preparation、target、buffer demand 並 release pin |
+| 目前 buffer episode 的 identity、target、timeout、resume guard | `PlaybackBufferEpisode`，由 `PlaybackEngineCore` 唯一持有 | Engine 進入 target miss 時建立 | supersede／resume／stop 時完成並解除；晚回傳不得修改新 episode |
 | 預熱 scope、inflight、retry/settle timer、Store subscription | `PlaybackPreheaterController` | `RuntimeCompositionRoot` | `stop / dispose` 取消 owned query scopes、timer 與 subscription |
 | 有效水位、下降 hold、最近 policy | `AdaptiveWatermarkControllerCore` | `RuntimeCompositionRoot` | `reset / dispose`；不擁有 query、cache 或播放 clock |
 | queued/active task、consumer、lane promotion | `QueryScheduler` | `RuntimeCompositionRoot` | `dispose` abort 未完成 task |
@@ -94,6 +95,9 @@ flowchart LR
 | 選取模式、cells、time binding | `SelectionSession` | Tile selection aggregate，由 `AppRuntime.install` 接管 | Layer dispose 清除 rectangle、label、cursor 與 listener |
 | viewport coverage 約束 | `LayerViewportController` | `RuntimeCompositionRoot` | `dispose` 還原 map bounds/min zoom |
 | 虛擬網格策略、revision、map subscription | `VirtualGridController` | `RuntimeCompositionRoot` | `dispose` 對稱解除 event/map subscription |
+| 航拍背景 fetch、object URL、paint timer／rAF | `AerialBackdropController` UI owner | UI install | `dispose` abort fetch、取消 timer／rAF、解除 listener 並 revoke object URL；不進資料 Runtime |
+| 效能縮圖 timer／rAF／ResizeObserver | `SnapshotPerformanceChart` UI owner | Widget capability render | `dispose` 取消排程並解除 observer |
+| Metrics Widget telemetry subscription | metrics capability instance | Widget capability render | re-render 前釋放舊 binding，Widget dispose 時全部解除 |
 
 `RuntimeCompositionRoot.snapshot()` 只列 owner 名稱與組裝狀態，不複製業務狀態。完成組裝後，root 依建立順序反向呼叫 `dispose()`，因此每份資源只有一條 teardown 路徑。
 

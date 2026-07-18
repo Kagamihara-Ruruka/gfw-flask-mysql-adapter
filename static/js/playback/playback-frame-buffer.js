@@ -173,4 +173,4 @@ const PlaybackFrameBuffer = (() => {
   };
 })();
 
-window.PlaybackFrameBuffer = PlaybackFrameBuffer;
+if (typeof globalThis !== "undefined") globalThis.PlaybackFrameBuffer = PlaybackFrameBuffer;

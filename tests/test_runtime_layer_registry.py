@@ -100,6 +100,32 @@ class RuntimeLayerRegistryTests(unittest.TestCase):
             )
             self.assertEqual(2, build_snapshot.call_count)
 
+    def test_consumer_snapshot_uses_materialized_truth_after_ttl_expiry(self) -> None:
+        clock = [0.0]
+        materialized = {
+            "generation": 0,
+            "datasets": {"pipeline.chlor_a": _runtime_dataset()},
+            "layers": [],
+            "imported_layers": ["pipeline.chlor_a"],
+            "source_errors": [],
+        }
+        registry = RuntimeLayerRegistry(
+            {},
+            refresh_ttl_seconds=0.5,
+            monotonic=lambda: clock[0],
+        )
+        with patch.object(
+            registry,
+            "_build_snapshot",
+            side_effect=lambda: deepcopy(materialized),
+        ) as build_snapshot:
+            first = registry.snapshot(force=True)
+            clock[0] = 5.0
+            second = registry.snapshot(refresh_if_expired=False)
+
+        self.assertEqual(first["datasets"], second["datasets"])
+        self.assertEqual(1, build_snapshot.call_count)
+
     def test_registered_dynamic_layer_remains_visible_when_catalog_is_offline(self) -> None:
         source_error = {
             "config_path": PIPELINE_CONFIG,

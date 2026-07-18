@@ -1,7 +1,6 @@
 const PLAYBACK_CONTROL_IDS = ["latest-date", "replay", "prev-day", "play-toggle", "next-day"];
 const DEFAULT_PLAYBACK_INTERVAL_MS = 1400;
 const PLAYBACK_BUFFER_POLL_MS = 180;
-const PLAYBACK_BUFFER_TIMEOUT_MS = PlaybackTimePolicy.BUFFER_TIMEOUT_MS;
 let playbackCacheUiFrame = null;
 
 function schedulePlaybackCacheUiSync() {
@@ -502,15 +501,9 @@ async function preparePlaybackStart() {
 }
 
 function playbackFrameDecision(dates, currentIndex, targetIndex) {
-  return PlaybackFrameBuffer.inspectTarget({
-    dates,
-    currentIndex,
+  return PlaybackRuntime.frameDecision({
     targetIndex,
     hasCacheLayer: hasPlaybackCacheLayer(),
-    inspectFrame: (index) => PlaybackRuntime.inspectTarget(index),
-    intervalMs: normalizedPlaybackInterval(),
-    rate: normalizedPlaybackRate(),
-    bufferGate: PlaybackRuntime.bufferGate(),
   });
 }
 
@@ -521,13 +514,6 @@ function playbackBufferAttempt(packet) {
     sameTarget,
     attempts: sameTarget ? Number(state.playbackCache.bufferAttempts || 0) + 1 : 1,
   };
-}
-
-function playbackBufferTimedOut() {
-  return PlaybackTimePolicy.bufferTimedOut(
-    PlaybackRuntime.bufferWaitMs(),
-    PLAYBACK_BUFFER_TIMEOUT_MS,
-  );
 }
 
 function markPlaybackTargetFailed(dates, targetIndex, decision, { attempts = 0, reason = "" } = {}) {
@@ -612,12 +598,6 @@ async function advancePlaybackToTimelineTarget(targetIndex, { stepMode = "sequen
     if (stepMode === "fluid") {
       markPlaybackTargetWaiting(dates, targetIndex, decision, waitState);
       return { advanced: true, held: true, done: false };
-    }
-    if (playbackBufferTimedOut()) {
-      return markPlaybackTargetFailed(dates, targetIndex, decision, {
-        attempts: waitState.attempts,
-        reason: `buffer wait timeout ${Math.round(PLAYBACK_BUFFER_TIMEOUT_MS / 1000)}s`,
-      });
     }
     markPlaybackTargetWaiting(dates, targetIndex, decision, waitState);
     return { advanced: false, buffering: true, done: false };

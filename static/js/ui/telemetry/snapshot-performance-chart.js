@@ -5,6 +5,9 @@ class SnapshotPerformanceChart {
     this.resizeObserver = null;
     this.observedElement = null;
     this.retryTimer = null;
+    this.disposed = false;
+    this.timers = new Set();
+    this.animationFrames = new Set();
     this.series = options.series || [
       { key: "total", name: "總耗時", color: "#43e28c" },
       { key: "query", name: "SQL", color: "#27c2ad" },
@@ -32,7 +35,7 @@ class SnapshotPerformanceChart {
   }
 
   observeElement(chart) {
-    if (!window.ResizeObserver || this.observedElement === chart) return;
+    if (this.disposed || !window.ResizeObserver || this.observedElement === chart) return;
     if (this.resizeObserver) {
       this.resizeObserver.disconnect();
     }
@@ -45,16 +48,46 @@ class SnapshotPerformanceChart {
   }
 
   scheduleResize(chart) {
+    if (this.disposed) return;
     const resize = () => {
       if (!chart.isConnected || !window.Plotly?.Plots?.resize) return;
       window.Plotly.Plots.resize(chart);
     };
-    window.requestAnimationFrame(() => {
+    this.scheduleFrame(() => {
       resize();
-      window.requestAnimationFrame(resize);
+      this.scheduleFrame(resize);
     });
-    window.setTimeout(resize, 80);
-    window.setTimeout(resize, 240);
+    this.scheduleTimer(resize, 80);
+    this.scheduleTimer(resize, 240);
+  }
+
+  scheduleFrame(callback) {
+    if (this.disposed) return 0;
+    const frame = window.requestAnimationFrame(() => {
+      this.animationFrames.delete(frame);
+      if (!this.disposed) callback();
+    });
+    this.animationFrames.add(frame);
+    return frame;
+  }
+
+  scheduleTimer(callback, delay) {
+    if (this.disposed) return 0;
+    const timer = window.setTimeout(() => {
+      this.timers.delete(timer);
+      if (!this.disposed) callback();
+    }, delay);
+    this.timers.add(timer);
+    return timer;
+  }
+
+  cancelScheduledWork() {
+    window.clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    for (const timer of this.timers) window.clearTimeout(timer);
+    this.timers.clear();
+    for (const frame of this.animationFrames) window.cancelAnimationFrame(frame);
+    this.animationFrames.clear();
   }
 
   isMeasurable(chart) {
@@ -70,14 +103,20 @@ class SnapshotPerformanceChart {
   }
 
   renderWhenReady(samples = [], attempt = 0) {
+    if (this.disposed) return;
     const chart = this.getElement();
     if (!chart) return;
     if (this.isMeasurable(chart) || attempt >= 6) {
       this.render(samples);
       return;
     }
-    window.clearTimeout(this.retryTimer);
-    this.retryTimer = window.setTimeout(() => {
+    if (this.retryTimer) {
+      window.clearTimeout(this.retryTimer);
+      this.timers.delete(this.retryTimer);
+      this.retryTimer = null;
+    }
+    this.retryTimer = this.scheduleTimer(() => {
+      this.retryTimer = null;
       this.renderWhenReady(samples, attempt + 1);
     }, 60);
   }
@@ -181,6 +220,7 @@ class SnapshotPerformanceChart {
   }
 
   render(samples = []) {
+    if (this.disposed) return;
     const chart = this.getElement();
     if (!chart) return;
     this.observeElement(chart);
@@ -205,7 +245,7 @@ class SnapshotPerformanceChart {
       .then(() => {
         chart.dataset.snapshotStatus = "rendered";
         this.scheduleResize(chart);
-        window.setTimeout(() => {
+        this.scheduleTimer(() => {
           this.recoverEmptyPlot(chart, data, layout, config);
         }, 180);
       })
@@ -218,12 +258,27 @@ class SnapshotPerformanceChart {
   purge() {
     const chart = this.getElement();
     this.lastSamples = [];
-    window.clearTimeout(this.retryTimer);
+    this.cancelScheduledWork();
     if (chart && window.Plotly?.purge) {
       window.Plotly.purge(chart);
     }
+  }
+
+  dispose() {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.cancelScheduledWork();
+    this.resizeObserver?.disconnect?.();
+    this.resizeObserver = null;
+    this.observedElement = null;
+    const chart = this.getElement();
+    this.lastSamples = [];
+    if (chart && window.Plotly?.purge) window.Plotly.purge(chart);
   }
 }
 
 window.createSnapshotPerformanceChart = (options = {}) => new SnapshotPerformanceChart(options);
 window.SnapshotPerformanceChart = new SnapshotPerformanceChart();
+window.addEventListener("pagehide", (event) => {
+  if (!event.persisted) window.SnapshotPerformanceChart?.dispose?.();
+});

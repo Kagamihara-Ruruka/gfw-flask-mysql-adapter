@@ -1261,7 +1261,7 @@ test("developer control plane and dashboard share one layer-contract registry", 
     /def developer_layer_contracts[\s\S]*?route_provided_layer_rows\(layer_registry\)/,
   );
   assert.match(datasetRoutes, /class DatasetRoutes[\s\S]*?self\.layer_registry = layer_registry/);
-  assert.match(datasetRoutes, /registry = self\.layer_registry\.snapshot\(force=True\)/);
+  assert.match(datasetRoutes, /registry = self\.layer_registry\.snapshot\(refresh_if_expired=False\)/);
   assert.match(server, /layer_registry = RuntimeLayerRegistry\(config\)/);
   assert.match(server, /route_status_registry = RouteStatusRegistry\(config, layer_registry\)/);
   assert.match(server, /create_developer_app\([\s\S]*?layer_registry=layer_registry/);

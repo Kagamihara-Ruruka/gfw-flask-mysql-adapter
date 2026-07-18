@@ -210,6 +210,7 @@ def summarize_batch_pass(
                 failures.append({"operation": event.get("operation_id"), "error": event.get("error")})
     wall_ms = (time.perf_counter() - started_at) * 1000
     phase_names = (
+        "snapshot_load_ms",
         "source_capacity_wait_ms",
         "source_http_ms",
         "source_json_decode_ms",
@@ -222,34 +223,27 @@ def summarize_batch_pass(
         "cache_evict_ms",
         "filter_ms",
         "packet_projection_ms",
+        "packet_build_ms",
+        "server_total_ms",
         "serialize_ms",
         "api_total_ms",
         "api_accounted_ms",
         "api_unattributed_ms",
+        "api_reconciliation_error_ms",
     )
     phases = {
         phase: distribution([float(timing.get(phase) or 0) for timing in operation_timings])
         for phase in phase_names
     }
     completed_frames = len(operation_timings)
-    api_phase_names = (
-        "cache_lookup_ms",
-        "cache_wait_ms",
-        "source_http_ms",
-        "source_json_decode_ms",
-        "canonicalize_rows_ms",
-        "canonical_packet_copy_ms",
-        "cache_commit_ms",
-        "cache_evict_ms",
-        "filter_ms",
-        "packet_projection_ms",
-        "serialize_ms",
-    )
     reconciliation_errors = []
     reconciliation_percentages = []
     for timing in operation_timings:
         total = float(timing.get("api_total_ms") or 0)
-        accounted = sum(float(timing.get(name) or 0) for name in api_phase_names)
+        declared_phases = timing.get("api_phase_names")
+        if not isinstance(declared_phases, list) or not declared_phases:
+            declared_phases = ["server_total_ms"]
+        accounted = sum(float(timing.get(name) or 0) for name in declared_phases)
         accounted += float(timing.get("api_unattributed_ms") or 0)
         error = abs(total - accounted)
         reconciliation_errors.append(error)

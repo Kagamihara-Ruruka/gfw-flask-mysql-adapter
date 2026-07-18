@@ -24,10 +24,14 @@ function loadBrowserScripts(files, globals = {}) {
 }
 
 function loadPlaybackCore(globals = {}) {
-  return loadBrowserScripts([
+  const { context } = loadBrowserScripts([
     "static/js/playback/playback-scheduler.js",
     "static/js/playback/playback-frame-buffer.js",
-  ], globals).window;
+  ], globals);
+  return {
+    PlaybackFrameBuffer: vm.runInContext("PlaybackFrameBuffer", context),
+    PlaybackScheduler: vm.runInContext("PlaybackScheduler", context),
+  };
 }
 
 function loadPlaybackRenderer() {
@@ -539,6 +543,8 @@ test("PlaybackEngine is the only mutable playback lifecycle truth", () => {
   assert.doesNotMatch(fullscreen, /state\.isPlaying/);
   assert.doesNotMatch(app, /state\.isPlaying/);
   assert.match(app, /setPlayback\(!playbackIsActive\(\)\)/);
+  assert.match(controls, /PlaybackRuntime\.frameDecision\(/);
+  assert.doesNotMatch(controls, /PlaybackTimePolicy|bufferTimedOut|BUFFER_TIMEOUT/);
 });
 
 test("document visibility suspends only the playback clock and preserves the producer", () => {

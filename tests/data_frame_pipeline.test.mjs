@@ -183,6 +183,8 @@ function createContext({ fetchJson, statePatch = {} } = {}) {
     "static/js/services/frame-demand-service.js",
     "static/js/services/frame-demand-decorators.js",
     "static/js/playback/playback-preheater.js",
+    "static/js/playback/playback-frame-buffer.js",
+    "static/js/playback/playback-time-policy.js",
     "static/js/playback/playback-engine.js",
     "static/js/playback/adaptive-watermark-controller.js",
     "static/js/playback/playback-renderer.js",
@@ -370,7 +372,7 @@ test("frame demand stores actual frame identity behind requested intent alias", 
   const store = api(context, "DataFrameStore");
   const first = await demand.demand(request(), { lane: "map-current", scopeId: "map" });
   const second = await demand.demand(request(), { lane: "widget-interactive", scopeId: "widget" });
-  const actualRoute = await demand.demand(request("2020-01-01", { resolution: 16 }), {
+  const actualRoute = await demand.demand(request("2020-01-01", { queryResolution: 16 }), {
     lane: "playback-window",
     scopeId: "preheater",
   });
@@ -398,8 +400,8 @@ test("resolved query route sends the effective resolution while preserving reque
   const operation = operationFor(routed, identity.intentKey(routed));
 
   assert.equal(operation.params.resolution, 16);
-  assert.match(identity.intentKey(routed), /\|4\|fixed$/);
-  assert.equal(identity.scopeKey(routed), identity.scopeKey(request("2020-01-02")));
+  assert.match(identity.intentKey(routed), /\|4\|16\|fixed$/);
+  assert.notEqual(identity.scopeKey(routed), identity.scopeKey(request("2020-01-02")));
 });
 
 test("canonical frame metadata preserves configured, routed and actual resolutions", async () => {
@@ -459,7 +461,7 @@ test("render intent separates configured resolution from the effective source ro
   assert.equal("zoom" in requestPacket, false);
   assert.equal("latitude" in requestPacket, false);
   assert.equal("center" in requestPacket, false);
-  assert.match(identity.intentKey(requestPacket), /\|4\|fixed$/);
+  assert.match(identity.intentKey(requestPacket), /\|4\|16\|fixed$/);
 });
 
 test("scope cancellation drains dispatched HTTP into cache instead of creating phantom capacity", async () => {
@@ -502,6 +504,36 @@ test("scope cancellation drains dispatched HTTP into cache instead of creating p
 
   assert.equal(log.query({ type: "QUERY_OPERATION_FINISHED" }).length, 1);
   assert.equal(log.query({ type: "HTTP_BATCH_FINISHED" }).length, 1);
+});
+
+test("late query completion keeps the run identity captured when demand started", async () => {
+  const source = deferred();
+  const context = createContext({
+    fetchJson: async () => source.promise,
+  });
+  const demand = api(context, "FrameDemandService");
+  const log = api(context, "LifecycleEventLog");
+  const firstRun = log.beginRun({ run_id: "playback-old", kind: "playback" });
+  const pending = demand.demand(request(), {
+    lane: "playback-window",
+    scopeId: "preheater:old-run",
+  });
+  await flush();
+
+  log.endRun({ run_id: firstRun, reason: "superseded" });
+  const secondRun = log.beginRun({ run_id: "playback-new", kind: "playback" });
+  source.resolve({
+    rows: [{ cell_id: "late", value: 3, lat: 15, lon: 125, resolution_km: 4 }],
+    row_count: 1,
+    grid: { actual_resolution_km: 4 },
+  });
+  await pending;
+
+  assert.equal(log.query({ type: "QUERY_OPERATION_FINISHED" }).at(-1)?.run_id, firstRun);
+  assert.equal(log.query({ type: "HTTP_BATCH_FINISHED" }).at(-1)?.run_id, firstRun);
+  assert.equal(log.query({ run_id: secondRun, type: "QUERY_OPERATION_FINISHED" }).length, 0);
+  assert.equal(log.query({ run_id: secondRun, type: "HTTP_BATCH_FINISHED" }).length, 0);
+  log.endRun({ run_id: secondRun, reason: "test_complete" });
 });
 
 test("scope replacement waits for dispatched source work instead of oversubscribing phantom slots", async () => {

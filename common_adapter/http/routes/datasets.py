@@ -51,6 +51,8 @@ class BatchStreamTiming:
 
     def snapshot(self) -> dict[str, Any]:
         return {
+            "metrics_scope": "events_before_batch_metrics",
+            "metrics_event_excluded": True,
             "batch_encode_ms": round(self.batch_encode_ms, 3),
             "batch_codec": "orjson",
             "batch_gzip_ms": round(self.batch_gzip_ms, 3),
@@ -63,18 +65,7 @@ class BatchStreamTiming:
 
 
 class DatasetRoutes:
-    API_TIMING_PHASES = (
-        "cache_lookup_ms",
-        "cache_wait_ms",
-        "source_http_wall_ms",
-        "canonicalize_rows_ms",
-        "canonical_packet_copy_ms",
-        "cache_commit_ms",
-        "cache_evict_ms",
-        "filter_ms",
-        "packet_projection_ms",
-        "serialize_ms",
-    )
+    DEFAULT_API_TIMING_PHASES = ("server_total_ms",)
 
     def __init__(
         self,
@@ -205,10 +196,23 @@ class DatasetRoutes:
     @classmethod
     def finalize_api_timing(cls, packet: dict[str, Any], api_total_ms: float) -> None:
         timing = dict(packet.get("timing") or {})
-        tracked = sum(float(timing.get(key) or 0) for key in cls.API_TIMING_PHASES)
-        timing["api_total_ms"] = round(float(api_total_ms), 3)
-        timing["api_unattributed_ms"] = round(max(0.0, float(api_total_ms) - tracked), 3)
+        declared_phases = timing.get("api_phase_names")
+        normalized_phases = (
+            tuple(dict.fromkeys(str(name).strip() for name in declared_phases if str(name).strip()))
+            if isinstance(declared_phases, (list, tuple))
+            else ()
+        )
+        phase_names = normalized_phases or cls.DEFAULT_API_TIMING_PHASES
+        total = float(api_total_ms)
+        tracked = sum(float(timing.get(key) or 0) for key in phase_names)
+        timing["api_phase_names"] = list(phase_names)
+        timing["api_total_ms"] = round(total, 3)
+        timing["api_unattributed_ms"] = round(max(0.0, total - tracked), 3)
         timing["api_accounted_ms"] = round(tracked + timing["api_unattributed_ms"], 3)
+        timing["api_reconciliation_error_ms"] = round(
+            abs(total - timing["api_accounted_ms"]),
+            3,
+        )
         packet["timing"] = timing
 
     def records_result(
@@ -310,7 +314,7 @@ class DatasetRoutes:
             safe = {}
             query_transport_capacities: dict[str, int] = {}
             policy = query_policy(config)
-            registry = self.layer_registry.snapshot(force=True)
+            registry = self.layer_registry.snapshot(refresh_if_expired=False)
             for dataset_id, runtime_dataset in registry["datasets"].items():
                 runtime = self.runtime_packet(dataset_id, runtime_dataset)
                 transport_key = str(runtime["query_transport_key"])

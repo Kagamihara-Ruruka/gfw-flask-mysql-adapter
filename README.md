@@ -32,6 +32,8 @@ The one-pass Mapping and end-to-end columnar Canonical Frame acceptance report i
 [`benchmarks/sampled_grid_canonical_frame_acceptance_2026-07-18.md`](benchmarks/sampled_grid_canonical_frame_acceptance_2026-07-18.md).
 The CC-scoped paging, shared render-grid, and query-storm acceptance report is available at
 [`benchmarks/sampled_grid_spatial_storm_acceptance_2026-07-18.md`](benchmarks/sampled_grid_spatial_storm_acceptance_2026-07-18.md).
+The Runtime identity, buffer-episode, timing-truth, and five-dataset full-year user-storm acceptance report is available at
+[`benchmarks/runtime_truth_acceptance_2026-07-19.md`](benchmarks/runtime_truth_acceptance_2026-07-19.md).
 
 ## Upstream Handoff
 
@@ -799,6 +801,8 @@ python scripts\sampled_grid_query_storm.py --base-url http://127.0.0.1:5083
 ```
 
 The final 2026-07-18 spatial/column acceptance run sent 12 simultaneous requests for one frame and observed one source HTTP plus 11 cache/in-flight reuses at **11.954 fps**. A second storm requested 15 unique frames across five Pipeline Iceberg datasets with ten clients and completed at **3.764 fps**. Mapping-driven source projection reduced a representative 92,432-cell response from 20.06 MB to 6.42 MB. That larger-window 30-frame cold path reached **1.292 fps**; a fresh-process, complete-Taiwan A/B reached **2.774 fps** with batch=2 and a 0.707 s P95 per two frames. All five sampled-grid datasets exceeded the 1x consumption rate in a cold matrix. The final observer-loop regression played chlorophyll plus EEZ from 2020-01-01 through 2020-06-27 while selecting a virtual cell, zooming z6→z7, switching 1x→2x→1x, and dragging the map. Playback remained responsive, the line chart advanced from cached scalar summaries, ready-ahead recovered after each scope change, and browser warning/error logs stayed empty.
+
+The 2026-07-19 Runtime-truth checkpoint separates requested, effective query, and observed actual resolution in physical Frame identity; gives `PlaybackEngineCore` one explicit `PlaybackBufferEpisode`; captures `run_id` when demand is created; and records a non-overlapping sampled-grid timing ledger. A fresh smoke measured 5085 batch=2 at **1.912 fps cold** and **15.309 fps warm**, with zero timing reconciliation error. The final query storm completed 12 duplicate consumers with one source request and 15 unique mixed-dataset Frames at **2.618 fps**. In the side browser, every Pipeline Iceberg dataset completed its full 2020 range while the run exercised speed changes, buffering recovery, Zoom, cell selection, Seek, Widgets, Event Viewer, and an active dataset switch. No run became permanently fetching, no late scope overwrote the current dataset, and browser warning/error logs were empty. Full evidence is in the Runtime-truth acceptance report linked above.
 
 JavaScript syntax check:
 

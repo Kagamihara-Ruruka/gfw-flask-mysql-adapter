@@ -312,6 +312,8 @@ class DataFrameStoreCore {
       && String(meta.limit) === String(normalized.limit)
       && String(meta.columns) === String(normalized.columns)
       && String(meta.requestedResolution ?? "auto") === String(normalized.resolution ?? "auto")
+      && String(meta.effectiveQueryResolution ?? "auto")
+        === String(FrameIdentity.queryResolution(normalized) ?? "auto")
       && (normalized.resolution != null
         || (String(meta.zoom ?? "auto") === String(normalized.zoom ?? "auto")
           && String(meta.latitude ?? "auto") === String(normalized.latitude ?? "auto")))
@@ -334,6 +336,7 @@ class DataFrameStoreCore {
     return compatibleMeta({
       ...source,
       requestedResolution: source.resolution,
+      effectiveQueryResolution: FrameIdentity.queryResolution(source),
       box: sourceBox,
     }, target) && containsBbox(sourceBox, targetBox);
   }
@@ -473,7 +476,7 @@ class DataFrameStoreCore {
     const actualResolution = FrameIdentity.actualResolutionFrom(storedPacket, normalized);
     const actualIntentKey = actualResolution == null
       ? intentKey
-      : FrameIdentity.intentKey({ ...normalized, resolution: actualResolution });
+      : FrameIdentity.intentKey({ ...normalized, queryResolution: actualResolution });
     const size = estimatePacketBytes(storedPacket);
     const { maxBytes } = options();
     if (maxBytes > 0 && size > maxBytes) {
@@ -521,6 +524,7 @@ class DataFrameStoreCore {
       bytes: size,
     };
     LifecycleEventLog?.record?.("CACHE_READY", {
+      requested_intent_key: FrameIdentity.requestedIntentKey(normalized),
       intent_key: intentKey,
       frame_key: frameKey,
       scope_key: FrameIdentity.scopeKey(normalized),

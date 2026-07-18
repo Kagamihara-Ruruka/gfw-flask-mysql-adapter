@@ -58,13 +58,13 @@ test("frame identity separates requested intent from actual returned resolution"
   };
   const intentKey = identity.intentKey(request);
   const frameKey = identity.frameKey(request, { grid: { actual_resolution_km: 16 } });
-  assert.match(intentKey, /\|4\|fixed$/);
-  assert.match(frameKey, /\|16\|fixed$/);
+  assert.match(intentKey, /\|4\|4\|fixed$/);
+  assert.match(frameKey, /\|4\|4\|16\|fixed$/);
   assert.notEqual(intentKey, frameKey);
   assert.equal(identity.bboxSignature(request.bbox), "120.123456,10.000000,130.000000,20.000000");
 });
 
-test("effective query resolution does not rewrite the requested scope identity", () => {
+test("effective query resolution preserves logical intent but changes physical identity", () => {
   const context = load("static/js/services/frame-identity.js", {
     state: {
       datasets: {
@@ -90,9 +90,11 @@ test("effective query resolution does not rewrite the requested scope identity",
   assert.equal(routed.resolution, 4);
   assert.equal(routed.requestedResolutionKm, 4);
   assert.equal(routed.queryResolution, 16);
-  assert.equal(identity.intentKey(routed), identity.intentKey(requested));
-  assert.equal(identity.scopeKey(routed), identity.scopeKey(requested));
-  assert.match(identity.frameKey(routed), /\|16\|fixed$/);
+  assert.equal(identity.requestedIntentKey(routed), identity.requestedIntentKey(requested));
+  assert.notEqual(identity.intentKey(routed), identity.intentKey(requested));
+  assert.notEqual(identity.scopeKey(routed), identity.scopeKey(requested));
+  assert.match(identity.intentKey(routed), /\|4\|16\|fixed$/);
+  assert.match(identity.frameKey(routed), /\|4\|16\|16\|fixed$/);
 });
 
 test("frame identity carries provider transport truth without changing cache identity", () => {

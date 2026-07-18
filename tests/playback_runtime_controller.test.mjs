@@ -55,6 +55,10 @@ function fixture() {
       status = reason === "ended" ? "ENDED" : "IDLE";
     },
     snapshot: () => ({ status, runId: status === "IDLE" ? "" : "run-1" }),
+    frameDecision(value) {
+      calls.push(["frame-decision", value]);
+      return { state: "ready", canRender: true };
+    },
     updatePlaybackRate(value) {
       calls.push(["rate", value]);
     },
@@ -248,6 +252,7 @@ test("PlaybackRuntime is the only UI facade for PlaybackEngine commands", () => 
     "configure",
     "inspectTarget",
     "requireTarget",
+    "frameDecision",
     "bufferGate",
     "bufferWaitMs",
     "markRenderStarted",

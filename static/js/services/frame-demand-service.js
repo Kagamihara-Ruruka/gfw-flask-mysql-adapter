@@ -36,6 +36,7 @@ class FrameDemandServiceCore {
 
   eventDetail(request, extra = {}) {
     return {
+      requested_intent_key: this.frameIdentity.requestedIntentKey(request),
       intent_key: this.frameIdentity.intentKey(request),
       scope_key: this.frameIdentity.scopeKey(request),
       dataset: request.datasetId,
@@ -84,6 +85,7 @@ class FrameDemandServiceCore {
     const { request, controller, intentKey, physicalScopeId } = entry;
     const startedAt = this.clock.now();
     this.eventLog.record?.("QUERY_OPERATION_STARTED", this.eventDetail(request, {
+      run_id: entry.runId,
       lane: entry.lane,
       scope_id: physicalScopeId,
     }));
@@ -93,6 +95,7 @@ class FrameDemandServiceCore {
         lane: entry.lane,
         signal: controller.signal,
         metadata: this.eventDetail(request, {
+          run_id: entry.runId,
           resource: "sampled-grid",
           scope_id: physicalScopeId,
         }),
@@ -100,6 +103,7 @@ class FrameDemandServiceCore {
       const packet = this.canonicalPacket(request, sourcePacket);
       const elapsedMs = this.clock.now() - startedAt;
       this.eventLog.record?.("QUERY_OPERATION_FINISHED", this.eventDetail(request, {
+        run_id: entry.runId,
         lane: entry.lane,
         scope_id: physicalScopeId,
         duration_ms: elapsedMs,
@@ -119,6 +123,7 @@ class FrameDemandServiceCore {
       this.eventLog.record?.(
         cancelled ? "QUERY_OPERATION_CANCELLED" : "QUERY_OPERATION_FAILED",
         this.eventDetail(request, {
+          run_id: entry.runId,
           lane: entry.lane,
           scope_id: physicalScopeId,
           error: error?.message || String(error),
@@ -130,12 +135,13 @@ class FrameDemandServiceCore {
     }
   }
 
-  createEntry(request, lane) {
+  createEntry(request, lane, runId = "") {
     const intentKey = this.frameIdentity.intentKey(request);
     const entry = {
       request,
       intentKey,
       lane: String(lane || "background"),
+      runId: String(runId || ""),
       physicalScopeId: `frame-demand:${intentKey}`,
       controller: new AbortController(),
       consumers: new Map(),
@@ -158,6 +164,7 @@ class FrameDemandServiceCore {
       if (!entry.draining) {
         entry.draining = true;
         this.eventLog.record?.("QUERY_OPERATION_DRAINING", this.eventDetail(entry.request, {
+          run_id: entry.runId,
           lane: entry.lane,
           scope_id: entry.physicalScopeId,
           reason: "consumer_scope_released",
@@ -177,12 +184,20 @@ class FrameDemandServiceCore {
     this.releaseUnusedEntry(entry);
   }
 
-  attachConsumer(entry, { signal = null, scopeId = "", consumerId = "", lane = "background" } = {}) {
+  attachConsumer(entry, {
+    signal = null,
+    scopeId = "",
+    consumerId = "",
+    lane = "background",
+    runId = "",
+  } = {}) {
     if (!entry) return Promise.reject(new Error("Frame demand entry is unavailable"));
     if (signal?.aborted) return Promise.reject(this.abortError());
     if (entry.draining) {
       entry.draining = false;
       this.eventLog.record?.("QUERY_OPERATION_REATTACHED", this.eventDetail(entry.request, {
+        run_id: entry.runId,
+        consumer_run_id: String(runId || ""),
         lane,
         scope_id: entry.physicalScopeId,
       }));
@@ -215,9 +230,13 @@ class FrameDemandServiceCore {
     scopeId = "",
     consumerId = "",
     allowPartial = false,
+    runId = undefined,
   } = {}) {
     this.assertActive();
     const request = this.frameIdentity.normalizeRequest(rawRequest);
+    const demandRunId = runId === undefined
+      ? String(this.eventLog.activeRunId?.() || "")
+      : String(runId || "");
     if (signal?.aborted) throw this.abortError();
     if (!request.datasetId || !request.date || !request.bbox) {
       const error = new Error("Frame demand requires datasetId, date and canonical bbox");
@@ -226,10 +245,14 @@ class FrameDemandServiceCore {
     }
     const existing = this.dataFrameStore.inspect(request);
     if (existing.status === "ready") {
-      this.eventLog.record?.("CACHE_HIT", this.eventDetail(request, { frame_key: existing.frameKey, lane }));
+      this.eventLog.record?.("CACHE_HIT", this.eventDetail(request, {
+        run_id: demandRunId,
+        frame_key: existing.frameKey,
+        lane,
+      }));
       return existing;
     }
-    this.eventLog.record?.("CACHE_MISS", this.eventDetail(request, { lane }));
+    this.eventLog.record?.("CACHE_MISS", this.eventDetail(request, { run_id: demandRunId, lane }));
     this.dataFrameStore.clearFailure(request);
 
     const covering = [...this.inflight.values()].find((entry) => (
@@ -237,9 +260,10 @@ class FrameDemandServiceCore {
     ));
     if (covering) {
       if (this.frameIdentity.intentKey(covering.request) === this.frameIdentity.intentKey(request)) {
-        return this.attachConsumer(covering, { lane, signal, scopeId, consumerId });
+        return this.attachConsumer(covering, { lane, signal, scopeId, consumerId, runId: demandRunId });
       }
       this.eventLog.record?.("CACHE_WAIT", this.eventDetail(request, {
+        run_id: demandRunId,
         lane,
         covering_intent_key: this.frameIdentity.intentKey(covering.request),
       }));
@@ -249,11 +273,13 @@ class FrameDemandServiceCore {
           signal,
           scopeId,
           consumerId: `${consumerId || "covering"}:covering`,
+          runId: demandRunId,
         });
         if (signal?.aborted) throw this.abortError();
         const reused = this.dataFrameStore.inspect(request);
         if (reused.status === "ready") {
           this.eventLog.record?.("CACHE_HIT", this.eventDetail(request, {
+            run_id: demandRunId,
             frame_key: reused.frameKey,
             lane,
             reuse: "inflight_covered_bbox",
@@ -270,15 +296,22 @@ class FrameDemandServiceCore {
       if (missing.length > 0 && missing.length <= 8 && missing.some((bbox) => bbox !== request.bbox)) {
         await Promise.all(missing.map((bbox, index) => this.demand(
           { ...request, bbox },
-          { lane, signal, scopeId, consumerId: `${consumerId || "partial"}-${index}`, allowPartial: false },
+          {
+            lane,
+            signal,
+            scopeId,
+            consumerId: `${consumerId || "partial"}-${index}`,
+            allowPartial: false,
+            runId: demandRunId,
+          },
         )));
         const materialized = this.dataFrameStore.materialize(request);
         if (materialized) return materialized;
       }
     }
     const intentKey = this.frameIdentity.intentKey(request);
-    const entry = this.inflight.get(intentKey) || this.createEntry(request, lane);
-    return this.attachConsumer(entry, { lane, signal, scopeId, consumerId });
+    const entry = this.inflight.get(intentKey) || this.createEntry(request, lane, demandRunId);
+    return this.attachConsumer(entry, { lane, signal, scopeId, consumerId, runId: demandRunId });
   }
 
   async demandMany(requests, {
@@ -286,6 +319,7 @@ class FrameDemandServiceCore {
     signal = null,
     scopeId = "",
     onProgress = null,
+    runId = undefined,
   } = {}) {
     this.assertActive();
     const unique = new Map();
@@ -301,6 +335,7 @@ class FrameDemandServiceCore {
           signal,
           scopeId,
           consumerId: `${scopeId || lane}-${index}`,
+          runId,
         });
         progress.completed += 1;
         if (result.cacheHit) progress.cacheHits += 1;

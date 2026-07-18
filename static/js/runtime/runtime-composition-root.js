@@ -203,6 +203,8 @@ class RuntimeCompositionRoot {
       eventLog,
       frameIdentity: this.frameIdentity,
       clock: clockDomain.playback,
+      frameBufferPolicy: PlaybackFrameBuffer,
+      bufferTimeoutMs: PlaybackTimePolicy.BUFFER_TIMEOUT_MS,
     }));
     const playbackRuntime = this.own("PlaybackRuntime", new PlaybackRuntimeController({
       engine: playbackEngine,

@@ -3,6 +3,7 @@ const { DashboardWidget } = window.WidgetCore;
 const METRICS_TELEMETRY_REFRESH_MS = 500;
 class MetricsWidget extends DashboardWidget {
   renderTemplate(container, { expanded = false, cinema = false } = {}) {
+    this.releaseTelemetryContainer(container);
     container.classList.add("widget-template", "widget-template-metrics");
     if (expanded) container.classList.add("is-expanded");
     if (expanded && cinema) {
@@ -221,18 +222,27 @@ class MetricsWidget extends DashboardWidget {
   }
 
   bindTelemetry(container) {
+    this.telemetryBindings ||= new Map();
     const api = this.timingMetricsApi();
     const eventLog = this.services.eventLog;
     let latestPacket = api?.snapshot?.() || null;
     let wasConnected = false;
     let timer = 0;
     let historyDirty = true;
+    let disposed = false;
     const unsubscribers = [];
     const dispose = () => {
+      if (disposed) return;
+      disposed = true;
       this.services.cancelSchedule?.(timer);
       timer = 0;
       unsubscribers.splice(0).forEach((unsubscribe) => unsubscribe?.());
+      if (this.telemetryBindings?.get(container) === dispose) {
+        this.telemetryBindings.delete(container);
+      }
+      this.disposeTelemetryCharts(container);
     };
+    this.telemetryBindings.set(container, dispose);
     const update = () => {
       timer = 0;
       if (container.isConnected) wasConnected = true;
@@ -259,6 +269,27 @@ class MetricsWidget extends DashboardWidget {
       unsubscribers.push(eventLog.subscribe(() => scheduleUpdate(), { emitCurrent: false }));
     }
     update();
+  }
+
+  disposeTelemetryCharts(container) {
+    container?.querySelectorAll?.("[data-widget-history-plotly]").forEach((chart) => {
+      chart.__snapshotPerformanceChart?.dispose?.();
+      delete chart.__snapshotPerformanceChart;
+    });
+  }
+
+  releaseTelemetryContainer(container) {
+    const dispose = this.telemetryBindings?.get(container);
+    if (dispose) {
+      dispose();
+      return;
+    }
+    this.disposeTelemetryCharts(container);
+  }
+
+  dispose() {
+    for (const dispose of Array.from(this.telemetryBindings?.values?.() || [])) dispose();
+    this.telemetryBindings?.clear?.();
   }
 
   updateTelemetryView(container, packet, { updateHistory = true } = {}) {

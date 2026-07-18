@@ -25,6 +25,7 @@ function loadClockRuntime() {
   for (const file of [
     "static/js/core/clock-domain.js",
     "static/js/services/lifecycle-event-log.js",
+    "static/js/playback/playback-frame-buffer.js",
     "static/js/playback/playback-engine.js",
     "static/js/services/runtime-performance-metrics.js",
     "static/js/playback/playback-time-policy.js",
@@ -151,26 +152,70 @@ test("five seconds of buffering stays five wall-clock seconds at every playback 
   }
 });
 
-test("the 30 second buffer timeout uses monotonic time instead of playback cadence", () => {
+test("PlaybackEngine owns the 30 second monotonic buffer timeout at every playback speed", async () => {
   const context = loadClockRuntime();
   const createClockDomain = vm.runInContext("createClockDomain", context);
+  const LifecycleEventLogCore = vm.runInContext("LifecycleEventLogCore", context);
+  const PlaybackEngineCore = vm.runInContext("PlaybackEngineCore", context);
+  const PlaybackFrameBuffer = vm.runInContext("PlaybackFrameBuffer", context);
   const PlaybackTimePolicy = vm.runInContext("PlaybackTimePolicy", context);
 
   for (const speed of [1, 2, 4]) {
     const clock = fakeClockDomain(createClockDomain);
-    const enteredAt = clock.domain.monotonic.now();
+    const eventLog = new LifecycleEventLogCore({
+      maxEntriesProvider: () => 2000,
+      clock: clock.domain.monotonic,
+    });
+    const target = deferred();
+    const engine = new PlaybackEngineCore({
+      store: {
+        inspect: (request) => ({ status: "missing", request }),
+        pin: () => true,
+        release: () => true,
+      },
+      demandService: { demand: () => target.promise, cancelScope: () => 0 },
+      preheater: {
+        activate() {},
+        setScope() {},
+        setPlayhead() {},
+        readyAhead: () => 1,
+        waitForDates: async () => ({ failed: 0 }),
+        snapshot: () => ({ status: "FETCHING", readyAhead: 1 }),
+      },
+      eventLog,
+      frameIdentity: identity(),
+      clock: clock.domain.playback,
+      frameBufferPolicy: PlaybackFrameBuffer,
+      bufferTimeoutMs: PlaybackTimePolicy.BUFFER_TIMEOUT_MS,
+    });
+    engine.configure({
+      dates: ["2020-01-01", "2020-01-02"],
+      currentDate: "2020-01-01",
+      requestContext: {
+        datasetId: "ocean",
+        date: "2020-01-01",
+        bbox: "120,10,130,20",
+        resolution: 4,
+      },
+    });
+    await engine.start({ speed });
+    const pending = engine.requireTarget(1);
     const cadence = clock.domain.playback.cadenceMs({ baseIntervalMs: 1400, speed });
     assert.equal(cadence, 1400 / speed);
     clock.advance(29_999);
-    assert.equal(
-      PlaybackTimePolicy.bufferTimedOut(clock.domain.monotonic.now() - enteredAt),
-      false,
-    );
+    assert.notEqual(engine.frameDecision({ targetIndex: 1 }).state, PlaybackFrameBuffer.FRAME_STATES.failed);
     clock.advance(1);
-    assert.equal(
-      PlaybackTimePolicy.bufferTimedOut(clock.domain.monotonic.now() - enteredAt),
-      true,
-    );
+    const failed = engine.frameDecision({ targetIndex: 1 });
+    assert.equal(failed.state, PlaybackFrameBuffer.FRAME_STATES.failed);
+    assert.equal(engine.snapshot().status, "FAILED");
+    assert.match(failed.errorMessage, /30s/);
+    assert.equal(eventLog.query({ type: "PLAYBACK_TARGET_FAILED" }).at(-1)?.reason, "buffer_timeout");
+
+    target.resolve({ frameKey: `late-frame-${speed}` });
+    await pending;
+    assert.equal(engine.snapshot().status, "FAILED");
+    assert.equal(eventLog.query({ type: "BUFFER_RESUMED" }).length, 0);
+    engine.stop("test_complete");
   }
 });
 

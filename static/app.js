@@ -244,11 +244,6 @@ function bindDeveloperBridge() {
     }
     refreshDatasetRegistry().catch((err) => setStatus(err.message, true));
   });
-  window.addEventListener("focus", () => {
-    if (!document.hidden) {
-      refreshDatasetRegistry().catch((err) => setStatus(err.message, true));
-    }
-  });
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
       PlaybackRuntime.suspend({ reason: "document_hidden" });
@@ -256,7 +251,6 @@ function bindDeveloperBridge() {
     }
     PlaybackRuntime.resume({ reason: "document_hidden" });
     updatePlaybackControls();
-    refreshDatasetRegistry().catch((err) => setStatus(err.message, true));
   });
 }
 

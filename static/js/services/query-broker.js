@@ -133,6 +133,20 @@ class QueryBroker {
     };
   }
 
+  batchTraceDetail(items) {
+    const operationIds = [...new Set((items || []).map((item) => (
+      String(item?.operation?.operation_id || "")
+    )).filter(Boolean))];
+    const runIds = [...new Set((items || []).map((item) => (
+      String(item?.metadata?.run_id || "")
+    )).filter(Boolean))];
+    return {
+      run_id: runIds.length === 1 ? runIds[0] : "",
+      run_ids: runIds,
+      operation_ids: operationIds,
+    };
+  }
+
   promoteOperation(operationId, lane) {
     const normalizedId = String(operationId || "");
     const nextLane = String(lane || "background");
@@ -337,6 +351,7 @@ class QueryBroker {
       startedAt: this.clock.now(),
       transportMetrics: null,
       frameDecodeMs: 0,
+      trace: this.batchTraceDetail(items),
     };
     this.activeBatches.set(batchId, batch);
     for (const item of items) {
@@ -346,6 +361,7 @@ class QueryBroker {
       }));
     }
     this.record("HTTP_BATCH_STARTED", {
+      ...batch.trace,
       batch_id: batchId,
       lane: batch.lane,
       operation_count: envelope.operations.length,
@@ -394,6 +410,7 @@ class QueryBroker {
           for (const item of consumers) this.settle(item, item.reject, error);
         }
         this.record("HTTP_BATCH_FINISHED", {
+          ...batch.trace,
           batch_id: batchId,
           lane: batch.lane,
           operation_count: envelope.operations.length,
@@ -409,6 +426,7 @@ class QueryBroker {
           if (!item.settled) this.settle(item, item.reject, cancelled ? this.abortError() : error);
         }
         this.record(cancelled ? "HTTP_BATCH_CANCELLED" : "HTTP_BATCH_FAILED", {
+          ...batch.trace,
           batch_id: batchId,
           lane: batch.lane,
           operation_count: envelope.operations.length,

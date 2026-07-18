@@ -376,6 +376,14 @@ class SampledGridPagingTests(unittest.TestCase):
         self.assertEqual(0, full["timing"]["source_request_count"])
         self.assertEqual(2, len(client.calls))
 
+        timing = full["timing"]
+        self.assertEqual(
+            ["snapshot_load_ms", "filter_ms", "packet_projection_ms", "packet_build_ms"],
+            timing["api_phase_names"],
+        )
+        critical_path_ms = sum(timing[name] for name in timing["api_phase_names"])
+        self.assertAlmostEqual(timing["server_total_ms"], critical_path_ms, places=2)
+
     def test_adapter_uses_mapping_driven_columnar_source_transport(self) -> None:
         adapter = SampledGridHttpQueryAdapter({}, _columnar_paged_adapter_dataset())
         client = _PagedClient()

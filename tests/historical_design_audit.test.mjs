@@ -125,3 +125,32 @@ test("sampled-grid runtime cannot reconstruct the removed row graph", () => {
   }
   assert.doesNotMatch(read("static/js/core/canonical-grid-frame.js"), /get\s+rows\s*\(/);
 });
+
+test("PlaybackEngine exclusively owns buffer episodes and wall-clock timeout policy", () => {
+  const engine = read("static/js/playback/playback-engine.js");
+  const controls = read("static/js/playback/playback-controls.js");
+  const compositionRoot = read("static/js/runtime/runtime-composition-root.js");
+
+  assert.match(engine, /class PlaybackBufferEpisode/);
+  assert.match(engine, /buffer_episode_id/);
+  assert.match(engine, /episode\.waitMs\(this\.clock\.now\(\)\)/);
+  assert.doesNotMatch(controls, /BUFFER_TIMEOUT|bufferTimeoutMs|bufferWaitStartedAt/);
+  assert.match(compositionRoot, /frameBufferPolicy:\s*PlaybackFrameBuffer/);
+  assert.match(compositionRoot, /bufferTimeoutMs:\s*PlaybackTimePolicy\.BUFFER_TIMEOUT_MS/);
+});
+
+test("long-lived UI helpers own and dispose their browser resources", () => {
+  const aerial = read("static/js/ui/background/aerial-backdrop.js");
+  const chart = read("static/js/ui/telemetry/snapshot-performance-chart.js");
+  const metricsWidget = read("static/js/ui/widgets/capabilities/metrics.js");
+
+  assert.match(aerial, /dispose\(\)\s*{/);
+  assert.match(aerial, /removeEventListener\("rrkal:tile-selection-changed"/);
+  assert.match(aerial, /this\.abortController\?\.abort\(\)/);
+  assert.match(aerial, /URL\.revokeObjectURL/);
+  assert.match(chart, /dispose\(\)\s*{/);
+  assert.match(chart, /this\.resizeObserver\?\.disconnect/);
+  assert.match(chart, /cancelAnimationFrame/);
+  assert.match(metricsWidget, /chart\.__snapshotPerformanceChart\?\.dispose\?\.\(\)/);
+  assert.match(metricsWidget, /releaseTelemetryContainer\(container\)/);
+});

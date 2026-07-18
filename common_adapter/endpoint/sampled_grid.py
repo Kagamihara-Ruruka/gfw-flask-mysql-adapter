@@ -1153,6 +1153,7 @@ class SampledGridHttpQueryAdapter:
         column_profile: str | None = None,
         query_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        records_started = time.perf_counter()
         if not date_value:
             raise ValueError("sampled-grid snapshot requires date")
         context = _mapping(query_context)
@@ -1181,6 +1182,7 @@ class SampledGridHttpQueryAdapter:
             candidates = [self.available_resolutions[-1]]
         resolution_policy = _mapping(self.descriptor.get("resolution_policy"))
         allow_fallback = str(resolution_policy.get("fallback") or "none").strip().lower() == "coarser"
+        snapshot_load_started = time.perf_counter()
         loaded = self._load_canonical_snapshot(
             date_value=date_value,
             coverage=coverage,
@@ -1192,6 +1194,7 @@ class SampledGridHttpQueryAdapter:
             resolution_policy=resolution_policy,
             allow_fallback=allow_fallback,
         )
+        snapshot_load_ms = round((time.perf_counter() - snapshot_load_started) * 1000, 3)
         source_slice = _mapping(loaded.payload)
         actual_resolution = _number(source_slice.get("actual_resolution_km"))
         if actual_resolution is None:
@@ -1262,18 +1265,6 @@ class SampledGridHttpQueryAdapter:
         frame_transport = view.transport() if output_profile == "canonical_frame" else None
         projected_rows = None if frame_transport is not None else view.rows()
         packet_projection_ms = round((time.perf_counter() - packet_projection_started) * 1000, 3)
-        tracked_server_ms = sum(
-            (
-                loaded.cache_lookup_ms,
-                loaded.cache_wait_ms,
-                source_http_wall_ms,
-                canonicalize_rows_ms,
-                loaded.cache_commit_ms,
-                loaded.cache_evict_ms,
-                filter_ms,
-                packet_projection_ms,
-            )
-        )
         degrade_reason = source_slice.get("degrade_reason") if actual_resolution > requested_resolution else None
         bounds = effective_bbox or coverage.get("bounds")
         query_scope = _query_scope(requested_bbox, coverage, coverage_status)
@@ -1341,7 +1332,7 @@ class SampledGridHttpQueryAdapter:
                 "query_ms": round(source_http_wall_ms, 3),
                 "normalize_ms": round(canonicalize_rows_ms, 3),
                 "serialize_ms": 0.0,
-                "server_total_ms": round(tracked_server_ms, 3),
+                "snapshot_load_ms": snapshot_load_ms,
             },
             "backend": {
                 "kind": "sampled_grid_http",
@@ -1352,6 +1343,18 @@ class SampledGridHttpQueryAdapter:
             packet["canonical_frame"] = frame_transport
         else:
             packet["rows"] = projected_rows
+        server_total_ms = round((time.perf_counter() - records_started) * 1000, 3)
+        critical_path_ms = snapshot_load_ms + filter_ms + packet_projection_ms
+        packet["timing"].update({
+            "packet_build_ms": round(max(0.0, server_total_ms - critical_path_ms), 3),
+            "server_total_ms": server_total_ms,
+            "api_phase_names": [
+                "snapshot_load_ms",
+                "filter_ms",
+                "packet_projection_ms",
+                "packet_build_ms",
+            ],
+        })
         return packet
 
     def _empty_packet(

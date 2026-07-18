@@ -178,6 +178,8 @@ function contextFor(fetchJson) {
     "static/js/services/frame-demand-service.js",
     "static/js/services/frame-demand-decorators.js",
     "static/js/playback/playback-preheater.js",
+    "static/js/playback/playback-frame-buffer.js",
+    "static/js/playback/playback-time-policy.js",
     "static/js/playback/playback-engine.js",
     "static/js/playback/adaptive-watermark-controller.js",
     "static/js/playback/playback-renderer.js",
@@ -449,7 +451,7 @@ test("preheater watermarks govern replenishment and never expose playback readin
   preheater.dispose();
 });
 
-test("preheater updates a resolved query route without cancelling or changing scope", async () => {
+test("preheater migrates physical scope when the resolved query route changes", async () => {
   const context = contextFor(async () => ({ rows: [], row_count: 0 }));
   const Preheater = api(context, "PlaybackPreheaterController");
   const pending = [];
@@ -491,7 +493,8 @@ test("preheater updates a resolved query route without cancelling or changing sc
   preheater.adoptRequestContext({ ...requestContext(), queryResolution: 16 }, { reason: "test_fallback" });
   assert.equal(preheater.snapshot().resolution, 4);
   assert.equal(preheater.snapshot().queryResolution, 16);
-  assert.equal(preheater.snapshot().id, originalScopeId);
+  const routedScopeId = preheater.snapshot().id;
+  assert.notEqual(routedScopeId, originalScopeId);
   assert.equal(cancelledScopes.length, 0);
 
   pending[0].resolve({ status: "ready" });
@@ -503,10 +506,10 @@ test("preheater updates a resolved query route without cancelling or changing sc
     requestContext: { ...requestContext(), queryResolution: 16 },
     anchorDate: allDates[0],
   });
-  assert.equal(preheater.snapshot().id, originalScopeId);
+  assert.equal(preheater.snapshot().id, routedScopeId);
   assert.equal(cancelledScopes.length, 0);
-  assert.equal(api(context, "LifecycleEventLog").query({ type: "PREHEATER_QUERY_ROUTE_UPDATED" }).length, 1);
-  assert.equal(api(context, "LifecycleEventLog").query({ type: "PREHEATER_SCOPE_MIGRATED" }).length, 0);
+  assert.equal(api(context, "LifecycleEventLog").query({ type: "PREHEATER_QUERY_ROUTE_UPDATED" }).length, 0);
+  assert.equal(api(context, "LifecycleEventLog").query({ type: "PREHEATER_SCOPE_MIGRATED" }).length, 1);
 
   preheater.stop("test_complete");
   assert.deepEqual(new Set(cancelledScopes), new Set(queryScopes));
@@ -1145,7 +1148,7 @@ test("preheater rejects late callbacks when a previous signature becomes active 
   preheater.stop("test_complete");
 });
 
-test("playback adopts an effective query resolution without rewriting requested scope", () => {
+test("playback adopts an effective query resolution as a new physical scope", () => {
   const context = contextFor(async () => ({ rows: [], row_count: 0 }));
   const Engine = api(context, "PlaybackEngineCore");
   const identity = api(context, "FrameIdentity");
@@ -1184,12 +1187,15 @@ test("playback adopts an effective query resolution without rewriting requested 
   assert.equal(adopted.length, 1);
   assert.equal(adopted[0].request.resolution, 4);
   assert.equal(adopted[0].request.queryResolution, 16);
-  assert.equal(engine.snapshot().scopeKey, identity.scopeKey(requested));
+  assert.notEqual(engine.snapshot().scopeKey, identity.scopeKey(requested));
+  assert.equal(engine.snapshot().scopeKey, identity.scopeKey({ ...requested, queryResolution: 16 }));
   assert.equal(log.query({ type: "PLAYBACK_SCOPE_CHANGED" }).length, 0);
   const migration = log.query({ type: "PLAYBACK_QUERY_RESOLUTION_ADOPTED" }).at(-1);
   assert.equal(migration?.requested_resolution_km, 4);
   assert.equal(migration?.effective_query_resolution_km, 16);
-  assert.equal(migration?.previous_scope, migration?.scope_id);
+  assert.equal(migration?.previous_scope, identity.scopeKey(requested));
+  assert.equal(migration?.scope_id, identity.scopeKey({ ...requested, queryResolution: 16 }));
+  assert.notEqual(migration?.previous_scope, migration?.scope_id);
   engine.dispose();
 });
 
@@ -1253,6 +1259,66 @@ test("playback scope changes cancel stale targets and keep engine and preheater 
   assert.equal(api(context, "LifecycleEventLog").query({ type: "PLAYBACK_SCOPE_CHANGED" }).length, 1);
   assert.equal(api(context, "LifecycleEventLog").query({ type: "BUFFER_CANCELLED" }).length, 1);
   assert.equal(api(context, "LifecycleEventLog").summary(engine.snapshot().runId).activeStallCount, 0);
+  engine.stop("test_complete");
+});
+
+test("a superseded buffer episode cannot resume the current playback episode", async () => {
+  const context = contextFor(async () => ({ rows: [], row_count: 0 }));
+  const Engine = api(context, "PlaybackEngineCore");
+  const identity = api(context, "FrameIdentity");
+  const log = api(context, "LifecycleEventLog");
+  const responses = new Map();
+  const engine = new Engine({
+    store: {
+      inspect(request) {
+        return { status: "missing", request, intentKey: identity.intentKey(request), frameKey: "" };
+      },
+      pin() { return true; },
+      release() { return true; },
+    },
+    demandService: {
+      cancelScope() { return 0; },
+      demand(request) {
+        if (!responses.has(request.date)) responses.set(request.date, deferred());
+        return responses.get(request.date).promise;
+      },
+    },
+    preheater: {
+      activate() {},
+      setScope() {},
+      setPlayhead() {},
+      readyAhead() { return 1; },
+      waitForDates: async () => ({ failed: 0 }),
+      snapshot() { return { status: "READY" }; },
+    },
+    eventLog: log,
+    frameIdentity: identity,
+    clock: api(context, "ClockDomain").playback,
+  });
+  const allDates = dates(4);
+  engine.configure({ dates: allDates, requestContext: requestContext(), currentDate: allDates[0] });
+  await engine.start();
+
+  const firstTarget = engine.requireTarget(1);
+  const firstEpisodeId = engine.snapshot().bufferEpisodeId;
+  const secondTarget = engine.requireTarget(2);
+  const secondEpisodeId = engine.snapshot().bufferEpisodeId;
+  assert.notEqual(secondEpisodeId, firstEpisodeId);
+
+  responses.get(allDates[2]).resolve({ frameKey: "second-frame" });
+  await secondTarget;
+  assert.equal(engine.snapshot().status, "PLAYING");
+
+  responses.get(allDates[1]).resolve({ frameKey: "first-frame" });
+  await firstTarget;
+  assert.equal(engine.snapshot().status, "PLAYING");
+  assert.equal(engine.snapshot().bufferEpisodeId, "");
+
+  const resumed = log.query({ type: "BUFFER_RESUMED" });
+  assert.equal(resumed.length, 1);
+  assert.equal(resumed[0].buffer_episode_id, secondEpisodeId);
+  assert.equal(log.query({ type: "BUFFER_CANCELLED" }).at(-1)?.buffer_episode_id, firstEpisodeId);
+  assert.equal(log.query({ type: "BUFFER_CANCELLED" }).at(-1)?.reason, "target_superseded");
   engine.stop("test_complete");
 });
 

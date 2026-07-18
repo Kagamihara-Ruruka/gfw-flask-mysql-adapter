@@ -39,6 +39,10 @@ class PlaybackRuntimeController {
     return this.engine.requireTarget(index);
   }
 
+  frameDecision(options) {
+    return this.engine.frameDecision(options);
+  }
+
   bufferGate() {
     return this.engine.bufferGate();
   }

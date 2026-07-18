@@ -48,11 +48,21 @@ class RuntimeLayerRegistry:
             self._invalidated = True
             self._last_refresh = float("-inf")
 
-    def snapshot(self, *, force: bool = False) -> dict[str, Any]:
+    def snapshot(
+        self,
+        *,
+        force: bool = False,
+        refresh_if_expired: bool = True,
+    ) -> dict[str, Any]:
         with self._lock:
             now = self.monotonic()
             expired = now - self._last_refresh >= self.refresh_ttl_seconds
-            if force or self._invalidated or self._generation == 0 or expired:
+            if (
+                force
+                or self._invalidated
+                or self._generation == 0
+                or (refresh_if_expired and expired)
+            ):
                 self._snapshot = self._build_snapshot()
                 self._generation += 1
                 self._snapshot["generation"] = self._generation

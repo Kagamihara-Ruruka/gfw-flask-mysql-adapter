@@ -94,10 +94,9 @@ function createFrameIdentity({ datasetResolver } = {}) {
       ?? requestedResolution(request);
   }
 
-  function requestParts(request = {}, { actualResolution = undefined } = {}) {
+  function logicalRequestParts(request = {}) {
     const requested = requestedResolution(request);
-    const resolution = actualResolution === undefined ? requested : actualResolution;
-    const autoContext = resolution == null
+    const autoContext = requested == null
       ? `${request.zoom ?? "auto"}@${request.latitude ?? "auto"}`
       : "fixed";
     return [
@@ -106,9 +105,28 @@ function createFrameIdentity({ datasetResolver } = {}) {
       bboxSignature(request.bbox),
       request.limit == null ? "max" : String(request.limit),
       String(request.columns || "render"),
-      resolution == null ? "auto" : String(resolution),
+      requested == null ? "auto" : String(requested),
       autoContext,
     ];
+  }
+
+  function requestParts(request = {}, { actualResolution = undefined } = {}) {
+    const logical = logicalRequestParts(request);
+    const autoContext = logical.pop();
+    const routed = queryResolution(request);
+    const parts = [
+      ...logical,
+      routed == null ? "auto" : String(routed),
+    ];
+    if (actualResolution !== undefined) {
+      parts.push(actualResolution == null ? "auto" : String(actualResolution));
+    }
+    parts.push(autoContext);
+    return parts;
+  }
+
+  function requestedIntentKey(request = {}) {
+    return `requested-intent|${logicalRequestParts(request).join("|")}`;
   }
 
   function intentKey(request = {}) {
@@ -171,6 +189,7 @@ function createFrameIdentity({ datasetResolver } = {}) {
     normalizedBbox,
     parseBbox,
     queryResolution,
+    requestedIntentKey,
     requestParts,
     scopeKey,
     transportKey,

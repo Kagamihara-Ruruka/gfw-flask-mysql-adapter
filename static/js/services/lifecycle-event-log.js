@@ -134,7 +134,10 @@ class LifecycleEventLogCore {
       ? { ...detail, type: typeOrEvent }
       : { ...(typeOrEvent || {}) };
     const type = String(source.type || "UNKNOWN").trim().toUpperCase();
-    const runId = String(source.run_id || source.runId || this.currentRun || "");
+    const hasExplicitRunId = Object.hasOwn(source, "run_id") || Object.hasOwn(source, "runId");
+    const runId = hasExplicitRunId
+      ? String(source.run_id ?? source.runId ?? "")
+      : String(this.currentRun || "");
     const monotonicMs = Number.isFinite(Number(source.monotonic_ms))
       ? Number(source.monotonic_ms)
       : this.clock.now();
@@ -148,6 +151,10 @@ class LifecycleEventLogCore {
       monotonic_ms: monotonicMs,
       wall_time: source.wall_time || this.clock.wallNowIso(),
     });
+  }
+
+  activeRunId() {
+    return this.currentRun;
   }
 
   record(typeOrEvent, detail = {}) {

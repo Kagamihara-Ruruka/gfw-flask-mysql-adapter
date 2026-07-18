@@ -9,11 +9,20 @@ class AerialBackdrop {
     this.abortController = null;
     this.requestSequence = 0;
     this.currentKey = "";
+    this.disposed = false;
+    this.timers = new Set();
+    this.animationFrames = new Set();
+    this.paintResolvers = new Set();
     this.boundSelectionChange = (event) => this.handleSelectionChange(event);
+    this.boundPageHide = (event) => {
+      if (!event.persisted) this.dispose();
+    };
     window.addEventListener("rrkal:tile-selection-changed", this.boundSelectionChange);
+    window.addEventListener("pagehide", this.boundPageHide);
   }
 
   configure(config) {
+    if (this.disposed) return;
     this.config = config && typeof config === "object" ? config : { enabled: false };
     if (!this.root) return;
     this.root.style.setProperty("--aerial-backdrop-image-opacity", String(this.config.background_opacity ?? 0));
@@ -63,7 +72,7 @@ class AerialBackdrop {
   }
 
   async loadSelection(selected) {
-    if (!this.root || this.images.length !== 2 || !this.config.route) return;
+    if (this.disposed || !this.root || this.images.length !== 2 || !this.config.route) return;
     const request = this.selectionRequest(selected);
     if (!request || (request.key === this.currentKey && this.root.dataset.state === "ready")) return;
 
@@ -128,9 +137,36 @@ class AerialBackdrop {
   }
 
   waitForPaint() {
+    if (this.disposed) return Promise.resolve();
     return new Promise((resolve) => {
-      window.requestAnimationFrame(() => window.requestAnimationFrame(resolve));
+      const finish = () => {
+        this.paintResolvers.delete(finish);
+        resolve();
+      };
+      this.paintResolvers.add(finish);
+      const firstFrame = window.requestAnimationFrame(() => {
+        this.animationFrames.delete(firstFrame);
+        if (this.disposed) {
+          finish();
+          return;
+        }
+        const secondFrame = window.requestAnimationFrame(() => {
+          this.animationFrames.delete(secondFrame);
+          finish();
+        });
+        this.animationFrames.add(secondFrame);
+      });
+      this.animationFrames.add(firstFrame);
     });
+  }
+
+  schedule(callback, delay) {
+    const timer = window.setTimeout(() => {
+      this.timers.delete(timer);
+      if (!this.disposed) callback();
+    }, delay);
+    this.timers.add(timer);
+    return timer;
   }
 
   transitionDurationMs() {
@@ -143,7 +179,7 @@ class AerialBackdrop {
   releaseInactiveLayer(index, sequence) {
     if (index < 0) return;
     const delay = this.transitionDurationMs() + 50;
-    window.setTimeout(() => {
+    this.schedule(() => {
       if (sequence !== this.requestSequence || index === this.activeIndex) return;
       const objectUrl = this.objectUrls[index];
       this.images[index].removeAttribute("src");
@@ -168,7 +204,7 @@ class AerialBackdrop {
     this.root.classList.remove("is-ready");
     document.body.classList.remove("has-aerial-backdrop");
     for (const image of this.images) image.classList.remove("is-visible");
-    window.setTimeout(() => {
+    this.schedule(() => {
       if (sequence !== this.requestSequence || this.root.dataset.state !== "idle") return;
       this.images.forEach((image, index) => {
         image.removeAttribute("src");
@@ -178,6 +214,32 @@ class AerialBackdrop {
       this.activeIndex = -1;
     }, this.transitionDurationMs() + 50);
     this.emit("idle", null, reason);
+  }
+
+  dispose() {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.abortController?.abort();
+    this.abortController = null;
+    this.requestSequence += 1;
+    window.removeEventListener("rrkal:tile-selection-changed", this.boundSelectionChange);
+    window.removeEventListener("pagehide", this.boundPageHide);
+    for (const timer of this.timers) window.clearTimeout(timer);
+    this.timers.clear();
+    for (const frame of this.animationFrames) window.cancelAnimationFrame(frame);
+    this.animationFrames.clear();
+    for (const resolve of this.paintResolvers) resolve();
+    this.paintResolvers.clear();
+    this.images.forEach((image, index) => {
+      image.classList.remove("is-visible");
+      image.removeAttribute("src");
+      if (this.objectUrls[index]) URL.revokeObjectURL(this.objectUrls[index]);
+      this.objectUrls[index] = null;
+    });
+    this.activeIndex = -1;
+    this.currentKey = "";
+    this.root?.classList.remove("is-ready");
+    document.body.classList.remove("has-aerial-backdrop");
   }
 
   emit(status, request = null, detail = "") {
