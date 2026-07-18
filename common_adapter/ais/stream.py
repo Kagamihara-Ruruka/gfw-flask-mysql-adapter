@@ -16,7 +16,15 @@ DEFAULT_MESSAGE_TYPES = [
     "PositionReport",
     "StandardClassBPositionReport",
     "ExtendedClassBPositionReport",
+    "ShipStaticData",
+    "StaticDataReport",
 ]
+
+POSITION_MESSAGE_TYPES = {
+    "PositionReport",
+    "StandardClassBPositionReport",
+    "ExtendedClassBPositionReport",
+}
 
 
 def setting_secret(value: Any) -> str:
@@ -107,10 +115,10 @@ def probe_aisstream(
                 last_message_type = row.get("message_type") or last_message_type
         if accepted_messages > 0:
             status = "ok"
-            diagnosis = "AISStream returned live position frames."
+            diagnosis = "AISStream returned usable live vessel updates."
         elif raw_messages > 0:
             status = "no_position_frames"
-            diagnosis = "AISStream returned frames, but none were usable position messages."
+            diagnosis = "AISStream returned frames, but none contained a usable vessel update."
         else:
             status = "no_frames"
             diagnosis = "AISStream connection stayed open but returned zero frames during the probe window."
@@ -167,6 +175,37 @@ def _finite_float(value: Any) -> float | None:
     return number
 
 
+def _clean_text(value: Any) -> str | None:
+    text = str(value or "").strip().strip("@").strip()
+    return text or None
+
+
+def _event_timestamp(metadata: dict[str, Any], received_at: datetime) -> str:
+    raw = metadata.get("time_utc") or metadata.get("TimeUtc") or metadata.get("timestamp")
+    if isinstance(raw, datetime):
+        parsed = raw
+    else:
+        text = str(raw or "").strip()
+        if text.endswith(" UTC"):
+            text = text[:-4].strip()
+        try:
+            parsed = datetime.fromisoformat(text) if text else received_at
+        except ValueError:
+            parsed = received_at
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+    return parsed.isoformat(timespec="milliseconds")
+
+
+def _payload_name(message_type: str | None, payload: dict[str, Any]) -> str | None:
+    if message_type == "StaticDataReport":
+        report_a = payload.get("ReportA") if isinstance(payload.get("ReportA"), dict) else {}
+        return _clean_text(report_a.get("Name"))
+    return _clean_text(payload.get("Name"))
+
+
 def normalize_aisstream_message(raw_message: str) -> dict[str, Any] | None:
     try:
         packet = json.loads(raw_message)
@@ -180,32 +219,101 @@ def normalize_aisstream_message(raw_message: str) -> dict[str, Any] | None:
     if not isinstance(payload, dict):
         payload = message if isinstance(message, dict) else {}
 
-    lat = _finite_float(payload.get("Latitude"))
-    lon = _finite_float(payload.get("Longitude"))
-    if lat is None:
-        lat = _finite_float(metadata.get("latitude") or metadata.get("Latitude"))
-    if lon is None:
-        lon = _finite_float(metadata.get("longitude") or metadata.get("Longitude"))
-    if lat is None or lon is None:
-        return None
-
     mmsi = payload.get("UserID") or metadata.get("MMSI") or metadata.get("mmsi")
     if mmsi is None:
         return None
 
-    event_time = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    return {
+    received_at = datetime.now(timezone.utc)
+    source_event_time = _event_timestamp(metadata, received_at)
+    row: dict[str, Any] = {
         "mmsi": str(mmsi),
-        "event_time": event_time,
-        "lat": lat,
-        "lon": lon,
-        "speed": _finite_float(payload.get("Sog")),
-        "course": _finite_float(payload.get("Cog")),
-        "heading": _finite_float(payload.get("TrueHeading")),
-        "name": payload.get("Name") or metadata.get("ShipName") or metadata.get("ship_name"),
+        "source_event_time": source_event_time,
+        "received_at": received_at.isoformat(timespec="milliseconds"),
         "source": "aisstream",
         "message_type": message_type,
     }
+
+    has_position = message_type in POSITION_MESSAGE_TYPES
+    if has_position:
+        lat = _finite_float(payload.get("Latitude"))
+        lon = _finite_float(payload.get("Longitude"))
+        if lat is None:
+            lat = _finite_float(metadata.get("latitude") or metadata.get("Latitude"))
+        if lon is None:
+            lon = _finite_float(metadata.get("longitude") or metadata.get("Longitude"))
+        if (
+            lat is not None
+            and lon is not None
+            and -90.0 <= lat <= 90.0
+            and -180.0 <= lon <= 180.0
+        ):
+            row.update({"position_event_time": source_event_time, "lat": lat, "lon": lon})
+            for target, source in (
+                ("speed", "Sog"),
+                ("course", "Cog"),
+                ("heading", "TrueHeading"),
+            ):
+                value = _finite_float(payload.get(source))
+                if value is not None:
+                    row[target] = value
+
+    name = _payload_name(message_type, payload) or _clean_text(
+        metadata.get("ShipName") or metadata.get("ship_name")
+    )
+    if name:
+        row["static_event_time"] = source_event_time
+        row["name"] = name
+
+    if "position_event_time" not in row and "static_event_time" not in row:
+        return None
+    row["update_kind"] = (
+        "mixed"
+        if "position_event_time" in row and "static_event_time" in row
+        else "position"
+        if "position_event_time" in row
+        else "static"
+    )
+    return row
+
+
+def merge_ais_updates(
+    current: dict[str, Any] | None,
+    incoming: dict[str, Any],
+) -> dict[str, Any]:
+    """Merge independent AIS deltas without treating absent fields as nulls."""
+    if current is None:
+        return dict(incoming)
+    if str(current.get("mmsi")) != str(incoming.get("mmsi")):
+        raise ValueError("AIS updates can only be merged for the same MMSI")
+
+    merged = dict(current)
+    for prefix, fields in (
+        ("position", ("lat", "lon", "speed", "course", "heading")),
+        ("static", ("name",)),
+    ):
+        timestamp_key = f"{prefix}_event_time"
+        incoming_time = str(incoming.get(timestamp_key) or "")
+        current_time = str(merged.get(timestamp_key) or "")
+        if not incoming_time or (current_time and incoming_time < current_time):
+            continue
+        merged[timestamp_key] = incoming_time
+        for field in fields:
+            if field in incoming:
+                merged[field] = incoming[field]
+
+    incoming_received = str(incoming.get("received_at") or "")
+    if incoming_received >= str(merged.get("received_at") or ""):
+        for field in ("received_at", "source_event_time", "source", "message_type"):
+            if field in incoming:
+                merged[field] = incoming[field]
+    merged["update_kind"] = (
+        "mixed"
+        if "position_event_time" in merged and "static_event_time" in merged
+        else "position"
+        if "position_event_time" in merged
+        else "static"
+    )
+    return merged
 
 
 def streaming_snapshot_packet(

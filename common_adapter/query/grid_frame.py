@@ -205,6 +205,39 @@ class CanonicalGridFrameView:
         }
 
 
+def merge_canonical_grid_frame_views(
+    views: Iterable[CanonicalGridFrameView],
+) -> CanonicalGridFrame:
+    """Merge compatible frame views without inflating canonical rows."""
+
+    materialized = tuple(view for view in views if view.row_count)
+    if not materialized:
+        raise ValueError("canonical grid frame merge requires at least one non-empty view")
+    first = materialized[0].frame
+    for view in materialized[1:]:
+        if view.frame.row_fields != first.row_fields:
+            raise ValueError("canonical grid frame merge field mismatch")
+        if view.frame.frame_fields != first.frame_fields:
+            raise ValueError("canonical grid frame merge metadata mismatch")
+
+    merged_columns: list[tuple[Any, ...]] = []
+    for column_index in range(len(first.columns)):
+        values: list[Any] = []
+        for view in materialized:
+            column = view.frame.columns[column_index]
+            if view.indices is None:
+                values.extend(column)
+            else:
+                values.extend(column[index] for index in view.indices)
+        merged_columns.append(tuple(values))
+    return CanonicalGridFrame(
+        row_fields=first.row_fields,
+        columns=tuple(merged_columns),
+        frame_fields=thaw_json(first.frame_fields),
+        row_count=sum(view.row_count for view in materialized),
+    )
+
+
 class CanonicalGridFrameBuilder:
     """Collects canonical values once and hoists invariant frame fields."""
 
@@ -258,11 +291,13 @@ def canonical_grid_frame_from_rows(rows: Iterable[Mapping[str, Any]]) -> Canonic
         for field_name in row
         if field_name not in {*CANONICAL_GRID_FRAME_FIELDS, "bounds"}
     }
-    row_fields = tuple(
+    canonical_row_fields = tuple(
         field_name
         for field_name in CANONICAL_GRID_ROW_FIELDS
         if field_name in present or (has_bounds and field_name.startswith("bounds."))
     )
+    extension_fields = tuple(sorted(present - set(CANONICAL_GRID_ROW_FIELDS)))
+    row_fields = (*canonical_row_fields, *extension_fields)
     frame_field_names = tuple(
         field_name
         for field_name in CANONICAL_GRID_FRAME_FIELDS

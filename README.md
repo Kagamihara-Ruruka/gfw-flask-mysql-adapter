@@ -4,7 +4,7 @@ This is a local data adapter for exploring pluggable datasets with Flask, MySQL,
 
 The current app renders:
 
-- GFW fishery grid records from MySQL, rendered through a WebGL-first map path with canvas fallback.
+- Mapping-driven sampled-grid datasets, including the current GFW MySQL read model and Pipeline Iceberg serving datasets, rendered through a WebGL-first map path with canvas fallback.
 - AIS latest vessel positions from a live MySQL table maintained by a separate upstream collector.
 - EEZ boundaries from PostGIS vector tiles and cached local vector data.
 - A Leaflet map with table preview, timing metrics, render-state lights, time playback, fullscreen map mode, layer ordering, basemap controls, graticule controls, screenshot export, and per-layer style controls.
@@ -30,6 +30,8 @@ The current 5081 sampled-grid throughput, completion-order batching, and five-da
 [`benchmarks/sampled_grid_throughput_acceptance_2026-07-17.md`](benchmarks/sampled_grid_throughput_acceptance_2026-07-17.md).
 The one-pass Mapping and end-to-end columnar Canonical Frame acceptance report is available at
 [`benchmarks/sampled_grid_canonical_frame_acceptance_2026-07-18.md`](benchmarks/sampled_grid_canonical_frame_acceptance_2026-07-18.md).
+The CC-scoped paging, shared render-grid, and query-storm acceptance report is available at
+[`benchmarks/sampled_grid_spatial_storm_acceptance_2026-07-18.md`](benchmarks/sampled_grid_spatial_storm_acceptance_2026-07-18.md).
 
 ## Upstream Handoff
 
@@ -75,6 +77,8 @@ The frontend is deliberately split by responsibility:
 
 Runtime timing is injected by `ClockDomain`: monotonic wall time owns queue, network, cache, buffering, timeout, and percentile measurements; playback time alone applies the speed multiplier; render time owns animation-frame and draw measurements. Lifecycle events use `monotonic_ms`, and the status line, metrics Widget, and event viewer consume the same `RuntimePerformanceMetrics` snapshot instead of maintaining separate playback telemetry.
 
+`BrowserProfileStoreCore` is created by the frontend DI composition root and persists only device/visual preferences in `localStorage`: map interaction and basemap preferences, paint/alpha profiles, renderer preference, and AIS display strategy. Source registration, imported/active layers, date selection, Mapping, Query Policy, cache/watermark policy, and playback state are deliberately excluded. If browser storage is unavailable, these preferences degrade to the current session without changing runtime correctness.
+
 Runtime pipeline:
 
 ```mermaid
@@ -117,7 +121,6 @@ Example dataset routing:
 
 ```json
 {
-  "default_connection_ref": "local_mysql",
   "connections": {
     "local_mysql": {
       "kind": "mysql",
@@ -169,7 +172,7 @@ The layer selector is built from imported layer contracts. It is not a hard-code
 - AIS vessel positions when an active websocket/read-model route is available
 - EEZ boundary overlays when an active spatial route is available
 
-Primary data layers are activation-controlled and may all be off; disabled imported layers do not query or render. EEZ is an independent overlay. For bounded sampled-grid datasets, Mapping owns the coverage union and `default_coverage_id`: the default coverage supplies the initial center, the union supplies CC bounds and the legal minimum zoom, and the source query keeps one complete coverage scope independent of camera zoom. A real source cell-limit fallback remains explicit as requested versus actual resolution; it is not camera LOD.
+Primary data layers are activation-controlled and may all be off; disabled imported layers do not query or render. EEZ is an independent overlay. For bounded sampled-grid datasets, Mapping owns the coverage union and `default_coverage_id`: the default coverage supplies the initial center, while the union supplies legal camera bounds. CC owns the effective spatial demand as `viewport bbox intersect coverage`. The adapter snaps that demand to the Scout-derived base grid and computes stable internal row-band pages from grid geometry and source page capacity. These page identities are adapter-owned formula results; the source contract exposes only `limit` and `offset`, and no upstream `shard_id`, bbox, or window parameter is assumed.
 
 Layer rows can be drag-reordered in the selector. The order controls map stacking by Leaflet pane z-index. Each layer has a gear panel:
 
@@ -255,6 +258,7 @@ Current frontend module boundaries:
 | `static/js/services/frame-demand-service.js` | The sampled-grid demand boundary. It checks `DataFrameStore`, joins an exact or containing-BBOX in-flight request when compatible, delegates a real miss directly to `QueryBroker`, normalizes the returned packet, and commits it once. |
 | `common_adapter/query/batch.py` | Flask-side batch execution owner. `QueryBatchExecutor` keeps one global worker pool and a shared per-provider capacity pool, acquires provider permits before worker submission so capacity waits cannot starve other sources, yields results in completion order by `operation_id`, and isolates sibling failures. |
 | `common_adapter/query/grid_frame.py` | Immutable server-side columnar sampled-grid frame, builder, transport projection, and zero-copy selection views. |
+| `common_adapter/query/sampled_grid_paging.py` | Pure CC/coverage clipping, base-grid snapping, formula-derived internal page planning, and canonical frame assembly. It never expects source-owned shard identity. |
 | `static/js/services/frame-demand-decorators.js` | DI-composed observability decorator. It records demand boundary duration and outcome without changing cache, scheduling, transport, result, or error semantics. |
 | `static/js/playback/playback-preheater.js` | Long-lived producer that independently maintains low/high ready-ahead inventory. Desired inventory and the 12-request scheduling window are separate concerns; it does not own the playback clock or playback readiness. |
 | `static/js/playback/adaptive-watermark-controller.js` | DI-owned stateful policy owner. It derives effective watermarks from trusted supply, cache-ready P95, playback consumption, and RAM budget, with monotonic decrease hysteresis. |
@@ -263,7 +267,9 @@ Current frontend module boundaries:
 | `static/js/services/lifecycle-event-log.js` | Bounded event log, linear Queue-to-Ready pairing, explicit run export, and user-perceived Queue/HTTP/cache/render/stall metrics. |
 | `static/js/services/runtime-performance-metrics.js` | The single trusted projection for supply, consumption, cache-ready tail latency, ready-ahead, and buffer-wait values. |
 | `static/js/ui/widgets/capabilities/event-viewer.js` | Read-only lifecycle Event Viewer Widget with run/dataset/event filters and manual JSON export. Playback completion never opens a download or file dialog. |
-| `static/js/layers/gfw-layer-effects.js` | Visual-only sampled-grid layer effects: zoom/LOD blur, reveal, retired-layer cleanup, and crossfade. The filename is historical; only `SampledGridLayerEffects` is exported. |
+| `static/js/services/browser-profile-store.js` | DI-owned browser-profile persistence for the explicit device/visual whitelist; storage failure falls back to session state. |
+| `static/js/layers/sampled-grid-layer-effects.js` | Visual-only sampled-grid layer effects: zoom/LOD blur, reveal, retired-layer cleanup, and crossfade. |
+| `static/js/rendering/render-grid-profile.js` | Pure zoom-bucket policy for visual aggregation. Renderer color cells and virtual selection cells consume the same profile and origin. |
 | `static/TimingMetrics.js` | DI-created query/render timing service. It accepts ClockDomain and does not keep a second playback-event timeline. |
 
 ```mermaid
@@ -320,9 +326,10 @@ The app asks `/api/render/capability` for backend policy and inspects browser We
 
 Sampled-grid records use a mapping-, source-scope-, resolution-, and date-aware cache:
 
-- A bounded dataset declared with complete Mapping coverage uses that stable coverage bbox for every camera position; pan and zoom redraw the existing canonical frame without changing its query or cache identity.
+- A bounded dataset clips CC viewport demand to Mapping coverage, snaps it to the base grid, and requests only missing internal row-band pages. A pan reuses retained pages and requests only newly required pages.
 - A viewport-native source without bounded coverage, such as a bbox-backed database route, still refreshes when the viewport leaves its cached packet.
-- An explicit resolution setting may request a different source packet without evicting completed packets at other resolutions. Camera zoom is renderer state and is not sent as sampled-grid source LOD.
+- Query/cache resolution stays at the Scout-derived base grid unless the user explicitly selects another valid source multiple. Camera zoom changes only `RenderGridProfile`; a zoom-bucket change with cached base data sends no source request.
+- Render aggregation is a GPU presentation concern. Mapping declares the reducer, the base Canonical Frame remains unchanged, and virtual-grid selection uses the same aggregation factor, scale, and origin as the rendered cells.
 - Date-to-date playback frame changes do not use Gaussian blur; they rely on cache readiness, renderer work, and layer crossfade.
 - Once a sampled-grid scope is known, the independent Preheater maintains its configured ready-ahead window; it does not wait for a render callback to begin its lifecycle.
 - Prewarm is opportunistic. It must not change the visible map, clear completed snapshots, or outrank a map request.
@@ -516,7 +523,9 @@ AIS live data is intentionally split into two processes:
 - `core.py serve` runs the local map UI and reads AIS from SQL.
 - `core.py ingest-ais` runs a long-lived upstream AISStream collector and writes SQL latest-state rows.
 
-The collector is not a frontend feature. It is an upstream data service whose job is to keep a durable AIS base table warm even when the map is closed. It can later be handed to the upstream/Airflow owner as a scheduled or long-lived data collection job. It upserts by `mmsi`, so the latest-state table keeps one current row per vessel instead of growing without bound. The map then queries that SQL table by viewport.
+The collector is not a frontend feature. It is an upstream data service whose job is to keep a durable AIS base table warm even when the map is closed. It can later be handed to the upstream/Airflow owner as a scheduled or long-lived data collection job. AISStream position and static messages are independent deltas: the collector merges them by `mmsi`, rejects stale updates within each domain, and never replaces an absent field with null. The latest-state table therefore keeps one current row per vessel instead of growing without bound. The map then queries that SQL table by viewport.
+
+Source event time and local receive time remain distinct. Position and static updates keep independent event-time columns, while `received_at` records collector receipt. This prevents late static data from rewinding a vessel position and avoids treating collector latency as source time.
 
 AIS latest-state reads must not impose an artificial total-row cap. The map may constrain reads by viewport, freshness, and future LOD representation, but `live.ais.limit: "max"` means the SQL query is unbounded and does not inherit `query_policy.max_limit`. If a numeric `live.ais.limit` is configured, it is treated as an explicit diagnostic cap, not the default product behavior.
 
@@ -537,7 +546,7 @@ Future public setup can replace the local handoff file with a K8 Secret, Airflow
 
 For the upstream owner, the handoff JSON should stay simple: upstream key, crawler timing, and destination sink. Changing polling/reconnect timing or changing the destination from local MySQL to another SQL/Hive-facing sink is crawler configuration work, not map UI work.
 
-AIS SQL reads and writes use `live.ais.connection_ref` or the registered default MySQL connection. Inline `live.ais.connection` credentials are not a runtime path; the SQL destination remains owned by the connection registry.
+AIS SQL reads and writes require `live.ais.connection_ref`; there is no implicit default MySQL fallback. Inline `live.ais.connection` credentials are not a declarative source-config path. When the UI creates the ignored collector handoff, it resolves the named connection into a concrete sink payload so the independent collector can run without a frontend service locator.
 
 Minimal crawler handoff shape:
 
@@ -599,7 +608,7 @@ py -3 -m venv .venv
 Copy-Item config\examples\runtime\adapter.example.json config\runtime\adapter.local.json -Force
 ```
 
-Use `config\router_manifest.local.json` to select the active route fragments. Keep local database settings in a DATABASE fragment such as `config\database.local.json`, spatial overlay settings in a SPATIAL fragment such as `config\spatial.eez.local.json`, and websocket/source settings in a WEBSOCKET fragment such as `config\websocket.aisstream.local.json`.
+Use `config\state\router_manifest.local.json` to select active route fragments. Keep local database settings under `config\sources\database\`, spatial overlay settings under `config\sources\spatial\`, and websocket/source settings under `config\sources\websocket\`. The parent folder and JSON `role` must agree.
 
 Local config files are ignored by git. Keep real passwords in local fragments or in environment variables.
 
@@ -783,6 +792,14 @@ For a Mapping-only equivalence and CPU benchmark:
 python scripts\sampled_grid_mapping_microbenchmark.py --rows 24192 --repeats 5
 ```
 
+Run the cold duplicate/mixed query storm against a running adapter:
+
+```powershell
+python scripts\sampled_grid_query_storm.py --base-url http://127.0.0.1:5083
+```
+
+The final 2026-07-18 acceptance run sent 12 simultaneous requests for one frame and observed one source HTTP plus 11 cache/in-flight reuses. A second storm requested 15 unique frames across five Pipeline Iceberg datasets with ten clients and completed at **0.921 fps**, above the 0.86 fps safety floor. The optimized 86,400-row compiled Mapping path measured a **205.78 ms P50** while preserving the legacy transport SHA exactly. Side-browser interaction added playback speed changes, zoom, pan, selection, Table/Event Viewer use, and a live dataset switch; the app remained responsive with no browser warnings or errors. Cold 4x playback still records supply-bound buffering and target promotion rather than hiding that physical throughput limit.
+
 JavaScript syntax check:
 
 ```powershell
@@ -804,4 +821,4 @@ git diff --check -- static templates scripts *.py config requirements.txt docker
 - Use environment variables for local secrets.
 - This app is designed as a small local exploratory adapter. Keep data access, rendering, and UI behavior separated as the feature set grows.
 - EEZ country/claim attribution is available through the registered `1x1` maritime jurisdiction Widget. It consumes saved virtual-grid selections and distinguishes jurisdiction, disputed, joint-regime, and other mapped cases; it is an exploratory dataset interpretation, not a legal determination.
-- AISHub polling remains a reserved fallback path. The MVP path is AISStream collector to SQL, then map consumption from SQL.
+- AIS has one runtime path: AISStream deltas are merged by the collector into the registered MySQL read model, and the map consumes that read model. Alternative brokers such as Kafka are a future upstream architecture option, not a dormant runtime fallback.

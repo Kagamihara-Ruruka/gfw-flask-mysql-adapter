@@ -86,6 +86,7 @@ class WidgetQueryContext {
     const mapSnapshot = this.mapSnapshot();
     return this.sampledGridContract.queryResolution({
       datasetId: layer.datasetId,
+      bbox: this.bbox(selection),
       zoom: mapSnapshot.zoom ?? null,
       latitude: selection?.center?.lat ?? mapSnapshot.latitude ?? null,
     });

@@ -71,6 +71,13 @@ class RuntimeCompositionRoot {
     if (this.composed) return this;
     this.own("FrameIdentity", this.frameIdentity);
     const clockDomain = this.own("ClockDomain", this.clockDomain);
+    if (typeof BrowserProfileStoreCore !== "undefined") {
+      this.own("BrowserProfileStore", new BrowserProfileStoreCore({
+        targetState: this.state,
+        storage: BrowserProfileContract.storage(this.globalTarget),
+        eventTarget: this.eventTarget,
+      }).mount());
+    }
     const eventLog = this.own("LifecycleEventLog", new LifecycleEventLogCore({
       maxEntriesProvider: () => this.state.lifecycleEvents?.maxEntries,
       eventTarget: this.eventTarget,
@@ -98,32 +105,30 @@ class RuntimeCompositionRoot {
         clock: clockDomain.monotonic,
       }));
     }
+    let queryPolicyController = null;
     const scheduler = this.own("QuerySchedulerInstance", new QueryScheduler({
-      concurrencyProvider: () => this.state.queryPolicy?.network_concurrency ?? 6,
-      backgroundConcurrencyProvider: () => (
-        this.state.queryPolicy?.background_network_concurrency ?? 3
-      ),
+      concurrencyProvider: () => queryPolicyController?.networkConcurrency() ?? 6,
+      backgroundConcurrencyProvider: () => queryPolicyController?.backgroundConcurrency() ?? 3,
       eventLog,
       snapshotSink: (snapshot) => this.syncQueryScheduler(snapshot),
       clock: clockDomain.monotonic,
     }), { expose: false });
-    this.own("QueryPolicyController", new QueryPolicyControllerCore({
-      targetState: this.state,
-      scheduler,
-    }));
-    const queryCoordinator = this.own("LayerQueryCoordinator", createLayerQueryCoordinator({
-      scheduler,
-      fetchJson: this.fetchJson,
-    }));
     const queryBroker = this.own("QueryBroker", new QueryBroker({
       fetchFn: this.globalTarget.fetch.bind(this.globalTarget),
       eventLog,
       clock: clockDomain.monotonic,
       priorityForLane: (lane) => scheduler.priorityFor(lane),
-      maxBatchSizeProvider: () => this.state.queryPolicy?.batch_max_operations ?? 3,
-      sourceCapacityProvider: (sourceKey) => (
-        this.state.queryTransportCapacities?.[sourceKey] ?? 1
-      ),
+      batchSizeProvider: (sourceKey) => queryPolicyController?.effectiveBatchSize(sourceKey) ?? 1,
+      sourceCapacityProvider: (sourceKey) => queryPolicyController?.sourceCapacity(sourceKey) ?? 1,
+    }));
+    queryPolicyController = this.own("QueryPolicyController", new QueryPolicyControllerCore({
+      targetState: this.state,
+      scheduler,
+      broker: queryBroker,
+    }));
+    const queryCoordinator = this.own("LayerQueryCoordinator", createLayerQueryCoordinator({
+      scheduler,
+      fetchJson: this.fetchJson,
     }));
     const dataFrameStore = this.own("DataFrameStore", new DataFrameStoreCore({
       frameIdentity: this.frameIdentity,
@@ -232,12 +237,31 @@ class RuntimeCompositionRoot {
         ),
       }));
     }
+    let renderGridProfileController = null;
+    if (
+      typeof RenderGridProfileControllerCore !== "undefined"
+      && typeof VirtualGridContract !== "undefined"
+      && typeof RendererRegistry !== "undefined"
+    ) {
+      renderGridProfileController = this.own(
+        "RenderGridProfileController",
+        new RenderGridProfileControllerCore({
+          targetState: this.state,
+          baseGridProvider: () => VirtualGridContract.resolveBase(),
+          zoomProvider: () => this.targetMap?.getZoom?.() ?? null,
+          gpuAggregationAvailableProvider: () => RendererRegistry.gpuAggregationAvailable?.() ?? false,
+          datasetProvider: (datasetId) => this.state.datasets?.[datasetId] || null,
+          eventTarget: this.eventTarget,
+        }),
+      );
+    }
     if (typeof VirtualGridRuntimeController !== "undefined" && typeof VirtualGridContract !== "undefined") {
       const virtualGridController = this.own("VirtualGridController", new VirtualGridRuntimeController({
         targetState: this.state,
         contract: VirtualGridContract,
         eventTarget: this.eventTarget,
         targetMap: this.targetMap,
+        profileController: renderGridProfileController,
       }));
       virtualGridController.bind();
     }

@@ -41,7 +41,7 @@ function setHardwareChip(kind, ready, detail) {
   detailNode.textContent = detail;
 }
 
-function setHardwarePolicy(mode) {
+function setHardwarePolicy(mode, { persistPreference = true } = {}) {
   const capability = state.renderCapability || {};
   const policy = capability.policy || {};
   if (mode === "off") {
@@ -59,6 +59,17 @@ function setHardwarePolicy(mode) {
   }
   capability.policy = policy;
   state.renderCapability = capability;
+  if (persistPreference) {
+    state.browserProfile.hardwareMode = mode;
+    notifyBrowserProfileChanged("hardware_mode_changed");
+  }
+}
+
+function applyBrowserHardwarePreference() {
+  const preferred = state.browserProfile?.hardwareMode || "auto";
+  const serverPolicy = state.renderCapability?.server?.policy || {};
+  const effective = serverPolicy.force_cpu ? "off" : preferred;
+  setHardwarePolicy(effective, { persistPreference: false });
 }
 
 function syncHardwareModeLabels(recommended) {
@@ -96,7 +107,7 @@ function syncHardwareSettingsControls() {
   let selected = currentHardwareMode();
   if ((selected === "auto" && autoInput.disabled) || (selected === "webgl" && webglInput.disabled)) {
     selected = "off";
-    setHardwarePolicy("off");
+    setHardwarePolicy("off", { persistPreference: false });
   }
   $(HARDWARE_MODE_IDS[selected]).checked = true;
 

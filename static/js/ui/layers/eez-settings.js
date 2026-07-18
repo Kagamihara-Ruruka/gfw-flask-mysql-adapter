@@ -24,6 +24,7 @@ function bindEezPaintControls() {
       state.eezPaint.polTypeColors = state.eezPaint.polTypeColors || {};
       state.eezPaint.polTypeColors[key] = input.value;
       scheduleRepaint();
+      notifyBrowserProfileChanged("eez_style_changed");
     });
   }
 }

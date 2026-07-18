@@ -37,6 +37,10 @@ class SampledGridContractModel {
     return sampledGridNumberOrNull(row?.value);
   }
 
+  get zeroIsData() {
+    return this.contract.zero_is_data !== false;
+  }
+
   coverageRatio(row) {
     return sampledGridNumberOrNull(row?.coverage_ratio);
   }
@@ -116,6 +120,38 @@ class SampledGridContractModel {
     };
   }
 
+  coverageIdForBbox(bboxValue) {
+    const bbox = sampledGridBboxOrNull(bboxValue);
+    if (!bbox) return "";
+    const areas = (this.contract.coverage_areas || [])
+      .map((area) => ({
+        id: String(area?.id || "").trim(),
+        bounds: sampledGridBboxOrNull(area?.bounds),
+      }))
+      .filter(({ id, bounds }) => id && bounds);
+    const containing = areas.filter(({ bounds }) => (
+      bounds.west <= bbox.west
+      && bounds.south <= bbox.south
+      && bounds.east >= bbox.east
+      && bounds.north >= bbox.north
+    ));
+    containing.sort((left, right) => {
+      const leftArea = (left.bounds.east - left.bounds.west) * (left.bounds.north - left.bounds.south);
+      const rightArea = (right.bounds.east - right.bounds.west) * (right.bounds.north - right.bounds.south);
+      return leftArea - rightArea;
+    });
+    if (containing.length) return containing[0].id;
+    const intersecting = areas
+      .map((area) => {
+        const width = Math.min(area.bounds.east, bbox.east) - Math.max(area.bounds.west, bbox.west);
+        const height = Math.min(area.bounds.north, bbox.north) - Math.max(area.bounds.south, bbox.south);
+        return { ...area, overlapArea: Math.max(0, width) * Math.max(0, height) };
+      })
+      .filter(({ overlapArea }) => overlapArea > 0)
+      .sort((left, right) => right.overlapArea - left.overlapArea);
+    return intersecting[0]?.id || "";
+  }
+
   cellAt(latValue, lonValue, resolutionValue = null) {
     const lat = sampledGridNumberOrNull(latValue);
     const lon = sampledGridNumberOrNull(lonValue);
@@ -169,6 +205,19 @@ class SampledGridResolutionPlanner {
   }
 }
 
+function sampledGridBboxOrNull(value) {
+  let parts = null;
+  if (typeof value === "string") parts = value.split(",").map(Number);
+  else if (Array.isArray(value)) parts = value.map(Number);
+  else if (value && typeof value === "object") {
+    parts = [value.west, value.south, value.east, value.north].map(Number);
+  }
+  if (!parts || parts.length !== 4 || !parts.every(Number.isFinite)) return null;
+  const [west, south, east, north] = parts;
+  if (west >= east || south >= north) return null;
+  return { west, south, east, north };
+}
+
 const SampledGridContract = (() => {
   function dataset(datasetId = state.datasetId) {
     return state.datasets?.[datasetId] || {};
@@ -192,8 +241,25 @@ const SampledGridContract = (() => {
       && Math.abs(leftNumber - rightNumber) <= 1e-9;
   }
 
-  function queryRoute(datasetId, configuredResolutionKm) {
-    const route = state.sampledGridQueryResolutionByDataset?.[datasetId] || null;
+  function resolutionScope(datasetId, { bbox = null, coverageId = "", useLatest = false } = {}) {
+    const id = String(datasetId || "").trim();
+    const latestCoverageId = useLatest
+      ? String(state.sampledGridMetaByDataset?.[id]?.coverage_id || "").trim()
+      : "";
+    const resolvedCoverageId = String(coverageId || "").trim()
+      || latestCoverageId
+      || model(id).coverageIdForBbox(bbox);
+    if (resolvedCoverageId) return `coverage:${resolvedCoverageId}`;
+    const normalizedBbox = sampledGridBboxOrNull(bbox);
+    if (normalizedBbox && (model(id).contract.coverage_areas || []).length) {
+      return `bbox:${[normalizedBbox.west, normalizedBbox.south, normalizedBbox.east, normalizedBbox.north].join(",")}`;
+    }
+    return "default";
+  }
+
+  function queryRoute(datasetId, configuredResolutionKm, scope = {}) {
+    const routeKey = resolutionScope(datasetId, scope);
+    const route = state.sampledGridQueryResolutionByDataset?.[datasetId]?.[routeKey] || null;
     const effective = sampledGridNumberOrNull(route?.effective_resolution_km);
     if (!route
       || !sameResolution(route.configured_resolution_km, configuredResolutionKm)
@@ -202,15 +268,18 @@ const SampledGridContract = (() => {
     return route;
   }
 
-  function queryResolution({ datasetId = state.datasetId } = {}) {
+  function queryResolution({ datasetId = state.datasetId, bbox = null, coverageId = "" } = {}) {
     const configuredResolutionKm = requestResolution({ datasetId });
-    const route = queryRoute(datasetId, configuredResolutionKm);
+    const route = queryRoute(datasetId, configuredResolutionKm, { bbox, coverageId });
     return sampledGridNumberOrNull(route?.effective_resolution_km) ?? configuredResolutionKm;
   }
 
-  function resolutionState(datasetId = state.datasetId) {
+  function resolutionState(datasetId = state.datasetId, scope = {}) {
     const requestedResolutionKm = requestResolution({ datasetId });
-    const route = queryRoute(datasetId, requestedResolutionKm);
+    const route = queryRoute(datasetId, requestedResolutionKm, {
+      ...scope,
+      useLatest: !scope.bbox && !scope.coverageId,
+    });
     const meta = state.sampledGridMetaByDataset?.[datasetId] || null;
     const metaRequested = sampledGridNumberOrNull(meta?.requested_resolution_km);
     const metaActual = sampledGridNumberOrNull(meta?.actual_resolution_km);
@@ -231,9 +300,9 @@ const SampledGridContract = (() => {
     };
   }
 
-  function emitResolutionChange(datasetId, reason) {
+  function emitResolutionChange(datasetId, reason, scope = {}) {
     window.dispatchEvent(new CustomEvent("rrkal:sampled-grid-resolution-changed", {
-      detail: { reason, ...resolutionState(datasetId) },
+      detail: { reason, ...resolutionState(datasetId, scope) },
     }));
   }
 
@@ -254,21 +323,26 @@ const SampledGridContract = (() => {
     return selected;
   }
 
-  function recordResolvedResolution(datasetId = state.datasetId, grid = null) {
+  function recordResolvedResolution(datasetId = state.datasetId, grid = null, { bbox = null } = {}) {
     const id = String(datasetId || "").trim();
     if (!id || !grid || typeof grid !== "object") return resolutionState(id);
     state.sampledGridMetaByDataset = state.sampledGridMetaByDataset || {};
     state.sampledGridQueryResolutionByDataset = state.sampledGridQueryResolutionByDataset || {};
     const configuredResolutionKm = requestResolution({ datasetId: id });
-    const sourceRequestedResolutionKm = sampledGridNumberOrNull(grid.requested_resolution_km);
+    const coverageId = String(grid.coverage_id || "").trim();
+    const routeKey = resolutionScope(id, { bbox, coverageId });
+    const sourceRequestedResolutionKm = sampledGridNumberOrNull(
+      grid.source_requested_resolution_km ?? grid.requested_resolution_km,
+    );
     const actualResolutionKm = sampledGridNumberOrNull(grid.actual_resolution_km);
-    const previousRoute = queryRoute(id, configuredResolutionKm);
+    const previousRoute = queryRoute(id, configuredResolutionKm, { bbox, coverageId });
     const continuesResolvedRoute = previousRoute
       && sameResolution(sourceRequestedResolutionKm, previousRoute.effective_resolution_km);
     if (Number.isFinite(actualResolutionKm)
       && actualResolutionKm > 0
       && (sameResolution(sourceRequestedResolutionKm, configuredResolutionKm) || continuesResolvedRoute)) {
-      state.sampledGridQueryResolutionByDataset[id] = {
+      state.sampledGridQueryResolutionByDataset[id] = state.sampledGridQueryResolutionByDataset[id] || {};
+      state.sampledGridQueryResolutionByDataset[id][routeKey] = {
         configured_resolution_km: configuredResolutionKm,
         effective_resolution_km: actualResolutionKm,
         source_requested_resolution_km: sourceRequestedResolutionKm,
@@ -276,8 +350,8 @@ const SampledGridContract = (() => {
     }
     state.sampledGridMetaByDataset[id] = { ...grid };
     if (id === state.datasetId) state.sampledGridMeta = state.sampledGridMetaByDataset[id];
-    emitResolutionChange(id, "actual_resolution_resolved");
-    return resolutionState(id);
+    emitResolutionChange(id, "actual_resolution_resolved", { bbox, coverageId });
+    return resolutionState(id, { bbox, coverageId });
   }
 
   return {

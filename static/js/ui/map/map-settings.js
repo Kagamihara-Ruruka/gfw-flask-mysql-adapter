@@ -91,7 +91,14 @@ function bindMapSettingsControls() {
   const openButton = $("map-settings-open");
   const closeButton = $("map-settings-close");
   const modal = $("map-settings-modal");
+  setMapScaleVisible(state.mapSettings.scaleVisible);
+  setMapZoomControlVisible(state.mapSettings.zoomControlVisible);
+  for (const interaction of ["scrollWheelZoom", "doubleClickZoom", "dragging", "keyboard"]) {
+    setMapInteraction(interaction, state.mapSettings[interaction]);
+  }
   applyMapVignetteSettings();
+  syncGraticuleLayer();
+  syncMapSettingsControls();
   if (openButton) {
     openButton.addEventListener("click", (event) => {
       event.stopPropagation();
@@ -131,40 +138,49 @@ function bindMapSettingsControls() {
   $("map-setting-vignette")?.addEventListener("change", (event) => {
     state.mapSettings.vignetteVisible = event.target.checked;
     applyMapVignetteSettings();
+    notifyBrowserProfileChanged("map_vignette_changed");
   });
   $("map-setting-vignette-inset")?.addEventListener("input", (event) => {
     state.mapSettings.vignetteInsetPct = Number(event.target.value);
     syncMapVignetteControls();
     applyMapVignetteSettings();
+    notifyBrowserProfileChanged("map_vignette_changed");
   });
   $("map-setting-vignette-strength")?.addEventListener("input", (event) => {
     state.mapSettings.vignetteStrength = Number(event.target.value);
     syncMapVignetteControls();
     applyMapVignetteSettings();
+    notifyBrowserProfileChanged("map_vignette_changed");
   });
   $("map-setting-graticule")?.addEventListener("change", (event) => {
     state.mapSettings.graticuleVisible = event.target.checked;
     syncGraticuleLayer();
+    notifyBrowserProfileChanged("graticule_changed");
   });
   $("map-setting-graticule-labels")?.addEventListener("change", (event) => {
     state.mapSettings.graticuleLabels = event.target.checked;
     syncGraticuleLayer();
+    notifyBrowserProfileChanged("graticule_changed");
   });
   $("map-setting-graticule-alpha")?.addEventListener("input", (event) => {
     state.mapSettings.graticuleAlpha = Number(event.target.value);
     syncGraticuleLayer();
+    notifyBrowserProfileChanged("graticule_changed");
   });
   $("map-setting-graticule-color")?.addEventListener("input", (event) => {
     state.mapSettings.graticuleColor = event.target.value;
     syncGraticuleLayer();
+    notifyBrowserProfileChanged("graticule_changed");
   });
   $("map-setting-graticule-line-style")?.addEventListener("change", (event) => {
     state.mapSettings.graticuleLineStyle = event.target.value;
     syncGraticuleLayer();
+    notifyBrowserProfileChanged("graticule_changed");
   });
   $("map-setting-graticule-line-width")?.addEventListener("input", (event) => {
     state.mapSettings.graticuleLineWidth = Number(event.target.value);
     syncGraticuleLayer();
+    notifyBrowserProfileChanged("graticule_changed");
   });
   $("map-setting-scroll-wheel")?.addEventListener("change", (event) => {
     setMapInteraction("scrollWheelZoom", event.target.checked);

@@ -21,6 +21,22 @@
     east: "東界",
     north: "北界",
   };
+  const SOURCE_ROLE_LABELS = {
+    id: "來源識別",
+    label: "顯示名稱",
+    product: "產品參數",
+    metric: "指標參數",
+    min: "值域下限",
+    max: "值域上限",
+    unit: "單位",
+    higher_is_better: "方向語意",
+    interpretation: "解讀語意",
+    west: "西界",
+    south: "南界",
+    east: "東界",
+    north: "北界",
+    resolution: "可用解析度",
+  };
   const CANONICAL_ROLE_KEYS = Object.freeze([
     "time", "lat", "lon", "id", "value", "resolution", "coverage", "status",
     "row", "column", "west", "south", "east", "north",
@@ -155,7 +171,8 @@
       tableDetails.dataset.table = table.name || "";
       tableDetails.dataset.datasetId = mapping?.dataset_id || "";
       const columns = table.columns || [];
-      const mappingReadonly = Boolean(profile.mapping_readonly || table.mapping_readonly);
+      const mappingCapability = this.mappingCapability(profile, table);
+      const mappingReadonly = !mappingCapability.editable;
       tableDetails.innerHTML = `
         <summary>
           <span>
@@ -164,8 +181,8 @@
           </span>
           <span class="developer-schema-candidates">${escapeHtml(this.candidateSummary(columns))}</span>
         </summary>
-        ${profile.mapping_readonly || table.mapping_readonly
-          ? this.renderGeneratedMappingInfo(profile, table)
+        ${mappingReadonly
+          ? this.renderGeneratedMappingInfo(profile, table, mappingCapability)
           : this.renderMappingToolbar(profile, table, mapping)}
         <div class="developer-status-table-wrap is-schema-columns-wrap">
           <table class="developer-status-table is-schema-columns">
@@ -179,7 +196,7 @@
               </tr>
             </thead>
             <tbody>
-              ${columns.map((column) => this.renderColumnRow(mapping, column, mappingReadonly)).join("")}
+              ${columns.map((column) => this.renderColumnRow(mapping, column, mappingReadonly, table)).join("")}
             </tbody>
           </table>
         </div>
@@ -187,21 +204,22 @@
       return tableDetails;
     }
 
-    renderGeneratedMappingInfo(profile, table) {
+    renderGeneratedMappingInfo(profile, table, capability) {
+      const provenance = capability.provenance === "mapping_artifact" ? "Mapping Artifact" : "來源宣告";
       return `
         <div class="developer-mapping-toolbar is-generated-mapping">
           <span><strong>${escapeHtml(table.label || table.name || "-")}</strong></span>
-          <span class="developer-status-badge is-ok">Catalog Mapping</span>
+          <span class="developer-status-badge is-ok">${escapeHtml(provenance)}</span>
         </div>
-        <p class="developer-status-hint">此表由 ${escapeHtml(profile.route_ref || profile.connection_ref || "route")} 的 Catalog Mapping 動態產生。</p>
+        <p class="developer-status-hint">Source Scout 顯示來源實際結構；目前執行中的查詢欄位由 ${escapeHtml(provenance)} 決定。此映射模式尚未提供視覺化編輯器。</p>
       `;
     }
 
-    renderColumnRow(mapping, column, readonly = false) {
-      const role = this.roleForColumn(mapping, column);
+    renderColumnRow(mapping, column, readonly = false, table = null) {
+      const role = this.roleForColumn(mapping, column, table);
       return `
         <tr>
-          <td>${this.roleSelectMarkup(column, role, readonly)}</td>
+          <td>${readonly ? this.readonlyRoleMarkup(role) : this.roleSelectMarkup(column, role)}</td>
           <td><strong>${escapeHtml(column.name || "-")}</strong><small>${column.nullable ? "nullable" : "not null"}</small></td>
           <td>${escapeHtml(column.column_type || column.data_type || "-")}</td>
           <td>${escapeHtml(column.key || "-")}</td>
@@ -293,10 +311,18 @@
       if (table?.resolved_mapping && typeof table.resolved_mapping === "object") {
         return table.resolved_mapping;
       }
-      return this.mappings.find((mapping) => (
+      const tableMapping = this.mappings.find((mapping) => (
         mapping.config_path === profile.config_path
         && mapping.connection_ref === profile.connection_ref
         && mapping.table === table.name
+      ));
+      if (tableMapping) {
+        return tableMapping;
+      }
+      return this.mappings.find((mapping) => (
+        mapping.config_path === profile.config_path
+        && mapping.connection_ref === profile.connection_ref
+        && mapping.sampled_grid?.catalog
       ));
     }
 
@@ -324,8 +350,10 @@
         .join(" / ");
     }
 
-    roleForColumn(mapping, column) {
+    roleForColumn(mapping, column, table = null) {
       if (mapping) {
+        const sourceRole = this.catalogRoleForColumn(mapping, table, column);
+        if (sourceRole) return sourceRole;
         const roles = mapping.roles || {};
         for (const role of CANONICAL_ROLE_KEYS) {
           if (roles[role] === column.name) return role;
@@ -339,11 +367,51 @@
       return "ignore";
     }
 
-    roleSelectMarkup(column, role, readonly = false) {
+    catalogRoleForColumn(mapping, table, column) {
+      const catalog = mapping?.sampled_grid?.catalog;
+      if (!catalog || !table || !column) {
+        return "";
+      }
+      const tableName = String(table.name || "");
+      const leaf = (value) => String(value || "").split(".").filter(Boolean).at(-1) || "";
+      let fields = null;
+      if (leaf(catalog.layers_path) === tableName) {
+        fields = catalog.layer_fields;
+      } else if (leaf(catalog.coverages_path) === tableName) {
+        fields = catalog.coverage_fields;
+      } else if (leaf(catalog.resolutions_path) === tableName && column.name === "value") {
+        return "resolution";
+      }
+      for (const [role, path] of Object.entries(fields || {})) {
+        if (leaf(path) === column.name) {
+          return role;
+        }
+      }
+      return "";
+    }
+
+    mappingCapability(profile, table) {
+      const value = table?.mapping_capability || profile?.capabilities?.mapping || {};
+      return {
+        supported: value.supported !== false,
+        editable: value.editable === true,
+        provenance: value.provenance || "source_schema",
+      };
+    }
+
+    readonlyRoleMarkup(role) {
+      if (!role || role === "ignore") {
+        return '<span class="developer-status-badge is-idle">未映射</span>';
+      }
+      const label = SOURCE_ROLE_LABELS[role] || ROLE_LABELS[role] || role;
+      return `<span class="developer-status-badge is-ok">${escapeHtml(label)}</span>`;
+    }
+
+    roleSelectMarkup(column, role) {
       const options = Object.entries(ROLE_LABELS).map(([value, label]) => (
         `<option value="${value}" ${value === role ? "selected" : ""}>${escapeHtml(label)}</option>`
       )).join("");
-      return `<select class="developer-column-role-select" data-column-role="${escapeHtml(column.name)}" ${readonly ? "disabled" : ""}>${options}</select>`;
+      return `<select class="developer-column-role-select" data-column-role="${escapeHtml(column.name)}">${options}</select>`;
     }
 
     safeLayerId(value) {

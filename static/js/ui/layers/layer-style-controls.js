@@ -27,6 +27,7 @@ function bindStateStyleControls({ source, controls, repaint, repaintDelayMs = 0 
     input.addEventListener("input", () => {
       source[key] = valueType === "number" ? Number(input.value) : input.value;
       scheduleRepaint();
+      notifyBrowserProfileChanged("layer_style_changed");
     });
   }
 }
@@ -43,6 +44,7 @@ function bindLayerAlphaControls() {
       if (!layerId) return;
       state.layerAlpha[layerId] = Number(input.value);
       applyLayerAlpha(layerId);
+      notifyBrowserProfileChanged("layer_alpha_changed");
     });
   }
   for (const layerId of Object.keys(state.layerAlpha)) {

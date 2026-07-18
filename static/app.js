@@ -2,6 +2,7 @@ async function init() {
   try {
     const renderCapability = await loadRenderCapability();
     window.aerialBackdropController?.configure(renderCapability?.server?.aerial_backdrop);
+    applyBrowserHardwarePreference();
     syncHardwareSettingsControls();
     await loadDatasets();
     await window.LayerActivationController.reconcile({ reload: true, reason: "bootstrap" });
@@ -165,7 +166,11 @@ function bindControls() {
     bindDeveloperConfigControls();
   }
   RenderState.sync();
-  $("ais-render-strategy").addEventListener("change", () => {
+  const aisRenderStrategy = $("ais-render-strategy");
+  aisRenderStrategy.value = state.browserProfile?.aisRenderStrategy || "density_grid";
+  aisRenderStrategy.addEventListener("change", () => {
+    state.browserProfile.aisRenderStrategy = aisRenderStrategy.value;
+    notifyBrowserProfileChanged("ais_render_strategy_changed");
     if (state.dataLayer === "ais") {
       reloadActiveLayer();
     }

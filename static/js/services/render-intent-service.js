@@ -55,6 +55,7 @@ function createRenderIntentService({
         }),
         effectiveQueryResolutionKm: sampledGridContract.queryResolution({
           datasetId: targetState.datasetId,
+          bbox: viewport.bbox,
         }),
         mappingVersion: dataset.sampled_grid?.mapping_version || dataset.mapping_version || "",
       },

@@ -62,17 +62,23 @@ function createDatasetCoverageModel(dataset = {}) {
     ));
   }
 
-  function sourceBbox(value) {
+  function queryBbox(value) {
     const requested = parseCoverageBbox(value);
     if (!requested || !bounded) return requested;
-    const intersectsSource = areas.some(({ bounds }) => intersectCoverageBounds(requested, bounds));
-    return intersectsSource ? unionBounds : null;
+    const overlaps = areas
+      .map(({ bounds }) => intersectCoverageBounds(requested, bounds))
+      .filter(Boolean)
+      .sort((left, right) => (
+        (right.east - right.west) * (right.north - right.south)
+        - (left.east - left.west) * (left.north - left.south)
+      ));
+    return overlaps[0] || null;
   }
 
-  function sourceBboxString(value) {
-    const source = sourceBbox(value);
-    return source
-      ? [source.west, source.south, source.east, source.north]
+  function queryBboxString(value) {
+    const requested = queryBbox(value);
+    return requested
+      ? [requested.west, requested.south, requested.east, requested.north]
         .map((number) => number.toFixed(6))
         .join(",")
       : null;
@@ -85,8 +91,8 @@ function createDatasetCoverageModel(dataset = {}) {
     defaultCoverageId: defaultArea?.id || "",
     initialBounds: initialBounds ? Object.freeze({ ...initialBounds }) : null,
     contains,
-    sourceBbox,
-    sourceBboxString,
+    queryBbox,
+    queryBboxString,
   });
 }
 
@@ -152,7 +158,8 @@ class DatasetViewportController {
       datasetId: normalizedDatasetId,
       signature: JSON.stringify({ union, initial, defaultCoverageId: model.defaultCoverageId }),
       bounds: union,
-      queryBounds: union,
+      coverageBounds: union,
+      queryBounds: null,
       minZoom,
       initialBounds: initial,
       defaultCoverageId: model.defaultCoverageId,
@@ -180,6 +187,7 @@ class DatasetViewportController {
       datasetId: null,
       signature: "",
       bounds: null,
+      coverageBounds: null,
       queryBounds: null,
       minZoom: this.baseMinZoom,
       initialBounds: null,
@@ -192,7 +200,7 @@ class DatasetViewportController {
 
   queryBbox(value, datasetId = this.state.datasetId) {
     const model = this.model(datasetId);
-    return model.bounded ? model.sourceBboxString(value) : value;
+    return model.bounded ? model.queryBboxString(value) : value;
   }
 
   filterFrame(frame, datasetId = this.state.datasetId) {

@@ -1,14 +1,22 @@
 from __future__ import annotations
 
+import re
+from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping
+from typing import Any
 
-from common_adapter.query.grid_frame import CanonicalGridFrame, CanonicalGridFrameBuilder
+from common_adapter.query.grid_frame import (
+    CANONICAL_GRID_FRAME_FIELDS,
+    CANONICAL_GRID_ROW_FIELDS,
+    CanonicalGridFrame,
+    CanonicalGridFrameBuilder,
+)
 from common_adapter.query.immutable import freeze_json, thaw_json
 
 
 SAMPLED_GRID_CONTRACT_VERSION = "rrkal.sampled_grid.v1"
+SAMPLED_GRID_MAPPING_VERSION = "rrkal.mapping.sampled_grid.v1"
 KM_PER_LATITUDE_DEGREE = 111.32
 CANONICAL_ROLE_COLUMNS = (
     ("time", "date"),
@@ -21,6 +29,7 @@ CANONICAL_ROLE_COLUMNS = (
     ("status", "data_status"),
 )
 CANONICAL_COLUMN_BY_ROLE = dict(CANONICAL_ROLE_COLUMNS)
+CANONICAL_EXTENSION_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,127}$")
 
 
 @dataclass(frozen=True)
@@ -42,6 +51,8 @@ class CompiledSampledGridMapping:
 
     source_fields: Mapping[str, str]
     request_fields: Mapping[str, str]
+    extension_fields: Mapping[str, str]
+    mapping_version: str
     geometry: Mapping[str, Any]
     alignment: Mapping[str, Any]
     available_resolutions_km: tuple[float, ...]
@@ -122,13 +133,33 @@ def sampled_grid_request_fields(dataset: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def sampled_grid_extension_fields(dataset: dict[str, Any]) -> dict[str, str]:
+    contract = sampled_grid_contract(dataset) or {}
+    reserved = {column for _role, column in CANONICAL_ROLE_COLUMNS}
+    reserved.update({"bounds", "bounds.west", "bounds.south", "bounds.east", "bounds.north"})
+    normalized: dict[str, str] = {}
+    for canonical_column, source_path in _mapping(contract.get("extension_fields")).items():
+        column = str(canonical_column).strip()
+        path = str(source_path).strip()
+        if not column or not path:
+            continue
+        if not CANONICAL_EXTENSION_NAME.fullmatch(column):
+            raise ValueError(f"invalid canonical extension column: {column!r}")
+        if column in reserved or column.startswith("bounds."):
+            raise ValueError(f"canonical extension column is reserved: {column!r}")
+        normalized[column] = path
+    return normalized
+
+
 def _canonical_columns(
     fields: Mapping[str, str],
     available_resolutions: Iterable[float],
+    extension_fields: Mapping[str, str],
 ) -> tuple[str, ...]:
     columns = [column for role, column in CANONICAL_ROLE_COLUMNS if role in fields]
     if tuple(available_resolutions) and "resolution_km" not in columns:
         columns.append("resolution_km")
+    columns.extend(column for column in extension_fields if column not in columns)
     return tuple(columns)
 
 
@@ -185,6 +216,7 @@ def compile_sampled_grid_mapping(dataset: dict[str, Any]) -> CompiledSampledGrid
         raise ValueError("dataset has no sampled-grid contract")
     source_fields = sampled_grid_source_fields(dataset)
     request_fields = sampled_grid_request_fields(dataset)
+    extension_fields = sampled_grid_extension_fields(dataset)
     available = tuple(sampled_grid_available_resolutions(dataset))
     frozen_source_fields = freeze_json(source_fields)
     frozen_request_fields = freeze_json(request_fields)
@@ -193,10 +225,12 @@ def compile_sampled_grid_mapping(dataset: dict[str, Any]) -> CompiledSampledGrid
     return CompiledSampledGridMapping(
         source_fields=frozen_source_fields,
         request_fields=frozen_request_fields,
+        extension_fields=freeze_json(extension_fields),
+        mapping_version=str(contract.get("mapping_version") or SAMPLED_GRID_MAPPING_VERSION),
         geometry=frozen_geometry,
         alignment=freeze_json(_mapping(contract.get("alignment"))),
         available_resolutions_km=available,
-        canonical_columns=_canonical_columns(frozen_source_fields, available),
+        canonical_columns=_canonical_columns(frozen_source_fields, available, extension_fields),
         grid_profile=freeze_json(_mapping(contract.get("grid_profile"))),
         coverage_areas=tuple(coverage_areas),
         snapshot_cache=freeze_json(_mapping(contract.get("snapshot_cache"))),
@@ -222,6 +256,9 @@ def sampled_grid_render_columns(dataset: dict[str, Any]) -> list[str]:
     for column in sampled_grid_source_fields(dataset).values():
         if column not in columns:
             columns.append(column)
+    for source_path in sampled_grid_extension_fields(dataset).values():
+        if source_path not in columns:
+            columns.append(source_path)
     return columns
 
 
@@ -261,6 +298,7 @@ def sampled_grid_public_contract(dataset: dict[str, Any]) -> dict[str, Any] | No
     compiled = compile_sampled_grid_mapping(dataset)
     return {
         "contract_version": contract.get("contract_version"),
+        "mapping_version": compiled.mapping_version,
         "default_coverage_id": compiled.default_coverage_id,
         "available_resolutions_km": list(compiled.available_resolutions_km),
         "grid_profile": thaw_json(compiled.grid_profile),
@@ -271,6 +309,7 @@ def sampled_grid_public_contract(dataset: dict[str, Any]) -> dict[str, Any] | No
         "value_domain": thaw_json(compiled.value_domain),
         "visualization": thaw_json(compiled.visualization),
         "zero_is_data": compiled.zero_is_data,
+        "extension_columns": list(compiled.extension_fields),
     }
 
 
@@ -284,14 +323,14 @@ def _row_value(row: dict[str, Any], fields: dict[str, str], role: str) -> Any:
     return row.get(role) if role in row else None
 
 
-def _context_value(context: dict[str, Any], path: str | None) -> Any:
+def _context_value(context: Mapping[str, Any], path: str | None) -> Any:
     if not str(path or "").strip():
         return None
     current: Any = context
     for part in str(path or "").split("."):
         if not part:
             continue
-        if not isinstance(current, dict) or part not in current:
+        if not isinstance(current, Mapping) or part not in current:
             return None
         current = current[part]
     return current
@@ -422,6 +461,8 @@ def canonicalize_sampled_grid_row(
             "data_status": _canonical_role_value(row, fields, request_fields, request_context, "status"),
         }
     )
+    for canonical_column, source_path in mapping.extension_fields.items():
+        canonical[canonical_column] = _context_value(row, source_path)
     available = mapping.available_resolutions_km
     if canonical["resolution_km"] is None and len(available) == 1:
         canonical["resolution_km"] = available[0]
@@ -456,36 +497,122 @@ def canonicalize_sampled_grid_rows(
     candidates = plan.role_candidates
     available = mapping.available_resolutions_km
     single_resolution = available[0] if len(available) == 1 else None
-    builder = CanonicalGridFrameBuilder()
+    extension_fields = tuple(mapping.extension_fields.items())
+    source_fields = mapping.source_fields
+    primary_fields = {
+        role: str(source_fields.get(role) or "")
+        for role in (
+            "time",
+            "id",
+            "lat",
+            "lon",
+            "value",
+            "resolution",
+            "coverage",
+            "status",
+            "row",
+            "column",
+            "west",
+            "south",
+            "east",
+            "north",
+        )
+    }
+    has_explicit_bounds = all(
+        primary_fields[role]
+        for role in ("west", "south", "east", "north")
+    )
+    columns: dict[str, list[Any]] = {
+        field_name: []
+        for field_name in (
+            *CANONICAL_GRID_ROW_FIELDS,
+            *(field_name for field_name, _source_path in extension_fields),
+            *CANONICAL_GRID_FRAME_FIELDS,
+        )
+    }
+    compiled_value = _compiled_value
+    as_number = _number
+    mapping_type = Mapping
+    append_cell_id = columns["cell_id"].append
+    append_lat = columns["lat"].append
+    append_lon = columns["lon"].append
+    append_value = columns["value"].append
+    append_coverage = columns["coverage_ratio"].append
+    append_status = columns["data_status"].append
+    append_west = columns["bounds.west"].append
+    append_south = columns["bounds.south"].append
+    append_east = columns["bounds.east"].append
+    append_north = columns["bounds.north"].append
+    append_date = columns["date"].append
+    append_resolution = columns["resolution_km"].append
+    extension_appenders = tuple(
+        (columns[field_name].append, source_path)
+        for field_name, source_path in extension_fields
+    )
+    missing = object()
     for row in rows:
-        if not isinstance(row, Mapping):
+        if not isinstance(row, mapping_type):
             continue
         nested_bounds = row.get("bounds")
-        bounds: dict[str, float] | None = None
-        if isinstance(nested_bounds, Mapping):
-            explicit_values = tuple(_number(nested_bounds.get(name)) for name in ("west", "south", "east", "north"))
-            if all(value is not None for value in explicit_values):
-                bounds = dict(zip(("west", "south", "east", "north"), explicit_values, strict=True))
-        if bounds is None:
-            explicit_values = tuple(
-                _number(_compiled_value(row, candidates[name]))
-                for name in ("west", "south", "east", "north")
-            )
-            if all(value is not None for value in explicit_values):
-                bounds = dict(zip(("west", "south", "east", "north"), explicit_values, strict=True))
+        west = south = east = north = None
+        if isinstance(nested_bounds, mapping_type):
+            west = as_number(nested_bounds.get("west"))
+            south = as_number(nested_bounds.get("south"))
+            east = as_number(nested_bounds.get("east"))
+            north = as_number(nested_bounds.get("north"))
+            if None in (west, south, east, north):
+                west = south = east = north = None
+        if west is None and has_explicit_bounds:
+            west = as_number(row.get(primary_fields["west"]))
+            south = as_number(row.get(primary_fields["south"]))
+            east = as_number(row.get(primary_fields["east"]))
+            north = as_number(row.get(primary_fields["north"]))
+            if None in (west, south, east, north):
+                west = south = east = north = None
 
-        resolution = _number(_compiled_value(
-            row,
-            candidates["resolution"],
-            context_values.get("resolution"),
-        ))
+        resolution = (
+            row.get(primary_fields["resolution"], missing)
+            if primary_fields["resolution"]
+            else missing
+        )
+        if resolution is missing:
+            resolution = compiled_value(
+                row,
+                candidates["resolution"],
+                context_values.get("resolution"),
+            )
+        resolution = as_number(resolution)
         if resolution is None:
             resolution = single_resolution
-        lat = _number(_compiled_value(row, candidates["lat"], context_values.get("lat")))
-        lon = _number(_compiled_value(row, candidates["lon"], context_values.get("lon")))
-        if bounds is None and plan.geometry_encoding == "global_index":
-            row_index = _number(_compiled_value(row, candidates["row"], context_values.get("row")))
-            column_index = _number(_compiled_value(row, candidates["column"], context_values.get("column")))
+        lat = row.get(primary_fields["lat"], missing) if primary_fields["lat"] else missing
+        if lat is missing:
+            lat = compiled_value(row, candidates["lat"], context_values.get("lat"))
+        lon = row.get(primary_fields["lon"], missing) if primary_fields["lon"] else missing
+        if lon is missing:
+            lon = compiled_value(row, candidates["lon"], context_values.get("lon"))
+        lat = as_number(lat)
+        lon = as_number(lon)
+        if west is None and plan.geometry_encoding == "global_index":
+            row_index = (
+                row.get(primary_fields["row"], missing)
+                if primary_fields["row"]
+                else missing
+            )
+            if row_index is missing:
+                row_index = compiled_value(row, candidates["row"], context_values.get("row"))
+            column_index = (
+                row.get(primary_fields["column"], missing)
+                if primary_fields["column"]
+                else missing
+            )
+            if column_index is missing:
+                column_index = compiled_value(
+                    row,
+                    candidates["column"],
+                    context_values.get("column"),
+                )
+            row_index = as_number(row_index)
+            column_index = as_number(column_index)
             if (
                 row_index is not None
                 and column_index is not None
@@ -501,44 +628,86 @@ def canonicalize_sampled_grid_rows(
                 span = (resolution / plan.base_resolution_km) / plan.index_units_per_degree
                 north = plan.origin_lat - (row_index / plan.index_units_per_degree)
                 west = plan.origin_lon + (column_index / plan.index_units_per_degree)
-                bounds = {
-                    "west": west,
-                    "south": north - span,
-                    "east": west + span,
-                    "north": north,
-                }
-        elif bounds is None and plan.geometry_encoding == "center":
+                south = north - span
+                east = west + span
+        elif west is None and plan.geometry_encoding == "center":
             if (
                 lat is not None
                 and lon is not None
                 and plan.cell_width_degrees is not None
                 and plan.cell_height_degrees is not None
             ):
-                bounds = {
-                    "west": lon - (plan.cell_width_degrees / 2),
-                    "south": lat - (plan.cell_height_degrees / 2),
-                    "east": lon + (plan.cell_width_degrees / 2),
-                    "north": lat + (plan.cell_height_degrees / 2),
-                }
-        if bounds is not None:
-            lat = (bounds["south"] + bounds["north"]) / 2
-            lon = (bounds["west"] + bounds["east"]) / 2
+                west = lon - (plan.cell_width_degrees / 2)
+                south = lat - (plan.cell_height_degrees / 2)
+                east = lon + (plan.cell_width_degrees / 2)
+                north = lat + (plan.cell_height_degrees / 2)
+        if west is not None:
+            lat = (south + north) / 2
+            lon = (west + east) / 2
 
-        builder.append((
-            _compiled_value(row, candidates["id"], context_values.get("id")),
-            lat,
-            lon,
-            _compiled_value(row, candidates["value"], context_values.get("value")),
-            _number(_compiled_value(row, candidates["coverage"], context_values.get("coverage"))),
-            _compiled_value(row, candidates["status"], context_values.get("status")),
-            bounds.get("west") if bounds else None,
-            bounds.get("south") if bounds else None,
-            bounds.get("east") if bounds else None,
-            bounds.get("north") if bounds else None,
-            _compiled_value(row, candidates["time"], context_values.get("time")),
-            resolution,
-        ))
-    return builder.build()
+        cell_id = row.get(primary_fields["id"], missing) if primary_fields["id"] else missing
+        if cell_id is missing:
+            cell_id = compiled_value(row, candidates["id"], context_values.get("id"))
+        value = (
+            row.get(primary_fields["value"], missing)
+            if primary_fields["value"]
+            else missing
+        )
+        if value is missing:
+            value = compiled_value(row, candidates["value"], context_values.get("value"))
+        coverage = (
+            row.get(primary_fields["coverage"], missing)
+            if primary_fields["coverage"]
+            else missing
+        )
+        if coverage is missing:
+            coverage = compiled_value(
+                row,
+                candidates["coverage"],
+                context_values.get("coverage"),
+            )
+        status = (
+            row.get(primary_fields["status"], missing)
+            if primary_fields["status"]
+            else missing
+        )
+        if status is missing:
+            status = compiled_value(row, candidates["status"], context_values.get("status"))
+        date = row.get(primary_fields["time"], missing) if primary_fields["time"] else missing
+        if date is missing:
+            date = compiled_value(row, candidates["time"], context_values.get("time"))
+
+        append_cell_id(cell_id)
+        append_lat(lat)
+        append_lon(lon)
+        append_value(value)
+        append_coverage(as_number(coverage))
+        append_status(status)
+        append_west(west)
+        append_south(south)
+        append_east(east)
+        append_north(north)
+        append_date(date)
+        append_resolution(resolution)
+        for append_extension, source_path in extension_appenders:
+            append_extension(_context_value(row, source_path))
+
+    row_count = len(columns["cell_id"])
+    frame_fields: dict[str, Any] = {}
+    row_fields = [*CANONICAL_GRID_ROW_FIELDS, *(name for name, _path in extension_fields)]
+    for field_name in CANONICAL_GRID_FRAME_FIELDS:
+        values = columns[field_name]
+        first = values[0] if values else None
+        if not values or all(value == first for value in values[1:]):
+            frame_fields[field_name] = first
+        else:
+            row_fields.append(field_name)
+    return CanonicalGridFrame(
+        row_fields=tuple(row_fields),
+        columns=tuple(tuple(columns[field_name]) for field_name in row_fields),
+        frame_fields=frame_fields,
+        row_count=row_count,
+    )
 
 
 def _actual_resolution(

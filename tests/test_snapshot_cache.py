@@ -254,6 +254,33 @@ class SnapshotCacheContractTests(unittest.TestCase):
         self.assertEqual("small", client.calls[0][1]["external_aoi"])
         self.assertEqual("small", packet["sampled_grid"]["default_coverage_id"])
 
+    def test_nested_coverage_preserves_the_full_requested_source_scope(self) -> None:
+        dataset = _dataset(resolutions=[16])
+        dataset["sampled_grid"]["coverage_areas"] = [
+            {
+                "id": "taiwan",
+                "bounds": {"west": -1, "south": -1, "east": 1, "north": 1},
+            },
+            {
+                "id": "northwest_pacific",
+                "bounds": {"west": -10, "south": -10, "east": 10, "north": 10},
+            },
+        ]
+        dataset["sampled_grid"]["default_coverage_id"] = "taiwan"
+        client = _TimeSeriesClient()
+        adapter = SampledGridHttpQueryAdapter({}, dataset)
+        adapter.client = client
+
+        packet = _records(adapter, (-8, -8, 8, 8), 16)
+
+        self.assertEqual("northwest_pacific", client.calls[0][1]["external_aoi"])
+        self.assertEqual("northwest_pacific", packet["grid"]["coverage_id"])
+        self.assertEqual("covered", packet["grid"]["coverage_status"])
+        self.assertEqual(
+            "northwest_pacific",
+            packet["query_scope"]["effective_source_scope"]["id"],
+        )
+
     def test_global_row_budget_evicts_lru_across_namespaces(self) -> None:
         policy = SnapshotCachePolicy.from_contract(_dataset(resolutions=[16])["sampled_grid"])
         CANONICAL_SNAPSHOT_CACHE.configure(max_total_rows=3)
@@ -323,6 +350,44 @@ class SnapshotCacheContractTests(unittest.TestCase):
             dataset_cache_namespace(first),
             dataset_cache_namespace(second),
         )
+
+    def test_dataset_namespace_changes_with_mapping_version_and_extensions(self) -> None:
+        first = _dataset(resolutions=[16])
+        second = _dataset(resolutions=[16])
+        second["sampled_grid"]["mapping_version"] = "rrkal.mapping.sampled_grid.v2"
+        second["sampled_grid"]["extension_fields"] = {"quality_flag": "source_quality"}
+
+        self.assertNotEqual(dataset_cache_namespace(first), dataset_cache_namespace(second))
+
+    def test_mapping_extensions_flow_to_canonical_frame_without_source_schema_leakage(self) -> None:
+        dataset = _dataset(resolutions=[16])
+        dataset["sampled_grid"]["extension_fields"] = {
+            "quality_flag": "observations.quality",
+        }
+        source_rows = [
+            {**_source_rows(16)[0], "observations": {"quality": "observed"}},
+            {**_source_rows(16)[1], "observations": {"quality": "filled"}},
+        ]
+
+        mapping = compile_sampled_grid_mapping(dataset)
+        frame = canonicalize_sampled_grid_rows(source_rows, mapping)
+        public_fields = sampled_grid_public_fields(dataset)
+
+        self.assertEqual(("observed", "filled"), frame.column("quality_flag"))
+        self.assertIn("quality_flag", public_fields["display_columns"])
+        self.assertNotIn("observations.quality", public_fields["display_columns"])
+        self.assertEqual("observed", frame.row_at(0)["quality_flag"])
+
+    def test_generic_canonical_frame_preserves_dynamic_extension_columns(self) -> None:
+        frame = canonical_grid_frame_from_rows(
+            [
+                {"date": "2024-01-01", "cell_id": "a", "value": 1, "quality_flag": "ok"},
+                {"date": "2024-01-01", "cell_id": "b", "value": 2, "quality_flag": "filled"},
+            ]
+        )
+
+        self.assertEqual(("ok", "filled"), frame.column("quality_flag"))
+        self.assertEqual("filled", frame.row_at(1)["quality_flag"])
 
     def test_dataset_namespace_excludes_credentials_and_visualization(self) -> None:
         first = _dataset(resolutions=[16])
@@ -530,6 +595,19 @@ class SnapshotCacheContractTests(unittest.TestCase):
         self.assertEqual(["east-cell"], [row["cell_id"] for row in second["rows"]])
         self.assertEqual(16, first["grid"]["actual_resolution_km"])
         self.assertTrue(first["grid"]["lod_degraded"])
+        self.assertEqual(
+            {"west": -1, "south": -1, "east": 1, "north": 1},
+            first["query_scope"]["requested_bbox"],
+        )
+        self.assertEqual(
+            "coverage-a",
+            first["query_scope"]["effective_source_scope"]["id"],
+        )
+        self.assertEqual(
+            "cc_viewport_clipped_to_coverage",
+            first["query_scope"]["translation"]["override_reason"],
+        )
+        self.assertTrue(first["query_scope"]["translation"]["requested_bbox_preserved"])
         self.assertFalse(first["timing"]["cache_hit"])
         self.assertTrue(second["timing"]["cache_hit"])
         self.assertEqual(0, second["timing"]["query_ms"])

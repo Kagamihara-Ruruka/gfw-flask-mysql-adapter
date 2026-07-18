@@ -6,7 +6,6 @@ from typing import Any
 
 from common_adapter.db.connect import (
     connection_configs,
-    default_connection_ref,
     elapsed_ms,
     mysql_connection,
     mysql_quote,
@@ -24,13 +23,15 @@ def ais_live_settings(config: dict[str, Any]) -> dict[str, Any]:
     configured_limit = settings.get("limit", policy["default_limit"])
     limit = None if configured_limit in {None, "max", "all", "unbounded"} else int(configured_limit)
     connection_ref = str(settings.get("connection_ref") or "")
-    database = settings.get("database") or _default_ais_database(config, connection_ref)
+    database = settings.get("database")
     return {
         "enabled": bool(settings.get("enabled", False)),
         "connection_ref": connection_ref,
         "database": database,
         "table": settings.get("table", ""),
         "time_column": settings.get("time_column", "timestamp"),
+        "static_time_column": settings.get("static_time_column", "static_event_time"),
+        "received_time_column": settings.get("received_time_column", "received_at"),
         "lat_column": settings.get("lat_column", "lat"),
         "lon_column": settings.get("lon_column", "lon"),
         "mmsi_column": settings.get("mmsi_column", "mmsi"),
@@ -45,35 +46,20 @@ def ais_live_settings(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _default_ais_database(config: dict[str, Any], connection_ref: str) -> str:
-    connections = connection_configs(config)
-    if connection_ref and connection_ref in connections:
-        return str(connections[connection_ref].get("database") or "")
-    ref = default_connection_ref(config, "mysql")
-    if ref and ref in connections:
-        return str(connections[ref].get("database") or "")
-    return ""
-
-
 def ais_mysql_connection_info(
     config: dict[str, Any],
     settings: dict[str, Any],
 ) -> tuple[str, dict[str, Any]]:
     connection_ref = str(settings.get("connection_ref") or "")
-    if connection_ref:
-        connections = connection_configs(config)
-        if connection_ref not in connections:
-            raise ValueError(f"unknown live.ais.connection_ref: {connection_ref}")
-        connection = dict(connections[connection_ref])
-        if str(connection.get("kind", "mysql")).lower() != "mysql":
-            raise ValueError(f"live.ais.connection_ref must point to mysql: {connection_ref}")
-        return connection_ref, connection
-
-    ref = default_connection_ref(config, "mysql")
+    if not connection_ref:
+        raise ValueError("live.ais.connection_ref is required")
     connections = connection_configs(config)
-    if ref not in connections:
-        raise ValueError(f"unknown default mysql connection_ref: {ref}")
-    return ref, dict(connections[ref])
+    if connection_ref not in connections:
+        raise ValueError(f"unknown live.ais.connection_ref: {connection_ref}")
+    connection = dict(connections[connection_ref])
+    if str(connection.get("kind", "mysql")).lower() != "mysql":
+        raise ValueError(f"live.ais.connection_ref must point to mysql: {connection_ref}")
+    return connection_ref, connection
 
 
 @contextmanager

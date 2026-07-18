@@ -6,10 +6,7 @@ function updateAisSettingsPanel() {
   const keyGate = settings.collector_key_gate || ingest.key_gate || {};
   const connectedPanel = $("ais-connected-panel");
   const configureButton = $("ais-open-config");
-  if (settings.provider === "aishub_polling" && settings.has_aishub_username) {
-    status.textContent = "AIS 來源：AISHub 輪詢，間隔 180 秒";
-    status.classList.remove("is-warning");
-  } else if (settings.has_api_key && settings.provider === "aisstream") {
+  if (settings.has_api_key && settings.provider === "aisstream") {
     if (keyGate.authorized_sql_read) {
       status.textContent = "AIS 爬蟲心跳已匹配，SQL 讀取已解鎖。";
       status.classList.remove("is-warning");
@@ -180,91 +177,6 @@ function bindAisStreamControls() {
   }
 }
 
-function bindAisHubControls() {
-  const saveButton = $("aishub-save-username");
-  const diagnosticsButton = $("aishub-run-diagnostics");
-  const disconnectButton = $("aishub-disconnect");
-  const usernameInput = $("aishub-username");
-  if (saveButton && usernameInput) {
-    saveButton.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      const username = usernameInput.value.trim();
-      if (!username) {
-        setStatus("請先貼上 AISHub 使用者名稱", true);
-        return;
-      }
-      saveButton.disabled = true;
-      try {
-        await saveAishubUsername(username);
-        usernameInput.value = "";
-        setStatus("AISHub 已連接；輪詢間隔固定為 180 秒");
-        if (state.dataLayer === "ais") {
-          await reloadAisRecords();
-        }
-      } catch (err) {
-        console.error(err);
-        setStatus(err.message, true);
-      } finally {
-        saveButton.disabled = false;
-      }
-    });
-  }
-  if (diagnosticsButton) {
-    diagnosticsButton.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      if (state.aisSettings?.provider !== "aishub_polling" || !state.aisSettings?.has_aishub_username) {
-        setStatus("請先連接 AISHub 使用者名稱，再執行診斷", true);
-        return;
-      }
-      diagnosticsButton.disabled = true;
-      const result = $("ais-diagnostics-result");
-      if (result) {
-        result.hidden = false;
-        result.classList.remove("is-ok", "is-warning", "is-error");
-        result.textContent = "正在測試 AISHub...";
-      }
-      try {
-        const packet = await runAisDiagnostics();
-        renderAisDiagnostics(packet);
-        if (packet.status === "ok" && Number(packet.accepted_messages || 0) > 0) {
-          setStatus("AISHub 診斷已收到資料列");
-        } else {
-          setStatus("AISHub 診斷沒有回傳船舶資料", true);
-        }
-      } catch (err) {
-        console.error(err);
-        if (result) {
-          result.hidden = false;
-          result.classList.add("is-error");
-          result.textContent = err.message;
-        }
-        setStatus(err.message, true);
-      } finally {
-        diagnosticsButton.disabled = false;
-      }
-    });
-  }
-  if (disconnectButton) {
-    disconnectButton.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      disconnectButton.disabled = true;
-      try {
-        await disconnectAishubUsername();
-        if (state.dataLayer === "ais") {
-          clearPrimaryLayerRecords();
-        }
-        setStatus("AISHub 已斷開");
-      } catch (err) {
-        console.error(err);
-        setStatus(err.message, true);
-      } finally {
-        disconnectButton.disabled = false;
-      }
-    });
-  }
-}
-
 function bindAisSettingsControls() {
   bindAisStreamControls();
-  bindAisHubControls();
 }

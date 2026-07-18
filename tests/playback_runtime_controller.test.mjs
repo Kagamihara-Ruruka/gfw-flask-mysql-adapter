@@ -175,7 +175,7 @@ test("playback controls no longer own timer, generation or timeline state", () =
 test("PlaybackRuntime is the only UI facade for PlaybackEngine commands", () => {
   const controls = fs.readFileSync(path.join(root, "static/js/playback/playback-controls.js"), "utf8");
   const apiClient = fs.readFileSync(path.join(root, "static/js/services/api-client.js"), "utf8");
-  const layerEffects = fs.readFileSync(path.join(root, "static/js/layers/gfw-layer-effects.js"), "utf8");
+  const layerEffects = fs.readFileSync(path.join(root, "static/js/layers/sampled-grid-layer-effects.js"), "utf8");
   const runtime = fs.readFileSync(path.join(root, "static/js/playback/playback-runtime-controller.js"), "utf8");
 
   for (const source of [controls, apiClient, layerEffects]) {

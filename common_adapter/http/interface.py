@@ -16,6 +16,7 @@ from common_adapter.http.routes.live import register_live_routes
 from common_adapter.http.routes.overlays import register_overlay_routes
 from common_adapter.http.routes.system import register_system_routes
 from common_adapter.layers.registry import RuntimeLayerRegistry
+from common_adapter.layers.status import RouteStatusRegistry
 from common_adapter.query.batch import QueryBatchExecutor
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -35,6 +36,7 @@ def create_app(
     *,
     developer_url: str | None = None,
     layer_registry: RuntimeLayerRegistry | None = None,
+    route_status_registry: RouteStatusRegistry | None = None,
 ) -> Flask:
     app = create_flask_app()
     app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
@@ -59,7 +61,16 @@ def create_app(
         response.headers["Content-Length"] = str(len(compressed))
         return response
 
-    register_system_routes(app, config, developer_url=developer_url)
+    resolved_layer_registry = layer_registry or RuntimeLayerRegistry(config)
+    resolved_route_status_registry = route_status_registry or RouteStatusRegistry(config, resolved_layer_registry)
+
+    register_system_routes(
+        app,
+        config,
+        layer_registry=resolved_layer_registry,
+        route_status_registry=resolved_route_status_registry,
+        developer_url=developer_url,
+    )
 
     register_backdrop_routes(app, config)
 
@@ -70,7 +81,7 @@ def create_app(
     register_dataset_routes(
         app,
         config,
-        layer_registry=layer_registry or RuntimeLayerRegistry(config),
+        layer_registry=resolved_layer_registry,
         batch_executor=batch_executor,
     )
 
@@ -86,6 +97,7 @@ def create_developer_app(
     *,
     consumer_url: str,
     layer_registry: RuntimeLayerRegistry | None = None,
+    route_status_registry: RouteStatusRegistry | None = None,
     endpoint_supervisor: ManagedEndpointSupervisor | None = None,
 ) -> Flask:
     app = create_flask_app()
@@ -106,10 +118,13 @@ def create_developer_app(
     def favicon():
         return "", 204
 
+    resolved_layer_registry = layer_registry or RuntimeLayerRegistry(config)
+    resolved_route_status_registry = route_status_registry or RouteStatusRegistry(config, resolved_layer_registry)
     register_developer_routes(
         app,
         runtime_config=config,
-        layer_registry=layer_registry or RuntimeLayerRegistry(config),
+        layer_registry=resolved_layer_registry,
+        route_status_registry=resolved_route_status_registry,
         endpoint_supervisor=endpoint_supervisor,
     )
     return app

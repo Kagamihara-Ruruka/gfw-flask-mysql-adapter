@@ -100,7 +100,7 @@ function loadColorScale(dataset) {
     sampledGridPaintProfiles: {},
   });
   const source = fs.readFileSync(
-    path.join(root, "static/js/rendering/gfw-paint.js"),
+    path.join(root, "static/js/rendering/sampled-grid-paint.js"),
     "utf8",
   );
   vm.runInContext(source, loaded.context);
@@ -375,6 +375,11 @@ test("sampled-grid reuses a resolved source fallback without changing the config
     sampled_grid: {
       contract_version: "rrkal.sampled_grid.v1",
       available_resolutions_km: [4, 16, 32],
+      default_coverage_id: "taiwan",
+      coverage_areas: [
+        { id: "taiwan", bounds: { west: 118, south: 20, east: 124, north: 27 } },
+        { id: "northwest_pacific", bounds: { west: 105, south: 15, east: 135, north: 35 } },
+      ],
       geometry: {
         encoding: "global_index",
         origin_lat: 90,
@@ -384,14 +389,21 @@ test("sampled-grid reuses a resolved source fallback without changing the config
       },
     },
   });
+  const taiwanBbox = "118,20,124,27";
+  const northwestPacificBbox = "125,15,135,25";
 
   contract.recordResolvedResolution("mapped-source", {
     requested_resolution_km: 4,
     actual_resolution_km: 16,
     lod_degraded: true,
-  });
+    coverage_id: "northwest_pacific",
+  }, { bbox: northwestPacificBbox });
   assert.equal(contract.requestResolution({ datasetId: "mapped-source" }), 4);
-  assert.equal(contract.queryResolution({ datasetId: "mapped-source" }), 16);
+  assert.equal(contract.queryResolution({
+    datasetId: "mapped-source",
+    bbox: northwestPacificBbox,
+  }), 16);
+  assert.equal(contract.queryResolution({ datasetId: "mapped-source", bbox: taiwanBbox }), 4);
   assert.deepEqual(
     JSON.parse(JSON.stringify(contract.resolutionState("mapped-source"))),
     {
@@ -409,12 +421,20 @@ test("sampled-grid reuses a resolved source fallback without changing the config
     requested_resolution_km: 16,
     actual_resolution_km: 16,
     lod_degraded: false,
-  });
-  assert.equal(contract.queryResolution({ datasetId: "mapped-source" }), 16);
+    coverage_id: "northwest_pacific",
+  }, { bbox: northwestPacificBbox });
+  assert.equal(contract.queryResolution({
+    datasetId: "mapped-source",
+    bbox: northwestPacificBbox,
+  }), 16);
+  assert.equal(contract.queryResolution({ datasetId: "mapped-source", bbox: taiwanBbox }), 4);
 
   contract.setRequestedResolution("mapped-source", 32);
   assert.equal(contract.requestResolution({ datasetId: "mapped-source" }), 32);
-  assert.equal(contract.queryResolution({ datasetId: "mapped-source" }), 32);
+  assert.equal(contract.queryResolution({
+    datasetId: "mapped-source",
+    bbox: northwestPacificBbox,
+  }), 32);
 });
 
 test("zero remains data and center-grid alignment is mapping-owned", () => {
@@ -541,6 +561,23 @@ test("virtual grid accepts source origins aligned on native cell boundaries", ()
   assert.match(unavailable.detail, /原點不相容/);
 });
 
+test("virtual grid multiplier control reaches its runtime owner and reports effective state", () => {
+  const source = fs.readFileSync(
+    path.join(root, "static/js/ui/settings/virtual-grid-settings.js"),
+    "utf8",
+  );
+  assert.match(source, /virtual-grid-multiplier/);
+  assert.match(source, /VirtualGridController\?\.setMultiplier/);
+
+  const context = loadVirtualGridContract({ enabledLayerIds: ["pipeline.fishing"] });
+  const snapshot = context.VirtualGridController.setMultiplier(3);
+  assert.equal(snapshot.multiplier, 3);
+  assert.equal(snapshot.controlMetadata.multiplier.requested_value, 3);
+  assert.equal(snapshot.controlMetadata.multiplier.effective_value, 3);
+  assert.equal(snapshot.controlMetadata.multiplier.owner, "VirtualGridRuntimeController");
+  assert.equal(snapshot.controlMetadata.multiplier.requires_restart, false);
+});
+
 test("non-zero sampled-grid extent expands a narrow distribution across multiple color stops", () => {
   const { colorScale, frameFromRows: makeFrame } = loadColorScale({
     layer_id: "pipeline_iceberg.fishing_hours",
@@ -607,11 +644,13 @@ test("mapping can hide zero-value paint without removing zero from the grid cont
   assert.equal(contract.model().value({ value: 0 }), 0);
   assert.equal(colorScale.opacity({ value: 0 }, profile), 0);
   assert.equal(colorScale.opacity({ value: 1 }, profile), 1);
-  assert.equal(colorScale.frame(makeFrame([{
+  const paintPlan = colorScale.frame(makeFrame([{
     value: 0,
     coverage_ratio: 1,
     bounds: { west: 120, south: 20, east: 121, north: 21 },
-  }])).indices.length, 0);
+  }]));
+  assert.equal(paintPlan.indices.length, 0);
+  assert.equal(paintPlan.validIndices.length, 1);
 });
 
 test("sampled-grid paint excludes no-coverage fill values before computing the color domain", () => {
@@ -697,7 +736,7 @@ test("sampled-grid frame plan reuses one compiled paint context per frame", () =
 
 test("sampled-grid WebGL preserves the configured alpha instead of squaring it", () => {
   const source = fs.readFileSync(
-    path.join(root, "static/js/rendering/gfw-webgl-renderer.js"),
+    path.join(root, "static/js/rendering/sampled-grid-webgl-renderer.js"),
     "utf8",
   );
   assert.match(source, /premultipliedAlpha:\s*true/);
@@ -710,7 +749,7 @@ test("sampled-grid WebGL preserves the configured alpha instead of squaring it",
 
 test("sampled-grid settings expose contract-driven multi-stop controls", () => {
   const template = fs.readFileSync(path.join(root, "templates/index.html"), "utf8");
-  const settings = fs.readFileSync(path.join(root, "static/js/ui/layers/gfw-settings.js"), "utf8");
+  const settings = fs.readFileSync(path.join(root, "static/js/ui/layers/sampled-grid-settings.js"), "utf8");
   assert.match(template, /id="sampled-grid-resolution"/);
   assert.match(template, /id="sampled-grid-scale-mode"/);
   assert.match(template, /id="sampled-grid-color-stops"/);
@@ -744,9 +783,9 @@ test("primary sampled-grid pipeline does not read source dataset columns", () =>
     "static/js/services/frame-identity.js",
     "static/js/services/data-frame-store.js",
     "static/js/services/frame-demand-service.js",
-    "static/js/rendering/gfw-paint.js",
-    "static/js/layers/gfw-layer.js",
-    "static/js/rendering/gfw-webgl-renderer.js",
+    "static/js/rendering/sampled-grid-paint.js",
+    "static/js/layers/sampled-grid-layer.js",
+    "static/js/rendering/sampled-grid-webgl-renderer.js",
     "static/js/ui/map/tile-selection-layer.js",
   ];
   const forbidden = ["fish_sum", "obs_date", "grid_id", "GFW_MIN_RENDER_CELL_KM", "gfwRenderCellKm"];
@@ -758,7 +797,7 @@ test("primary sampled-grid pipeline does not read source dataset columns", () =>
   }
 });
 
-test("bounded sampled-grid layers constrain viewport, queries, and rendered rows from Mapping coverage", () => {
+test("bounded sampled-grid layers clip canonical query bboxes to source coverage", () => {
   const dataset = {
     sampled_grid: {
       default_coverage_id: "small",
@@ -777,9 +816,9 @@ test("bounded sampled-grid layers constrain viewport, queries, and rendered rows
     east: 122,
     north: 26,
   });
-  assert.equal(model.sourceBboxString("100,10,140,40"), "105.000000,15.000000,135.000000,35.000000");
-  assert.equal(model.sourceBboxString("125,20,140,30"), "105.000000,15.000000,135.000000,35.000000");
-  assert.equal(model.sourceBboxString("0,0,1,1"), null);
+  assert.equal(model.queryBboxString("100,10,140,40"), "105.000000,15.000000,135.000000,35.000000");
+  assert.equal(model.queryBboxString("125,20,140,30"), "125.000000,20.000000,135.000000,30.000000");
+  assert.equal(model.queryBboxString("0,0,1,1"), null);
 
   const viewport = context.LayerViewportController.syncForDataset("bounded", { focus: true });
   assert.equal(viewport.mode, "coverage");
@@ -796,7 +835,7 @@ test("bounded sampled-grid layers constrain viewport, queries, and rendered rows
   assert.ok(mapState.maxBounds);
   assert.equal(
     context.LayerViewportController.queryBbox("118,20,122,26", "bounded"),
-    "105.000000,15.000000,135.000000,35.000000",
+    "118.000000,20.000000,122.000000,26.000000",
   );
 
   const frame = frameFromRows(context, [
@@ -811,7 +850,7 @@ test("bounded sampled-grid layers constrain viewport, queries, and rendered rows
     "utf8",
   );
   assert.match(source, /coverage_areas/);
-  assert.match(source, /sourceBboxString/);
+  assert.match(source, /queryBboxString/);
   assert.match(source, /setMaxBounds/);
   assert.match(source, /filterFrame/);
   assert.doesNotMatch(source, /coverage_mask|destination-out|sampledGridMaskPane/);
@@ -823,7 +862,7 @@ test("bounded sampled-grid layers constrain viewport, queries, and rendered rows
   assert.equal(fs.existsSync(path.join(root, "static/js/layers/sampled-grid-coverage-mask.js")), false);
 });
 
-test("coverage CC starts at the union minimum zoom while queries keep one full source scope", () => {
+test("coverage CC starts at the union minimum zoom while the adapter owns source scope translation", () => {
   const dataset = {
     sampled_grid: {
       default_coverage_id: "taiwan",
@@ -844,19 +883,20 @@ test("coverage CC starts at the union minimum zoom while queries keep one full s
   assert.equal(viewport.minZoom, 6);
   assert.equal(mapState.zoom, 6);
   assert.deepEqual(JSON.parse(JSON.stringify(mapState.center)), { lat: 23.5, lng: 121 });
-  assert.deepEqual(JSON.parse(JSON.stringify(viewport.queryBounds)), {
+  assert.deepEqual(JSON.parse(JSON.stringify(viewport.coverageBounds)), {
     west: 105,
     south: 15,
     east: 135,
     north: 35,
   });
+  assert.equal(viewport.queryBounds, null);
   assert.equal(
     context.LayerViewportController.queryBbox("118.9,21.8,123.1,25.1", "bounded"),
-    "105.000000,15.000000,135.000000,35.000000",
+    "118.900000,21.800000,123.100000,25.100000",
   );
   assert.equal(
     context.LayerViewportController.queryBbox("112.8,19.2,129.1,27.6", "bounded"),
-    "105.000000,15.000000,135.000000,35.000000",
+    "112.800000,19.200000,129.100000,27.600000",
   );
 });
 
@@ -885,6 +925,17 @@ test("schema candidates never become mapping roles automatically", () => {
   assert.doesNotMatch(source, /guessedRole/);
   assert.match(source, /roleForColumn\([\s\S]*?return "ignore";/);
   assert.match(source, /table\?\.resolved_mapping/);
+});
+
+test("readonly source mappings distinguish unmapped fields from query exclusion", () => {
+  const source = fs.readFileSync(
+    path.join(root, "static/js/ui/developer/developer-mapping-controller.js"),
+    "utf8",
+  );
+  assert.match(source, /readonlyRoleMarkup/);
+  assert.match(source, /未映射/);
+  assert.match(source, /mappingCapability/);
+  assert.doesNotMatch(source, /readonly \? "disabled"/);
 });
 
 test("database config wizard owns connections but not dataset mappings", () => {
@@ -1113,11 +1164,11 @@ test("selection breathing uses a dedicated SVG renderer under a canvas-first map
 
 test("sampled-grid renderers redraw once after viewport interaction settles", () => {
   const webgl = fs.readFileSync(
-    path.join(root, "static/js/rendering/gfw-webgl-renderer.js"),
+    path.join(root, "static/js/rendering/sampled-grid-webgl-renderer.js"),
     "utf8",
   );
   const canvas = fs.readFileSync(
-    path.join(root, "static/js/layers/gfw-layer.js"),
+    path.join(root, "static/js/layers/sampled-grid-layer.js"),
     "utf8",
   );
   const ais = fs.readFileSync(
@@ -1136,7 +1187,7 @@ test("sampled-grid renderers redraw once after viewport interaction settles", ()
 
 test("sampled-grid WebGL contexts are explicitly released and support probing is cached", () => {
   const webgl = fs.readFileSync(
-    path.join(root, "static/js/rendering/gfw-webgl-renderer.js"),
+    path.join(root, "static/js/rendering/sampled-grid-webgl-renderer.js"),
     "utf8",
   );
 
@@ -1186,8 +1237,12 @@ test("developer control plane and dashboard share one layer-contract registry", 
   assert.match(datasetRoutes, /class DatasetRoutes[\s\S]*?self\.layer_registry = layer_registry/);
   assert.match(datasetRoutes, /registry = self\.layer_registry\.snapshot\(force=True\)/);
   assert.match(server, /layer_registry = RuntimeLayerRegistry\(config\)/);
+  assert.match(server, /route_status_registry = RouteStatusRegistry\(config, layer_registry\)/);
   assert.match(server, /create_developer_app\([\s\S]*?layer_registry=layer_registry/);
-  assert.match(server, /create_app\(config, developer_url=developer_url, layer_registry=layer_registry\)/);
+  assert.match(
+    server,
+    /create_app\([\s\S]*?developer_url=developer_url,[\s\S]*?layer_registry=layer_registry,[\s\S]*?route_status_registry=route_status_registry/,
+  );
   assert.doesNotMatch(developerRoutes, /build_layer_contracts\(/);
 });
 

@@ -16,7 +16,12 @@ from typing import Any
 from websocket import WebSocketTimeoutException
 
 from common_adapter.ais.live import _ais_mysql_connection, ais_live_settings, ais_mysql_connection_info
-from common_adapter.ais.stream import ais_stream_settings, normalize_aisstream_message, open_aisstream_socket
+from common_adapter.ais.stream import (
+    ais_stream_settings,
+    merge_ais_updates,
+    normalize_aisstream_message,
+    open_aisstream_socket,
+)
 from common_adapter.db.connect import mysql_connection, mysql_quote, validate_identifier
 from common_adapter.query.serialization import json_ready
 
@@ -176,6 +181,7 @@ def write_ais_collector_handoff(config: dict[str, Any], api_key: str) -> dict[st
     live = ais_live_settings(config)
     ingest = ais_ingest_settings(config)
     live_config = config.get("live", {}).get("ais", {})
+    connection_ref, connection = ais_mysql_connection_info(config, live)
     payload = {
         "schema": "rrkal.ais.collector_handoff.v1",
         "role": "upstream_ais_collector",
@@ -199,10 +205,13 @@ def write_ais_collector_handoff(config: dict[str, Any], api_key: str) -> dict[st
             "snapshot_window_hours": ingest["snapshot_window_hours"],
         },
         "sql": {
-            "connection": live_config.get("connection", live.get("connection", {})),
+            "connection_ref": connection_ref,
+            "connection": connection,
             "database": live["database"],
             "table": live["table"],
             "time_column": live["time_column"],
+            "static_time_column": live["static_time_column"],
+            "received_time_column": live["received_time_column"],
             "lat_column": live["lat_column"],
             "lon_column": live["lon_column"],
             "mmsi_column": live["mmsi_column"],
@@ -253,54 +262,6 @@ def apply_ais_collector_handoff(config: dict[str, Any]) -> dict[str, Any]:
     ais["provider"] = "aisstream"
     ais["api_key"] = data.get("api_key") or ais.get("api_key", "")
     ais["api_key_fingerprint"] = _api_key_fingerprint(ais["api_key"])
-    ais["stream_url"] = data.get("stream_url") or ais.get("stream_url")
-    if data.get("filter_message_types"):
-        ais["filter_message_types"] = data["filter_message_types"]
-
-    ingest = data.get("ingest") or {}
-    ingest_key_map = {
-        "enabled": "ingest_enabled",
-        "reconnect_seconds": "ingest_reconnect_seconds",
-        "status_report_seconds": "ingest_status_report_seconds",
-        "flush_seconds": "ingest_flush_seconds",
-        "batch_size": "ingest_batch_size",
-        "auto_create_table": "ingest_auto_create_table",
-        "meta_table": "ingest_meta_table",
-        "data_directory": "ingest_data_directory",
-        "snapshot_enabled": "snapshot_enabled",
-        "snapshot_table": "snapshot_table",
-        "snapshot_retention_days": "snapshot_retention_days",
-        "snapshot_interval_hours": "snapshot_interval_hours",
-        "snapshot_window_hours": "snapshot_window_hours",
-        "daily_snapshot_enabled": "snapshot_enabled",
-        "daily_snapshot_table": "snapshot_table",
-        "daily_snapshot_retention_days": "snapshot_retention_days",
-        "daily_snapshot_window_hours": "snapshot_window_hours",
-    }
-    for source_key, target_key in ingest_key_map.items():
-        if source_key in ingest:
-            ais[target_key] = ingest[source_key]
-
-    sql = data.get("sql") or {}
-    for key in [
-        "connection",
-        "database",
-        "table",
-        "time_column",
-        "lat_column",
-        "lon_column",
-        "mmsi_column",
-        "speed_column",
-        "course_column",
-        "heading_column",
-        "name_column",
-        "source_column",
-        "include_sources",
-        "max_age_minutes",
-        "limit",
-    ]:
-        if key in sql:
-            ais[key] = sql[key]
     return config
 
 
@@ -344,14 +305,7 @@ def ais_collector_key_gate_status(config: dict[str, Any]) -> dict[str, Any]:
     """
     stream = ais_stream_settings(config)
     live = ais_live_settings(config)
-    if stream["provider"] == "aishub_polling":
-        return {
-            "status": "not_applicable",
-            "authorized_sql_read": True,
-            "provider": stream["provider"],
-            "message": "AISStream collector key gate is not active for this provider.",
-        }
-    if stream["provider"] not in {"aisstream", "mysql"}:
+    if stream["provider"] != "aisstream":
         return {
             "status": "unsupported_provider",
             "authorized_sql_read": False,
@@ -477,6 +431,38 @@ def _ingest_data_directory_option(ingest: dict[str, Any]) -> tuple[str, list[str
     return " DATA DIRECTORY = %s", [path.as_posix()]
 
 
+def _ensure_ais_latest_columns(
+    cur,
+    table: str,
+    columns: dict[str, str],
+    indexes: dict[str, str],
+) -> None:
+    cur.execute(f"SHOW COLUMNS FROM {mysql_quote(table)}")
+    existing_columns = {
+        str((row.get("Field") if isinstance(row, dict) else row[0]) or "")
+        for row in cur.fetchall()
+    }
+    for column, definition in columns.items():
+        if column in existing_columns:
+            continue
+        cur.execute(
+            f"ALTER TABLE {mysql_quote(table)} ADD COLUMN {mysql_quote(column)} {definition}"
+        )
+
+    cur.execute(f"SHOW INDEX FROM {mysql_quote(table)}")
+    existing_indexes = {
+        str((row.get("Key_name") if isinstance(row, dict) else row[2]) or "")
+        for row in cur.fetchall()
+    }
+    for index_name, column in indexes.items():
+        if index_name in existing_indexes:
+            continue
+        cur.execute(
+            f"ALTER TABLE {mysql_quote(table)} ADD INDEX {mysql_quote(index_name)} "
+            f"({mysql_quote(column)})"
+        )
+
+
 def ensure_ais_latest_store(config: dict[str, Any]) -> dict[str, Any]:
     """Prepare the upstream AIS collector SQL store without starting collection."""
     config = apply_ais_collector_handoff(config)
@@ -490,6 +476,8 @@ def ensure_ais_latest_store(config: dict[str, Any]) -> dict[str, Any]:
     table = validate_identifier(live["table"], "live.ais.table")
     database = validate_identifier(live["database"], "live.ais.database")
     time_column = validate_identifier(live["time_column"], "live.ais.time_column")
+    static_time_column = validate_identifier(live["static_time_column"], "live.ais.static_time_column")
+    received_time_column = validate_identifier(live["received_time_column"], "live.ais.received_time_column")
     lat_column = validate_identifier(live["lat_column"], "live.ais.lat_column")
     lon_column = validate_identifier(live["lon_column"], "live.ais.lon_column")
     mmsi_column = validate_identifier(live["mmsi_column"], "live.ais.mmsi_column")
@@ -505,6 +493,8 @@ def ensure_ais_latest_store(config: dict[str, Any]) -> dict[str, Any]:
     columns = [
         f"{mysql_quote(mmsi_column)} VARCHAR(32) NOT NULL PRIMARY KEY",
         f"{mysql_quote(time_column)} DATETIME NULL",
+        f"{mysql_quote(static_time_column)} DATETIME NULL",
+        f"{mysql_quote(received_time_column)} DATETIME NULL",
         f"{mysql_quote(lat_column)} DOUBLE NULL",
         f"{mysql_quote(lon_column)} DOUBLE NULL",
     ]
@@ -531,6 +521,29 @@ def ensure_ais_latest_store(config: dict[str, Any]) -> dict[str, Any]:
             f"CREATE TABLE IF NOT EXISTS {mysql_quote(table)} "
             f"({', '.join(columns)}) ENGINE=InnoDB{data_directory_sql} DEFAULT CHARSET=utf8mb4",
             data_directory_params,
+        )
+        required_columns = {
+            static_time_column: "DATETIME NULL",
+            received_time_column: "DATETIME NULL",
+        }
+        if speed_column:
+            required_columns[speed_column] = "DOUBLE NULL"
+        if course_column:
+            required_columns[course_column] = "DOUBLE NULL"
+        if heading_column:
+            required_columns[heading_column] = "DOUBLE NULL"
+        if name_column:
+            required_columns[name_column] = "VARCHAR(255) NULL"
+        if source_column:
+            required_columns[source_column] = "VARCHAR(64) NULL"
+        _ensure_ais_latest_columns(
+            cur,
+            table,
+            required_columns,
+            {
+                "idx_ais_position_time": time_column,
+                "idx_ais_received_time": received_time_column,
+            },
         )
         cur.execute(
             f"CREATE TABLE IF NOT EXISTS {mysql_quote(meta_table)} ("
@@ -823,7 +836,8 @@ class AisIngestWorker(threading.Thread):
                     self.dropped_messages += 1
                 else:
                     self.accepted_messages += 1
-                    buffer[str(row["mmsi"])] = row
+                    key = str(row["mmsi"])
+                    buffer[key] = merge_ais_updates(buffer.get(key), row)
             now = time.perf_counter()
             should_flush_by_time = buffer and now - last_flush >= self.ingest["flush_seconds"]
             should_flush_by_size = len(buffer) >= self.ingest["batch_size"]
@@ -844,19 +858,24 @@ class AisIngestWorker(threading.Thread):
             return None
         return validate_identifier(value, f"live.ais.{key}")
 
-    def _row_values(self, row: dict[str, Any]) -> tuple[list[str], list[Any]]:
-        columns = [
-            self.live["mmsi_column"],
-            self.live["time_column"],
-            self.live["lat_column"],
-            self.live["lon_column"],
-        ]
-        values: list[Any] = [
-            str(row["mmsi"]),
-            _mysql_datetime(row.get("event_time")),
-            row.get("lat"),
-            row.get("lon"),
-        ]
+    def _insert_row_values(self, row: dict[str, Any]) -> tuple[list[str], list[Any]]:
+        pairs: list[tuple[str, Any]] = [(self.live["mmsi_column"], str(row["mmsi"]))]
+        if row.get("position_event_time"):
+            pairs.extend(
+                [
+                    (self.live["time_column"], _mysql_datetime(row["position_event_time"])),
+                    (self.live["lat_column"], row.get("lat")),
+                    (self.live["lon_column"], row.get("lon")),
+                ]
+            )
+        if row.get("static_event_time"):
+            pairs.append(
+                (self.live["static_time_column"], _mysql_datetime(row["static_event_time"]))
+            )
+        if row.get("received_at"):
+            pairs.append(
+                (self.live["received_time_column"], _mysql_datetime(row["received_at"]))
+            )
         optional_mapping = [
             ("speed_column", "speed"),
             ("course_column", "course"),
@@ -866,11 +885,52 @@ class AisIngestWorker(threading.Thread):
         ]
         for column_key, row_key in optional_mapping:
             column = self.live.get(column_key)
-            if not column:
-                continue
-            columns.append(column)
-            values.append(row.get(row_key))
-        return columns, values
+            if column and row_key in row:
+                pairs.append((column, row[row_key]))
+        return [column for column, _value in pairs], [value for _column, value in pairs]
+
+    def _eligible_updates(
+        self,
+        row: dict[str, Any],
+        existing: dict[str, Any],
+    ) -> dict[str, Any]:
+        updates: dict[str, Any] = {}
+        incoming_position = row.get("position_event_time")
+        current_position = existing.get("position_event_time")
+        if incoming_position and (
+            current_position is None
+            or _mysql_datetime(incoming_position) >= _mysql_datetime(current_position)
+        ):
+            updates[self.live["time_column"]] = _mysql_datetime(incoming_position)
+            for column_key, row_key in (
+                ("lat_column", "lat"),
+                ("lon_column", "lon"),
+                ("speed_column", "speed"),
+                ("course_column", "course"),
+                ("heading_column", "heading"),
+            ):
+                column = self.live.get(column_key)
+                if column and row_key in row:
+                    updates[column] = row[row_key]
+
+        incoming_static = row.get("static_event_time")
+        current_static = existing.get("static_event_time")
+        if incoming_static and (
+            current_static is None
+            or _mysql_datetime(incoming_static) >= _mysql_datetime(current_static)
+        ):
+            updates[self.live["static_time_column"]] = _mysql_datetime(incoming_static)
+            name_column = self.live.get("name_column")
+            if name_column and "name" in row:
+                updates[name_column] = row["name"]
+
+        if updates:
+            if row.get("received_at"):
+                updates[self.live["received_time_column"]] = _mysql_datetime(row["received_at"])
+            source_column = self.live.get("source_column")
+            if source_column and "source" in row:
+                updates[source_column] = row["source"]
+        return updates
 
     def _upsert_latest_rows(self, rows: list[dict[str, Any]]) -> None:
         if not rows:
@@ -879,35 +939,36 @@ class AisIngestWorker(threading.Thread):
         database = validate_identifier(self.live["database"], "live.ais.database")
         mmsi_column = validate_identifier(self.live["mmsi_column"], "live.ais.mmsi_column")
         time_column = validate_identifier(self.live["time_column"], "live.ais.time_column")
+        static_time_column = validate_identifier(
+            self.live["static_time_column"], "live.ais.static_time_column"
+        )
         with _ais_mysql_connection(self.config, self.live, database) as conn, conn.cursor() as cur:
             written = 0
             skipped = 0
             for row in rows:
-                columns, values = self._row_values(row)
-                update_pairs = [
-                    f"{mysql_quote(column)} = %s"
-                    for column in columns
-                    if column != mmsi_column
-                ]
-                update_values = [
-                    value
-                    for column, value in zip(columns, values)
-                    if column != mmsi_column
-                ]
                 cur.execute(
-                    f"UPDATE {mysql_quote(table)} SET {', '.join(update_pairs)} "
-                    f"WHERE {mysql_quote(mmsi_column)} = %s "
-                    f"AND ({mysql_quote(time_column)} IS NULL OR {mysql_quote(time_column)} <= %s)",
-                    [*update_values, str(row["mmsi"]), _mysql_datetime(row.get("event_time"))],
-                )
-                if cur.rowcount > 0:
-                    written += 1
-                    continue
-                cur.execute(
-                    f"SELECT 1 FROM {mysql_quote(table)} WHERE {mysql_quote(mmsi_column)} = %s LIMIT 1",
+                    f"SELECT {mysql_quote(time_column)} AS position_event_time, "
+                    f"{mysql_quote(static_time_column)} AS static_event_time "
+                    f"FROM {mysql_quote(table)} WHERE {mysql_quote(mmsi_column)} = %s LIMIT 1",
                     [str(row["mmsi"])],
                 )
-                if cur.fetchone():
+                existing = cur.fetchone()
+                if existing:
+                    updates = self._eligible_updates(row, existing)
+                    if not updates:
+                        skipped += 1
+                        continue
+                    cur.execute(
+                        f"UPDATE {mysql_quote(table)} SET "
+                        + ", ".join(f"{mysql_quote(column)} = %s" for column in updates)
+                        + f" WHERE {mysql_quote(mmsi_column)} = %s",
+                        [*updates.values(), str(row["mmsi"])],
+                    )
+                    written += 1
+                    continue
+
+                columns, values = self._insert_row_values(row)
+                if len(columns) == 1:
                     skipped += 1
                     continue
                 placeholders = ", ".join(["%s"] * len(columns))
@@ -924,7 +985,9 @@ class AisIngestWorker(threading.Thread):
                 self.last_write_at = time.time()
 
     def _snapshot_values(self, row: dict[str, Any]) -> tuple[list[str], list[Any]] | None:
-        event_time = _mysql_datetime(row.get("event_time"))
+        if not row.get("position_event_time") or "lat" not in row or "lon" not in row:
+            return None
+        event_time = _mysql_datetime(row["position_event_time"])
         target = _ceil_snapshot_at(event_time, self.ingest["snapshot_interval_hours"])
         if target is None:
             return None
@@ -956,10 +1019,10 @@ class AisIngestWorker(threading.Thread):
         ]
         for column_key, row_key in optional_mapping:
             column = self.live.get(column_key)
-            if not column:
+            if not column or row_key not in row:
                 continue
             columns.append(column)
-            values.append(row.get(row_key))
+            values.append(row[row_key])
         return columns, values
 
     def _upsert_snapshot_rows(self, rows: list[dict[str, Any]]) -> None:

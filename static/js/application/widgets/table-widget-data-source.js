@@ -89,7 +89,7 @@ class TableWidgetDataSource {
           limit: "max",
           columns: "render",
           resolution: this.sampledGridContract.requestResolution({ datasetId: tab.datasetId }),
-          queryResolution: this.sampledGridContract.queryResolution({ datasetId: tab.datasetId }),
+          queryResolution: null,
         };
     packetRequest.datasetId = tab.datasetId;
     packetRequest.layerId = tab.layerId;
@@ -97,13 +97,14 @@ class TableWidgetDataSource {
     packetRequest.resolution = this.sampledGridContract.requestResolution({
       datasetId: tab.datasetId,
     });
+    const selectedBbox = this.selectedBbox(selected);
+    if (selectedBbox) packetRequest.bbox = selectedBbox;
     packetRequest.queryResolution = this.sampledGridContract.queryResolution({
       datasetId: tab.datasetId,
+      bbox: packetRequest.bbox,
       zoom: packetRequest.zoom,
       latitude: packetRequest.latitude,
     });
-    const selectedBbox = this.selectedBbox(selected);
-    if (selectedBbox) packetRequest.bbox = selectedBbox;
     const scope = selected ? "tile" : "viewport";
     const scopeLabel = selected
       ? selected.tile_key || selected.label || "選取 Tile"

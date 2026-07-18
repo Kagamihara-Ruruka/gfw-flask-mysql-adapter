@@ -31,6 +31,7 @@ def _mapping() -> dict:
                 "layers_path": "metrics",
                 "resolutions_path": "resolutions",
                 "coverages_path": "aois",
+                "snapshot_capabilities_path": "query_capabilities.daily_grid",
                 "layer_fields": {
                     "id": "metric_id",
                     "label": "label",
@@ -82,6 +83,17 @@ def _mapping() -> dict:
 def _catalog() -> dict:
     return {
         "resolutions": [4, 16, 32],
+        "query_capabilities": {
+            "daily_grid": {
+                "pagination": {
+                    "mode": "offset_limit",
+                    "limit_parameter": "limit",
+                    "offset_parameter": "offset",
+                    "max_page_size": 100000,
+                    "stable_order": ["grid_row", "grid_col"],
+                }
+            }
+        },
         "aois": [
             {
                 "id": "taiwan",
@@ -143,6 +155,10 @@ class EndpointMappingRuntimeTests(unittest.TestCase):
         self.assertEqual(1, len(profiles))
         self.assertEqual({"time": "date"}, datasets["pipeline.chlor_a"]["sampled_grid"]["request_fields"])
         self.assertEqual("taiwan", datasets["pipeline.chlor_a"]["sampled_grid"]["default_coverage_id"])
+        self.assertEqual(
+            100000,
+            datasets["pipeline.chlor_a"]["sampled_grid"]["query"]["snapshot"]["pagination"]["max_page_size"],
+        )
         self.assertTrue(datasets["pipeline.chlor_a"]["sampled_grid"]["value_domain"]["higher_is_better"])
         self.assertFalse(datasets["pipeline.pressure"]["sampled_grid"]["value_domain"]["higher_is_better"])
         self.assertEqual(

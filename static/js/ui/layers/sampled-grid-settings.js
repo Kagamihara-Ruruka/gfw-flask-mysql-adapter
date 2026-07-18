@@ -131,6 +131,7 @@ class SampledGridPaintController {
   repaintAndSync({ preserveInput = false } = {}) {
     repaintSampledGridLayer();
     this.sync(this.layerId, { preserveInput });
+    notifyBrowserProfileChanged("sampled_grid_style_changed");
   }
 
   sync(layerId = state.dataLayer, { preserveInput = false } = {}) {
@@ -199,12 +200,4 @@ function bindSampledGridPaintControls() {
 function syncSampledGridPaintControls(layerId) {
   sampledGridPaintController.sync(layerId);
   sampledGridResolutionController.sync(layerId);
-}
-
-function repaintGfwLayer() {
-  repaintSampledGridLayer();
-}
-
-function bindGfwPaintControls() {
-  bindSampledGridPaintControls();
 }

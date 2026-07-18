@@ -76,7 +76,6 @@
       schema: "rrkal.adapter.database.v1",
       role: "database",
       sql_backend: { kind, driver },
-      default_connection_ref: connectionRef,
       connections: {
         [connectionRef]: connection,
       },

@@ -9,13 +9,8 @@ from common_adapter.db.connect import (
     mysql_connection,
     validate_identifier,
 )
+from common_adapter.endpoint.client import EndpointHttpClient, EndpointRequestError
 from common_adapter.query.serialization import json_ready
-from common_adapter.developer.artifacts.layer_mappings import load_layer_mappings
-from common_adapter.endpoint.runtime import (
-    endpoint_datasets_from_routes,
-    resolved_mapping_for_dataset,
-    sampled_grid_catalog_mappings,
-)
 
 
 PROFILE_VERSION = "rrkal.schema_profile.relational.v1"
@@ -25,16 +20,6 @@ _PROFILE_CACHE_TTL_SECONDS = 60
 
 def _route_ref(config_ref: str, route_config: dict[str, Any]) -> str:
     return str(route_config.get("name") or route_config.get("id") or Path(config_ref).stem).strip()
-
-
-def _mapped_tables(config_ref: str) -> set[str]:
-    return {
-        str(mapping.get("table") or "")
-        for mapping in load_layer_mappings().get("mappings", [])
-        if mapping.get("enabled", True)
-        and mapping.get("config_path") == config_ref
-        and str(mapping.get("table") or "")
-    }
 
 
 def _column_hints(name: str, data_type: str) -> list[str]:
@@ -62,7 +47,6 @@ def inspect_mysql_route(
 ) -> list[dict[str, Any]]:
     profiles: list[dict[str, Any]] = []
     route_ref = _route_ref(config_ref, route_config)
-    provided_tables = _mapped_tables(config_ref)
     for connection_ref, connection in connection_configs(route_config).items():
         if inspectable_connection_refs is not None and connection_ref not in inspectable_connection_refs:
             continue
@@ -137,10 +121,6 @@ def inspect_mysql_route(
                 )
                 column_rows = cur.fetchall()
 
-            if provided_tables:
-                table_rows = [row for row in table_rows if str(row["TABLE_NAME"]) in provided_tables]
-                column_rows = [row for row in column_rows if str(row["TABLE_NAME"]) in provided_tables]
-
             tables: dict[str, dict[str, Any]] = {}
             for row in table_rows:
                 table_name = str(row["TABLE_NAME"])
@@ -193,7 +173,11 @@ def inspect_mysql_route(
                 },
                 "capabilities": {
                     "schema_discovery": True,
-                    "field_mapping": True,
+                    "mapping": {
+                        "supported": True,
+                        "editable": True,
+                        "provenance": "source_schema",
+                    },
                     "viewport_query": True,
                     "time_filter": True,
                 },
@@ -218,7 +202,11 @@ def inspect_mysql_route(
                 },
                 "capabilities": {
                     "schema_discovery": False,
-                    "field_mapping": False,
+                    "mapping": {
+                        "supported": False,
+                        "editable": False,
+                        "provenance": "unavailable",
+                    },
                     "viewport_query": False,
                     "time_filter": False,
                 },
@@ -232,7 +220,75 @@ def inspect_mysql_route(
     return profiles
 
 
-def inspect_sampled_grid_route(
+def _json_data_type(values: list[Any]) -> str:
+    non_null = [value for value in values if value is not None]
+    if not non_null:
+        return "null"
+    kinds = {type(value) for value in non_null}
+    if kinds <= {bool}:
+        return "boolean"
+    if kinds <= {int}:
+        return "integer"
+    if kinds <= {int, float}:
+        return "double"
+    if kinds <= {str}:
+        return "string"
+    if kinds <= {dict}:
+        return "object"
+    if kinds <= {list}:
+        return "array"
+    return "mixed"
+
+
+def _catalog_tables(catalog_body: Any) -> list[dict[str, Any]]:
+    root = catalog_body if isinstance(catalog_body, dict) else {"catalog": catalog_body}
+    tables: list[dict[str, Any]] = []
+    for name, value in root.items():
+        rows = value if isinstance(value, list) else [value]
+        object_rows = [row for row in rows if isinstance(row, dict)]
+        if object_rows:
+            field_names = sorted({str(field) for row in object_rows for field in row})
+            columns = []
+            for ordinal, field_name in enumerate(field_names, start=1):
+                field_values = [row.get(field_name) for row in object_rows]
+                data_type = _json_data_type(field_values)
+                columns.append(
+                    {
+                        "name": field_name,
+                        "ordinal": ordinal,
+                        "column_type": data_type,
+                        "data_type": data_type,
+                        "nullable": any(value is None for value in field_values),
+                        "key": "",
+                        "semantic_hints": _column_hints(field_name, data_type),
+                    }
+                )
+        else:
+            data_type = _json_data_type(rows)
+            columns = [
+                {
+                    "name": "value",
+                    "ordinal": 1,
+                    "column_type": data_type,
+                    "data_type": data_type,
+                    "nullable": any(item is None for item in rows),
+                    "key": "",
+                    "semantic_hints": _column_hints("value", data_type),
+                }
+            ]
+        tables.append(
+            {
+                "name": str(name),
+                "type": "CATALOG_COLLECTION" if isinstance(value, list) else "CATALOG_VALUE",
+                "estimated_rows": len(rows),
+                "columns": columns,
+                "schema_provenance": "source_catalog",
+            }
+        )
+    return tables
+
+
+def inspect_http_catalog_route(
     config_ref: str,
     path: Any,
     route_config: dict[str, Any],
@@ -240,64 +296,63 @@ def inspect_sampled_grid_route(
     router_row: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     route_ref = _route_ref(config_ref, route_config)
-    datasets, errors = endpoint_datasets_from_routes(
-        [(config_ref, path, route_config)],
-        source_route_group="database",
-    )
     backend = route_config.get("backend") if isinstance(route_config.get("backend"), dict) else {}
-    columns = [
-        {"name": "date", "column_type": "date", "data_type": "date", "nullable": False, "key": "", "semantic_hints": ["time_candidate"]},
-        {"name": "cell_id", "column_type": "string", "data_type": "string", "nullable": False, "key": "PRI", "semantic_hints": ["identity_candidate"]},
-        {"name": "lat", "column_type": "double", "data_type": "double", "nullable": False, "key": "", "semantic_hints": ["latitude_candidate", "numeric_candidate"]},
-        {"name": "lon", "column_type": "double", "data_type": "double", "nullable": False, "key": "", "semantic_hints": ["longitude_candidate", "numeric_candidate"]},
-        {"name": "value", "column_type": "double", "data_type": "double", "nullable": True, "key": "", "semantic_hints": ["numeric_candidate"]},
-        {"name": "resolution_km", "column_type": "double", "data_type": "double", "nullable": False, "key": "", "semantic_hints": ["numeric_candidate"]},
-        {"name": "coverage_ratio", "column_type": "double", "data_type": "double", "nullable": True, "key": "", "semantic_hints": ["numeric_candidate"]},
-        {"name": "data_status", "column_type": "string", "data_type": "string", "nullable": False, "key": "", "semantic_hints": []},
-    ]
-    tables = [
-        {
-            "name": dataset_id,
-            "label": dataset.get("label") or dataset_id,
-            "type": "CATALOG_LAYER",
-            "estimated_rows": None,
-            "mapping_readonly": True,
-            "resolved_mapping": resolved_mapping_for_dataset(dataset_id, dataset),
-            "columns": columns,
+    started = time.perf_counter()
+    cache_key = f"{config_ref}|{route_ref}|http_catalog"
+    cached = _PROFILE_CACHE.get(cache_key)
+    if cached and time.time() - cached["created_at"] < _PROFILE_CACHE_TTL_SECONDS:
+        packet = dict(cached["packet"])
+        packet["cache_hit"] = True
+        packet["router_source"] = {
+            "enabled": bool((router_row or {}).get("enabled")),
+            "connected": bool((router_row or {}).get("connected")),
+            "detail": str((router_row or {}).get("detail") or ""),
         }
-        for dataset_id, dataset in sorted(datasets.items())
-    ]
-    detail = "catalog mapping inspected"
+        return [packet]
+
     status = "ok"
-    if errors and not tables:
+    detail = "source catalog inspected"
+    catalog_path = ""
+    tables: list[dict[str, Any]] = []
+    try:
+        client = EndpointHttpClient.from_config(route_config)
+        catalog_path, catalog_body = client.first_json(client.target.catalog_paths)
+        tables = _catalog_tables(catalog_body)
+    except (EndpointRequestError, ValueError) as exc:
         status = "error"
-        detail = "; ".join(str(item.get("error") or "catalog inspection failed") for item in errors)
-    return [
-        {
-            "profile_version": PROFILE_VERSION,
-            "config_path": config_ref,
-            "route_ref": route_ref,
-            "connection_ref": route_ref,
-            "backend": str(backend.get("kind") or "database").lower(),
-            "database": route_ref,
-            "status": status,
-            "detail": detail,
-            "mapping_readonly": True,
-            "router_source": {
-                "enabled": bool((router_row or {}).get("enabled")),
-                "connected": bool((router_row or {}).get("connected")),
-                "detail": str((router_row or {}).get("detail") or ""),
+        detail = str(exc)
+    profile = {
+        "profile_version": PROFILE_VERSION,
+        "config_path": config_ref,
+        "route_ref": route_ref,
+        "connection_ref": route_ref,
+        "backend": str(backend.get("kind") or "database").lower(),
+        "database": route_ref,
+        "status": status,
+        "detail": detail,
+        "catalog_path": catalog_path,
+        "router_source": {
+            "enabled": bool((router_row or {}).get("enabled")),
+            "connected": bool((router_row or {}).get("connected")),
+            "detail": str((router_row or {}).get("detail") or ""),
+        },
+        "capabilities": {
+            "schema_discovery": status == "ok",
+            "mapping": {
+                "supported": True,
+                "editable": False,
+                "provenance": "mapping_artifact",
             },
-            "capabilities": {
-                "schema_discovery": True,
-                "field_mapping": True,
-                "viewport_query": True,
-                "time_filter": True,
-            },
-            "tables": tables,
-            "cache_hit": False,
-        }
-    ]
+            "viewport_query": None,
+            "time_filter": None,
+        },
+        "tables": tables,
+        "timing": {"query_ms": round((time.perf_counter() - started) * 1000, 3)},
+        "cache_hit": False,
+    }
+    if status == "ok":
+        _PROFILE_CACHE[cache_key] = {"created_at": time.time(), "packet": profile}
+    return [profile]
 
 
 def inspect_relational_routes(
@@ -320,12 +375,14 @@ def inspect_relational_routes(
 
     profiles: list[dict[str, Any]] = []
     for config_ref, path, route_config in active_routes:
-        if sampled_grid_catalog_mappings(config_ref):
+        adapter = route_config.get("adapter") if isinstance(route_config.get("adapter"), dict) else {}
+        adapter_kind = str(adapter.get("kind") or "").strip().lower()
+        if adapter_kind in {"http", "http_endpoint", "rest"}:
             route_ref = _route_ref(config_ref, route_config)
             route_rows = router_rows_by_config.get(config_ref, {})
             router_row = route_rows.get(route_ref) or next(iter(route_rows.values()), {})
             profiles.extend(
-                inspect_sampled_grid_route(
+                inspect_http_catalog_route(
                     config_ref,
                     path,
                     route_config,

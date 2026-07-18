@@ -230,16 +230,40 @@ class ExactCommonGridResolver {
 const VirtualGridContract = (() => {
   const resolver = new ExactCommonGridResolver();
 
-  function resolve({ zoom = map?.getZoom?.(), latitude = map?.getCenter?.().lat } = {}) {
+  function resolveBase({ zoom = map?.getZoom?.(), latitude = map?.getCenter?.().lat } = {}) {
     if (state.virtualGrid?.strategy !== "least_common_multiple") {
-      return resolver.unavailable("所選策略尚未實作", [], state.virtualGrid?.multiplier);
+      return resolver.unavailable("所選策略尚未實作", [], 1);
     }
     return resolver.resolve({
       layers: LayerRuntimeContractRegistry.sampledGridLayers({ enabledOnly: true }),
-      multiplier: state.virtualGrid?.multiplier,
+      multiplier: 1,
       zoom,
       latitude,
     });
+  }
+
+  function resolve(options = {}) {
+    const profile = state.renderGridProfile;
+    if (profile?.schema === "rrkal.render_grid_profile.v1") {
+      return {
+        strategy: "least_common_multiple",
+        status: profile.status,
+        participants: (profile.participants || []).map((item) => ({ ...item })),
+        geometry: profile.geometry ? { ...profile.geometry } : null,
+        baseResolutionKm: profile.baseResolutionKm,
+        resolutionKm: profile.renderResolutionKm,
+        multiplier: profile.aggregationFactor,
+        detail: profile.detail,
+        renderGridProfile: profile,
+      };
+    }
+    const base = resolveBase(options);
+    return resolver.resolve({
+      layers: LayerRuntimeContractRegistry.sampledGridLayers({ enabledOnly: true }),
+      multiplier: state.virtualGrid?.multiplier,
+      zoom: options.zoom,
+      latitude: options.latitude,
+    }) || base;
   }
 
   function cellAt(latValue, lonValue, snapshot = state.virtualGrid) {
@@ -277,7 +301,7 @@ const VirtualGridContract = (() => {
     };
   }
 
-  return Object.freeze({ ExactCommonGridResolver, resolve, cellAt });
+  return Object.freeze({ ExactCommonGridResolver, resolveBase, resolve, cellAt });
 })();
 
 function virtualGridSignature(snapshot) {
@@ -291,7 +315,7 @@ function virtualGridSignature(snapshot) {
   }
 
 class VirtualGridRuntimeController {
-  constructor({ targetState, contract, eventTarget, targetMap = null } = {}) {
+  constructor({ targetState, contract, eventTarget, targetMap = null, profileController = null } = {}) {
     if (!targetState || !contract || !eventTarget?.dispatchEvent) {
       throw new TypeError("VirtualGridController requires state, contract and event target");
     }
@@ -299,6 +323,7 @@ class VirtualGridRuntimeController {
     this.contract = contract;
     this.eventTarget = eventTarget;
     this.map = targetMap;
+    this.profileController = profileController;
     this.bound = false;
     this.boundDatasetsLoaded = () => this.refresh("datasets_loaded");
     this.boundResolutionChanged = () => this.refresh("resolution_changed");
@@ -306,13 +331,34 @@ class VirtualGridRuntimeController {
   }
 
   refresh(reason = "refresh") {
+    this.profileController?.refresh?.(reason);
     const next = this.contract.resolve();
+    const requestedMultiplier = Number(this.state.virtualGrid.requestedMultiplier ?? next.multiplier);
+    const controlMetadata = {
+      multiplier: {
+        requested_value: Number.isFinite(requestedMultiplier) ? requestedMultiplier : 1,
+        effective_value: next.multiplier,
+        scope: "session",
+        owner: "VirtualGridRuntimeController",
+        persistence: "session",
+        override_reason: requestedMultiplier === next.multiplier
+          ? null
+          : next.renderGridProfile?.overrideReason || "zoom_aggregation",
+        requires_restart: false,
+      },
+    };
     const nextSignature = virtualGridSignature(next);
     const changed = nextSignature !== this.state.virtualGrid.signature;
     const revision = changed
       ? Number(this.state.virtualGrid.revision || 0) + 1
       : this.state.virtualGrid.revision;
-    this.state.virtualGrid = { ...this.state.virtualGrid, ...next, signature: nextSignature, revision };
+    this.state.virtualGrid = {
+      ...this.state.virtualGrid,
+      ...next,
+      controlMetadata,
+      signature: nextSignature,
+      revision,
+    };
     if (changed) {
       this.eventTarget.dispatchEvent(new CustomEvent("rrkal:virtual-grid-changed", {
         detail: { reason, ...this.state.virtualGrid },
@@ -327,7 +373,9 @@ class VirtualGridRuntimeController {
   }
 
   setMultiplier(multiplier) {
-    this.state.virtualGrid.multiplier = Math.max(1, Math.min(64, Math.round(Number(multiplier) || 1)));
+    const requested = Number(multiplier);
+    this.state.virtualGrid.requestedMultiplier = Number.isFinite(requested) ? requested : 1;
+    this.state.virtualGrid.multiplier = Math.max(1, Math.min(64, Math.round(requested || 1)));
     return this.refresh("multiplier_changed");
   }
 

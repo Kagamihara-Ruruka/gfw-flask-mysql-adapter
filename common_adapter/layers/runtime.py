@@ -18,6 +18,7 @@ from common_adapter.developer.config_service import (
 )
 from common_adapter.layers.contracts import build_layer_contracts
 from common_adapter.query.grid_registry import grid_profile_contract
+from common_adapter.query.sampled_grid import SAMPLED_GRID_MAPPING_VERSION
 from common_adapter.registry import unique_by
 
 
@@ -168,7 +169,7 @@ def _mapping_selected_columns(mapping: dict[str, Any]) -> list[str]:
     return columns
 
 
-def _dataset_from_mapping(mapping: dict[str, Any], fallback_dataset: dict[str, Any]) -> dict[str, Any]:
+def _dataset_from_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
     roles = mapping.get("roles") if isinstance(mapping.get("roles"), dict) else {}
     time_column = validate_identifier(roles.get("time"), "mapping time_column")
     lat_column = validate_identifier(roles.get("lat"), "mapping lat_column")
@@ -188,21 +189,30 @@ def _dataset_from_mapping(mapping: dict[str, Any], fallback_dataset: dict[str, A
         if not source_fields.get("value") and len(metrics) == 1:
             source_fields["value"] = metrics[0]
         sampled_grid["source_fields"] = source_fields
+        extension_fields = (
+            dict(sampled_grid.get("extension_fields"))
+            if isinstance(sampled_grid.get("extension_fields"), dict)
+            else {}
+        )
+        mapped_source_columns = {str(column) for column in source_fields.values()}
+        for column in selected_columns:
+            if column not in mapped_source_columns:
+                extension_fields.setdefault(column, column)
+        sampled_grid["extension_fields"] = extension_fields
+        sampled_grid.setdefault("mapping_version", SAMPLED_GRID_MAPPING_VERSION)
         sampled_grid["grid_profile"] = grid_profile_contract(sampled_grid)
 
-    runtime = dict(fallback_dataset)
-    runtime.update(
-        {
-            "label": mapping.get("label") or fallback_dataset.get("label") or mapping.get("layer_id"),
-            "backend": mapping.get("backend") or fallback_dataset.get("backend") or "mysql",
-            "connection_ref": mapping.get("connection_ref") or fallback_dataset.get("connection_ref"),
-            "database": mapping.get("database") or fallback_dataset.get("database"),
+    runtime = {
+            "label": mapping.get("label") or mapping.get("layer_id"),
+            "backend": mapping.get("backend") or "mysql",
+            "connection_ref": validate_identifier(mapping.get("connection_ref"), "mapping connection_ref"),
+            "database": mapping.get("database"),
             "table": table,
             "mysql_table": table,
             "time_column": time_column,
             "lat_column": lat_column,
             "lon_column": lon_column,
-            "id_column": roles.get("id") or fallback_dataset.get("id_column"),
+            "id_column": roles.get("id"),
             "display_columns": selected_columns,
             "metric_columns": mapping.get("metric_columns") or [],
             "category_columns": mapping.get("category_columns") or [],
@@ -214,7 +224,6 @@ def _dataset_from_mapping(mapping: dict[str, Any], fallback_dataset: dict[str, A
             "__runtime_config_path": LAYER_MAPPINGS_CONFIG_REF,
             "__runtime_source_config_path": mapping.get("config_path"),
         }
-    )
     if sampled_grid is not None:
         runtime["sampled_grid"] = sampled_grid
         runtime["grid_profile_id"] = sampled_grid["grid_profile"]["profile_id"]
@@ -246,7 +255,7 @@ def database_datasets_from_mappings(
         try:
             if not dataset_id:
                 raise ValueError("mapping dataset id is required")
-            runtime_dataset = _dataset_from_mapping(mapping, {})
+            runtime_dataset = _dataset_from_mapping(mapping)
             dataset_backend_info(config, runtime_dataset)
             if dataset_id in datasets:
                 raise ValueError(f"duplicate mapping dataset id: {dataset_id}")
@@ -260,81 +269,3 @@ def database_datasets_from_mappings(
                 }
             )
     return datasets, errors
-
-
-def active_mapping_for_layer(layer_id: str) -> dict[str, Any] | None:
-    layer = str(layer_id or "").strip().lower()
-    manifest = load_router_manifest()
-    imported_layers = set(normalize_imported_layers(manifest.get("imported_layers")))
-    if layer not in imported_layers:
-        return None
-    active_configs = set(str(item) for item in manifest.get("active_configs") or [])
-    candidates: list[dict[str, Any]] = []
-    for mapping in load_layer_mappings().get("mappings", []):
-        if not mapping.get("enabled", True):
-            continue
-        if str(mapping.get("layer_id") or "").strip().lower() != layer:
-            continue
-        config_path = str(mapping.get("config_path") or "")
-        if active_configs and config_path and config_path not in active_configs:
-            continue
-        candidates.append(mapping)
-    return sorted(candidates, key=lambda row: str(row.get("mapping_id") or ""))[0] if candidates else None
-
-
-def active_mapping_for_dataset(dataset: dict[str, Any]) -> dict[str, Any] | None:
-    table = str(dataset.get("table") or dataset.get("mysql_table") or "").strip()
-    connection_ref = str(dataset.get("connection_ref") or "").strip()
-    if not table:
-        return None
-    manifest = load_router_manifest()
-    imported_layers = set(normalize_imported_layers(manifest.get("imported_layers")))
-    active_configs = set(str(item) for item in manifest.get("active_configs") or [])
-    candidates: list[dict[str, Any]] = []
-    for mapping in load_layer_mappings().get("mappings", []):
-        if not mapping.get("enabled", True):
-            continue
-        if str(mapping.get("table") or "").strip() != table:
-            continue
-        if connection_ref and str(mapping.get("connection_ref") or "").strip() != connection_ref:
-            continue
-        layer_id = str(mapping.get("layer_id") or "").strip().lower()
-        if layer_id not in imported_layers:
-            continue
-        config_path = str(mapping.get("config_path") or "")
-        if active_configs and config_path and config_path not in active_configs:
-            continue
-        candidates.append(mapping)
-    return sorted(candidates, key=lambda row: str(row.get("mapping_id") or ""))[0] if candidates else None
-
-
-def resolve_runtime_dataset(
-    config: dict[str, Any],
-    dataset_id: str,
-    dataset: dict[str, Any] | None = None,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    base_dataset = dict(dataset or config["datasets"][dataset_id])
-    mapping = active_mapping_for_dataset(base_dataset)
-    layer_id = str(mapping.get("layer_id") or "").strip().lower() if mapping else dataset_layer_id(dataset_id, base_dataset)
-    if mapping is None:
-        mapping = active_mapping_for_layer(layer_id)
-    if not mapping:
-        return base_dataset, {
-            "layer_id": layer_id,
-            "source": "unmapped_database_route",
-            "contract_group": None,
-            "source_route_group": "database",
-            "mapping_id": None,
-            "config_path": None,
-            "source_config_path": None,
-        }
-    runtime_dataset = _dataset_from_mapping(mapping, base_dataset)
-    return runtime_dataset, {
-        "layer_id": layer_id,
-        "source": "mapping_controller_contract",
-        "contract_group": "mapping",
-        "source_route_group": "database",
-        "mapping_id": mapping.get("mapping_id"),
-        "config_path": LAYER_MAPPINGS_CONFIG_REF,
-        "source_config_path": mapping.get("config_path"),
-    }

@@ -112,6 +112,7 @@ function setBasemap(basemapId) {
   currentBasemapLayer = L.tileLayer(definition.url, definition.options).addTo(map);
   currentBasemapLayer.setZIndex(100);
   state.mapSettings.basemapId = nextBasemapId;
+  notifyBrowserProfileChanged?.("basemap_changed");
 }
 
 function getCurrentBasemapAttribution() {
@@ -160,6 +161,7 @@ function setMapScaleVisible(visible) {
   } else {
     mapScaleControl.remove();
   }
+  notifyBrowserProfileChanged?.("map_scale_visibility_changed");
 }
 
 function setMapZoomControlVisible(visible) {
@@ -169,6 +171,7 @@ function setMapZoomControlVisible(visible) {
   } else {
     map.zoomControl.remove();
   }
+  notifyBrowserProfileChanged?.("map_zoom_control_visibility_changed");
 }
 
 function setMapInteraction(name, enabled) {
@@ -180,6 +183,7 @@ function setMapInteraction(name, enabled) {
   } else {
     interaction.disable();
   }
+  notifyBrowserProfileChanged?.("map_interaction_changed");
 }
 
 function resetMapView() {

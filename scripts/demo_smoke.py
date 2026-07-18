@@ -42,7 +42,7 @@ REQUIRED_HTML_MARKERS = (
     "adaptive-watermark-controller.js",
     "runtime-composition-root.js",
     "event-viewer.js",
-    "gfw-layer-effects.js",
+    "sampled-grid-layer-effects.js",
 )
 
 REQUIRED_SCRIPT_ORDER = (
@@ -74,8 +74,8 @@ REQUIRED_SCRIPT_ORDER = (
 )
 
 REQUIRED_LAYER_SCRIPT_ORDER = (
-    "gfw-layer-effects.js",
-    "gfw-layer.js",
+    "sampled-grid-layer-effects.js",
+    "sampled-grid-layer.js",
 )
 
 

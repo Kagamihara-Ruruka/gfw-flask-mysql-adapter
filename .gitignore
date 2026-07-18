@@ -3,6 +3,7 @@
 __pycache__/
 *.pyc
 *.log
+logs/
 benchmark_result.csv
 benchmarks/*.json
 instance/

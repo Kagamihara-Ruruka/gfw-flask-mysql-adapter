@@ -96,8 +96,8 @@ test("sampled-grid selection exposes no GFW compatibility global", () => {
 });
 
 test("sampled-grid rendering exposes no GFW compatibility globals", () => {
-  const effects = read("static/js/layers/gfw-layer-effects.js");
-  const renderer = read("static/js/rendering/gfw-webgl-renderer.js");
+  const effects = read("static/js/layers/sampled-grid-layer-effects.js");
+  const renderer = read("static/js/rendering/sampled-grid-webgl-renderer.js");
   assert.doesNotMatch(effects, /window\.GfwLayerEffects/);
   assert.match(effects, /window\.SampledGridLayerEffects/);
   assert.doesNotMatch(renderer, /window\.GfwWebglLayer/);

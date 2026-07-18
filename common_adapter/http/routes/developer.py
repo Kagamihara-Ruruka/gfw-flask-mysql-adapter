@@ -1,21 +1,14 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 from flask import Flask, jsonify, request
 
-from common_adapter.ais.ingest import get_ais_ingest_status
-from common_adapter.db.connect import load_config
 from common_adapter.developer.config_service import (
-    connection_status_from_config,
     create_source_group,
     delete_managed_config,
     delete_staging_config,
-    discover_config_files,
-    endpoint_status_from_config,
-    has_builtin_probe,
     is_routable_config_group,
     load_layer_mappings,
     load_router_manifest,
@@ -29,7 +22,6 @@ from common_adapter.developer.config_service import (
     set_config_note,
     set_layer_import,
     set_layer_mapping_enabled,
-    spatial_status_from_config,
     source_group_cards,
     stage_config_file,
     staging_config_machine,
@@ -42,48 +34,14 @@ from common_adapter.developer.config_service import (
 from common_adapter.developer.schema_inspector import inspect_relational_routes
 from common_adapter.endpoint.supervisor import ManagedEndpointSupervisor
 from common_adapter.layers.registry import RuntimeLayerRegistry
-
-
-def runtime_config_ref(runtime_config: dict[str, Any] | None) -> str | None:
-    if not runtime_config:
-        return None
-    config_path = runtime_config.get("__config_path")
-    if not config_path:
-        return None
-    try:
-        ref = normalize_config_ref(str(config_path))
-        path = resolve_config_ref(ref)
-    except Exception:
-        return None
-    return ref if path.exists() else None
-
-
-def runtime_config_refs(runtime_config: dict[str, Any] | None) -> set[str]:
-    ref = runtime_config_ref(runtime_config)
-    return {ref} if ref else set()
-
-
-def active_refs_with_runtime(runtime_config: dict[str, Any] | None) -> set[str]:
-    manifest = load_router_manifest()
-    return set(manifest["active_configs"])
-
-
-def locked_refs_with_runtime(runtime_config: dict[str, Any] | None) -> set[str]:
-    manifest = load_router_manifest()
-    return set(manifest["locked_configs"]) | runtime_config_refs(runtime_config)
-
-
-def config_paths_with_runtime(runtime_config: dict[str, Any] | None) -> list[Path]:
-    return sorted({path.resolve() for path in discover_config_files()}, key=lambda item: str(item).lower())
-
-
-def config_supports_group(data: dict[str, Any], summary: dict[str, Any], group: str) -> bool:
-    summary_group = str(summary.get("group") or "")
-    if summary_group != group:
-        return False
-    if not has_builtin_probe(group):
-        return False
-    return True
+from common_adapter.layers.runtime import (
+    active_config_files_by_group,
+    active_refs_with_runtime,
+    config_paths_with_runtime,
+    locked_refs_with_runtime,
+    runtime_config_refs,
+)
+from common_adapter.layers.status import RouteStatusRegistry
 
 
 def response_manifest(runtime_config: dict[str, Any] | None) -> dict[str, Any]:
@@ -95,157 +53,8 @@ def response_manifest(runtime_config: dict[str, Any] | None) -> dict[str, Any]:
     return manifest
 
 
-def reloaded_runtime_config(runtime_config: dict[str, Any] | None) -> dict[str, Any]:
-    config_path = runtime_config.get("__config_path") if runtime_config else None
-    if not config_path:
-        return runtime_config or {}
-    try:
-        loaded = load_config(config_path)
-        loaded["__config_path"] = str(Path(config_path).resolve())
-        return loaded
-    except Exception:
-        return runtime_config or {}
-
-
-def websocket_pipeline_state(provider: str, data: dict[str, Any], runtime_config: dict[str, Any]) -> dict[str, Any]:
-    live_ais = data.get("live", {}).get("ais", {}) if isinstance(data.get("live"), dict) else {}
-    provider_name = str(provider or live_ais.get("provider") or "").lower()
-    is_ais_source = bool(live_ais) or provider_name in {"aisstream", "aishub_polling", "mysql"}
-    if not is_ais_source:
-        return {"pipeline_ready": True, "detail": "設定可用"}
-
-    try:
-        status = get_ais_ingest_status(runtime_config)
-    except Exception as exc:
-        return {"pipeline_ready": False, "detail": f"AIS pipeline 檢查失敗: {exc}"}
-
-    source_enabled = bool(live_ais.get("enabled", runtime_config.get("live", {}).get("ais", {}).get("enabled", False)))
-    handoff = status.get("handoff") or {}
-    store = status.get("store") or {}
-    gate = status.get("key_gate") or {}
-    store_ok = store.get("status") == "ok"
-    gate_ok = bool(gate.get("authorized_sql_read"))
-    pipeline_ready = source_enabled and store_ok and gate_ok
-
-    if not source_enabled:
-        detail = "AIS source disabled"
-    elif not handoff.get("has_api_key") and provider_name == "aisstream":
-        detail = "AIS collector handoff 缺少金鑰"
-    elif not store_ok:
-        detail = f"AIS SQL store 未就緒: {store.get('error') or store.get('status') or '-'}"
-    elif not gate_ok:
-        detail = gate.get("message") or "AIS key gate 尚未解鎖"
-    else:
-        vessel_count = store.get("vessel_count", 0)
-        collector = gate.get("collector_status") or ("running" if status.get("running") else "external")
-        detail = f"AIS pipeline 可用；collector {collector}，可見船舶 {vessel_count}"
-    return {
-        "pipeline_ready": pipeline_ready,
-        "detail": detail,
-        "pipeline": {
-            "source_enabled": source_enabled,
-            "store": store,
-            "key_gate": gate,
-            "handoff": handoff,
-            "running": bool(status.get("running")),
-        },
-    }
-
-
-def active_config_files_by_group(group: str, runtime_config: dict[str, Any] | None = None) -> list[tuple[str, Path, dict[str, Any]]]:
-    manifest = load_router_manifest()
-    active_refs = active_refs_with_runtime(runtime_config)
-    locked_refs = locked_refs_with_runtime(runtime_config)
-    runtime_refs = runtime_config_refs(runtime_config)
-    rows: list[tuple[str, Path, dict[str, Any]]] = []
-    for path in config_paths_with_runtime(runtime_config):
-        ref = normalize_config_ref(path)
-        if ref not in active_refs:
-            continue
-        summary = summarize_config_file(path, active_refs, locked_refs, runtime_refs)
-        data, error = read_config_json(path)
-        if error or data is None:
-            continue
-        if not config_supports_group(data, summary, group):
-            continue
-        rows.append((ref, path, data))
-    return rows
-
-
 def route_provided_layer_rows(layer_registry: RuntimeLayerRegistry) -> list[dict[str, Any]]:
     return layer_registry.snapshot(force=True)["layers"]
-
-
-def database_router_status_rows(runtime_config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    active_refs = active_refs_with_runtime(runtime_config)
-    locked_refs = locked_refs_with_runtime(runtime_config)
-    runtime_refs = runtime_config_refs(runtime_config)
-    rows: list[dict[str, Any]] = []
-    for path in config_paths_with_runtime(runtime_config):
-        if path.name.endswith(".example.json"):
-            continue
-        ref = normalize_config_ref(path)
-        if ref not in active_refs:
-            continue
-        summary = summarize_config_file(path, active_refs, locked_refs, runtime_refs)
-        data, error = read_config_json(path)
-        if error or data is None:
-            rows.append(
-                {
-                    "config_path": ref,
-                    "connection_ref": "-",
-                    "backend": "unknown",
-                    "enabled": ref in active_refs,
-                    "connected": False,
-                    "schema_inspectable": False,
-                    "detail": error,
-                }
-            )
-            continue
-        if not config_supports_group(data, summary, "database"):
-            continue
-        for row in connection_status_from_config(ref, data, ref in active_refs):
-            backend = str(row.get("backend") or "").lower()
-            row["schema_inspectable"] = bool(
-                row.get("enabled")
-                and row.get("connected")
-                and (backend == "mysql" or row.get("contract_detected"))
-            )
-            rows.append(row)
-    return rows
-
-
-def endpoint_router_status_rows(runtime_config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    active_refs = active_refs_with_runtime(runtime_config)
-    locked_refs = locked_refs_with_runtime(runtime_config)
-    runtime_refs = runtime_config_refs(runtime_config)
-    rows: list[dict[str, Any]] = []
-    for path in config_paths_with_runtime(runtime_config):
-        if path.name.endswith(".example.json"):
-            continue
-        ref = normalize_config_ref(path)
-        if ref not in active_refs:
-            continue
-        summary = summarize_config_file(path, active_refs, locked_refs, runtime_refs)
-        data, error = read_config_json(path)
-        if error or data is None:
-            rows.append(
-                {
-                    "config_path": ref,
-                    "endpoint_ref": "-",
-                    "base_url": "-",
-                    "enabled": ref in active_refs,
-                    "configured": False,
-                    "reachable": False,
-                    "contract_detected": False,
-                    "detail": error,
-                }
-            )
-            continue
-        if not config_supports_group(data, summary, "endpoint"):
-            continue
-        rows.extend(endpoint_status_from_config(ref, data, ref in active_refs))
-    return rows
 
 
 def register_developer_routes(
@@ -253,6 +62,7 @@ def register_developer_routes(
     runtime_config: dict[str, Any] | None = None,
     *,
     layer_registry: RuntimeLayerRegistry,
+    route_status_registry: RouteStatusRegistry,
     endpoint_supervisor: ManagedEndpointSupervisor | None = None,
 ) -> None:
     @app.get("/api/developer/configs")
@@ -364,7 +174,7 @@ def register_developer_routes(
                 config_ref = next_ref
             normalized_content = json.dumps(parsed, ensure_ascii=False, indent=2) + "\n"
             saved = write_config_json_content(config_ref, normalized_content)
-            layer_registry.invalidate()
+            route_status_registry.invalidate()
             return jsonify(
                 {
                     **saved,
@@ -411,7 +221,7 @@ def register_developer_routes(
                     locked_refs_with_runtime(runtime_config),
                     runtime_config_refs(runtime_config),
                 )
-            layer_registry.invalidate()
+            route_status_registry.invalidate()
             return jsonify(
                 {
                     **result,
@@ -447,7 +257,7 @@ def register_developer_routes(
                     locked_refs_with_runtime(runtime_config),
                     runtime_config_refs(runtime_config),
                 )
-            layer_registry.invalidate()
+            route_status_registry.invalidate()
             return jsonify({**result, "config": config_summary, "manifest": response_manifest(runtime_config)})
         except Exception as exc:
             return jsonify({"error": str(exc)}), 400
@@ -498,7 +308,7 @@ def register_developer_routes(
                     "imported_layers": manifest.get("imported_layers") or [],
                 }
             )
-            layer_registry.invalidate()
+            route_status_registry.invalidate()
             updated_manifest = response_manifest(runtime_config)
             return jsonify({"status": "ok", "manifest": updated_manifest})
         except Exception as exc:
@@ -534,7 +344,7 @@ def register_developer_routes(
             payload = request.get_json(silent=True) or {}
             config_ref = str(payload.get("path") or "")
             result = delete_managed_config(config_ref)
-            layer_registry.invalidate()
+            route_status_registry.invalidate()
             return jsonify({"status": "ok", **result})
         except Exception as exc:
             return jsonify({"error": str(exc)}), 400
@@ -543,7 +353,7 @@ def register_developer_routes(
     def developer_router_status():
         try:
             manifest = response_manifest(runtime_config)
-            rows = database_router_status_rows(runtime_config)
+            rows = route_status_registry.rows("database")
             managed_endpoints = endpoint_supervisor.statuses() if endpoint_supervisor is not None else []
             managed_by_ref = {row["config_ref"]: row for row in managed_endpoints}
             for row in rows:
@@ -567,60 +377,12 @@ def register_developer_routes(
     @app.get("/api/developer/websocket-status")
     def developer_websocket_status():
         try:
-            manifest = response_manifest(runtime_config)
-            status_runtime_config = reloaded_runtime_config(runtime_config)
-            active_refs = active_refs_with_runtime(runtime_config)
-            locked_refs = locked_refs_with_runtime(runtime_config)
-            runtime_refs = runtime_config_refs(runtime_config)
-            rows: list[dict[str, Any]] = []
-            for path in config_paths_with_runtime(runtime_config):
-                ref = normalize_config_ref(path)
-                if ref not in active_refs:
-                    continue
-                summary = summarize_config_file(path, active_refs, locked_refs, runtime_refs)
-                data, error = read_config_json(path)
-                if not data or not config_supports_group(data, summary, "websocket"):
-                    continue
-                provider = "-"
-                endpoint = "-"
-                configured = False
-                source_enabled = False
-                if data:
-                    live_ais = data.get("live", {}).get("ais", {}) if isinstance(data.get("live"), dict) else {}
-                    provider = str(
-                        data.get("provider")
-                        or data.get("stream_provider")
-                        or live_ais.get("provider")
-                        or "websocket"
-                    )
-                    endpoint = str(
-                        data.get("stream_url")
-                        or data.get("url")
-                        or data.get("endpoint")
-                        or live_ais.get("stream_url")
-                        or "-"
-                    )
-                    ingest = data.get("ingest") if isinstance(data.get("ingest"), dict) else {}
-                    source_enabled = bool(ingest.get("enabled", live_ais.get("enabled", True)))
-                    configured = bool(provider and endpoint != "-")
-                pipeline_state = websocket_pipeline_state(provider, data or {}, status_runtime_config)
-                pipeline_ready = bool(pipeline_state.get("pipeline_ready"))
-                enabled = bool(source_enabled and configured and not error and pipeline_ready)
-                detail = error or pipeline_state.get("detail") or ("設定可用" if configured else "缺少 provider 或 endpoint")
-                rows.append(
-                    {
-                        "config_path": ref,
-                        "provider": provider,
-                        "endpoint": endpoint,
-                        "enabled": enabled,
-                        "source_enabled": source_enabled,
-                        "configured": configured and not error,
-                        "pipeline_ready": pipeline_ready,
-                        "pipeline": pipeline_state.get("pipeline", {}),
-                        "detail": detail,
-                    }
-                )
-            return jsonify({"manifest": manifest, "rows": rows})
+            return jsonify(
+                {
+                    "manifest": response_manifest(runtime_config),
+                    "rows": route_status_registry.rows("websocket"),
+                }
+            )
         except Exception as exc:
             return jsonify({"error": str(exc)}), 400
 
@@ -628,32 +390,19 @@ def register_developer_routes(
     def developer_endpoint_status():
         try:
             manifest = response_manifest(runtime_config)
-            return jsonify({"manifest": manifest, "rows": endpoint_router_status_rows(runtime_config)})
+            return jsonify({"manifest": manifest, "rows": route_status_registry.rows("endpoint")})
         except Exception as exc:
             return jsonify({"error": str(exc)}), 400
 
     @app.get("/api/developer/spatial-status")
     def developer_spatial_status():
         try:
-            manifest = response_manifest(runtime_config)
-            active_refs = active_refs_with_runtime(runtime_config)
-            locked_refs = locked_refs_with_runtime(runtime_config)
-            runtime_refs = runtime_config_refs(runtime_config)
-            rows: list[dict[str, Any]] = []
-            for path in config_paths_with_runtime(runtime_config):
-                if path.name.endswith(".example.json"):
-                    continue
-                ref = normalize_config_ref(path)
-                if ref not in active_refs:
-                    continue
-                summary = summarize_config_file(path, active_refs, locked_refs, runtime_refs)
-                data, error = read_config_json(path)
-                if error or data is None:
-                    continue
-                if not config_supports_group(data, summary, "spatial"):
-                    continue
-                rows.extend(spatial_status_from_config(ref, data))
-            return jsonify({"manifest": manifest, "rows": rows})
+            return jsonify(
+                {
+                    "manifest": response_manifest(runtime_config),
+                    "rows": route_status_registry.rows("spatial"),
+                }
+            )
         except Exception as exc:
             return jsonify({"error": str(exc)}), 400
 
@@ -678,7 +427,7 @@ def register_developer_routes(
                 if layer_id.strip().lower() not in available_layers:
                     raise ValueError("data layer is not provided by an active route contract")
             result = set_layer_import(layer_id, imported)
-            layer_registry.invalidate()
+            route_status_registry.invalidate()
             return jsonify({"rows": route_provided_layer_rows(layer_registry), **result})
         except Exception as exc:
             return jsonify({"error": str(exc)}), 400
@@ -686,7 +435,7 @@ def register_developer_routes(
     @app.get("/api/developer/schema-profiles")
     def developer_schema_profiles():
         try:
-            router_rows = database_router_status_rows(runtime_config)
+            router_rows = route_status_registry.rows("database")
             return jsonify(
                 {
                     "source": "router-status",
@@ -713,7 +462,7 @@ def register_developer_routes(
         try:
             payload = request.get_json(silent=True) or {}
             result = upsert_layer_mapping(payload)
-            layer_registry.invalidate()
+            route_status_registry.invalidate()
             return jsonify(
                 {
                     **result,
@@ -730,7 +479,7 @@ def register_developer_routes(
             mapping_id = str(payload.get("mapping_id") or "")
             enabled = bool(payload.get("enabled"))
             result = set_layer_mapping_enabled(mapping_id, enabled)
-            layer_registry.invalidate()
+            route_status_registry.invalidate()
             return jsonify(
                 {
                     **result,

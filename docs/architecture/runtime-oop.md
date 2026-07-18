@@ -22,6 +22,7 @@ flowchart LR
   CFG --> FLASKROOT["Flask create_app composition root"]
   REG["Registry + capability matrix"] --> ROOT
   ROOT --> CLOCK["ClockDomain"]
+  ROOT --> PROFILE["BrowserProfileStore"]
   ROOT --> EVENTS["LifecycleEventLog"]
   ROOT --> SCHED["QueryScheduler"]
   ROOT --> QUERYPOLICY["QueryPolicyController"]
@@ -37,6 +38,8 @@ flowchart LR
   ROOT --> VIEWPORT["LayerViewportController"]
   ROOT --> GRID["VirtualGridController"]
   FLASKROOT --> BATCH["QueryBatchExecutor"]
+  FLASKROOT --> LAYERREG["RuntimeLayerRegistry"]
+  FLASKROOT --> ROUTESTATUS["RouteStatusRegistry"]
 
   DECORATOR --> CORE
   QUERYPOLICY --> SCHED
@@ -45,6 +48,7 @@ flowchart LR
   CORE --> EVENTS
   BROKER -. "POST /api/query/batch" .-> BATCH
   BATCH --> ADAPTER["Mapping-backed query adapter"]
+  ROUTESTATUS --> LAYERREG
   PREHEAT --> DECORATOR
   PREHEAT --> STORE
   ENGINE --> PREHEAT
@@ -68,6 +72,7 @@ flowchart LR
 | 狀態／資源 | 唯一 owner | 建立位置 | 銷毀責任 |
 | --- | --- | --- | --- |
 | monotonic、playback、render clock interfaces | `ClockDomain` immutable value | `RuntimeCompositionRoot` | 無業務狀態；供 instance 注入使用 |
+| 裝置／視覺偏好、storage 狀態 | `BrowserProfileStoreCore` | `RuntimeCompositionRoot` | `dispose` 解除 profile change listener；storage 失敗只降級 session |
 | timer、generation、timeline、播放 session callback | `PlaybackRuntimeController` | `RuntimeCompositionRoot` | `stop / dispose` 取消 timer，先停 Preheater 再停 Engine |
 | 播放日期、狀態、下一 target readiness、visible-frame pin | `PlaybackEngineCore` | `RuntimeCompositionRoot` | `stop / dispose` 取消 preparation、target、buffer demand 並 release pin |
 | 預熱 scope、inflight、retry/settle timer、Store subscription | `PlaybackPreheaterController` | `RuntimeCompositionRoot` | `stop / dispose` 取消 owned query scopes、timer 與 subscription |
@@ -75,6 +80,7 @@ flowchart LR
 | queued/active task、consumer、lane promotion | `QueryScheduler` | `RuntimeCompositionRoot` | `dispose` abort 未完成 task |
 | provider batch、lane promotion、stream demultiplex、來源容量與 in-flight operation 計數 | `QueryBroker` | `RuntimeCompositionRoot` | `dispose` abort active batches 並拒絕 queued operation |
 | Flask batch worker pool、跨 request 的 provider in-flight 計數 | `QueryBatchExecutor` | Flask `create_app()` composition root，保存於 `app.extensions` | 跟隨服務 process 生命週期，`close()` shutdown executor |
+| active route probe、read-model readiness、status generation | `RouteStatusRegistry` | Flask server composition root，與 `RuntimeLayerRegistry` 一起注入 consumer/developer app | `invalidate` 重建 snapshot；跟隨服務 process 生命週期 |
 | network/background concurrency policy 與不變量 | `QueryPolicyControllerCore` | `RuntimeCompositionRoot` | `dispose` 無資源；UI 只能透過 command 更新 policy |
 | demand inflight、owned scope ids、transport lifecycle | `FrameDemandServiceCore` | `RuntimeCompositionRoot`，再交給 decorator | `dispose` 取消 owned scopes 並清空 inflight |
 | canonical frames、alias、pin、failure、LRU | `DataFrameStoreCore` | `RuntimeCompositionRoot` | `dispose` 清空 RAM 與 listener |
@@ -119,6 +125,7 @@ Registry 與能力矩陣是能力與相容關係的唯一真相，不以 inherit
 - `decorateFrameDemandService()` 只記錄需求開始、完成、取消、失敗與 monotonic duration；它不發 HTTP、不查 Store、不改 lane、不正規化 packet。
 - Decorator 回傳原結果，失敗時重新拋出同一個 error instance；其 `dispose()` 只轉交被包裝的 core 一次。
 - Event subscriber 只能觀測或取消自己明確擁有的 scope，不能成為第二個業務狀態 owner。
+- Browser Profile 只持有裝置與視覺白名單；資料源、圖層啟用、日期、Mapping、Query Policy、cache/watermark 與 playback state 不得透過 profile 形成第二真相。
 
 ## Playback 聚合邊界
 

@@ -105,7 +105,11 @@ class FrameDemandServiceCore {
         duration_ms: elapsedMs,
         row_count: Number(packet?.row_count ?? packet?.frame?.rowCount ?? 0),
       }));
-      this.sampledGridContract?.recordResolvedResolution?.(request.datasetId, packet?.grid || null);
+      this.sampledGridContract?.recordResolvedResolution?.(
+        request.datasetId,
+        packet?.grid || null,
+        { bbox: request.bbox },
+      );
       return this.dataFrameStore.put(request, packet, {
         lane: entry.lane,
         scopeId: physicalScopeId,

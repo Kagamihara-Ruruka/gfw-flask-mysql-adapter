@@ -7,6 +7,7 @@ const root = process.cwd();
 const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), "utf8");
 
 const coreOwners = [
+  ["static/js/services/browser-profile-store.js", "BrowserProfileStoreCore"],
   ["static/js/services/lifecycle-event-log.js", "LifecycleEventLogCore"],
   ["static/js/services/layer-query-coordinator.js", "QueryScheduler"],
   ["static/js/services/query-broker.js", "QueryBroker"],
@@ -19,7 +20,7 @@ const coreOwners = [
   ["static/js/playback/adaptive-watermark-controller.js", "AdaptiveWatermarkControllerCore"],
   ["static/js/playback/playback-renderer.js", "PlaybackRendererController"],
   ["static/js/core/render-state.js", "RenderStateController"],
-  ["static/js/services/gfw-render-artifact-cache.js", "RenderArtifactCache"],
+  ["static/js/services/sampled-grid-render-artifact-cache.js", "RenderArtifactCache"],
   ["static/js/rendering/virtual-grid-contract.js", "VirtualGridRuntimeController"],
   ["static/js/ui/map/layer-viewport-controller.js", "DatasetViewportController"],
 ];
@@ -66,6 +67,7 @@ test("runtime definitions load before the composition root and consumers load af
 
   for (const definition of [
     "/static/js/services/lifecycle-event-log.js",
+    "/static/js/services/browser-profile-store.js",
     "/static/js/services/layer-query-coordinator.js",
     "/static/js/services/query-broker.js",
     "/static/js/services/query-policy-controller.js",
@@ -95,6 +97,7 @@ test("runtime definitions load before the composition root and consumers load af
 test("runtime-owned resources expose symmetric teardown", () => {
   const lifecycleFiles = [
     "static/js/services/lifecycle-event-log.js",
+    "static/js/services/browser-profile-store.js",
     "static/js/services/layer-query-coordinator.js",
     "static/js/services/query-broker.js",
     "static/js/services/data-frame-store.js",
@@ -165,11 +168,15 @@ test("query policy mutations are aggregated behind the DI-owned controller", () 
   const compositionRoot = read("static/js/runtime/runtime-composition-root.js");
 
   assert.doesNotMatch(controls, /LayerQueryCoordinator\.drain/);
-  assert.doesNotMatch(controls, /queryPolicy\.(?:network_concurrency|background_network_concurrency)\s*=/);
+  assert.doesNotMatch(controls, /queryPolicy\.(?:network_concurrency|background_network_concurrency|batch_max_operations)\s*=/);
   assert.match(controls, /QueryPolicyController\.setNetworkConcurrency/);
   assert.match(controls, /QueryPolicyController\.setBackgroundConcurrency/);
+  assert.match(controls, /QueryPolicyController\.setBatchMaxOperations/);
   assert.match(controller, /class QueryPolicyControllerCore\b/);
+  assert.match(controller, /function resolveQueryPolicy\(/);
+  assert.doesNotMatch(controller, /DataFrameStore|clear\w*Cache|cancelPending/);
   assert.match(compositionRoot, /new QueryPolicyControllerCore\(\{/);
+  assert.match(compositionRoot, /batchSizeProvider: \(sourceKey\) => queryPolicyController\?\.effectiveBatchSize/);
 });
 
 test("demand telemetry is a DI-composed decorator with no business authority", () => {

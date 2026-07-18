@@ -20,6 +20,8 @@ const VirtualGridSettings = (() => {
     const metrics = element("virtual-grid-status-metrics");
     const participants = element("virtual-grid-participants");
     if (!chip || !detail || !metrics || !participants) return;
+    const multiplierInput = element("virtual-grid-multiplier");
+    if (multiplierInput) multiplierInput.value = String(snapshot.multiplier || 1);
     chip.textContent = statusLabel(snapshot);
     chip.dataset.status = snapshot.status || "unresolved";
     detail.textContent = snapshot.detail || "等待已導入圖層。";
@@ -59,8 +61,13 @@ const VirtualGridSettings = (() => {
 
   function bind() {
     const input = element("virtual-grid-strategy-lcm");
+    const multiplierInput = element("virtual-grid-multiplier");
     input?.addEventListener("change", () => {
       if (input.checked) window.VirtualGridController?.setStrategy?.(input.value);
+    });
+    multiplierInput?.addEventListener("change", () => {
+      const snapshot = window.VirtualGridController?.setMultiplier?.(multiplierInput.value);
+      if (snapshot) render(snapshot);
     });
     window.addEventListener("rrkal:virtual-grid-changed", (event) => render(event.detail));
     window.addEventListener("rrkal:datasets-loaded", () => render(state.virtualGrid));

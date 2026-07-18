@@ -95,7 +95,7 @@ class QueryBatchExecutor:
         try:
             packet = execute_operation(operation)
             timing = dict(packet.get("timing") or {})
-            timing["source_capacity_wait_ms"] = round(source_capacity_wait_ms, 3)
+            timing["batch_capacity_wait_ms"] = round(source_capacity_wait_ms, 3)
             timing["pipeline_total_ms"] = round(
                 float(timing.get("api_total_ms") or 0) + source_capacity_wait_ms,
                 3,

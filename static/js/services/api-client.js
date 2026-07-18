@@ -51,9 +51,10 @@ async function loadDatasets() {
     .map((contract) => String(contract?.layer_id || "").trim().toLowerCase())
     .filter((layerId) => layerId && state.importedLayers[layerId]);
   state.overlayLayers = state.overlayLayers || {};
-  // Keep frontend limits aligned with the Flask adapter config.
-  state.queryPolicy = packet.query_policy || state.queryPolicy;
-  state.queryTransportCapacities = packet.query_transport_capacities || {};
+  QueryPolicyController.hydrate({
+    policy: packet.query_policy || {},
+    sourceCapacities: packet.query_transport_capacities || {},
+  });
   renderDatasetSelect();
   if (typeof renderDataLayerMenu === "function") {
     renderDataLayerMenu();
@@ -161,32 +162,6 @@ async function runAisDiagnostics() {
   return fetchJson(`/api/live/ais/diagnostics?${params}`);
 }
 
-async function saveAishubUsername(username) {
-  const res = await fetch("/api/live/ais/aishub/settings", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username }),
-  });
-  const payload = await res.json();
-  if (!res.ok) {
-    throw new Error(payload.error || res.statusText);
-  }
-  state.aisSettings = { ...(state.aisSettings || {}), ...payload };
-  updateAisSettingsPanel();
-  return payload;
-}
-
-async function disconnectAishubUsername() {
-  const res = await fetch("/api/live/ais/aishub/settings", { method: "DELETE" });
-  const payload = await res.json();
-  if (!res.ok) {
-    throw new Error(payload.error || res.statusText);
-  }
-  state.aisSettings = { ...(state.aisSettings || {}), ...payload };
-  updateAisSettingsPanel();
-  return payload;
-}
-
 function aisWebSocketUrl(bboxes) {
   const scheme = window.location.protocol === "https:" ? "wss" : "ws";
   const params = new URLSearchParams();
@@ -263,11 +238,6 @@ function applyAisPacket(packet, bboxes, timing) {
     setStatus(
       `AIS SQL 收集器${ingestState}，可見船舶 ${rows.length.toLocaleString()} 艘${storeSuffix}，接收 ${accepted} 筆，寫入 ${written} 筆，略過過期 ${skipped} 筆`
     );
-    return;
-  }
-  if (packet.transport === "aishub_polling") {
-    const interval = Number(packet.stream?.poll_interval_seconds || 180);
-    setStatus(`AISHub 輪詢，可見船舶 ${rows.length.toLocaleString()} 艘${stream}，間隔 ${interval} 秒`);
     return;
   }
   setStatus(`AIS 本機 SQL 串流，可見船舶 ${rows.length.toLocaleString()} 艘${stream}，${bboxes.length} 個循環邊界框`);

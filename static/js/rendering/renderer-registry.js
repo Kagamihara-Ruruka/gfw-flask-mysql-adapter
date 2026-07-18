@@ -22,8 +22,15 @@ const RendererRegistry = (() => {
     return Boolean(browserWebgl().available && window.SampledGridWebglLayer?.isSupported?.());
   }
 
+  function gpuAggregationAvailable() {
+    return Boolean(gpuAvailable() && window.SampledGridWebglLayer?.supportsAggregation?.());
+  }
+
   function chooseSampledGridLayer(frame, canvasLayerClass) {
     const rowCount = CanonicalGridFrame.isFrame(frame) ? frame.rowCount : 0;
+    if (state.renderGridProfile?.gpuAggregation && gpuAggregationAvailable()) {
+      return { backend: "webgl", LayerClass: window.SampledGridWebglLayer };
+    }
     if (webglAllowed(rowCount) && window.SampledGridWebglLayer?.isSupported?.()) {
       return { backend: "webgl", LayerClass: window.SampledGridWebglLayer };
     }
@@ -45,6 +52,7 @@ const RendererRegistry = (() => {
   return {
     chooseSampledGridLayer,
     gpuAvailable,
+    gpuAggregationAvailable,
     recordSampledGridRender,
   };
 })();

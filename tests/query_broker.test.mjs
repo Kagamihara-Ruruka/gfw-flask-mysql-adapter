@@ -46,7 +46,7 @@ function loadBroker(fetchFn, { maxBatchSize = 3, sourceCapacity = 2 } = {}) {
         "widget-auto": 40,
         background: 40,
       })[lane] ?? 40,
-      maxBatchSizeProvider: () => maxBatchSize,
+      batchSizeProvider: () => maxBatchSize,
       sourceCapacityProvider: () => sourceCapacity,
     }),
     context,

@@ -179,6 +179,8 @@ function currentPlaybackDateIndex(dates = datesInSelectedRange()) {
 function syncPlaybackSettingsInputs() {
   const options = PlaybackCacheService.options();
   const queryPolicy = QueryPolicyController.snapshot();
+  const requestedQueryPolicy = queryPolicy.requested;
+  const effectiveQueryPolicy = queryPolicy.effective;
   PlaybackDeliveryPolicy.apply(state);
   const interpolation = PlaybackInterpolationController.options(state);
   if ($("play-speed")) $("play-speed").value = String(normalizedPlaybackRate());
@@ -186,10 +188,31 @@ function syncPlaybackSettingsInputs() {
   if ($("playback-interpolation-mode")) $("playback-interpolation-mode").value = interpolation.mode;
   if ($("playback-cache-strategy")) $("playback-cache-strategy").value = options.strategy;
   if ($("query-network-concurrency")) {
-    $("query-network-concurrency").value = String(queryPolicy.networkConcurrency);
+    $("query-network-concurrency").value = String(requestedQueryPolicy.networkConcurrency);
   }
   if ($("query-background-concurrency")) {
-    $("query-background-concurrency").value = String(queryPolicy.backgroundConcurrency);
+    $("query-background-concurrency").value = String(requestedQueryPolicy.backgroundConcurrency);
+  }
+  if ($("query-batch-max-operations")) {
+    $("query-batch-max-operations").value = String(requestedQueryPolicy.batchMaxOperations);
+  }
+  if ($("query-policy-effective-status")) {
+    const transportPolicies = Object.values(queryPolicy.transports);
+    const effectiveBatchSizes = [...new Set(
+      transportPolicies.map((policy) => policy.effectiveBatchSize),
+    )].sort((left, right) => left - right);
+    const batchLabel = effectiveBatchSizes.length === 0
+      ? "等待來源容量"
+      : effectiveBatchSizes.length === 1
+        ? `${effectiveBatchSizes[0]} 張`
+        : `${effectiveBatchSizes[0]}–${effectiveBatchSizes.at(-1)} 張`;
+    $("query-policy-effective-status").textContent = [
+      `實際前端並行 ${effectiveQueryPolicy.networkConcurrency}`,
+      `背景 ${effectiveQueryPolicy.backgroundConcurrency}`,
+      `保留前景 ${effectiveQueryPolicy.foregroundReservedSlots}`,
+      `來源批次 ${batchLabel}`,
+      `Server 上限 ${queryPolicy.serverLimits.networkConcurrency}`,
+    ].join(" · ");
   }
   const configuredHigh = Math.max(4, Number(state.playbackCache.highWatermark || 15));
   const configuredLow = Math.max(1, Math.min(
@@ -241,6 +264,10 @@ function bindPlaybackSettingsControls() {
   });
   $("query-background-concurrency")?.addEventListener("change", (event) => {
     QueryPolicyController.setBackgroundConcurrency(event.target.value);
+    syncPlaybackSettingsInputs();
+  });
+  $("query-batch-max-operations")?.addEventListener("change", (event) => {
+    QueryPolicyController.setBatchMaxOperations(event.target.value);
     syncPlaybackSettingsInputs();
   });
   $("playback-cache-low-watermark")?.addEventListener("change", (event) => {

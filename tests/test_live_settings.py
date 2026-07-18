@@ -12,7 +12,7 @@ class LiveSettingsTests(unittest.TestCase):
             "live": {
                 "ais": {
                     "enabled": True,
-                    "provider": "mysql",
+                    "provider": "aisstream",
                     "density_cells_per_tile": 12,
                 }
             }
@@ -25,9 +25,11 @@ class LiveSettingsTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["rendering"]["density_cells_per_tile"], 12)
+        self.assertEqual(response.get_json()["source_transport"], "aisstream_websocket")
+        self.assertEqual(response.get_json()["read_model_transport"], "mysql")
 
     def test_ais_density_grid_has_a_named_default(self) -> None:
-        config = {"live": {"ais": {"enabled": False, "provider": "mysql"}}}
+        config = {"live": {"ais": {"enabled": False, "provider": "aisstream"}}}
         with (
             patch("common_adapter.http.routes.live.get_ais_ingest_status", return_value={"key_gate": "disabled"}),
             patch("common_adapter.http.routes.live.ais_collector_handoff_status", return_value={"has_api_key": False}),

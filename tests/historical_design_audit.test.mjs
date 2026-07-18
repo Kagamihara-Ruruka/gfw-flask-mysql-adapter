@@ -55,10 +55,10 @@ test("playback lifecycle owners cannot evict completed DataFrameStore entries", 
 
 test("sampled-grid runtime has no GFW state mirrors or compatibility entrypoints", () => {
   const state = read("static/js/core/state.js");
-  const layer = read("static/js/layers/gfw-layer.js");
-  const effects = read("static/js/layers/gfw-layer-effects.js");
+  const layer = read("static/js/layers/sampled-grid-layer.js");
+  const effects = read("static/js/layers/sampled-grid-layer-effects.js");
   const registry = read("static/js/rendering/renderer-registry.js");
-  const artifacts = read("static/js/services/gfw-render-artifact-cache.js");
+  const artifacts = read("static/js/services/sampled-grid-render-artifact-cache.js");
   const controls = read("static/js/playback/playback-controls.js");
 
   for (const source of [state, layer, effects, registry, artifacts, controls]) {
@@ -111,9 +111,9 @@ test("sampled-grid runtime cannot reconstruct the removed row graph", () => {
     "static/js/services/query-broker.js",
     "static/js/services/data-frame-store.js",
     "static/js/services/frame-demand-service.js",
-    "static/js/layers/gfw-layer.js",
-    "static/js/rendering/gfw-paint.js",
-    "static/js/rendering/gfw-webgl-renderer.js",
+    "static/js/layers/sampled-grid-layer.js",
+    "static/js/rendering/sampled-grid-paint.js",
+    "static/js/rendering/sampled-grid-webgl-renderer.js",
     "static/js/ui/map/layer-viewport-controller.js",
     "static/js/application/widgets/widget-query-context.js",
     "static/js/application/widgets/line-chart-data-source.js",

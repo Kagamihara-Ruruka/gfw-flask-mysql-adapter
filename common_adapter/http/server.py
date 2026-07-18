@@ -12,6 +12,7 @@ from typing import Any
 
 from common_adapter.endpoint.supervisor import ManagedEndpointSupervisor
 from common_adapter.layers.registry import RuntimeLayerRegistry
+from common_adapter.layers.status import RouteStatusRegistry
 
 from common_adapter.http.interface import create_app, create_developer_app
 
@@ -159,7 +160,13 @@ def run_server(config: dict[str, Any], *, host: str, port: int, debug: bool, kil
     force_exit_previous_server_instance(enabled=kill_port_if_busy)
     free_configured_port_if_needed(host, port, enabled=kill_port_if_busy)
     write_server_pid_file(host=host, port=port)
-    app = create_app(config, layer_registry=RuntimeLayerRegistry(config))
+    layer_registry = RuntimeLayerRegistry(config)
+    route_status_registry = RouteStatusRegistry(config, layer_registry)
+    app = create_app(
+        config,
+        layer_registry=layer_registry,
+        route_status_registry=route_status_registry,
+    )
     app.run(host=host, port=port, debug=debug, use_reloader=False)
 
 
@@ -181,10 +188,12 @@ def run_server_pair(
     consumer_url = public_url(host, port)
     developer_url = public_url(host, developer_port)
     layer_registry = RuntimeLayerRegistry(config)
+    route_status_registry = RouteStatusRegistry(config, layer_registry)
     developer_app = create_developer_app(
         config,
         consumer_url=consumer_url,
         layer_registry=layer_registry,
+        route_status_registry=route_status_registry,
         endpoint_supervisor=endpoint_supervisor,
     )
     developer_thread = threading.Thread(
@@ -194,5 +203,10 @@ def run_server_pair(
     )
     developer_thread.start()
 
-    app = create_app(config, developer_url=developer_url, layer_registry=layer_registry)
+    app = create_app(
+        config,
+        developer_url=developer_url,
+        layer_registry=layer_registry,
+        route_status_registry=route_status_registry,
+    )
     app.run(host=host, port=port, debug=debug, use_reloader=False)

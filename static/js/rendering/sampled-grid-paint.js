@@ -184,6 +184,7 @@ const SampledGridColorScale = (() => {
     }
     const model = SampledGridContract.model(targetProfile.datasetId);
     const configuredZeroOpacity = zeroOpacity(targetProfile);
+    const validIndices = [];
     const renderIndices = [];
     let minimum = null;
     let maximum = null;
@@ -199,6 +200,8 @@ const SampledGridColorScale = (() => {
       const status = String(canonicalFrame.valueAt("data_status", index) || "").trim().toLowerCase();
       if (!bounds || !Number.isFinite(value) || status === "no_data") continue;
       if (Number.isFinite(coverageRatio) && coverageRatio <= 0) continue;
+      if (value === 0 && !model.zeroIsData) continue;
+      validIndices.push(index);
       if (opacityForValue(value, configuredZeroOpacity) <= 0) continue;
       renderIndices.push(index);
       minimum = minimum == null ? value : Math.min(minimum, value);
@@ -224,9 +227,12 @@ const SampledGridColorScale = (() => {
     };
     return {
       frame: canonicalFrame,
+      validIndices,
       indices: renderIndices,
       model,
       domain: activeDomain,
+      zeroOpacity: configuredZeroOpacity,
+      compiledStops,
       opacityForValue: (value) => opacityForValue(value, configuredZeroOpacity),
       colorPartsForValue,
       colorCssForValue(value) {

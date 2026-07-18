@@ -65,8 +65,7 @@ class DatasetRoutes:
     API_TIMING_PHASES = (
         "cache_lookup_ms",
         "cache_wait_ms",
-        "source_http_ms",
-        "source_json_decode_ms",
+        "source_http_wall_ms",
         "canonicalize_rows_ms",
         "canonical_packet_copy_ms",
         "cache_commit_ms",
@@ -192,7 +191,7 @@ class DatasetRoutes:
     def runtime_packet(dataset_id: str, dataset: dict[str, Any]) -> dict[str, Any]:
         return {
             "layer_id": dataset_layer_id(dataset_id, dataset),
-            "source": dataset.get("__runtime_source", "unmapped_database_route"),
+            "source": dataset["__runtime_source"],
             "contract_group": dataset.get("__runtime_contract_group"),
             "source_route_group": dataset.get("__runtime_source_route_group"),
             "mapping_id": dataset.get("__runtime_mapping_id"),

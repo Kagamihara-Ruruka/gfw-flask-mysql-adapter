@@ -5,7 +5,7 @@
 這份交接只處理 AIS 上游收集器。它的任務是：
 
 1. 使用 AISStream API key 連到 AISStream websocket。
-2. 將收到的船舶位置資料寫入 SQL。
+2. 將收到的船舶位置與靜態 delta 合併後寫入 SQL。
 3. 維護 latest-state table，讓小可愛只消費 SQL，不直接碰 AISStream。
 4. 維護 hourly snapshot table，供未來一個月歷史軌跡與時間播放器使用。
 
@@ -55,7 +55,7 @@ python core.py --config config/runtime/adapter.ais_collector.local.json ingest-a
 
 `config/runtime/ais_collector.local.json` 可以由 Airflow variable、K8 Secret 或 volume mount 產生。不要 commit。
 
-若只拿到兩個 JSON，代表交接包拿錯了。Airflow owner 需要 crawler 本體與 runner；至少要包含 `common_adapter/ais/ingest.py`、`common_adapter/ais/stream.py`、`common_adapter/ais/live.py`、`common_adapter/db/connect.py`、`common_adapter/db/registry.py`、`core.py`、`requirements.txt` 與本 README。
+若只拿到兩個 JSON，代表交接包拿錯了。Airflow owner 需要 crawler 本體與 runner；至少要包含 `common_adapter/ais/ingest.py`、`common_adapter/ais/stream.py`、`common_adapter/ais/live.py`、`common_adapter/db/connect.py`、`common_adapter/query/registry.py`、`core.py`、`requirements.txt` 與本 README。
 
 ## API key 交付方式
 
@@ -96,7 +96,8 @@ Latest table 是 upsert 邏輯：
 
 - primary key: `mmsi`
 - 只保存每艘船最新一筆狀態。
-- 若 incoming event_time 比既有資料舊，會跳過。
+- position 與 static 各自保存來源 event time；任一 domain 的 incoming event time 比既有資料舊時，只跳過該 domain。
+- 缺少的 delta 欄位不會覆寫既有值；collector receipt time 另存為 `received_at`。
 - 小可愛 live mode 查這張表。
 
 Hourly snapshot table 是時間播放器資料：

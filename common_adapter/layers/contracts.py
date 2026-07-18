@@ -85,6 +85,8 @@ def _websocket_contracts(active_routes: list[tuple[str, Any, dict[str, Any]]]) -
         live_ais = route_config.get("live", {}).get("ais", {}) if isinstance(route_config.get("live"), dict) else {}
         provider = route_config.get("provider") or route_config.get("stream_provider") or live_ais.get("provider") or "websocket"
         endpoint = route_config.get("stream_url") or route_config.get("endpoint") or live_ais.get("stream_url") or "-"
+        connection_ref = _text(live_ais.get("connection_ref"))
+        table_ref = _text(live_ais.get("table"))
         contracts.append(
             {
                 "contract_version": LAYER_CONTRACT_VERSION,
@@ -96,16 +98,21 @@ def _websocket_contracts(active_routes: list[tuple[str, Any, dict[str, Any]]]) -
                 "source_config_path": config_ref,
                 "config_path": config_ref,
                 "source_ref": str(provider),
-                "source_label": "AIS WebSocket",
+                "source_label": "AISStream WebSocket",
                 "layer_id": "ais",
                 "label": _layer_label("ais"),
-                "backend": "websocket",
-                "detail": str(endpoint),
+                "backend": "mysql",
+                "source_backend": "websocket",
+                "connection_ref": connection_ref,
+                "table_ref": table_ref,
+                "detail": f"{endpoint} -> MYSQL {connection_ref} / {table_ref}",
                 "mapping": {},
                 "capabilities": {
-                    "relational_query": False,
+                    "relational_query": True,
                     "schema_inspection": False,
                     "mapping_controller": False,
+                    "delta_ingest": True,
+                    "sql_read_model": True,
                 },
             }
         )

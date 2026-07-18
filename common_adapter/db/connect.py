@@ -31,7 +31,6 @@ from common_adapter.query.sampled_grid import (
 
 ROOT = Path(__file__).resolve().parents[2]
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-DEFAULT_MYSQL_CONNECTION_REF = "local_mysql"
 SUPPORTED_CONNECTION_KINDS = {"mysql", "hive", "spark", "postgresql", "mongodb", "duckdb", "custom"}
 SUPPORTED_SQL_BACKENDS = {"mysql", "hive", "spark"}
 
@@ -106,15 +105,6 @@ def connection_configs(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
     }
 
 
-def default_connection_ref(config: dict[str, Any], backend_kind: str) -> str:
-    configured = config.get("default_connection_ref")
-    if configured:
-        return str(configured)
-    if backend_kind == "mysql":
-        return DEFAULT_MYSQL_CONNECTION_REF
-    return ""
-
-
 def validate_connections(config: dict[str, Any]) -> None:
     connections = connection_configs(config)
     if not connections:
@@ -137,7 +127,7 @@ def dataset_backend_kind(config: dict[str, Any], dataset: dict[str, Any]) -> str
 
 def dataset_backend_info(config: dict[str, Any], dataset: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
     kind = dataset_backend_kind(config, dataset)
-    connection_ref = str(dataset.get("connection_ref") or default_connection_ref(config, kind))
+    connection_ref = str(dataset.get("connection_ref") or "").strip()
     connections = connection_configs(config)
     if not connection_ref:
         raise ValueError(f"dataset backend {kind!r} requires connection_ref")
@@ -459,12 +449,9 @@ def mysql_connection(
     connection: dict[str, Any] | None = None,
     use_connection_database: bool = True,
 ):
-    if connection is not None:
-        mysql = dict(connection)
-    else:
-        connections = connection_configs(config)
-        ref = config.get("default_connection_ref") or DEFAULT_MYSQL_CONNECTION_REF
-        mysql = dict(connections.get(ref) or connections[DEFAULT_MYSQL_CONNECTION_REF])
+    if connection is None:
+        raise ValueError("mysql_connection requires an explicitly resolved connection")
+    mysql = dict(connection)
     database_name = database
     if database_name is None and use_connection_database:
         database_name = mysql.get("database")
@@ -492,7 +479,9 @@ def ensure_database(
     connection: dict[str, Any] | None = None,
     database: str | None = None,
 ) -> None:
-    mysql = dict(connection) if connection is not None else connection_configs(config)[DEFAULT_MYSQL_CONNECTION_REF]
+    if connection is None:
+        raise ValueError("ensure_database requires an explicitly resolved connection")
+    mysql = dict(connection)
     database_name = validate_identifier(database or mysql["database"], "database")
     with mysql_connection(config, database=None, connection=mysql) as conn, conn.cursor() as cur:
         cur.execute(

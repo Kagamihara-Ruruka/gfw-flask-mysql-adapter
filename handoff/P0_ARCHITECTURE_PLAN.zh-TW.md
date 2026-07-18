@@ -55,7 +55,7 @@ static/js/
   ui/                         # page panels and controls
 ```
 
-播放控制、獨立 `PlaybackPreheater` 與 snapshot splitter 位於 `static/js/playback/`。所有 sampled-grid 查詢統一經過 `FrameDemandService` 與 `QueryScheduler`，完成的 canonical packet 只存入 `DataFrameStore`；不存在第二套圖層專用快取。
+播放控制、獨立 `PlaybackPreheater` 與 snapshot splitter 位於 `static/js/playback/`。所有 sampled-grid 查詢統一經過 `FrameDemandService` 與 `QueryBroker`，完成的 canonical frame 只存入 `DataFrameStore`；`QueryScheduler` 只服務其他 query family，不存在第二套圖層專用快取。
 
 ## 已完成拆分
 
@@ -63,11 +63,11 @@ static/js/
 - `common_adapter/http/routes/system.py`：承接 root page、favicon、health、render capability。
 - `common_adapter/http/routes/datasets.py`：承接 `/api/datasets`、schema、records、records/range。
 - `common_adapter/http/routes/overlays.py`：承接 EEZ GeoJSON fallback 與 fill/boundary MVT tiles。
-- `common_adapter/http/routes/live.py`：承接 AIS/AISHub settings、diagnostics、ingest status、live REST 與 websocket。
+- `common_adapter/http/routes/live.py`：承接 AISStream settings、diagnostics、ingest status，以及 MySQL read-model 的 live REST 與 websocket。
 - `common_adapter/http/server.py`：承接 port cleanup、PID file、public URL、`run_server`、`run_server_pair`。
 - `common_adapter/http/interface.py`：已縮回 Flask app factory 與 route assembly。
 - `core.py`：已改由 `common_adapter.http.server` 匯入 server lifecycle。
-- Root `Interface.py`：保留相容 wrapper，轉接 `common_adapter.http.interface` 與 `common_adapter.http.server`。
+- 舊 Root `Interface.py` 相容 wrapper 已刪除；Runtime 直接匯入 canonical `common_adapter` 模組。
 
 ## 已驗證
 

@@ -67,4 +67,4 @@
 
 - `hive` backend 已註冊，但目前是 explicit unsupported stub；只能作為能力矩陣與契約位置，不是可用功能。
 - Skin/display 設定目前是 proposed contract，尚未接進 runtime schema；應維持 `enabled: false`。
-- AISHub polling 是備援思路，目前 MVP 不啟用。
+- AIS runtime 只有 AISStream delta collector 到 SQL read model 這一條路；Kafka 等 broker 只列為未來 upstream 演進方向。

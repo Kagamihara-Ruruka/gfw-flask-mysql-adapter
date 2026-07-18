@@ -269,7 +269,7 @@
                 </select>
               </label>
               <label>
-                網路查詢並行數
+                瀏覽器查詢並行上限
                 <select id="query-network-concurrency">
                   <option value="1">1</option>
                   <option value="2">2</option>
@@ -280,7 +280,7 @@
                 </select>
               </label>
               <label>
-                背景預熱並行數
+                背景預熱上限
                 <select id="query-background-concurrency">
                   <option value="1">1</option>
                   <option value="2">2</option>
@@ -290,6 +290,18 @@
                   <option value="6">6</option>
                 </select>
               </label>
+              <label>
+                每批要求上限
+                <select id="query-batch-max-operations">
+                  <option value="1">1</option>
+                  <option value="2">2</option>
+                  <option value="3" selected>3</option>
+                  <option value="4">4</option>
+                  <option value="6">6</option>
+                </select>
+              </label>
+              <p id="query-policy-effective-status" class="setting-note">等待來源容量資訊。</p>
+              <p class="setting-note">設定值是瀏覽器要求；實際值會受 Server worker、來源容量與前景保留槽限制。修改 Server 上限需要更新 Config 並重啟服務。</p>
               <label>
                 固定策略觸發水位（張）
                 <input id="playback-cache-low-watermark" type="number" min="1" max="59" step="1" value="10">
@@ -470,19 +482,6 @@
                 <button id="ais-disconnect-key" class="small-button danger-button" type="button">斷開收集器金鑰</button>
               </div>
             </details>
-            <section class="provider-settings aishub-settings" hidden>
-              <h3>AISHub 輪詢</h3>
-              <p class="setting-note">AISHub 最多每 180 秒輪詢一次，以遵守 API 限制。</p>
-              <label>
-                AISHub 使用者名稱
-                <input id="aishub-username" type="password" autocomplete="off" placeholder="貼上 AISHub 使用者名稱">
-              </label>
-              <div class="button-row">
-                <button id="aishub-save-username" class="small-button" type="button">連接 AISHub</button>
-                <button id="aishub-run-diagnostics" class="small-button" type="button">執行 AISHub 測試</button>
-                <button id="aishub-disconnect" class="small-button danger-button" type="button">斷開 AISHub</button>
-              </div>
-            </section>
             <div id="ais-diagnostics-result" class="diagnostics-result" hidden></div>
           </div>
           <label>
@@ -691,6 +690,7 @@
   <script src="/static/js/core/clock-domain.js?v=clock-domain-v1"></script>
   <script src="/static/TimingMetrics.js?v=clock-domain-v1"></script>
   <script src="/static/js/core/state.js?v=runtime-convergence-v3"></script>
+  <script src="/static/js/services/browser-profile-store.js?v=browser-profile-v1"></script>
   <script src="/static/js/services/lifecycle-event-log.js?v=runtime-convergence-v3"></script>
   <script src="/static/js/services/runtime-performance-metrics.js?v=runtime-convergence-v3"></script>
   <script src="/static/js/services/frame-identity.js?v=lifecycle-core-v1"></script>
@@ -703,22 +703,23 @@
   <script src="/static/js/rendering/sampled-grid-contract.js?v=resolution-route-v2"></script>
   <script src="/static/js/rendering/virtual-grid-contract.js?v=resolution-contract-v1"></script>
   <script src="/static/js/ui/map/layer-viewport-controller.js?v=coverage-routing-v3"></script>
-  <script src="/static/js/rendering/gfw-paint.js?v=zero-paint-opacity-v2"></script>
-  <script src="/static/js/rendering/gfw-webgl-renderer.js?v=alpha-composite-v2"></script>
+  <script src="/static/js/rendering/sampled-grid-paint.js?v=zero-paint-opacity-v2"></script>
+  <script src="/static/js/rendering/sampled-grid-webgl-renderer.js?v=alpha-composite-v2"></script>
   <script src="/static/js/rendering/renderer-registry.js?v=zh-tw-v99"></script>
+  <script src="/static/js/rendering/render-grid-profile.js?v=zoom-aggregation-v1"></script>
   <script src="/static/js/core/render-refresh.js?v=dynamic-layer-menu-v1"></script>
   <script src="/static/js/layers/eez-layer.js?v=eez-lod-pixel-v2"></script>
   <script src="/static/js/layers/graticule-layer.js?v=zh-tw-v99"></script>
   <script src="/static/js/layers/ais-layer.js?v=zh-tw-v99"></script>
-  <script src="/static/js/layers/gfw-layer-effects.js?v=clock-domain-v1"></script>
-  <script src="/static/js/layers/gfw-layer.js?v=clock-domain-v1"></script>
+  <script src="/static/js/layers/sampled-grid-layer-effects.js?v=clock-domain-v1"></script>
+  <script src="/static/js/layers/sampled-grid-layer.js?v=clock-domain-v1"></script>
   <script src="/static/js/ui/map/table-view.js?v=records-updated-v1"></script>
   <script src="/static/js/ui/map/control-buttons.js?v=map-fullscreen-icon-v1"></script>
   <script src="/static/js/ui/map/map-settings.js?v=widgets-map-jump-v70"></script>
   <script src="/static/js/ui/map/map-export.js?v=zh-tw-v99"></script>
   <script src="/static/js/ui/layers/layer-style-controls.js?v=zh-tw-v99"></script>
   <script src="/static/js/ui/layers/eez-settings.js?v=eez-color-controls-v1"></script>
-  <script src="/static/js/ui/layers/gfw-settings.js?v=resolution-contract-v1"></script>
+  <script src="/static/js/ui/layers/sampled-grid-settings.js?v=resolution-contract-v1"></script>
   <script src="/static/js/ui/layers/ais-settings.js?v=display-number-v2"></script>
   <script src="/static/js/ui/layers/layer-menu.js?v=layer-activation-controller-v2"></script>
   <script src="/static/js/ui/background/aerial-backdrop.js?v=aerial-backdrop-v6"></script>
@@ -726,7 +727,7 @@
   <script src="/static/js/playback/playback-snapshot-splitter.js?v=playback-snapshot-splitter-v1"></script>
   <script src="/static/js/playback/playback-scheduler.js?v=playback-runtime-v1"></script>
   <script src="/static/js/playback/playback-runtime-controller.js?v=playback-runtime-v1"></script>
-  <script src="/static/js/services/gfw-render-artifact-cache.js?v=gfw-render-artifact-cache-v1"></script>
+  <script src="/static/js/services/sampled-grid-render-artifact-cache.js?v=sampled-grid-render-artifact-cache-v1"></script>
   <script src="/static/js/services/render-intent-service.js?v=resolution-route-v2"></script>
   <script src="/static/js/services/layer-query-coordinator.js?v=clock-domain-v1"></script>
   <script src="/static/js/services/query-broker.js?v=query-broker-v1"></script>

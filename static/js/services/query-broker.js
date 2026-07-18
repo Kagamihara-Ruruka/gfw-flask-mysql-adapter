@@ -56,7 +56,7 @@ class QueryBroker {
     eventLog,
     clock,
     priorityForLane,
-    maxBatchSizeProvider = null,
+    batchSizeProvider = null,
     sourceCapacityProvider = null,
     endpoint = "/api/query/batch",
   } = {}) {
@@ -70,7 +70,7 @@ class QueryBroker {
     this.eventLog = eventLog;
     this.clock = clock;
     this.priorityForLane = priorityForLane;
-    this.maxBatchSizeProvider = maxBatchSizeProvider || (() => 3);
+    this.batchSizeProvider = batchSizeProvider || (() => 1);
     this.sourceCapacityProvider = sourceCapacityProvider || (() => 1);
     this.endpoint = endpoint;
     this.pending = [];
@@ -81,9 +81,9 @@ class QueryBroker {
     this.disposed = false;
   }
 
-  maxBatchSize() {
-    const numeric = Number(this.maxBatchSizeProvider());
-    return Math.max(1, Math.min(32, Number.isFinite(numeric) ? Math.floor(numeric) : 3));
+  batchSize(sourceKey) {
+    const numeric = Number(this.batchSizeProvider(String(sourceKey || "")));
+    return Math.max(1, Math.min(32, Number.isFinite(numeric) ? Math.floor(numeric) : 1));
   }
 
   sourceCapacity(sourceKey) {
@@ -249,8 +249,7 @@ class QueryBroker {
     const sourceKey = this.sourceKey(first.operation);
     const priority = first.priority;
     const effectiveBatchSize = Math.min(
-      this.maxBatchSize(),
-      this.sourceCapacity(sourceKey),
+      this.batchSize(sourceKey),
       this.sourceAvailableSlots(sourceKey),
     );
     const selected = [];
@@ -432,17 +431,22 @@ class QueryBroker {
         (total, batch) => total + batch.items.filter((item) => !item.settled).length,
         0,
       ),
-      maxBatchSize: this.maxBatchSize(),
       sourceInflight: Object.freeze(Object.fromEntries(
         [...new Set([
           ...this.pending.map((item) => this.sourceKey(item.operation)),
           ...[...this.activeBatches.values()].map((batch) => batch.sourceKey),
         ])].map((sourceKey) => [sourceKey, Object.freeze({
           capacity: this.sourceCapacity(sourceKey),
+          effectiveBatchSize: this.batchSize(sourceKey),
           inFlight: this.sourceInflightCount(sourceKey),
         })]),
       )),
     });
+  }
+
+  reconcilePolicy() {
+    this.scheduleFlush();
+    return this.snapshot();
   }
 
   dispose() {

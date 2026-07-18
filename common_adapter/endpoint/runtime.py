@@ -197,6 +197,14 @@ def _dataset_from_catalog_item(
         if _text(role) and _text(path)
     }
     query = deepcopy(_mapping(sampled_grid.get("query")))
+    snapshot_capabilities = _mapping(
+        value_at(catalog_body, catalog.get("snapshot_capabilities_path"))
+    )
+    pagination = _mapping(snapshot_capabilities.get("pagination"))
+    if pagination:
+        snapshot = deepcopy(_mapping(query.get("snapshot")))
+        snapshot["pagination"] = deepcopy(pagination)
+        query["snapshot"] = snapshot
     source_parameters = deepcopy(_mapping(query.get("static_parameters")))
     source_parameters.update({"product": product_value, "metric": metric_value})
     higher_is_better = _field(item, fields, "higher_is_better")
@@ -215,6 +223,7 @@ def _dataset_from_catalog_item(
         "coverage_areas": coverages,
         "source_fields": row_fields,
         "request_fields": request_fields,
+        "extension_fields": deepcopy(_mapping(sampled_grid.get("extension_fields"))),
         "geometry": deepcopy(_mapping(sampled_grid.get("geometry"))),
         "alignment": deepcopy(_mapping(sampled_grid.get("alignment"))),
         "query": query,
@@ -227,7 +236,17 @@ def _dataset_from_catalog_item(
     }
     grid_profile = grid_registry.register(descriptor)
     descriptor["grid_profile"] = grid_profile.as_contract()
-    display_columns = ["date", "cell_id", "lat", "lon", "value", "resolution_km", "coverage_ratio", "data_status"]
+    display_columns = [
+        "date",
+        "cell_id",
+        "lat",
+        "lon",
+        "value",
+        "resolution_km",
+        "coverage_ratio",
+        "data_status",
+        *descriptor["extension_fields"].keys(),
+    ]
     backend = _mapping(route_config.get("backend"))
     dataset = {
         "dataset_id": dataset_id,

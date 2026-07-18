@@ -44,6 +44,34 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertNotIn('data.get("mysql")', probe_source)
         self.assertNotIn('"default_mysql"', connect_source)
 
+    def test_runtime_connections_are_explicit_and_have_no_local_mysql_fallback(self) -> None:
+        connect_source = (ROOT / "common_adapter/db/connect.py").read_text(encoding="utf-8")
+        runtime_source = (ROOT / "common_adapter/layers/runtime.py").read_text(encoding="utf-8")
+        dataset_routes = (ROOT / "common_adapter/http/routes/datasets.py").read_text(encoding="utf-8")
+        ais_source = (ROOT / "common_adapter/ais/live.py").read_text(encoding="utf-8")
+        combined = "\n".join((connect_source, runtime_source, dataset_routes, ais_source))
+
+        self.assertNotIn("DEFAULT_MYSQL_CONNECTION_REF", combined)
+        self.assertNotIn("default_connection_ref", combined)
+        self.assertNotIn("unmapped_database_route", combined)
+        self.assertNotIn("resolve_runtime_dataset", runtime_source)
+        self.assertIn('dataset.get("connection_ref") or ""', connect_source)
+        self.assertIn('raise ValueError("live.ais.connection_ref is required")', ais_source)
+
+        wizard_source = (ROOT / "static/js/ui/developer/developer-wizard.js").read_text(encoding="utf-8")
+        hive_example = (ROOT / "config/examples/sources/database/hive.example.json").read_text(encoding="utf-8")
+        self.assertNotIn("default_connection_ref", wizard_source)
+        self.assertNotIn("default_connection_ref", hive_example)
+
+    def test_status_views_consume_the_shared_route_status_registry(self) -> None:
+        developer_source = (ROOT / "common_adapter/http/routes/developer.py").read_text(encoding="utf-8")
+        system_source = (ROOT / "common_adapter/http/routes/system.py").read_text(encoding="utf-8")
+        self.assertNotIn("connection_status_from_config", developer_source)
+        self.assertNotIn("endpoint_status_from_config", developer_source)
+        self.assertNotIn("spatial_status_from_config", developer_source)
+        self.assertIn("route_status_registry.rows", developer_source)
+        self.assertIn("route_status_registry.snapshot", system_source)
+
     def test_database_adapters_use_the_query_registry_directly(self) -> None:
         paths = [
             ROOT / "common_adapter/db/connect.py",
@@ -74,6 +102,37 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertNotIn("GfwRecordCache", playback_source)
         self.assertNotIn("SampledGridRecordCache", cache_source)
 
+    def test_sampled_grid_runtime_has_no_gfw_compatibility_modules(self) -> None:
+        legacy_paths = [
+            "static/js/layers/gfw-layer-effects.js",
+            "static/js/layers/gfw-layer.js",
+            "static/js/rendering/gfw-paint.js",
+            "static/js/rendering/gfw-webgl-renderer.js",
+            "static/js/services/gfw-render-artifact-cache.js",
+            "static/js/ui/layers/gfw-settings.js",
+        ]
+        for relative_path in legacy_paths:
+            self.assertFalse((ROOT / relative_path).exists(), relative_path)
+
+        demo_smoke = (ROOT / "scripts/demo_smoke.py").read_text(encoding="utf-8")
+        for relative_path in legacy_paths:
+            self.assertNotIn(Path(relative_path).name, demo_smoke, relative_path)
+
+        generic_paths = [
+            ROOT / "static/js/layers/sampled-grid-layer-effects.js",
+            ROOT / "static/js/layers/sampled-grid-layer.js",
+            ROOT / "static/js/rendering/sampled-grid-paint.js",
+            ROOT / "static/js/rendering/sampled-grid-webgl-renderer.js",
+            ROOT / "static/js/services/sampled-grid-render-artifact-cache.js",
+            ROOT / "static/js/ui/layers/sampled-grid-settings.js",
+        ]
+        for path in generic_paths:
+            source = path.read_text(encoding="utf-8")
+            self.assertNotIn("window.Gfw", source, str(path))
+
+        styles = (ROOT / "static/styles.css").read_text(encoding="utf-8")
+        self.assertNotIn(".gfw-webgl-layer", styles)
+
     def test_sampled_grid_batch_transport_has_no_row_inflation_shim(self) -> None:
         source = (ROOT / "common_adapter/query/transport.py").read_text(encoding="utf-8")
         self.assertNotIn("inflate_sampled_grid", source)
@@ -97,8 +156,23 @@ class ArchitectureBoundaryTests(unittest.TestCase):
 
     def test_ais_uses_registered_connections_without_inline_compatibility(self) -> None:
         source = (ROOT / "common_adapter/ais/live.py").read_text(encoding="utf-8")
+        source_config = (ROOT / "config/sources/websocket/aisstream.local.json").read_text(encoding="utf-8")
         self.assertNotIn('settings.get("connection")', source)
         self.assertNotIn('"live.ais.connection"', source)
+        self.assertNotIn('"connection":', source_config)
+        self.assertIn('"connection_ref": "local_mysql"', source_config)
+
+    def test_ais_has_one_runtime_source_path(self) -> None:
+        paths = [
+            ROOT / "common_adapter/http/routes/live.py",
+            ROOT / "static/js/services/api-client.js",
+            ROOT / "static/js/ui/layers/ais-settings.js",
+            ROOT / "templates/index.html",
+            ROOT / "config/sources/websocket/aisstream.local.json",
+        ]
+        self.assertFalse((ROOT / "common_adapter/ais/aishub.py").exists())
+        for path in paths:
+            self.assertNotIn("aishub", path.read_text(encoding="utf-8").lower(), str(path))
 
     def test_common_adapter_import_graph_is_acyclic(self) -> None:
         modules: dict[str, Path] = {}

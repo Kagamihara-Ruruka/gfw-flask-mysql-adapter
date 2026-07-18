@@ -2,30 +2,54 @@ from __future__ import annotations
 
 import math
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
-from dataclasses import replace
-from typing import Any
+from dataclasses import dataclass, replace
+from threading import BoundedSemaphore, RLock
+from typing import Any, Mapping
 
 from common_adapter.endpoint.client import EndpointHttpClient, EndpointRequestError
 from common_adapter.endpoint.runtime import value_at
 from common_adapter.query.registry import query_adapter
+from common_adapter.query.batch import dataset_query_concurrency
 from common_adapter.query.sampled_grid import (
     SAMPLED_GRID_CONTRACT_VERSION,
     canonicalize_sampled_grid_rows,
     compile_sampled_grid_mapping,
+)
+from common_adapter.query.sampled_grid_paging import (
+    CanonicalSampledGridShard,
+    SampledGridFrameAssembler,
+    SampledGridShardPlan,
+    canonicalize_sampled_grid_shard,
+    effective_query_bbox,
+    plan_sampled_grid_shards,
 )
 from common_adapter.query.snapshot_cache import (
     CANONICAL_SNAPSHOT_CACHE,
     SnapshotCachePolicy,
     SnapshotLoad,
 )
-from common_adapter.query.identity import dataset_cache_namespace
+from common_adapter.query.identity import dataset_cache_namespace, dataset_query_transport_key
 
 
-WEB_MERCATOR_KM_PER_CSS_PIXEL_AT_ZOOM_ZERO = 156.54303392804097
 GEOGRAPHIC_INTERSECTION_EPSILON = 1e-9
 TIME_SERIES_AGGREGATIONS = {"sum", "avg", "min", "max", "count"}
+_SOURCE_PAGE_LIMITERS_LOCK = RLock()
+_SOURCE_PAGE_LIMITERS: dict[str, tuple[int, BoundedSemaphore]] = {}
+
+
+@dataclass(frozen=True)
+class _FetchedSampledGridShard:
+    plan: SampledGridShardPlan
+    rows: tuple[Mapping[str, Any], ...]
+    metadata: Mapping[str, Any]
+    source_http_ms: float
+    source_json_decode_ms: float
+    source_response_bytes: int
+    source_capacity_wait_ms: float
+    source_request_count: int
+    empty_reason: str | None = None
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -114,16 +138,38 @@ def _coverage_choice(
     return row, "partial"
 
 
-def _latitude_for_request(
-    bbox: dict[str, float] | None,
-    query_context: dict[str, Any],
-) -> float:
-    configured = _number(query_context.get("latitude"))
-    if configured is not None:
-        return max(-85.0, min(85.0, configured))
-    if bbox is not None:
-        return max(-85.0, min(85.0, (bbox["south"] + bbox["north"]) / 2))
-    return 0.0
+def _query_scope(
+    requested_bbox: dict[str, float] | None,
+    coverage: dict[str, Any] | None,
+    coverage_status: str,
+) -> dict[str, Any]:
+    coverage_bounds = _mapping(coverage.get("bounds")) if coverage is not None else {}
+    effective_bbox = (
+        effective_query_bbox(requested_bbox, coverage_bounds)
+        if coverage_bounds
+        else None
+    )
+    if coverage is None:
+        override_reason = "outside_source_coverage"
+    elif requested_bbox is None:
+        override_reason = "default_source_coverage"
+    else:
+        override_reason = "cc_viewport_clipped_to_coverage"
+    return {
+        "requested_bbox": deepcopy(requested_bbox),
+        "effective_query_bbox": deepcopy(effective_bbox),
+        "effective_source_scope": None if coverage is None else {
+            "kind": "cc_viewport",
+            "id": coverage.get("id"),
+            "coverage_id": coverage.get("id"),
+            "bounds": deepcopy(effective_bbox),
+        },
+        "translation": {
+            "status": coverage_status,
+            "override_reason": override_reason,
+            "requested_bbox_preserved": True,
+        },
+    }
 
 
 def _resolution_for_request(
@@ -136,16 +182,20 @@ def _resolution_for_request(
     explicit = _number(query_context.get("requested_resolution_km"))
     if explicit is not None and explicit > 0:
         return next((value for value in available if value >= explicit), available[-1])
-    zoom = _number(query_context.get("zoom"))
-    if zoom is None:
-        return available[-1]
-    latitude = _latitude_for_request(bbox, query_context)
-    ground_resolution = (
-        WEB_MERCATOR_KM_PER_CSS_PIXEL_AT_ZOOM_ZERO
-        * math.cos(math.radians(latitude))
-        / (2 ** zoom)
-    )
-    return next((value for value in available if value >= ground_resolution), available[-1])
+    return available[0]
+
+
+def _source_page_limiter(dataset: dict[str, Any]) -> tuple[BoundedSemaphore, int]:
+    source_key = dataset_query_transport_key(dataset)
+    capacity = dataset_query_concurrency(dataset)
+    with _SOURCE_PAGE_LIMITERS_LOCK:
+        registered = _SOURCE_PAGE_LIMITERS.get(source_key)
+        if registered is None:
+            registered = (capacity, BoundedSemaphore(capacity))
+            _SOURCE_PAGE_LIMITERS[source_key] = registered
+        elif registered[0] != capacity:
+            raise RuntimeError("sampled-grid source capacity changed without a runtime restart")
+    return registered[1], capacity
 
 
 def _query_parameters(
@@ -288,6 +338,14 @@ class SampledGridHttpQueryAdapter:
         if not self.dataset_id:
             raise ValueError("sampled-grid dataset is missing its canonical dataset_id")
         self.snapshot_cache_policy = SnapshotCachePolicy.from_contract(self.descriptor)
+        self.shard_cache_policy = SnapshotCachePolicy(
+            enabled=self.snapshot_cache_policy.enabled,
+            identity_roles=tuple(
+                dict.fromkeys((*self.snapshot_cache_policy.identity_roles, "shard_id"))
+            ),
+            max_entries=self.snapshot_cache_policy.max_entries,
+            ttl_seconds=self.snapshot_cache_policy.ttl_seconds,
+        )
         self.snapshot_cache_namespace = dataset_cache_namespace(dataset)
         self.grid_profile = deepcopy(_mapping(self.descriptor.get("grid_profile")))
 
@@ -330,11 +388,320 @@ class SampledGridHttpQueryAdapter:
             "resolution_km": float(resolution),
         }
 
+    def _shard_identity(
+        self,
+        *,
+        date_value: str,
+        coverage_id: Any,
+        resolution: float,
+        shard_id: str,
+    ) -> dict[str, Any]:
+        return {
+            **self._snapshot_identity(
+                date_value=date_value,
+                coverage_id=coverage_id,
+                resolution=resolution,
+            ),
+            "shard_id": str(shard_id),
+        }
+
+    def _fetch_paginated_shard(
+        self,
+        *,
+        date_value: str,
+        coverage_id: Any,
+        resolution: float,
+        snapshot: dict[str, Any],
+        path: str,
+        pagination: dict[str, Any],
+        shard_plan: SampledGridShardPlan,
+        limiter: BoundedSemaphore,
+    ) -> _FetchedSampledGridShard:
+        params = _query_parameters(
+            self.query,
+            self.descriptor,
+            {
+                "date": date_value,
+                "aoi": coverage_id,
+                "resolution": resolution,
+            },
+        )
+        limit_parameter = str(pagination.get("limit_parameter") or "limit").strip()
+        offset_parameter = str(pagination.get("offset_parameter") or "offset").strip()
+        if not limit_parameter or not offset_parameter:
+            raise ValueError("sampled-grid pagination parameter names are required")
+        params[limit_parameter] = shard_plan.limit
+        params[offset_parameter] = shard_plan.offset
+        no_data_policy = _mapping(snapshot.get("no_data"))
+        retry_policy = _mapping(snapshot.get("retry"))
+        try:
+            max_attempts = max(1, int(retry_policy.get("max_attempts", 1)))
+            backoff_seconds = max(0.0, float(retry_policy.get("backoff_seconds", 0)))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("sampled-grid snapshot retry policy is invalid") from exc
+
+        source_http_ms = 0.0
+        source_json_decode_ms = 0.0
+        source_response_bytes = 0
+        source_capacity_wait_ms = 0.0
+        attempt = 0
+        while True:
+            attempt += 1
+            capacity_started = time.perf_counter()
+            limiter.acquire()
+            source_capacity_wait_ms += (time.perf_counter() - capacity_started) * 1000
+            http_started = time.perf_counter()
+            try:
+                timed_get = getattr(self.client, "get_json_timed", None)
+                if callable(timed_get):
+                    response = timed_get(path, params=params)
+                    body = response.body
+                    source_http_ms += float(response.http_read_ms)
+                    source_json_decode_ms += float(response.json_decode_ms)
+                    source_response_bytes += int(response.response_bytes)
+                else:
+                    body = self.client.get_json(path, params=params)
+                    source_http_ms += (time.perf_counter() - http_started) * 1000
+            except EndpointRequestError as exc:
+                source_http_ms += (time.perf_counter() - http_started) * 1000
+                if no_data_policy and _endpoint_error_matches(exc, no_data_policy):
+                    return _FetchedSampledGridShard(
+                        plan=shard_plan,
+                        rows=(),
+                        metadata={},
+                        source_http_ms=source_http_ms,
+                        source_json_decode_ms=source_json_decode_ms,
+                        source_response_bytes=source_response_bytes,
+                        source_capacity_wait_ms=source_capacity_wait_ms,
+                        source_request_count=attempt,
+                        empty_reason=str(
+                            no_data_policy.get("reason") or "source_snapshot_unavailable"
+                        ),
+                    )
+                if (
+                    retry_policy
+                    and attempt < max_attempts
+                    and _endpoint_error_matches(exc, retry_policy)
+                ):
+                    if backoff_seconds:
+                        time.sleep(backoff_seconds * attempt)
+                    continue
+                raise
+            finally:
+                limiter.release()
+
+            return _FetchedSampledGridShard(
+                plan=shard_plan,
+                rows=tuple(
+                    row
+                    for row in _list(value_at(body, snapshot.get("rows_path", "rows")))
+                    if isinstance(row, Mapping)
+                ),
+                metadata=_mapping(value_at(body, pagination.get("metadata_path", "page"))),
+                source_http_ms=source_http_ms,
+                source_json_decode_ms=source_json_decode_ms,
+                source_response_bytes=source_response_bytes,
+                source_capacity_wait_ms=source_capacity_wait_ms,
+                source_request_count=attempt,
+            )
+
+    def _load_paginated_canonical_snapshot(
+        self,
+        *,
+        date_value: str,
+        coverage: dict[str, Any],
+        requested_bbox: dict[str, float] | None,
+        requested_resolution: float,
+        snapshot: dict[str, Any],
+        path: str,
+    ) -> SnapshotLoad:
+        coverage_id = coverage.get("id")
+        requested_identity = self._snapshot_identity(
+            date_value=date_value,
+            coverage_id=coverage_id,
+            resolution=requested_resolution,
+        )
+        pagination = _mapping(snapshot.get("pagination"))
+        query_plan = plan_sampled_grid_shards(
+            viewport_bbox=requested_bbox,
+            coverage_bounds=_mapping(coverage.get("bounds")),
+            resolution_km=requested_resolution,
+            mapping=self.mapping_context,
+            pagination=pagination,
+        )
+        limiter, source_capacity = _source_page_limiter(self.dataset)
+
+        def load_shard(shard_plan: SampledGridShardPlan) -> SnapshotLoad:
+            shard_identity = self._shard_identity(
+                date_value=date_value,
+                coverage_id=coverage_id,
+                resolution=requested_resolution,
+                shard_id=shard_plan.shard_id,
+            )
+
+            def load() -> SnapshotLoad:
+                fetched = self._fetch_paginated_shard(
+                    date_value=date_value,
+                    coverage_id=coverage_id,
+                    resolution=requested_resolution,
+                    snapshot=snapshot,
+                    path=path,
+                    pagination=pagination,
+                    shard_plan=shard_plan,
+                    limiter=limiter,
+                )
+                if fetched.empty_reason:
+                    return SnapshotLoad(
+                        shard_identity,
+                        {
+                            "frame": canonicalize_sampled_grid_rows(
+                                [],
+                                self.mapping_context,
+                                context={"date": date_value, "resolution": requested_resolution},
+                            ),
+                            "source_row_count": 0,
+                            "duplicate_source_rows": 0,
+                            "canonicalize_rows_ms": 0.0,
+                            "source_http_ms": fetched.source_http_ms,
+                            "source_json_decode_ms": fetched.source_json_decode_ms,
+                            "source_response_bytes": fetched.source_response_bytes,
+                            "source_capacity_wait_ms": fetched.source_capacity_wait_ms,
+                            "source_request_count": fetched.source_request_count,
+                            "empty_reason": fetched.empty_reason,
+                        },
+                    )
+                canonicalize_started = time.perf_counter()
+                canonical = canonicalize_sampled_grid_shard(
+                    rows=fetched.rows,
+                    page_metadata=fetched.metadata,
+                    mapping=self.mapping_context,
+                    query_plan=query_plan,
+                    shard_plan=shard_plan,
+                    context={"date": date_value, "resolution": requested_resolution},
+                )
+                return SnapshotLoad(
+                    shard_identity,
+                    {
+                        "frame": canonical.frame,
+                        "source_row_count": canonical.source_row_count,
+                        "duplicate_source_rows": canonical.duplicate_row_count,
+                        "canonicalize_rows_ms": round(
+                            (time.perf_counter() - canonicalize_started) * 1000,
+                            3,
+                        ),
+                        "source_http_ms": fetched.source_http_ms,
+                        "source_json_decode_ms": fetched.source_json_decode_ms,
+                        "source_response_bytes": fetched.source_response_bytes,
+                        "source_capacity_wait_ms": fetched.source_capacity_wait_ms,
+                        "source_request_count": fetched.source_request_count,
+                    },
+                )
+
+            return CANONICAL_SNAPSHOT_CACHE.get_or_load(
+                self.snapshot_cache_namespace,
+                self.shard_cache_policy,
+                shard_identity,
+                load,
+            )
+
+        fetch_started = time.perf_counter()
+        worker_count = min(source_capacity, len(query_plan.shards))
+        results: dict[str, SnapshotLoad] = {}
+        if worker_count == 1:
+            for shard in query_plan.shards:
+                results[shard.shard_id] = load_shard(shard)
+        else:
+            with ThreadPoolExecutor(
+                max_workers=worker_count,
+                thread_name_prefix="sampled-grid-shard",
+            ) as executor:
+                jobs = {
+                    executor.submit(load_shard, shard): shard.shard_id
+                    for shard in query_plan.shards
+                }
+                try:
+                    for job in as_completed(jobs):
+                        results[jobs[job]] = job.result()
+                except BaseException:
+                    for job in jobs:
+                        job.cancel()
+                    raise
+        source_fetch_wall_ms = (time.perf_counter() - fetch_started) * 1000
+        ordered = [results[shard.shard_id] for shard in query_plan.shards]
+        payloads = [_mapping(result.payload) for result in ordered]
+        misses = [
+            (result, payload)
+            for result, payload in zip(ordered, payloads, strict=True)
+            if not result.cache_hit
+        ]
+        empty_payloads = [payload for payload in payloads if payload.get("empty_reason")]
+        if empty_payloads:
+            if len(empty_payloads) != len(payloads):
+                raise ValueError("sampled-grid source returned a partially missing shard set")
+            assembled_frame = canonicalize_sampled_grid_rows(
+                [],
+                self.mapping_context,
+                context={"date": date_value, "resolution": requested_resolution},
+            )
+            assembled_source_rows = 0
+            duplicate_source_rows = 0
+        else:
+            assembler = SampledGridFrameAssembler(plan=query_plan)
+            for shard_plan, payload in zip(query_plan.shards, payloads, strict=True):
+                frame = payload.get("frame")
+                if frame is None or not hasattr(frame, "view"):
+                    raise RuntimeError("sampled-grid shard cache has no canonical frame")
+                assembler.add_shard(
+                    shard_plan,
+                    CanonicalSampledGridShard(
+                        frame=frame,
+                        source_row_count=int(payload.get("source_row_count") or frame.row_count),
+                        duplicate_row_count=int(payload.get("duplicate_source_rows") or 0),
+                    ),
+                )
+            assembled = assembler.finish()
+            assembled_frame = assembled.frame
+            assembled_source_rows = assembled.source_row_count
+            duplicate_source_rows = assembled.duplicate_row_count
+
+        return SnapshotLoad(
+            requested_identity,
+            {
+                "frame": assembled_frame,
+                "actual_resolution_km": requested_resolution,
+                "effective_bbox": dict(query_plan.effective_bbox),
+                "source_http_ms": round(sum(float(payload.get("source_http_ms") or 0) for _, payload in misses), 3),
+                "source_http_wall_ms": round(source_fetch_wall_ms, 3),
+                "source_json_decode_ms": round(sum(float(payload.get("source_json_decode_ms") or 0) for _, payload in misses), 3),
+                "source_response_bytes": sum(int(payload.get("source_response_bytes") or 0) for _, payload in misses),
+                "source_capacity_wait_ms": round(sum(float(payload.get("source_capacity_wait_ms") or 0) for _, payload in misses), 3),
+                "source_request_count": sum(int(payload.get("source_request_count") or 0) for _, payload in misses),
+                "source_page_count": len(misses),
+                "source_shard_count": len(query_plan.shards),
+                "source_topology_shard_count": query_plan.topology_shard_count,
+                "source_shard_cache_hits": len(ordered) - len(misses),
+                "source_worker_count": worker_count,
+                "source_row_count": assembled_source_rows,
+                "source_overfetch_row_count": max(0, assembled_source_rows - assembled_frame.row_count),
+                "duplicate_source_rows": duplicate_source_rows,
+                "canonicalize_rows_ms": round(sum(float(payload.get("canonicalize_rows_ms") or 0) for _, payload in misses), 3),
+                "degrade_reason": None,
+                "empty_reason": empty_payloads[0].get("empty_reason") if empty_payloads else None,
+            },
+            cache_hit=all(result.cache_hit for result in ordered),
+            waited=any(result.waited for result in ordered),
+            cache_lookup_ms=round(sum(result.cache_lookup_ms for result in ordered), 3),
+            cache_wait_ms=round(sum(result.cache_wait_ms for result in ordered), 3),
+            cache_commit_ms=round(sum(result.cache_commit_ms for result in ordered), 3),
+            cache_evict_ms=round(sum(result.cache_evict_ms for result in ordered), 3),
+        )
+
     def _load_canonical_snapshot(
         self,
         *,
         date_value: str,
         coverage: dict[str, Any],
+        requested_bbox: dict[str, float] | None,
         requested_resolution: float,
         candidates: list[float],
         snapshot: dict[str, Any],
@@ -342,6 +709,15 @@ class SampledGridHttpQueryAdapter:
         resolution_policy: dict[str, Any],
         allow_fallback: bool,
     ) -> SnapshotLoad:
+        if _mapping(snapshot.get("pagination")):
+            return self._load_paginated_canonical_snapshot(
+                date_value=date_value,
+                coverage=coverage,
+                requested_bbox=requested_bbox,
+                requested_resolution=requested_resolution,
+                snapshot=snapshot,
+                path=path,
+            )
         coverage_id = coverage.get("id")
         requested_identity = self._snapshot_identity(
             date_value=date_value,
@@ -483,7 +859,7 @@ class SampledGridHttpQueryAdapter:
             None,
             self.default_coverage_id,
         )
-        resolution = self.available_resolutions[-1] if self.available_resolutions else None
+        resolution = self.available_resolutions[0] if self.available_resolutions else None
         dates = self._availability_dates(coverage=coverage, resolution=resolution)
         return {
             "columns": [
@@ -605,6 +981,7 @@ class SampledGridHttpQueryAdapter:
             "point_count": len(points),
             "row_count": sum(point["row_count"] for point in points),
             "bbox": requested_bbox,
+            "query_scope": _query_scope(requested_bbox, coverage, coverage_status),
             "identity": None,
             "grid": {
                 "contract_version": SAMPLED_GRID_CONTRACT_VERSION,
@@ -628,7 +1005,10 @@ class SampledGridHttpQueryAdapter:
                 "normalize_ms": round(sum(float(timing.get("normalize_ms") or 0) for timing in timings), 3),
                 "filter_ms": round(sum(float(timing.get("filter_ms") or 0) for timing in timings), 3),
                 "serialize_ms": round(sum(float(timing.get("serialize_ms") or 0) for timing in timings), 3),
-                "source_request_count": sum(not bool(timing.get("cache_hit")) for timing in timings),
+                "source_request_count": sum(
+                    int(timing.get("source_request_count") or (not bool(timing.get("cache_hit"))))
+                    for timing in timings
+                ),
                 "worker_count": workers,
                 "server_total_ms": round((time.perf_counter() - total_started) * 1000, 3),
             },
@@ -679,6 +1059,7 @@ class SampledGridHttpQueryAdapter:
         loaded = self._load_canonical_snapshot(
             date_value=date_value,
             coverage=coverage,
+            requested_bbox=requested_bbox,
             requested_resolution=requested_resolution,
             candidates=candidates,
             snapshot=snapshot,
@@ -692,12 +1073,16 @@ class SampledGridHttpQueryAdapter:
             actual_resolution = _number(loaded.actual_identity.get("resolution_km"))
         if actual_resolution is None:
             raise RuntimeError("mapped snapshot has no actual resolution")
+        effective_bbox = _mapping(source_slice.get("effective_bbox")) or effective_query_bbox(
+            requested_bbox,
+            _mapping(coverage.get("bounds")),
+        )
 
         frame = source_slice.get("frame")
         if frame is None or not hasattr(frame, "view"):
             raise RuntimeError("mapped snapshot has no canonical grid frame")
         filter_started = time.perf_counter()
-        view = frame.view().intersecting(requested_bbox, epsilon=GEOGRAPHIC_INTERSECTION_EPSILON)
+        view = frame.view().intersecting(effective_bbox, epsilon=GEOGRAPHIC_INTERSECTION_EPSILON)
         source_row_count = view.row_count
         offset_value = max(0, int(offset))
         effective_limit = _effective_limit(limit)
@@ -708,8 +1093,37 @@ class SampledGridHttpQueryAdapter:
         source_json_decode_ms = (
             0.0 if loaded.cache_hit else float(source_slice.get("source_json_decode_ms") or 0)
         )
+        source_http_wall_ms = (
+            0.0
+            if loaded.cache_hit
+            else float(
+                source_slice.get("source_http_wall_ms")
+                or (source_http_ms + source_json_decode_ms)
+            )
+        )
         source_response_bytes = (
             0 if loaded.cache_hit else int(source_slice.get("source_response_bytes") or 0)
+        )
+        source_capacity_wait_ms = (
+            0.0 if loaded.cache_hit else float(source_slice.get("source_capacity_wait_ms") or 0)
+        )
+        source_request_count = (
+            0 if loaded.cache_hit else int(source_slice.get("source_request_count") or 1)
+        )
+        source_page_count = (
+            0 if loaded.cache_hit else int(source_slice.get("source_page_count") or 1)
+        )
+        source_worker_count = (
+            0 if loaded.cache_hit else int(source_slice.get("source_worker_count") or 1)
+        )
+        source_shard_count = int(source_slice.get("source_shard_count") or 0)
+        source_topology_shard_count = int(
+            source_slice.get("source_topology_shard_count") or source_shard_count
+        )
+        source_shard_cache_hits = (
+            source_shard_count
+            if loaded.cache_hit
+            else int(source_slice.get("source_shard_cache_hits") or 0)
         )
         canonicalize_rows_ms = (
             0.0 if loaded.cache_hit else float(source_slice.get("canonicalize_rows_ms") or 0)
@@ -722,8 +1136,7 @@ class SampledGridHttpQueryAdapter:
             (
                 loaded.cache_lookup_ms,
                 loaded.cache_wait_ms,
-                source_http_ms,
-                source_json_decode_ms,
+                source_http_wall_ms,
                 canonicalize_rows_ms,
                 loaded.cache_commit_ms,
                 loaded.cache_evict_ms,
@@ -732,7 +1145,9 @@ class SampledGridHttpQueryAdapter:
             )
         )
         degrade_reason = source_slice.get("degrade_reason") if actual_resolution > requested_resolution else None
-        bounds = requested_bbox or coverage.get("bounds")
+        bounds = effective_bbox or coverage.get("bounds")
+        query_scope = _query_scope(requested_bbox, coverage, coverage_status)
+        query_scope["snapped_query_bbox"] = deepcopy(effective_bbox)
         packet = {
             "row_contract_version": SAMPLED_GRID_CONTRACT_VERSION,
             "row_count": view.row_count,
@@ -748,6 +1163,7 @@ class SampledGridHttpQueryAdapter:
                 "max_lon": bounds["east"],
                 "max_lat": bounds["north"],
             },
+            "query_scope": query_scope,
             "grid": {
                 "contract_version": SAMPLED_GRID_CONTRACT_VERSION,
                 "grid_profile": deepcopy(self.grid_profile),
@@ -774,13 +1190,25 @@ class SampledGridHttpQueryAdapter:
                 "cache_commit_ms": loaded.cache_commit_ms,
                 "cache_evict_ms": loaded.cache_evict_ms,
                 "source_http_ms": round(source_http_ms, 3),
+                "source_http_wall_ms": round(source_http_wall_ms, 3),
                 "source_json_decode_ms": round(source_json_decode_ms, 3),
                 "source_response_bytes": source_response_bytes,
+                "source_capacity_wait_ms": round(source_capacity_wait_ms, 3),
+                "source_request_count": source_request_count,
+                "source_page_count": source_page_count,
+                "source_shard_count": source_shard_count,
+                "source_topology_shard_count": source_topology_shard_count,
+                "source_shard_cache_hits": source_shard_cache_hits,
+                "source_worker_count": source_worker_count,
+                "source_overfetch_row_count": int(
+                    source_slice.get("source_overfetch_row_count") or 0
+                ),
+                "duplicate_source_rows": int(source_slice.get("duplicate_source_rows") or 0),
                 "canonicalize_rows_ms": round(canonicalize_rows_ms, 3),
                 "canonical_packet_copy_ms": 0.0,
                 "filter_ms": filter_ms,
                 "packet_projection_ms": packet_projection_ms,
-                "query_ms": round(source_http_ms + source_json_decode_ms, 3),
+                "query_ms": round(source_http_wall_ms, 3),
                 "normalize_ms": round(canonicalize_rows_ms, 3),
                 "serialize_ms": 0.0,
                 "server_total_ms": round(tracked_server_ms, 3),
@@ -815,6 +1243,7 @@ class SampledGridHttpQueryAdapter:
                 "max_lon": requested_bbox["east"],
                 "max_lat": requested_bbox["north"],
             },
+            "query_scope": _query_scope(requested_bbox, None, coverage_status),
             "grid": {
                 "contract_version": SAMPLED_GRID_CONTRACT_VERSION,
                 "grid_profile": deepcopy(self.grid_profile),

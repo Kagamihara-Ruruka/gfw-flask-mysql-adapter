@@ -1,1 +1,1 @@
-"""AIS providers, live SQL reads, and ingest worker services."""
+"""AISStream delta ingest and MySQL read-model services."""
