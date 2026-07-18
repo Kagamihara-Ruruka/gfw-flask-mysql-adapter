@@ -105,6 +105,20 @@ class RuntimeCompositionRoot {
         clock: clockDomain.monotonic,
       }));
     }
+    if (
+      this.targetMap
+      && typeof SampledGridLayerPoolCore !== "undefined"
+      && typeof createSampledGridLayer === "function"
+      && typeof SampledGridLayerEffects !== "undefined"
+    ) {
+      this.own("SampledGridLayerPool", new SampledGridLayerPoolCore({
+        targetMap: this.targetMap,
+        targetState: this.state,
+        layerFactory: (LayerClass) => createSampledGridLayer(LayerClass),
+        layerEffects: SampledGridLayerEffects,
+        maxLayers: 2,
+      }));
+    }
     let queryPolicyController = null;
     const scheduler = this.own("QuerySchedulerInstance", new QueryScheduler({
       concurrencyProvider: () => queryPolicyController?.networkConcurrency() ?? 6,
@@ -135,6 +149,10 @@ class RuntimeCompositionRoot {
       eventLog,
       optionsProvider: () => this.state.dataFrameStore || {},
       statsTargetProvider: () => this.dataFrameStatsTarget(),
+      heapLimitProvider: () => Number(
+        this.globalTarget.performance?.memory?.jsHeapSizeLimit || 0
+      ),
+      heapBudgetFraction: 0.35,
       retentionPartitionProvider: () => {
         const datasetId = String(this.state.datasetId || "");
         if (!datasetId) return {};
@@ -169,6 +187,13 @@ class RuntimeCompositionRoot {
       watermarkPolicyProvider: (fixedPolicy, context) => (
         adaptiveWatermarkController?.resolve({ fixedPolicy, ...context }) || fixedPolicy
       ),
+      sourcePolicyProvider: (sourceKey) => {
+        const transport = queryPolicyController?.snapshot().transports[String(sourceKey || "")];
+        return transport ? {
+          sourceCapacity: transport.sourceCapacity,
+          effectiveBatchSize: transport.effectiveBatchSize,
+        } : null;
+      },
       stateSink: (snapshot) => this.syncPreheater(snapshot),
     }));
     const playbackEngine = this.own("PlaybackEngine", new PlaybackEngineCore({
@@ -212,12 +237,12 @@ class RuntimeCompositionRoot {
       "AdaptiveWatermarkController",
       new AdaptiveWatermarkControllerCore({
         metricsProvider: (context = {}) => runtimePerformanceMetrics.inputs(context),
-        cacheSnapshotProvider: ({ cacheNamespace = "", datasetId = "" } = {}) => dataFrameStore.snapshot(
-          cacheNamespace
-            ? { cacheNamespace }
-            : datasetId
-              ? { datasetId }
+        cacheSnapshotProvider: ({ scopeKey = "", cacheNamespace = "", datasetId = "" } = {}) => (
+          dataFrameStore.snapshot(
+            scopeKey || cacheNamespace || datasetId
+              ? { scopeKey, cacheNamespace, datasetId }
               : { datasetId: "unscoped" },
+          )
         ),
         configProvider: () => this.state.playbackCache || {},
         eventLog,

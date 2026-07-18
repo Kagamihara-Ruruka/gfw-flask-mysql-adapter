@@ -10,6 +10,7 @@
     "network_concurrency": 6,
     "background_network_concurrency": 3,
     "batch_max_operations": 3,
+    "batch_gzip_level": 3,
     "snapshot_cache_max_rows": 800000
   },
   "server": {

@@ -10,6 +10,6 @@
 
 `managed/` 是保留給匯入檔案隔離與刪除權限判定的內部目錄，預設由 registry 標成 `ignore=1`，不作為瀏覽器中的資料源抽屜，也不參與 runtime source discovery。
 
-HTTP-backed DATABASE source 可以在自己的 `query_policy.max_in_flight` 宣告實體來源可同時承受的 operation 數量。這是後端 `QueryBatchExecutor` 解包 batch 後的 provider capacity，不是瀏覽器批次大小，也不是播放水位。未宣告時採保守值 `1`；應以相同日期集合的受控量測決定，不得直接照搬機器 CPU 數。
+HTTP-backed DATABASE source 可以在自己的 `query_policy.max_in_flight` 宣告實體來源可同時承受的完整 Frame operation 數量。若單一 Frame 還會展開成多個來源 HTTP 分片，`query_policy.max_request_in_flight` 另行宣告該來源的實體 request 槽位；未宣告時沿用 operation 容量。兩者都不是瀏覽器水位，且必須以相同日期、BBOX 與解析度的受控量測決定，不得直接照搬機器 CPU 數。
 
-[`../examples/sources/database/pipeline-iceberg.example.json`](../examples/sources/database/pipeline-iceberg.example.json) 示範 HTTP Iceberg 來源與 `max_in_flight`。將範例複製到 `config/sources/database/` 後再填入實際 host、port、runtime launcher 與 secret；本機 source config 由 gitignore 排除，不得強制提交。
+[`../examples/sources/database/pipeline-iceberg.example.json`](../examples/sources/database/pipeline-iceberg.example.json) 示範 HTTP Iceberg 來源的 Frame 與 request 雙層容量。將範例複製到 `config/sources/database/` 後再填入實際 host、port、runtime launcher 與 secret；本機 source config 由 gitignore 排除，不得強制提交。

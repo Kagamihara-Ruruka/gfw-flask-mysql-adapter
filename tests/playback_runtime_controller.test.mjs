@@ -60,6 +60,9 @@ function fixture() {
     },
   };
   const preheater = {
+    reconcile(options) {
+      calls.push(["preheater-reconcile", options]);
+    },
     stop(reason) {
       calls.push(["preheater-stop", reason]);
     },
@@ -160,6 +163,65 @@ test("rate changes rebuild the owned timeline without exposing state mirrors", a
   }]);
 });
 
+test("visibility suspension preserves playback intent and reanchors the timeline on resume", async () => {
+  const target = fixture();
+  let currentIndex = 0;
+  await target.runtime.start({
+    configure: { dates: ["2020-01-01", "2020-01-02", "2020-01-03"] },
+    engineOptions: {},
+    rate: 1,
+    intervalMs: 100,
+    stepMode: "sequential",
+    currentIndexProvider: () => currentIndex,
+    datesLengthProvider: () => 3,
+    onFrameDue: async () => ({ advanced: true }),
+  });
+
+  assert.equal(target.runtime.suspend({ reason: "document_hidden" }), true);
+  assert.equal(target.runtime.snapshot().active, true);
+  assert.equal(target.runtime.snapshot().suspended, true);
+  assert.equal(target.runtime.snapshot().hasTimer, false);
+  assert.deepEqual(target.calls.filter(([name]) => name.endsWith("stop")), []);
+
+  target.advance(5000);
+  currentIndex = 1;
+  assert.equal(target.runtime.resume({ reason: "document_hidden" }), true);
+  const snapshot = target.runtime.snapshot();
+  assert.equal(snapshot.suspended, false);
+  assert.equal(snapshot.hasTimer, true);
+  assert.equal(snapshot.timeline.baseDateIndex, 1);
+  assert.equal(snapshot.timeline.startedAt, 6000);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(target.calls.at(-1))),
+    ["preheater-reconcile", { force: true }],
+  );
+});
+
+test("nested visibility reasons resume only after every owner releases suspension", async () => {
+  const target = fixture();
+  await target.runtime.start({
+    configure: { dates: ["2020-01-01", "2020-01-02"] },
+    engineOptions: {},
+    rate: 1,
+    intervalMs: 100,
+    stepMode: "sequential",
+    currentIndexProvider: () => 0,
+    datesLengthProvider: () => 2,
+    onFrameDue: async () => ({ advanced: true }),
+  });
+
+  target.runtime.suspend({ reason: "document_hidden" });
+  assert.equal(target.runtime.suspend({ reason: "dashboard_hidden" }), false);
+  assert.deepEqual(
+    [...target.runtime.snapshot().suspensionReasons].sort(),
+    ["dashboard_hidden", "document_hidden"],
+  );
+  assert.equal(target.runtime.resume({ reason: "document_hidden" }), false);
+  assert.equal(target.runtime.snapshot().hasTimer, false);
+  assert.equal(target.runtime.resume({ reason: "dashboard_hidden" }), true);
+  assert.equal(target.runtime.snapshot().hasTimer, true);
+});
+
 test("playback controls no longer own timer, generation or timeline state", () => {
   const controls = fs.readFileSync(path.join(root, "static/js/playback/playback-controls.js"), "utf8");
   const state = fs.readFileSync(path.join(root, "static/js/core/state.js"), "utf8");
@@ -191,6 +253,8 @@ test("PlaybackRuntime is the only UI facade for PlaybackEngine commands", () => 
     "markRenderStarted",
     "markFrameVisible",
     "releaseDisplayedFrame",
+    "suspend",
+    "resume",
   ]) {
     assert.match(runtime, new RegExp(`\\b${method}\\s*\\(`));
   }

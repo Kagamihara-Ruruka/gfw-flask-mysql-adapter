@@ -96,7 +96,14 @@ const SampledGridLayerEffects = (() => {
     }
   }
 
-  function crossfade({ targetMap, targetState, previousLayer, nextLayer, renderClock }) {
+  function crossfade({
+    targetMap,
+    targetState,
+    previousLayer,
+    nextLayer,
+    renderClock,
+    retainPrevious = false,
+  }) {
     if (!renderClock || typeof renderClock.request !== "function" || typeof renderClock.schedule !== "function") {
       throw new TypeError("SampledGrid crossfade requires a render clock");
     }
@@ -114,8 +121,10 @@ const SampledGridLayerEffects = (() => {
     setLayerTransition(previousLayer, targetState);
     setLayerBlur(previousLayer, targetState, false);
     setLayerOpacity(nextLayer, 0);
-    targetState.sampledGridRetiringLayers = targetState.sampledGridRetiringLayers || [];
-    targetState.sampledGridRetiringLayers.push(previousLayer);
+    if (!retainPrevious) {
+      targetState.sampledGridRetiringLayers = targetState.sampledGridRetiringLayers || [];
+      targetState.sampledGridRetiringLayers.push(previousLayer);
+    }
 
     renderClock.request(() => {
       renderClock.request(() => {
@@ -125,7 +134,9 @@ const SampledGridLayerEffects = (() => {
     });
 
     renderClock.schedule(() => {
-      if (targetState.gridLayer !== previousLayer) {
+      if (retainPrevious) {
+        if (targetState.gridLayer !== previousLayer) setLayerOpacity(previousLayer, 0);
+      } else if (targetState.gridLayer !== previousLayer) {
         removeRetiredLayer({ targetMap, targetState, layer: previousLayer });
       }
     }, transitionMs(targetState) + 80);

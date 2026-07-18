@@ -7,6 +7,108 @@ function canonicalGridEstimateValueBytes(value) {
   return 16;
 }
 
+function canonicalGridIndexArray(length, dictionarySize) {
+  if (dictionarySize <= 0x100) return new Uint8Array(length);
+  if (dictionarySize <= 0x10000) return new Uint16Array(length);
+  return new Uint32Array(length);
+}
+
+function canonicalGridRawColumn(values) {
+  Object.freeze(values);
+  return Object.freeze({
+    kind: "raw",
+    length: values.length,
+    estimatedBytes: 32 + values.reduce(
+      (sum, value) => sum + canonicalGridEstimateValueBytes(value),
+      0,
+    ),
+    valueAt: (index) => values[index],
+  });
+}
+
+function canonicalGridTypedColumn(values, valueType, nullable) {
+  const length = values.length;
+  const validity = nullable ? new Uint8Array(length) : null;
+  const typed = valueType === "boolean" ? new Uint8Array(length) : new Float64Array(length);
+  for (let index = 0; index < length; index += 1) {
+    const value = values[index];
+    if (value == null) continue;
+    if (validity) validity[index] = 1;
+    typed[index] = valueType === "boolean" ? Number(Boolean(value)) : Number(value);
+  }
+  return Object.freeze({
+    kind: valueType,
+    length,
+    estimatedBytes: 64 + typed.byteLength + (validity?.byteLength || 0),
+    valueAt: (index) => {
+      if (validity && validity[index] === 0) return null;
+      return valueType === "boolean" ? typed[index] === 1 : typed[index];
+    },
+  });
+}
+
+function canonicalGridDictionaryColumn(values, valueType, nullable, dictionary, lookup) {
+  const length = values.length;
+  const validity = nullable ? new Uint8Array(length) : null;
+  const indices = canonicalGridIndexArray(length, dictionary.length);
+  for (let index = 0; index < length; index += 1) {
+    const value = values[index];
+    if (value == null) continue;
+    if (validity) validity[index] = 1;
+    indices[index] = lookup.get(value);
+  }
+  const compactDictionary = valueType === "number"
+    ? Float64Array.from(dictionary)
+    : Object.freeze([...dictionary]);
+  const dictionaryBytes = valueType === "number"
+    ? compactDictionary.byteLength
+    : compactDictionary.reduce(
+      (sum, value) => sum + canonicalGridEstimateValueBytes(value),
+      0,
+    );
+  return Object.freeze({
+    kind: `${valueType}_dictionary`,
+    length,
+    estimatedBytes: 96 + indices.byteLength + (validity?.byteLength || 0) + dictionaryBytes,
+    valueAt: (index) => {
+      if (validity && validity[index] === 0) return null;
+      return compactDictionary[indices[index]];
+    },
+  });
+}
+
+function compileCanonicalGridColumn(values) {
+  let valueType = "";
+  let nullable = false;
+  for (const value of values) {
+    if (value == null) {
+      nullable = true;
+      continue;
+    }
+    const candidate = typeof value;
+    if (!["number", "boolean", "string"].includes(candidate)) return canonicalGridRawColumn(values);
+    if (valueType && valueType !== candidate) return canonicalGridRawColumn(values);
+    valueType = candidate;
+  }
+  if (!valueType) return canonicalGridRawColumn(values);
+  if (valueType === "boolean") return canonicalGridTypedColumn(values, valueType, nullable);
+
+  const dictionary = [];
+  const lookup = new Map();
+  const dictionaryLimit = Math.min(0x10000, Math.max(16, Math.ceil(values.length / 4)));
+  for (const value of values) {
+    if (value == null || lookup.has(value)) continue;
+    lookup.set(value, dictionary.length);
+    dictionary.push(value);
+    if (dictionary.length > dictionaryLimit) break;
+  }
+  if (dictionary.length <= dictionaryLimit) {
+    return canonicalGridDictionaryColumn(values, valueType, nullable, dictionary, lookup);
+  }
+  if (valueType === "number") return canonicalGridTypedColumn(values, valueType, nullable);
+  return canonicalGridRawColumn(values);
+}
+
 class CanonicalGridFrame {
   #storage;
   #indices;
@@ -36,14 +138,14 @@ class CanonicalGridFrame {
     }
     const fieldIndexes = new Map(fields.map((field, index) => [field, index]));
     const frameFields = Object.freeze({ ...(transport.frame_fields || {}) });
-    columns.forEach((column) => Object.freeze(column));
-    Object.freeze(columns);
-    const estimatedBytes = columns.reduce((total, column) => (
-      total + 32 + column.reduce((sum, value) => sum + canonicalGridEstimateValueBytes(value), 0)
-    ), 256 + fields.reduce((total, field) => total + field.length * 2, 0));
+    const compiledColumns = Object.freeze(columns.map(compileCanonicalGridColumn));
+    const estimatedBytes = compiledColumns.reduce(
+      (total, column) => total + column.estimatedBytes,
+      256 + fields.reduce((total, field) => total + field.length * 2, 0),
+    );
     this.#storage = Object.freeze({
       fields: Object.freeze(fields),
-      columns,
+      columns: compiledColumns,
       fieldIndexes,
       frameFields,
       rowCount,
@@ -95,7 +197,7 @@ class CanonicalGridFrame {
     if (Object.hasOwn(this.#storage.frameFields, field)) return this.#storage.frameFields[field];
     const columnIndex = this.#storage.fieldIndexes.get(field);
     if (columnIndex === undefined) return null;
-    return this.#storage.columns[columnIndex][this.sourceIndex(logicalIndex)];
+    return this.#storage.columns[columnIndex].valueAt(this.sourceIndex(logicalIndex));
   }
 
   boundsAt(logicalIndex, target = {}) {

@@ -96,22 +96,27 @@ function removeRetiredSampledGridLayers() {
   SampledGridLayerEffects.removeRetiredLayers({ targetMap: map, targetState: state });
 }
 
-function crossfadeSampledGridLayer(previousLayer, nextLayer) {
+function crossfadeSampledGridLayer(previousLayer, nextLayer, { retainPrevious = false } = {}) {
   SampledGridLayerEffects.crossfade({
     targetMap: map,
     targetState: state,
     previousLayer,
     nextLayer,
     renderClock: ClockDomain.render,
+    retainPrevious,
   });
 }
 
 function removeSampledGridLayer() {
-  removeRetiredSampledGridLayers();
-  if (state.gridLayer && map.hasLayer(state.gridLayer)) {
-    map.removeLayer(state.gridLayer);
+  if (typeof SampledGridLayerPool !== "undefined") {
+    SampledGridLayerPool.clear();
+  } else {
+    removeRetiredSampledGridLayers();
+    if (state.gridLayer && map.hasLayer(state.gridLayer)) {
+      map.removeLayer(state.gridLayer);
+    }
+    state.gridLayer = null;
   }
-  state.gridLayer = null;
   revealSampledGridLayer();
   state.renderedSampledGridDate = null;
   state.sampledGridMeta = null;
@@ -143,19 +148,29 @@ function renderSampledGridMap(frame) {
   removeAisLayer();
   const previousLayer = state.gridLayer && map.hasLayer(state.gridLayer) ? state.gridLayer : null;
   let choice = RendererRegistry.chooseSampledGridLayer(visibleFrame, SampledGridCanvasLayer);
-  let nextLayer = createSampledGridLayer(choice.LayerClass);
+  let nextLayer = typeof SampledGridLayerPool !== "undefined"
+    ? SampledGridLayerPool.acquire(choice.LayerClass, { currentLayer: previousLayer })
+    : createSampledGridLayer(choice.LayerClass);
   let drawMs = nextLayer.setFrame(visibleFrame);
   if (choice.backend === "webgl" && nextLayer._failed) {
-    if (map.hasLayer(nextLayer)) map.removeLayer(nextLayer);
+    if (typeof SampledGridLayerPool !== "undefined") {
+      SampledGridLayerPool.discard(nextLayer);
+    } else if (map.hasLayer(nextLayer)) {
+      map.removeLayer(nextLayer);
+    }
     choice = { backend: "canvas", LayerClass: SampledGridCanvasLayer };
-    nextLayer = createSampledGridLayer(choice.LayerClass);
+    nextLayer = typeof SampledGridLayerPool !== "undefined"
+      ? SampledGridLayerPool.acquire(choice.LayerClass, { currentLayer: previousLayer })
+      : createSampledGridLayer(choice.LayerClass);
     drawMs = nextLayer.setFrame(visibleFrame);
   }
   state.gridLayer = nextLayer;
   state.renderedSampledGridDate = $("date")?.value || state.renderedSampledGridDate;
   setRenderedLodZoom(state.dataLayer || "sampled-grid");
   applyLayerOrder();
-  crossfadeSampledGridLayer(previousLayer, nextLayer);
+  crossfadeSampledGridLayer(previousLayer, nextLayer, {
+    retainPrevious: typeof SampledGridLayerPool !== "undefined",
+  });
   return {
     backend: choice.backend,
     drawMs,

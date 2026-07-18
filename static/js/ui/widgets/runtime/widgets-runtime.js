@@ -708,6 +708,8 @@ class WidgetRefreshCoordinator {
     this.abortController = null;
     this.mapMoveHandler = null;
     this.timers = new Set();
+    this.pendingFrameStoreEvents = [];
+    this.frameStoreRefreshQueued = false;
     this.bound = false;
   }
 
@@ -718,6 +720,28 @@ class WidgetRefreshCoordinator {
       if (this.bound) callback();
     }, 0);
     this.timers.add(timerId);
+  }
+
+  queueFrameStoreRefresh(event) {
+    this.pendingFrameStoreEvents.push({ detail: event?.detail || {} });
+    if (this.frameStoreRefreshQueued) return;
+    this.frameStoreRefreshQueued = true;
+    this.queue(() => {
+      this.frameStoreRefreshQueued = false;
+      const events = this.pendingFrameStoreEvents.splice(0);
+      const lineSource = this.applicationRuntime.source("line-chart");
+      const tableSource = this.applicationRuntime.source("table");
+      const barSource = this.applicationRuntime.source("horizontal-bar-chart");
+      if (events.some((candidate) => lineSource?.cacheEventAffectsCurrent(candidate))) {
+        renderLineChartWidgets();
+      }
+      if (events.some((candidate) => tableSource?.cacheEventAffectsCurrent(candidate))) {
+        refreshTableWidgets();
+      }
+      if (events.some((candidate) => barSource?.cacheEventAffectsCurrent(candidate))) {
+        refreshHorizontalBarWidgets();
+      }
+    });
   }
 
   bind() {
@@ -775,11 +799,7 @@ class WidgetRefreshCoordinator {
   }, listenerOptions);
     this.eventTarget.addEventListener("rrkal:data-frame-store-changed", (event) => {
     if (event?.detail?.type !== "committed") return;
-    if (this.applicationRuntime.source("line-chart")?.cacheEventAffectsCurrent(event)) renderLineChartWidgets();
-    if (this.applicationRuntime.source("table")?.cacheEventAffectsCurrent(event)) refreshTableWidgets();
-    if (this.applicationRuntime.source("horizontal-bar-chart")?.cacheEventAffectsCurrent(event)) {
-      refreshHorizontalBarWidgets();
-    }
+    this.queueFrameStoreRefresh(event);
   }, listenerOptions);
   for (const id of ["start-date", "end-date", "dataset-select"]) {
       this.elementById(id)?.addEventListener("change", () => {
@@ -805,6 +825,8 @@ class WidgetRefreshCoordinator {
     this.targetMap?.off?.("moveend", this.mapMoveHandler);
     for (const timerId of this.timers) this.applicationRuntime.cancelSchedule(timerId);
     this.timers.clear();
+    this.pendingFrameStoreEvents.length = 0;
+    this.frameStoreRefreshQueued = false;
     this.abortController = null;
     this.mapMoveHandler = null;
   }

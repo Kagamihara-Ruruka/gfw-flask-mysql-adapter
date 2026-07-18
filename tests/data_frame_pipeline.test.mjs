@@ -7,6 +7,24 @@ import vm from "node:vm";
 const root = process.cwd();
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
+async function waitFor(predicate, attempts = 50) {
+  for (let index = 0; index < attempts; index += 1) {
+    if (predicate()) return;
+    await flush();
+  }
+  throw new Error("condition was not reached");
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  return { promise, resolve, reject };
+}
+
 function canonicalTransport(rows = []) {
   const values = Array.isArray(rows) ? rows : [];
   const frameFields = {};
@@ -195,11 +213,144 @@ function request(date = "2020-01-01", patch = {}) {
   };
 }
 
+test("active frame demand drains into cache after its last consumer leaves", async () => {
+  const context = createContext();
+  const source = deferred();
+  let sourceSignal = null;
+  const queryBroker = {
+    operationStatus: () => "active",
+    promoteSampledGrid: () => false,
+    requestSampledGrid(_request, { signal }) {
+      sourceSignal = signal;
+      signal.addEventListener("abort", () => {
+        const error = new Error("source transport aborted");
+        error.name = "AbortError";
+        source.reject(error);
+      }, { once: true });
+      return source.promise;
+    },
+  };
+  const FrameDemandService = api(context, "FrameDemandServiceCore");
+  const store = api(context, "DataFrameStore");
+  const eventLog = api(context, "LifecycleEventLog");
+  const service = new FrameDemandService({
+    frameIdentity: api(context, "FrameIdentity"),
+    queryBroker,
+    dataFrameStore: store,
+    eventLog,
+    sampledGridContract: context.SampledGridContract,
+    clock: api(context, "ClockDomain").monotonic,
+  });
+  const consumer = new AbortController();
+  const result = service.demand(request(), {
+    lane: "playback-window",
+    scopeId: "old-scope",
+    signal: consumer.signal,
+  });
+  await flush();
+
+  consumer.abort();
+  await assert.rejects(result, (error) => error?.name === "AbortError");
+  assert.equal(sourceSignal.aborted, false);
+  assert.equal(eventLog.query({ type: "QUERY_OPERATION_DRAINING" }).length, 1);
+
+  source.resolve(framePacket(context, [{ cell_id: "kept", lat: 15, lon: 125, value: 7 }], {
+    grid: { actual_resolution_km: 4 },
+  }));
+  await flush();
+  await flush();
+
+  assert.equal(store.inspect(request()).status, "ready");
+  assert.equal(store.inspect(request()).packet.frame.valueAt("cell_id", 0), "kept");
+  service.dispose();
+});
+
+test("queued frame demand still aborts when its last consumer leaves", async () => {
+  const context = createContext();
+  const source = deferred();
+  let sourceSignal = null;
+  const queryBroker = {
+    operationStatus: () => "queued",
+    promoteSampledGrid: () => false,
+    requestSampledGrid(_request, { signal }) {
+      sourceSignal = signal;
+      signal.addEventListener("abort", () => {
+        const error = new Error("queued source transport aborted");
+        error.name = "AbortError";
+        source.reject(error);
+      }, { once: true });
+      return source.promise;
+    },
+  };
+  const FrameDemandService = api(context, "FrameDemandServiceCore");
+  const service = new FrameDemandService({
+    frameIdentity: api(context, "FrameIdentity"),
+    queryBroker,
+    dataFrameStore: api(context, "DataFrameStore"),
+    eventLog: api(context, "LifecycleEventLog"),
+    sampledGridContract: context.SampledGridContract,
+    clock: api(context, "ClockDomain").monotonic,
+  });
+  const consumer = new AbortController();
+  const result = service.demand(request(), {
+    lane: "playback-window",
+    scopeId: "old-scope",
+    signal: consumer.signal,
+  });
+  await flush();
+
+  consumer.abort();
+  await assert.rejects(result, (error) => error?.name === "AbortError");
+  await flush();
+
+  assert.equal(sourceSignal.aborted, true);
+  assert.equal(api(context, "LifecycleEventLog").query({ type: "QUERY_OPERATION_DRAINING" }).length, 0);
+  service.dispose();
+});
+
 test("browser frame cache defaults to a bounded 512 MB budget", () => {
   const context = createContext({ statePatch: { dataFrameStore: undefined } });
   assert.equal(api(context, "DataFrameStore").snapshot().maxBytes, 512 * 1024 * 1024);
   api(context, "AppRuntime").dataFrameStatsTarget();
   assert.equal(context.state.dataFrameStore.maxBytes, 512 * 1024 * 1024);
+});
+
+test("browser frame cache clamps configured capacity to a safe heap fraction", () => {
+  const context = createContext();
+  const DataFrameStore = api(context, "DataFrameStoreCore");
+  const configuredMaxBytes = 4 * 1024 * 1024 * 1024;
+  const heapLimitBytes = 4 * 1024 * 1024 * 1024;
+  const store = new DataFrameStore({
+    frameIdentity: api(context, "FrameIdentity"),
+    clock: api(context, "ClockDomain").monotonic,
+    optionsProvider: () => ({ maxBytes: configuredMaxBytes }),
+    heapLimitProvider: () => heapLimitBytes,
+    heapBudgetFraction: 0.35,
+  });
+
+  const snapshot = store.snapshot();
+  assert.equal(snapshot.configuredMaxBytes, configuredMaxBytes);
+  assert.equal(snapshot.heapLimitBytes, heapLimitBytes);
+  assert.equal(snapshot.heapSafeMaxBytes, Math.floor(heapLimitBytes * 0.35));
+  assert.equal(snapshot.maxBytes, snapshot.heapSafeMaxBytes);
+  assert.equal(snapshot.heapSafetyApplied, true);
+});
+
+test("browser frame cache preserves configured capacity when heap telemetry is unavailable", () => {
+  const context = createContext();
+  const DataFrameStore = api(context, "DataFrameStoreCore");
+  const configuredMaxBytes = 768 * 1024 * 1024;
+  const store = new DataFrameStore({
+    frameIdentity: api(context, "FrameIdentity"),
+    clock: api(context, "ClockDomain").monotonic,
+    optionsProvider: () => ({ maxBytes: configuredMaxBytes }),
+  });
+
+  const snapshot = store.snapshot();
+  assert.equal(snapshot.maxBytes, configuredMaxBytes);
+  assert.equal(snapshot.configuredMaxBytes, configuredMaxBytes);
+  assert.equal(snapshot.heapLimitBytes, 0);
+  assert.equal(snapshot.heapSafetyApplied, false);
 });
 
 test("frame demand stores actual frame identity behind requested intent alias", async () => {
@@ -311,17 +462,16 @@ test("render intent separates configured resolution from the effective source ro
   assert.match(identity.intentKey(requestPacket), /\|4\|fixed$/);
 });
 
-test("scope cancellation is lifecycle cancellation instead of an HTTP failure", async () => {
+test("scope cancellation drains dispatched HTTP into cache instead of creating phantom capacity", async () => {
   let requestStarted = false;
+  let sourceSignal = null;
+  const source = deferred();
   const context = createContext({
-    fetchJson: async (_url, { signal } = {}) => new Promise((resolve, reject) => {
+    fetchJson: async (_url, { signal } = {}) => {
       requestStarted = true;
-      signal?.addEventListener("abort", () => {
-        const error = new Error("request cancelled");
-        error.name = "AbortError";
-        reject(error);
-      }, { once: true });
-    }),
+      sourceSignal = signal;
+      return source.promise;
+    },
   });
   const demand = api(context, "FrameDemandService");
   const log = api(context, "LifecycleEventLog");
@@ -336,10 +486,75 @@ test("scope cancellation is lifecycle cancellation instead of an HTTP failure", 
   await assert.rejects(pending, (error) => error?.name === "AbortError");
   await flush();
 
-  assert.equal(log.query({ type: "QUERY_OPERATION_CANCELLED" }).length, 1);
+  assert.equal(sourceSignal.aborted, false);
+  assert.equal(log.query({ type: "QUERY_OPERATION_DRAINING" }).length, 1);
+  assert.equal(log.query({ type: "QUERY_OPERATION_CANCELLED" }).length, 0);
   assert.equal(log.query({ type: "QUERY_OPERATION_FAILED" }).length, 0);
-  assert.equal(log.query({ type: "HTTP_BATCH_CANCELLED" }).length, 1);
+  assert.equal(log.query({ type: "HTTP_BATCH_CANCELLED" }).length, 0);
   assert.equal(api(context, "DataFrameStore").snapshot().failures, 0);
+
+  source.resolve({
+    rows: [{ cell_id: "drained", value: 3, lat: 15, lon: 125, resolution_km: 4 }],
+    row_count: 1,
+    grid: { actual_resolution_km: 4 },
+  });
+  await waitFor(() => api(context, "DataFrameStore").inspect(request()).status === "ready");
+
+  assert.equal(log.query({ type: "QUERY_OPERATION_FINISHED" }).length, 1);
+  assert.equal(log.query({ type: "HTTP_BATCH_FINISHED" }).length, 1);
+});
+
+test("scope replacement waits for dispatched source work instead of oversubscribing phantom slots", async () => {
+  const sourceRequests = [];
+  const context = createContext({
+    statePatch: {
+      playbackCache: {
+        watermarkStrategy: "fixed",
+        highWatermark: 2,
+        lowWatermark: 1,
+        maxPendingFrames: 2,
+        windowBehind: 0,
+        scopeSettleMs: 0,
+      },
+    },
+    fetchJson: async (url, { signal } = {}) => {
+      const task = deferred();
+      sourceRequests.push({ url, signal, task });
+      return task.promise;
+    },
+  });
+  const preheater = api(context, "PlaybackPreheater");
+  const firstScope = request("2020-01-01", { bbox: "120,10,130,20" });
+  const secondScope = request("2020-01-01", { bbox: "130,10,140,20" });
+  const allDates = ["2020-01-01", "2020-01-02", "2020-01-03"];
+
+  preheater.setScope({ dates: allDates, requestContext: firstScope, anchorDate: allDates[0] });
+  await waitFor(() => sourceRequests.length === 1);
+  const staleRequest = sourceRequests[0];
+
+  preheater.setScope({ dates: allDates, requestContext: secondScope, anchorDate: allDates[0] });
+  await flush();
+  await flush();
+
+  assert.equal(staleRequest.signal.aborted, false);
+  assert.equal(sourceRequests.length, 1);
+
+  staleRequest.task.resolve({
+    rows: [{ cell_id: "stale", value: 1, lat: 15, lon: 125, resolution_km: 4 }],
+    row_count: 1,
+    grid: { actual_resolution_km: 4 },
+  });
+  await waitFor(() => sourceRequests.length === 2);
+
+  assert.match(sourceRequests[1].url, /bbox=130\.000000%2C10\.000000%2C140\.000000%2C20\.000000/);
+  assert.equal(api(context, "LifecycleEventLog").query({ type: "HTTP_BATCH_CANCELLED" }).length, 0);
+
+  sourceRequests[1].task.resolve({
+    rows: [{ cell_id: "current", value: 2, lat: 15, lon: 135, resolution_km: 4 }],
+    row_count: 1,
+    grid: { actual_resolution_km: 4 },
+  });
+  preheater.stop("test_complete");
 });
 
 test("concurrent map and widget demand shares one HTTP request", async () => {

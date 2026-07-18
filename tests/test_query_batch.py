@@ -58,7 +58,7 @@ class QueryBatchRouteTests(unittest.TestCase):
             "endpoint_source": {"query_policy": {"max_in_flight": 2}},
         }
         self.routes = DatasetRoutes(
-            {"query_policy": {"batch_max_operations": 3}},
+            {"query_policy": {"batch_max_operations": 3, "batch_gzip_level": 3}},
             layer_registry=layer_registry,
             batch_executor=self.batch_executor,
         )
@@ -101,6 +101,7 @@ class QueryBatchRouteTests(unittest.TestCase):
         metrics = json.loads(next(chunks))
         self.assertEqual(metrics["type"], "batch.metrics")
         self.assertIn("batch_encode_ms", metrics["metrics"])
+        self.assertEqual(metrics["metrics"]["batch_codec"], "orjson")
         self.assertIn("response_bytes", metrics["metrics"])
         self.assertCountEqual(calls, ["2020-01-01", "2020-01-02"])
 
@@ -155,6 +156,7 @@ class QueryBatchRouteTests(unittest.TestCase):
             "batch.metrics",
         ])
         self.assertGreater(events[-1]["metrics"]["response_bytes"], 0)
+        self.assertEqual(events[-1]["metrics"]["batch_gzip_level"], 3)
 
 
 if __name__ == "__main__":

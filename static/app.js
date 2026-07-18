@@ -129,9 +129,11 @@ function setActivePage(pageId) {
     }
   }
   if (pageId !== "dashboard") {
-    stopPlayback();
+    PlaybackRuntime.suspend({ reason: "dashboard_hidden" });
     return;
   }
+  PlaybackRuntime.resume({ reason: "dashboard_hidden" });
+  updatePlaybackControls();
   setTimeout(() => syncMapContainerSize("頁籤切換", { force: true }), 60);
 }
 
@@ -249,9 +251,11 @@ function bindDeveloperBridge() {
   });
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
-      stopPlayback({ clearPreheater: true, reason: "document_hidden" });
+      PlaybackRuntime.suspend({ reason: "document_hidden" });
       return;
     }
+    PlaybackRuntime.resume({ reason: "document_hidden" });
+    updatePlaybackControls();
     refreshDatasetRegistry().catch((err) => setStatus(err.message, true));
   });
 }

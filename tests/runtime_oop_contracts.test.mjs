@@ -21,6 +21,7 @@ const coreOwners = [
   ["static/js/playback/playback-renderer.js", "PlaybackRendererController"],
   ["static/js/core/render-state.js", "RenderStateController"],
   ["static/js/services/sampled-grid-render-artifact-cache.js", "RenderArtifactCache"],
+  ["static/js/services/sampled-grid-layer-pool.js", "SampledGridLayerPoolCore"],
   ["static/js/rendering/virtual-grid-contract.js", "VirtualGridRuntimeController"],
   ["static/js/ui/map/layer-viewport-controller.js", "DatasetViewportController"],
 ];
@@ -75,6 +76,7 @@ test("runtime definitions load before the composition root and consumers load af
     "/static/js/services/frame-demand-service.js",
     "/static/js/services/frame-demand-decorators.js",
     "/static/js/services/render-intent-service.js",
+    "/static/js/services/sampled-grid-layer-pool.js",
     "/static/js/playback/playback-cache-service.js",
     "/static/js/playback/playback-preheater.js",
     "/static/js/playback/playback-engine.js",
@@ -108,6 +110,7 @@ test("runtime-owned resources expose symmetric teardown", () => {
     "static/js/playback/adaptive-watermark-controller.js",
     "static/js/playback/playback-renderer.js",
     "static/js/rendering/virtual-grid-contract.js",
+    "static/js/services/sampled-grid-layer-pool.js",
     "static/js/ui/map/layer-viewport-controller.js",
     "static/js/ui/map/tile-selection-layer.js",
     "static/js/ui/layers/layer-activation-controller.js",
@@ -143,6 +146,18 @@ test("query coordinator does not expose its scheduler implementation", () => {
     coordinator.indexOf("});", coordinator.indexOf("function createLayerQueryCoordinator")) + 3,
   );
   assert.doesNotMatch(returnBlock, /\bscheduler\s*,/);
+});
+
+test("adaptive watermark cache sizing keeps the active scope identity", () => {
+  const compositionRoot = read("static/js/runtime/runtime-composition-root.js");
+  const provider = compositionRoot.slice(
+    compositionRoot.indexOf("cacheSnapshotProvider:"),
+    compositionRoot.indexOf("configProvider:", compositionRoot.indexOf("cacheSnapshotProvider:")),
+  );
+
+  assert.match(provider, /scopeKey\s*=\s*""/);
+  assert.match(provider, /dataFrameStore\.snapshot\([\s\S]*\{ scopeKey, cacheNamespace, datasetId \}/);
+  assert.doesNotMatch(provider, /cacheNamespace\s*\?\s*\{ cacheNamespace \}\s*:\s*datasetId/);
 });
 
 test("sampled-grid transport has one DI-owned batch boundary", () => {

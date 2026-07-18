@@ -61,13 +61,14 @@ def direct_source_snapshot(
     resolution: float,
     timeout: float,
 ) -> dict[str, Any]:
+    source_resolution = format(float(resolution), "g")
     query = urlencode(
         {
             "date": date,
             "aoi": aoi,
             "product": product,
             "metric": metric,
-            "resolution": resolution,
+            "resolution": source_resolution,
         }
     )
     started_at = time.perf_counter()

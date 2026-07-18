@@ -36,6 +36,7 @@ class PlaybackPreheaterController {
     optionsProvider = null,
     fixedPolicyNormalizer,
     watermarkPolicyProvider = null,
+    sourcePolicyProvider = null,
     stateSink = null,
   } = {}) {
     if (!store || !demandService || !eventLog || !frameIdentity || !clock) {
@@ -55,6 +56,7 @@ class PlaybackPreheaterController {
     this.optionsProvider = optionsProvider || (() => ({}));
     this.fixedPolicyNormalizer = fixedPolicyNormalizer;
     this.watermarkPolicyProvider = watermarkPolicyProvider;
+    this.sourcePolicyProvider = sourcePolicyProvider;
     this.stateSink = stateSink;
     this.scope = null;
     this.scopeSequence = 0;
@@ -62,18 +64,45 @@ class PlaybackPreheaterController {
     this.retryAfter = new Map();
     this.retryTimer = null;
     this.scopeSettleTimer = null;
+    this.reconcileTimer = null;
     this.unsubscribeStore = this.store.subscribe?.((change) => this.handleStoreChange(change)) || null;
   }
 
   options(policyContext = {}) {
     const cache = this.optionsProvider() || {};
     const basePolicy = this.fixedPolicyNormalizer(cache);
+    const configuredMaxPendingFrames = Math.max(1, Math.min(
+      32,
+      Number(cache.maxPendingFrames ?? 12),
+    ));
+    const requestContext = this.scope?.requestContext || {};
+    const sourceKey = this.frameIdentity.transportKey(requestContext);
+    const sourcePolicy = this.sourcePolicyProvider?.(sourceKey, requestContext) || null;
+    const rawSourceCapacity = Number(sourcePolicy?.sourceCapacity);
+    const sourceCapacity = sourcePolicy
+      ? Math.max(1, Math.min(
+        16,
+        Number.isFinite(rawSourceCapacity) ? Math.floor(rawSourceCapacity) : 1,
+      ))
+      : null;
+    const rawBatchSize = Number(sourcePolicy?.effectiveBatchSize);
+    const effectiveBatchSize = sourcePolicy
+      ? Math.max(1, Math.min(
+        sourceCapacity,
+        Number.isFinite(rawBatchSize) ? Math.floor(rawBatchSize) : sourceCapacity,
+      ))
+      : null;
+    const transportPendingFrames = sourcePolicy
+      ? sourceCapacity + effectiveBatchSize
+      : configuredMaxPendingFrames;
     const fixedPolicy = {
       ...basePolicy,
-      maxPendingFrames: Math.max(1, Math.min(32, Number(cache.maxPendingFrames ?? 12))),
+      configuredMaxPendingFrames,
+      maxPendingFrames: Math.min(configuredMaxPendingFrames, transportPendingFrames),
+      sourceCapacity,
+      effectiveBatchSize,
       scopeSettleMs: Math.max(0, Number(cache.scopeSettleMs ?? 0)),
     };
-    const requestContext = this.scope?.requestContext || {};
     const policy = this.watermarkPolicyProvider?.(fixedPolicy, {
       datasetId: requestContext.datasetId || "",
       cacheNamespace: requestContext.cacheNamespace || "",
@@ -203,6 +232,7 @@ class PlaybackPreheaterController {
     this.scope.id = id;
     this.scope.signature = signature;
     this.scope.requestContext = normalizedContext;
+    this.cancelScheduledReconcile();
     this.clock.cancel(this.retryTimer);
     this.retryTimer = null;
     this.clock.cancel(this.scopeSettleTimer);
@@ -231,6 +261,7 @@ class PlaybackPreheaterController {
       this.reconcile();
       return this.snapshot();
     }
+    this.cancelScheduledReconcile();
     this.cancelQueryScopes(this.scope, { includeActive: true });
     this.clock.cancel(this.retryTimer);
     this.retryTimer = null;
@@ -252,6 +283,8 @@ class PlaybackPreheaterController {
       failed: 0,
       replenishing: false,
       replenishmentReason: "",
+      reconcileRuns: 0,
+      coalescedReconciles: 0,
       queryScopeIds: new Set([id]),
     };
     this.eventLog?.record?.("PREHEATER_SCOPE_CHANGED", {
@@ -328,14 +361,37 @@ class PlaybackPreheaterController {
     return this.scope.dates.slice(start, end).map((date) => this.requestForDate(date));
   }
 
+  cancelScheduledReconcile() {
+    if (this.reconcileTimer === null) return false;
+    this.clock.cancel(this.reconcileTimer);
+    this.reconcileTimer = null;
+    return true;
+  }
+
+  scheduleReconcile() {
+    if (!this.scope) return false;
+    if (this.reconcileTimer !== null) {
+      this.scope.coalescedReconciles += 1;
+      return false;
+    }
+    const scopeId = this.scope.id;
+    this.reconcileTimer = this.clock.schedule(() => {
+      this.reconcileTimer = null;
+      if (this.scope?.id === scopeId) this.reconcile();
+    }, 0);
+    return true;
+  }
+
   reconcile({
     force = false,
     bypassSettle = false,
     bypassDecreaseHysteresis = false,
     pruneQueued = false,
   } = {}) {
+    this.cancelScheduledReconcile();
     if (!this.scope?.dates.length || !this.scope.requestContext.bbox) return this.snapshot();
     if (this.scopeSettleTimer && !bypassSettle) return this.snapshot();
+    this.scope.reconcileRuns += 1;
     const options = this.options({ bypassDecreaseHysteresis });
     const {
       highWatermark,
@@ -454,13 +510,20 @@ class PlaybackPreheaterController {
         .finally(() => {
           if (this.inflight.get(intentKey) === promise) this.inflight.delete(intentKey);
           if (!this.ownsQueryScope(scopeId)) return;
-          this.scope.readyAhead = this.readyAhead();
-          const hasRetry = this.windowRequests().some((candidate) => (
-            Number(this.retryAfter.get(this.frameIdentity.intentKey(candidate)) || 0) > this.clock.now()
+          const hasRetry = [...this.retryAfter.values()].some((retryAt) => (
+            Number(retryAt || 0) > this.clock.now()
           ));
-          this.syncState(this.inflight.size ? "FETCHING" : hasRetry ? "DEGRADED" : "READY");
+          this.syncState(
+            this.inflight.size
+              ? "FETCHING"
+              : hasRetry
+                ? "DEGRADED"
+                : this.scope.replenishing
+                  ? "FETCHING"
+                  : "READY",
+          );
           if (hasRetry) this.scheduleRetry();
-          else if (this.scope.replenishing) queueMicrotask(() => this.reconcile());
+          else if (this.scope.replenishing) this.scheduleReconcile();
         });
       this.inflight.set(intentKey, promise);
     }
@@ -518,8 +581,7 @@ class PlaybackPreheaterController {
     if (!this.scope || !["committed", "evicted"].includes(change?.type)) return;
     if (String(change.datasetId || "") !== this.scope.requestContext.datasetId) return;
     if (change.date && !this.scope.dates.includes(String(change.date))) return;
-    this.scope.readyAhead = this.readyAhead();
-    this.reconcile();
+    this.scheduleReconcile();
   }
 
   syncState(status) {
@@ -540,6 +602,7 @@ class PlaybackPreheaterController {
     this.retryTimer = null;
     this.clock.cancel(this.scopeSettleTimer);
     this.scopeSettleTimer = null;
+    this.cancelScheduledReconcile();
     this.scope = null;
     this.stateSink?.(this.snapshot());
   }
@@ -565,6 +628,9 @@ class PlaybackPreheaterController {
       failed: this.scope.failed,
       replenishing: this.scope.replenishing,
       scopeSettlePending: Boolean(this.scopeSettleTimer),
+      reconcilePending: this.reconcileTimer !== null,
+      reconcileRuns: this.scope.reconcileRuns,
+      coalescedReconciles: this.scope.coalescedReconciles,
       ...this.options(),
     });
   }

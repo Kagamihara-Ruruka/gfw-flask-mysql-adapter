@@ -141,6 +141,7 @@ class FrameDemandServiceCore {
       consumers: new Map(),
       promise: null,
       settled: false,
+      draining: false,
     };
     this.inflight.set(intentKey, entry);
     entry.promise = this.fetchRequest(entry).finally(() => {
@@ -150,18 +151,42 @@ class FrameDemandServiceCore {
     return entry;
   }
 
+  releaseUnusedEntry(entry) {
+    if (!entry || entry.settled || entry.consumers.size > 0) return;
+    const operationStatus = this.queryBroker.operationStatus?.(entry.intentKey) || "missing";
+    if (operationStatus === "active") {
+      if (!entry.draining) {
+        entry.draining = true;
+        this.eventLog.record?.("QUERY_OPERATION_DRAINING", this.eventDetail(entry.request, {
+          lane: entry.lane,
+          scope_id: entry.physicalScopeId,
+          reason: "consumer_scope_released",
+        }));
+      }
+      return;
+    }
+    entry.controller.abort();
+  }
+
   settleConsumer(entry, consumer, method, value) {
     if (!consumer || consumer.settled) return;
     consumer.settled = true;
     consumer.signal?.removeEventListener("abort", consumer.abortListener);
     entry.consumers.delete(consumer.id);
     method(value);
-    if (!entry.settled && entry.consumers.size === 0) entry.controller.abort();
+    this.releaseUnusedEntry(entry);
   }
 
   attachConsumer(entry, { signal = null, scopeId = "", consumerId = "", lane = "background" } = {}) {
     if (!entry) return Promise.reject(new Error("Frame demand entry is unavailable"));
     if (signal?.aborted) return Promise.reject(this.abortError());
+    if (entry.draining) {
+      entry.draining = false;
+      this.eventLog.record?.("QUERY_OPERATION_REATTACHED", this.eventDetail(entry.request, {
+        lane,
+        scope_id: entry.physicalScopeId,
+      }));
+    }
     if (this.queryBroker.promoteSampledGrid?.(entry.intentKey, lane)) entry.lane = String(lane);
     const id = `${String(consumerId || "consumer")}:${++this.consumerSequence}`;
     return new Promise((resolve, reject) => {

@@ -151,7 +151,7 @@ Playback UI
 - Flask `QueryBatchExecutor` 是 batch 解包後的唯一執行 owner；全域 worker 上限來自 runtime query policy，各 provider capacity 來自 source `query_policy.max_in_flight`，而且跨瀏覽器 request 共用同一份 in-flight 計數。Provider permit 必須在提交 worker 前取得，等待來源容量不得占用全域 worker。
 - `QueryScheduler` 保留給其他 query family；不得再包住 sampled-grid Demand/Broker 鏈形成第二個 queued/active owner。
 - tracing decorator 不參與 cache hit、dedupe、promotion 或 cancellation 決策。
-- 插隊與 scope cancellation 只影響 queued/active consumer，不清除已完成 canonical frame。
+- 插隊與 scope cancellation 只影響 consumer，不清除已完成 canonical frame。最後一個 consumer 離開時，queued operation 可取消；已送到 physical provider 的 operation 必須 drain 並提交 Store，不能因 browser abort 提前釋放虛假的來源容量。
 - 播放中 Widget 日期刷新只讀 Store；明確 Tile 選取缺當日資料時，才允許一張 `widget-interactive` demand。
 - idle/paused 圖表可用 `widget-auto` 補設定窗口；表格與事件檢視器永遠唯讀。
 - Widget Capability 只渲染注入的 model，不得直接存取 Store、Demand、Coordinator 或 HTTP。

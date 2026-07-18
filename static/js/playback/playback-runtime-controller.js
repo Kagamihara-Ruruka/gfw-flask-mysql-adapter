@@ -14,6 +14,7 @@ class PlaybackRuntimeController {
     this.timeline = null;
     this.timer = null;
     this.session = null;
+    this.suspensionReasons = new Set();
   }
 
   isActive() {
@@ -106,14 +107,25 @@ class PlaybackRuntimeController {
     this.clock.cancel(this.timer);
     this.timer = null;
     const timeline = this.activeTimeline(generation);
-    if (!timeline || !this.session || !this.isActive() || !this.isGenerationActive(generation)) return;
+    if (
+      !timeline
+      || !this.session
+      || this.suspensionReasons.size
+      || !this.isActive()
+      || !this.isGenerationActive(generation)
+    ) return;
     const delayMs = this.scheduler.delayUntilNextFrame(timeline, {
       nowMs: this.clock.now(),
       fallbackIntervalMs: this.session.intervalMs,
     });
     this.timer = this.clock.schedule(async () => {
       this.timer = null;
-      if (!this.isActive() || !this.isGenerationActive(generation) || !this.session) return;
+      if (
+        this.suspensionReasons.size
+        || !this.isActive()
+        || !this.isGenerationActive(generation)
+        || !this.session
+      ) return;
       try {
         const frameNumber = this.scheduler.dueFrameNumber(timeline, {
           nowMs: this.clock.now(),
@@ -177,6 +189,7 @@ class PlaybackRuntimeController {
     this.clock.cancel(this.timer);
     this.timer = null;
     this.timeline = null;
+    this.suspensionReasons.clear();
     this.session = {
       bufferPollMs: Math.max(1, Number(bufferPollMs || 180)),
       currentIndexProvider,
@@ -220,6 +233,33 @@ class PlaybackRuntimeController {
     return true;
   }
 
+  suspend({ reason = "suspended" } = {}) {
+    if (!this.session || !this.isActive()) return false;
+    const normalizedReason = String(reason || "suspended");
+    const wasSuspended = this.suspensionReasons.size > 0;
+    this.suspensionReasons.add(normalizedReason);
+    if (!wasSuspended) {
+      this.clock.cancel(this.timer);
+      this.timer = null;
+    }
+    return !wasSuspended;
+  }
+
+  resume({ reason = "suspended" } = {}) {
+    const normalizedReason = String(reason || "suspended");
+    const removed = this.suspensionReasons.delete(normalizedReason);
+    this.preheater.reconcile?.({ force: true });
+    if (
+      !removed
+      || this.suspensionReasons.size
+      || !this.session
+      || !this.isActive()
+    ) return false;
+    this.startTimeline(this.generation, { firstDelayMs: this.session.intervalMs });
+    this.schedule(this.generation);
+    return true;
+  }
+
   stop({ clearPreheater = false, reason = "stopped" } = {}) {
     const wasActive = Boolean(this.isActive() || this.timer || this.timeline);
     this.nextGeneration();
@@ -227,6 +267,7 @@ class PlaybackRuntimeController {
     this.timer = null;
     this.timeline = null;
     this.session = null;
+    this.suspensionReasons.clear();
     if (clearPreheater) this.preheater.stop?.(reason);
     if (wasActive || this.lifecycleSnapshot()?.runId) this.engine.stop(reason);
     return wasActive;
@@ -237,6 +278,8 @@ class PlaybackRuntimeController {
       active: this.isActive(),
       generation: this.generation,
       hasTimer: Boolean(this.timer),
+      suspended: this.suspensionReasons.size > 0,
+      suspensionReasons: Object.freeze([...this.suspensionReasons]),
       timeline: this.timeline ? Object.freeze({ ...this.timeline }) : null,
     });
   }

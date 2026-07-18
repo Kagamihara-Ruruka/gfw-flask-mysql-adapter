@@ -201,9 +201,19 @@ def _dataset_from_catalog_item(
         value_at(catalog_body, catalog.get("snapshot_capabilities_path"))
     )
     pagination = _mapping(snapshot_capabilities.get("pagination"))
-    if pagination:
+    spatial_window = _mapping(snapshot_capabilities.get("spatial_window"))
+    field_projection = _mapping(snapshot_capabilities.get("field_projection"))
+    columnar_response = _mapping(snapshot_capabilities.get("columnar_response"))
+    if pagination or spatial_window or field_projection or columnar_response:
         snapshot = deepcopy(_mapping(query.get("snapshot")))
-        snapshot["pagination"] = deepcopy(pagination)
+        if pagination:
+            snapshot["pagination"] = deepcopy(pagination)
+        if spatial_window:
+            snapshot["spatial_window"] = deepcopy(spatial_window)
+        if field_projection:
+            snapshot["field_projection"] = deepcopy(field_projection)
+        if columnar_response:
+            snapshot["columnar_response"] = deepcopy(columnar_response)
         query["snapshot"] = snapshot
     source_parameters = deepcopy(_mapping(query.get("static_parameters")))
     source_parameters.update({"product": product_value, "metric": metric_value})

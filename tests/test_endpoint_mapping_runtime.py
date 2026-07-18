@@ -91,7 +91,20 @@ def _catalog() -> dict:
                     "offset_parameter": "offset",
                     "max_page_size": 100000,
                     "stable_order": ["grid_row", "grid_col"],
-                }
+                },
+                "field_projection": {
+                    "mode": "field_list",
+                    "parameter": "fields",
+                    "separator": ",",
+                    "available_fields": ["grid_id", "grid_row", "grid_col", "value", "resolution_km"],
+                },
+                "columnar_response": {
+                    "mode": "columns",
+                    "parameter": "response_shape",
+                    "value": "columns",
+                    "columns_path": "columns",
+                    "row_count_path": "row_count",
+                },
             }
         },
         "aois": [
@@ -159,6 +172,9 @@ class EndpointMappingRuntimeTests(unittest.TestCase):
             100000,
             datasets["pipeline.chlor_a"]["sampled_grid"]["query"]["snapshot"]["pagination"]["max_page_size"],
         )
+        snapshot = datasets["pipeline.chlor_a"]["sampled_grid"]["query"]["snapshot"]
+        self.assertEqual("fields", snapshot["field_projection"]["parameter"])
+        self.assertEqual("columns", snapshot["columnar_response"]["value"])
         self.assertTrue(datasets["pipeline.chlor_a"]["sampled_grid"]["value_domain"]["higher_is_better"])
         self.assertFalse(datasets["pipeline.pressure"]["sampled_grid"]["value_domain"]["higher_is_better"])
         self.assertEqual(

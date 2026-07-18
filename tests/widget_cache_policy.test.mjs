@@ -165,6 +165,86 @@ test("line-chart source owns cache-first refresh policy", async () => {
   assert.equal(demands[1].options.lane, "widget-auto");
 });
 
+test("line-chart cache commits redraw only when playback does not own the lifecycle", () => {
+  const { LineChartDataSource } = loadWidgetClasses();
+  const dates = ["2020-01-01", "2020-01-02", "2020-01-03"];
+  let playbackOwnsQuery = true;
+  const source = new LineChartDataSource({
+    stateProvider: () => ({
+      datasetId: "ocean",
+      availableDates: dates,
+      datasets: { ocean: { sampled_grid: {}, layer_id: "ocean.layer", label: "Ocean" } },
+    }),
+    queryContext: {
+      selectedCell: () => selection,
+      currentDate: () => "2020-01-02",
+      resolutionFor: () => 4,
+      requestedResolutionFor: () => 4,
+      mapSnapshot: () => ({ zoom: 5, latitude: 13 }),
+      playbackOwnsQueryLifecycle: () => playbackOwnsQuery,
+    },
+    dataFrameStore: { inspect: () => ({ status: "missing" }) },
+    frameDemandService: { demandRange: () => Promise.resolve({}) },
+    renderIntentService: { unlimitedLimit: () => "max" },
+    selectedRangeProvider: () => dates,
+    dateBoundsProvider: () => ({ start: dates[0], end: dates.at(-1) }),
+  });
+  const event = { detail: { datasetId: "ocean", date: "2020-01-02" } };
+
+  assert.equal(source.cacheEventAffectsCurrent(event), false);
+  playbackOwnsQuery = false;
+  assert.equal(source.cacheEventAffectsCurrent(event), true);
+});
+
+test("line-chart reuses cached tile summaries as its moving window advances", () => {
+  const { CanonicalGridFrame, LineChartDataSource } = loadWidgetClasses();
+  const dates = ["2020-01-01", "2020-01-02", "2020-01-03", "2020-01-04"];
+  const frame = new CanonicalGridFrame({
+    schema: "rrkal.canonical_grid_frame.v1",
+    row_fields: ["value"],
+    frame_fields: {},
+    columns: [[3]],
+    row_count: 1,
+  });
+  let currentDate = "2020-01-02";
+  let inspections = 0;
+  const source = new LineChartDataSource({
+    stateProvider: () => ({
+      datasetId: "ocean",
+      availableDates: dates,
+      datasets: { ocean: { sampled_grid: {}, layer_id: "ocean.layer", label: "Ocean" } },
+    }),
+    queryContext: {
+      selectedCell: () => selection,
+      currentDate: () => currentDate,
+      resolutionFor: () => 4,
+      requestedResolutionFor: () => 4,
+      mapSnapshot: () => ({ zoom: 5, latitude: 13 }),
+    },
+    dataFrameStore: {
+      inspect() {
+        inspections += 1;
+        return { status: "ready", packet: { frame, timing: {} } };
+      },
+    },
+    frameDemandService: { demandRange: () => Promise.resolve({}) },
+    renderIntentService: { unlimitedLimit: () => "max" },
+    selectedRangeProvider: () => dates,
+    dateBoundsProvider: () => ({ start: dates[0], end: dates.at(-1) }),
+  });
+  source.windowDays = 1;
+
+  assert.equal(source.model().pointCount, 3);
+  assert.equal(inspections, 3);
+  currentDate = "2020-01-03";
+  assert.equal(source.model().pointCount, 3);
+  assert.equal(inspections, 4);
+
+  source.clear();
+  assert.equal(source.model().pointCount, 3);
+  assert.equal(inspections, 7);
+});
+
 test("line-chart auto fill cancels through its scheduler-owned query scope", async () => {
   const { LineChartDataSource } = loadWidgetClasses();
   const dates = ["2020-01-01", "2020-01-02", "2020-01-03"];

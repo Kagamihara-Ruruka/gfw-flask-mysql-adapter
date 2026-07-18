@@ -27,6 +27,7 @@ def _dataset(*, units_per_degree: int = 24) -> dict:
                 "value": "value",
                 "resolution": "resolution_km",
             },
+            "request_fields": {"time": "date"},
             "geometry": {
                 "encoding": "global_index",
                 "origin_lat": 90,
@@ -47,6 +48,20 @@ def _pagination(max_page_size: int) -> dict:
     }
 
 
+def _spatial_window() -> dict:
+    return {
+        "mode": "grid_index_range",
+        "bounds": "half_open",
+        "row_field": "grid_row",
+        "column_field": "grid_col",
+        "row_start_parameter": "row_start",
+        "row_stop_parameter": "row_stop",
+        "column_start_parameter": "column_start",
+        "column_stop_parameter": "column_stop",
+        "metadata_path": "spatial_window",
+    }
+
+
 def _paged_adapter_dataset() -> dict:
     return {
         "dataset_id": "paged.sampled-grid",
@@ -55,7 +70,10 @@ def _paged_adapter_dataset() -> dict:
         "display_columns": ["date", "cell_id", "lat", "lon", "value", "resolution_km"],
         "endpoint_source": {
             "endpoint": {"base_url": "http://paged.example.invalid"},
-            "query_policy": {"max_in_flight": 2},
+            "query_policy": {
+                "max_in_flight": 1,
+                "max_request_in_flight": 2,
+            },
         },
         "sampled_grid": {
             "available_resolutions_km": [4],
@@ -72,6 +90,7 @@ def _paged_adapter_dataset() -> dict:
                 "value": "value",
                 "resolution": "resolution_km",
             },
+            "request_fields": {"time": "date"},
             "geometry": {
                 "encoding": "global_index",
                 "origin_lat": 2,
@@ -88,6 +107,7 @@ def _paged_adapter_dataset() -> dict:
                         "limit_parameter": "take",
                         "offset_parameter": "skip",
                     },
+                    "spatial_window": _spatial_window(),
                 },
             },
             "resolution_policy": {"fallback": "none"},
@@ -101,15 +121,41 @@ def _paged_adapter_dataset() -> dict:
     }
 
 
+def _columnar_paged_adapter_dataset() -> dict:
+    dataset = _paged_adapter_dataset()
+    snapshot = dataset["sampled_grid"]["query"]["snapshot"]
+    snapshot["field_projection"] = {
+        "mode": "field_list",
+        "parameter": "fields",
+        "separator": ",",
+        "available_fields": [
+            "grid_id",
+            "grid_row",
+            "grid_col",
+            "value",
+            "resolution_km",
+            "unused_source_field",
+        ],
+    }
+    snapshot["columnar_response"] = {
+        "mode": "columns",
+        "parameter": "response_shape",
+        "value": "columns",
+        "columns_path": "columns",
+        "row_count_path": "row_count",
+    }
+    return dataset
+
+
 class _PagedClient:
-    def __init__(self, *, incomplete_offset: int | None = None) -> None:
+    def __init__(self, *, incomplete_row_start: int | None = None) -> None:
         self.rows = [
             {"grid_id": "0:0", "grid_row": 0, "grid_col": 0, "value": 1, "resolution_km": 4},
             {"grid_id": "0:1", "grid_row": 0, "grid_col": 1, "value": 2, "resolution_km": 4},
             {"grid_id": "1:0", "grid_row": 1, "grid_col": 0, "value": 3, "resolution_km": 4},
             {"grid_id": "1:1", "grid_row": 1, "grid_col": 1, "value": 4, "resolution_km": 4},
         ]
-        self.incomplete_offset = incomplete_offset
+        self.incomplete_row_start = incomplete_row_start
         self.calls: list[dict] = []
         self.active = 0
         self.peak_active = 0
@@ -124,19 +170,48 @@ class _PagedClient:
             time.sleep(0.03)
             offset = int(params["skip"])
             limit = int(params["take"])
-            rows = self.rows[offset : offset + limit]
-            if self.incomplete_offset == offset:
+            row_start = int(params["row_start"])
+            row_stop = int(params["row_stop"])
+            column_start = int(params["column_start"])
+            column_stop = int(params["column_stop"])
+            window_rows = [
+                row
+                for row in self.rows
+                if row_start <= row["grid_row"] < row_stop
+                and column_start <= row["grid_col"] < column_stop
+            ]
+            rows = window_rows[offset : offset + limit]
+            if self.incomplete_row_start == row_start:
                 rows = rows[:-1]
-            return {
-                "rows": rows,
+            payload = {
                 "page": {
                     "mode": "offset_limit",
                     "limit": limit,
                     "offset": offset,
                     "returned": len(rows),
-                    "has_more": offset + limit < len(self.rows),
+                    "has_more": offset + limit < len(window_rows),
+                    "spatial_window": {
+                        "row_start": row_start,
+                        "row_stop": row_stop,
+                        "column_start": column_start,
+                        "column_stop": column_stop,
+                    },
                 },
             }
+            if params.get("response_shape") == "columns":
+                fields = str(params["fields"]).split(",")
+                payload.update(
+                    {
+                        "columns": {
+                            field: [row[field] for row in rows]
+                            for field in fields
+                        },
+                        "row_count": len(rows),
+                    }
+                )
+            else:
+                payload["rows"] = rows
+            return payload
         finally:
             with self._lock:
                 self.active -= 1
@@ -172,13 +247,14 @@ class SampledGridPagingTests(unittest.TestCase):
             resolution_km=4,
             mapping=mapping,
             pagination=_pagination(100000),
+            spatial_window=_spatial_window(),
         )
 
         self.assertEqual(720, plan.source_column_count)
         self.assertEqual(480, plan.source_row_count)
         self.assertEqual(345600, plan.expected_row_count)
         self.assertEqual(4, plan.topology_shard_count)
-        self.assertEqual([0, 86400, 172800, 259200], [shard.offset for shard in plan.shards])
+        self.assertEqual([0, 0, 0, 0], [shard.offset for shard in plan.shards])
         self.assertEqual([86400, 86400, 86400, 86400], [shard.limit for shard in plan.shards])
         self.assertEqual(4, len({shard.shard_id for shard in plan.shards}))
 
@@ -190,13 +266,15 @@ class SampledGridPagingTests(unittest.TestCase):
             resolution_km=4,
             mapping=mapping,
             pagination=_pagination(100000),
+            spatial_window=_spatial_window(),
         )
 
         self.assertEqual(144, plan.query_column_count)
         self.assertEqual(168, plan.query_row_count)
         self.assertEqual(24192, plan.expected_row_count)
-        self.assertEqual([86400, 172800], [shard.offset for shard in plan.shards])
-        self.assertEqual(2, len(plan.shards))
+        self.assertEqual([0], [shard.offset for shard in plan.shards])
+        self.assertEqual([24192], [shard.limit for shard in plan.shards])
+        self.assertEqual(1, len(plan.shards))
 
     def test_assembler_accepts_out_of_order_canonical_shards(self) -> None:
         mapping = compile_sampled_grid_mapping(_paged_adapter_dataset())
@@ -206,6 +284,7 @@ class SampledGridPagingTests(unittest.TestCase):
             resolution_km=4,
             mapping=mapping,
             pagination=_pagination(2),
+            spatial_window=_spatial_window(),
         )
         rows = [
             {"grid_id": "0:0", "grid_row": 0, "grid_col": 0, "value": 1, "resolution_km": 4},
@@ -215,7 +294,12 @@ class SampledGridPagingTests(unittest.TestCase):
         ]
         assembler = SampledGridFrameAssembler(plan=plan)
         for shard in reversed(plan.shards):
-            page_rows = rows[shard.offset : shard.offset + shard.limit]
+            page_rows = [
+                row
+                for row in rows
+                if shard.source_row_start <= row["grid_row"] < shard.source_row_stop
+                and shard.source_column_start <= row["grid_col"] < shard.source_column_stop
+            ][shard.offset : shard.offset + shard.limit]
             canonical = canonicalize_sampled_grid_shard(
                 rows=page_rows,
                 page_metadata={
@@ -224,10 +308,17 @@ class SampledGridPagingTests(unittest.TestCase):
                     "offset": shard.offset,
                     "returned": len(page_rows),
                     "has_more": shard.source_has_more,
+                    "spatial_window": {
+                        "row_start": shard.source_row_start,
+                        "row_stop": shard.source_row_stop,
+                        "column_start": shard.source_column_start,
+                        "column_stop": shard.source_column_stop,
+                    },
                 },
                 mapping=mapping,
                 query_plan=plan,
                 shard_plan=shard,
+                spatial_window=_spatial_window(),
                 context={"date": "2020-01-01", "resolution": 4},
             )
             assembler.add_shard(shard, canonical)
@@ -285,11 +376,60 @@ class SampledGridPagingTests(unittest.TestCase):
         self.assertEqual(0, full["timing"]["source_request_count"])
         self.assertEqual(2, len(client.calls))
 
+    def test_adapter_uses_mapping_driven_columnar_source_transport(self) -> None:
+        adapter = SampledGridHttpQueryAdapter({}, _columnar_paged_adapter_dataset())
+        client = _PagedClient()
+        adapter.client = client
+
+        packet = adapter.records_packet(
+            date_value="2020-01-01",
+            bbox=(0, 0, 2, 2),
+            limit="max",
+            offset=0,
+            query_context={
+                "requested_resolution_km": 4,
+                "output_profile": "canonical_frame",
+            },
+        )
+
+        self.assertEqual(4, packet["row_count"])
+        self.assertNotIn("rows", packet)
+        value_index = packet["canonical_frame"]["row_fields"].index("value")
+        self.assertEqual(
+            [1, 2, 3, 4],
+            list(packet["canonical_frame"]["columns"][value_index]),
+        )
+        self.assertEqual("columns", client.calls[0]["response_shape"])
+        self.assertEqual(
+            "grid_id,grid_row,grid_col,value,resolution_km",
+            client.calls[0]["fields"],
+        )
+        self.assertNotIn("unused_source_field", client.calls[0]["fields"])
+
+    def test_source_request_capacity_is_independent_from_frame_operation_capacity(self) -> None:
+        adapter = SampledGridHttpQueryAdapter({}, _paged_adapter_dataset())
+        client = _PagedClient()
+        adapter.client = client
+
+        packet = adapter.records_packet(
+            date_value="2020-01-01",
+            bbox=(0, 0, 2, 2),
+            limit="max",
+            offset=0,
+            query_context={"requested_resolution_km": 4},
+        )
+
+        self.assertEqual(2, packet["timing"]["source_worker_count"])
+        self.assertEqual(2, client.peak_active)
+
     def test_incomplete_shard_never_returns_a_partial_frame(self) -> None:
         adapter = SampledGridHttpQueryAdapter({}, _paged_adapter_dataset())
-        adapter.client = _PagedClient(incomplete_offset=2)
+        adapter.client = _PagedClient(incomplete_row_start=1)
 
-        with self.assertRaisesRegex(ValueError, "shard rows-000001-000002 is incomplete"):
+        with self.assertRaisesRegex(
+            ValueError,
+            "shard rows-000001-000002-cols-000000-000002 is incomplete",
+        ):
             adapter.records_packet(
                 date_value="2020-01-01",
                 bbox=(0, 0, 2, 2),

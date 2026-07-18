@@ -90,13 +90,16 @@ function engineFrameInspector(service, sourceDates = dates) {
   };
 }
 
-function loadPlaybackCacheService({ waitForDates = async (dates) => ({
-  total: dates.length,
-  completed: dates.length,
-  fetched: dates.length,
-  cacheHits: 0,
-  failed: 0,
-}) } = {}) {
+function loadPlaybackCacheService({
+  waitForDates = async (dates) => ({
+    total: dates.length,
+    completed: dates.length,
+    fetched: dates.length,
+    cacheHits: 0,
+    failed: 0,
+  }),
+  policyPreview = null,
+} = {}) {
   const state = {
     dataLayer: "sampled-grid-test",
     playbackRate: 1,
@@ -150,7 +153,9 @@ function loadPlaybackCacheService({ waitForDates = async (dates) => ({
     },
     AdaptiveWatermarkController: {
       preview({ fixedPolicy }) {
-        return { strategy: "fixed", status: "FIXED", ...fixedPolicy };
+        return policyPreview
+          ? policyPreview({ fixedPolicy })
+          : { strategy: "fixed", status: "FIXED", ...fixedPolicy };
       },
       resolve({ fixedPolicy }) {
         return { strategy: "fixed", status: "FIXED", ...fixedPolicy };
@@ -471,6 +476,20 @@ test("playback watermarks are explicit runtime policy", () => {
   assert.equal(PlaybackCacheService.options().effectiveTargetWatermark, 4);
 });
 
+test("adaptive policy does not display an unknown RAM budget as zero frames", () => {
+  const { PlaybackCacheService } = loadPlaybackCacheService({
+    policyPreview: ({ fixedPolicy }) => ({
+      ...fixedPolicy,
+      strategy: "adaptive",
+      status: "WARMING",
+      ramBudgetFrames: null,
+    }),
+  });
+
+  assert.doesNotMatch(PlaybackCacheService.policyStatusText(), /RAM 50%/);
+  assert.doesNotMatch(PlaybackCacheService.policyStatusText(), /0 張/);
+});
+
 test("playback settings preview policy without applying lifecycle state", () => {
   const source = readFileSync(
     path.join(repoRoot, "static/js/playback/playback-cache-service.js"),
@@ -522,7 +541,7 @@ test("PlaybackEngine is the only mutable playback lifecycle truth", () => {
   assert.match(app, /setPlayback\(!playbackIsActive\(\)\)/);
 });
 
-test("document visibility shutdown sends one scoped runtime command", () => {
+test("document visibility suspends only the playback clock and preserves the producer", () => {
   const app = readFileSync(
     path.join(repoRoot, "static/app.js"),
     "utf8",
@@ -532,8 +551,25 @@ test("document visibility shutdown sends one scoped runtime command", () => {
   const body = app.slice(start, end);
 
   assert.ok(start >= 0 && end > start);
-  assert.match(body, /stopPlayback\(\{ clearPreheater: true, reason: "document_hidden" \}\)/);
+  assert.match(body, /PlaybackRuntime\.suspend\(\{ reason: "document_hidden" \}\)/);
+  assert.match(body, /PlaybackRuntime\.resume\(\{ reason: "document_hidden" \}\)/);
+  assert.doesNotMatch(body, /stopPlayback|clearPreheater/);
   assert.doesNotMatch(body, /PlaybackPreheater|PlaybackEngine/);
+});
+
+test("page navigation preserves playback intent behind a scoped runtime suspension", () => {
+  const app = readFileSync(
+    path.join(repoRoot, "static/app.js"),
+    "utf8",
+  );
+  const start = app.indexOf("function setActivePage");
+  const end = app.indexOf("function bindPageTabs", start);
+  const body = app.slice(start, end);
+
+  assert.ok(start >= 0 && end > start);
+  assert.match(body, /PlaybackRuntime\.suspend\(\{ reason: "dashboard_hidden" \}\)/);
+  assert.match(body, /PlaybackRuntime\.resume\(\{ reason: "dashboard_hidden" \}\)/);
+  assert.doesNotMatch(body, /stopPlayback/);
 });
 
 test("playback rendering advances the engine through the PlaybackRuntime facade", () => {

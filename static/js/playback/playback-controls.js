@@ -2,6 +2,17 @@ const PLAYBACK_CONTROL_IDS = ["latest-date", "replay", "prev-day", "play-toggle"
 const DEFAULT_PLAYBACK_INTERVAL_MS = 1400;
 const PLAYBACK_BUFFER_POLL_MS = 180;
 const PLAYBACK_BUFFER_TIMEOUT_MS = PlaybackTimePolicy.BUFFER_TIMEOUT_MS;
+let playbackCacheUiFrame = null;
+
+function schedulePlaybackCacheUiSync() {
+  if (playbackCacheUiFrame !== null) return;
+  playbackCacheUiFrame = ClockDomain.render.request(() => {
+    playbackCacheUiFrame = null;
+    syncPlaybackCacheCapacityMeter();
+    syncPlaybackPolicyStatus();
+    syncPlaybackRuntimeGateState();
+  });
+}
 
 function playbackIsActive() {
   return PlaybackRuntime.isActive();
@@ -29,6 +40,7 @@ function syncPlaybackCacheCapacityMeter() {
   const snapshot = DataFrameStore.snapshot();
   const usedBytes = Math.max(0, Number(snapshot.bytes || 0));
   const limitBytes = Math.max(0, Number(snapshot.maxBytes || state.dataFrameStore?.maxBytes || 0));
+  const configuredLimitBytes = Math.max(0, Number(snapshot.configuredMaxBytes || limitBytes));
   const ratio = limitBytes > 0 ? Math.min(1, usedBytes / limitBytes) : 0;
   const percent = Math.round(ratio * 100);
   const capacityText = $("playback-cache-capacity-text");
@@ -36,7 +48,10 @@ function syncPlaybackCacheCapacityMeter() {
   const capacityFill = $("playback-cache-capacity-fill");
 
   if (capacityText) {
-    capacityText.textContent = `快取容量：${PlaybackCacheService.formatBytes(usedBytes)} / ${PlaybackCacheService.formatBytes(limitBytes)}`;
+    const configuredSuffix = snapshot.heapSafetyApplied
+      ? `（設定 ${PlaybackCacheService.formatBytes(configuredLimitBytes)}）`
+      : "";
+    capacityText.textContent = `快取容量：${PlaybackCacheService.formatBytes(usedBytes)} / ${PlaybackCacheService.formatBytes(limitBytes)}${configuredSuffix}`;
   }
   if (capacityPercent) {
     capacityPercent.textContent = `${percent}%`;
@@ -314,9 +329,7 @@ function bindPlaybackSettingsControls() {
     syncPlaybackSettingsInputs();
   });
   window.addEventListener("rrkal:data-frame-store-changed", () => {
-    syncPlaybackCacheCapacityMeter();
-    syncPlaybackPolicyStatus();
-    syncPlaybackRuntimeGateState();
+    schedulePlaybackCacheUiSync();
   });
   window.addEventListener("rrkal:lifecycle-event", (event) => {
     if (["WATERMARK_POLICY_CHANGED", "WATERMARK_POLICY_RESET"].includes(event.detail?.type)) {

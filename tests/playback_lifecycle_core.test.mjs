@@ -285,6 +285,87 @@ test("preheater caps outstanding playback-window work while filling a large wate
   for (const task of pending) task.resolve({ status: "ready" });
 });
 
+test("preheater derives its pending window from source capacity", () => {
+  const context = contextFor(async () => ({ rows: [], row_count: 0 }));
+  const Preheater = api(context, "PlaybackPreheaterController");
+  const pending = [];
+  let demands = 0;
+  const preheater = new Preheater({
+    fixedPolicyNormalizer: api(context, "normalizedFixedWatermarkPolicy"),
+    store: {
+      subscribe: () => () => {},
+      inspect: () => ({ status: "missing" }),
+    },
+    demandService: {
+      cancelScope() {},
+      demand() {
+        demands += 1;
+        const task = deferred();
+        pending.push(task);
+        return task.promise;
+      },
+    },
+    eventLog: api(context, "LifecycleEventLog"),
+    frameIdentity: api(context, "FrameIdentity"),
+    clock: api(context, "ClockDomain").monotonic,
+    optionsProvider: () => ({
+      highWatermark: 60,
+      lowWatermark: 30,
+      maxPendingFrames: 12,
+      windowBehind: 1,
+    }),
+    sourcePolicyProvider: () => ({ sourceCapacity: 2, effectiveBatchSize: 2 }),
+  });
+
+  preheater.setScope({ dates: dates(100), requestContext: requestContext(), anchorDate: dates(100)[0] });
+  assert.equal(demands, 4);
+  assert.equal(preheater.snapshot().configuredMaxPendingFrames, 12);
+  assert.equal(preheater.snapshot().maxPendingFrames, 4);
+  assert.equal(preheater.snapshot().sourceCapacity, 2);
+  assert.equal(preheater.snapshot().effectiveBatchSize, 2);
+
+  preheater.stop("test_complete");
+  for (const task of pending) task.resolve({ status: "ready" });
+});
+
+test("preheater coalesces cache commit and completion reconcile triggers", async () => {
+  const context = contextFor(async () => ({ rows: [], row_count: 0 }));
+  const Preheater = api(context, "PlaybackPreheaterController");
+  let storeListener = null;
+  const preheater = new Preheater({
+    fixedPolicyNormalizer: api(context, "normalizedFixedWatermarkPolicy"),
+    store: {
+      subscribe(listener) {
+        storeListener = listener;
+        return () => { storeListener = null; };
+      },
+      inspect: () => ({ status: "missing" }),
+    },
+    demandService: {
+      cancelScope() {},
+      demand: () => new Promise(() => {}),
+    },
+    eventLog: api(context, "LifecycleEventLog"),
+    frameIdentity: api(context, "FrameIdentity"),
+    clock: api(context, "ClockDomain").monotonic,
+    optionsProvider: () => ({ highWatermark: 4, lowWatermark: 2, maxPendingFrames: 2 }),
+  });
+  const allDates = dates(8);
+  preheater.setScope({ dates: allDates, requestContext: requestContext(), anchorDate: allDates[0] });
+  const baselineRuns = preheater.snapshot().reconcileRuns;
+
+  for (const date of allDates.slice(1, 4)) {
+    storeListener({ type: "committed", datasetId: "ocean", date });
+  }
+  assert.equal(preheater.snapshot().reconcilePending, true);
+  assert.equal(preheater.snapshot().reconcileRuns, baselineRuns);
+  assert.equal(preheater.snapshot().coalescedReconciles, 2);
+
+  await waitFor(() => preheater.snapshot().reconcilePending === false);
+  assert.equal(preheater.snapshot().reconcileRuns, baselineRuns + 1);
+  preheater.stop("test_complete");
+});
+
 test("preheater prunes queued window consumers without aborting active work on rate downshift", () => {
   const context = contextFor(async () => ({ rows: [], row_count: 0 }));
   const Preheater = api(context, "PlaybackPreheaterController");
@@ -934,7 +1015,7 @@ test("replenishment policy is repeatable across refill completion and a later de
   assert.deepEqual({ ...laterDeficit }, { replenishing: true, trigger: "low_watermark" });
 });
 
-test("an LRU eviction below the low watermark re-enters the same replenishment lifecycle", () => {
+test("an LRU eviction below the low watermark re-enters the same replenishment lifecycle", async () => {
   const context = contextFor(async () => ({ rows: [], row_count: 0 }));
   const Preheater = api(context, "PlaybackPreheaterController");
   const allDates = dates(3);
@@ -977,6 +1058,7 @@ test("an LRU eviction below the low watermark re-enters the same replenishment l
 
   readyDates.delete(allDates[1]);
   storeListener({ type: "evicted", datasetId: "ocean", date: allDates[1] });
+  await waitFor(() => demands.length === 1);
 
   assert.equal(preheater.snapshot().readyAhead, 0);
   assert.equal(preheater.snapshot().replenishing, true);

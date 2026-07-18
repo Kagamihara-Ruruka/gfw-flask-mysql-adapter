@@ -5,6 +5,8 @@ class DataFrameStoreCore {
     optionsProvider = null,
     statsTargetProvider = null,
     retentionPartitionProvider = null,
+    heapLimitProvider = null,
+    heapBudgetFraction = 0.35,
     eventTarget = null,
     clock,
   } = {}) {
@@ -23,15 +25,44 @@ class DataFrameStoreCore {
   const pins = new Map();
   const failures = new Map();
   const listeners = new Set();
+  const configuredHeapBudgetFraction = Number(heapBudgetFraction);
+  const safeHeapBudgetFraction = Number.isFinite(configuredHeapBudgetFraction)
+    ? Math.min(0.8, Math.max(0.1, configuredHeapBudgetFraction))
+    : 0.35;
   let cacheBytes = 0;
+
+  function observedHeapLimitBytes() {
+    try {
+      const value = Number(heapLimitProvider?.() || 0);
+      return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+    } catch (_error) {
+      return 0;
+    }
+  }
 
   function options() {
     const configured = optionsProvider?.() || {};
     const rawMaxEntries = Number(configured.maxEntries ?? 0);
     const rawMaxBytes = Number(configured.maxBytes ?? DEFAULT_MAX_BYTES);
+    const configuredMaxBytes = rawMaxBytes <= 0
+      ? 0
+      : Math.max(64 * 1024 * 1024, rawMaxBytes);
+    const heapLimitBytes = observedHeapLimitBytes();
+    const heapSafeMaxBytes = heapLimitBytes > 0
+      ? Math.max(64 * 1024 * 1024, Math.floor(heapLimitBytes * safeHeapBudgetFraction))
+      : 0;
+    const maxBytes = heapSafeMaxBytes > 0
+      ? (configuredMaxBytes > 0 ? Math.min(configuredMaxBytes, heapSafeMaxBytes) : heapSafeMaxBytes)
+      : configuredMaxBytes;
     return {
       maxEntries: rawMaxEntries <= 0 ? 0 : Math.max(12, rawMaxEntries),
-      maxBytes: rawMaxBytes <= 0 ? 0 : Math.max(64 * 1024 * 1024, rawMaxBytes),
+      maxBytes,
+      configuredMaxBytes,
+      heapLimitBytes,
+      heapSafeMaxBytes,
+      heapBudgetFraction: safeHeapBudgetFraction,
+      heapSafetyApplied: heapSafeMaxBytes > 0
+        && (configuredMaxBytes <= 0 || maxBytes < configuredMaxBytes),
     };
   }
 
@@ -41,11 +72,23 @@ class DataFrameStoreCore {
 
   function syncStats(extra = {}) {
     const target = statsTarget();
-    const { maxBytes } = options();
+    const {
+      maxBytes,
+      configuredMaxBytes,
+      heapLimitBytes,
+      heapSafeMaxBytes,
+      heapBudgetFraction,
+      heapSafetyApplied,
+    } = options();
     const patch = {
       cacheEntries: cache.size,
       cacheBytes,
       cacheLimitBytes: maxBytes,
+      configuredCacheLimitBytes: configuredMaxBytes,
+      browserHeapLimitBytes: heapLimitBytes,
+      browserHeapSafeCacheBytes: heapSafeMaxBytes,
+      browserHeapBudgetFraction: heapBudgetFraction,
+      browserHeapSafetyApplied: heapSafetyApplied,
       pinnedEntries: [...pins.values()].filter((owners) => owners.size > 0).length,
       aliasEntries: aliases.size,
       ...extra,
@@ -546,13 +589,26 @@ class DataFrameStoreCore {
   }
 
   function snapshot(filter = {}) {
-    const { maxBytes, maxEntries } = options();
+    const {
+      maxBytes,
+      maxEntries,
+      configuredMaxBytes,
+      heapLimitBytes,
+      heapSafeMaxBytes,
+      heapBudgetFraction,
+      heapSafetyApplied,
+    } = options();
     return Object.freeze({
       entries: cache.size,
       aliases: aliases.size,
       bytes: cacheBytes,
       ...frameSizeStats(filter),
       maxBytes,
+      configuredMaxBytes,
+      heapLimitBytes,
+      heapSafeMaxBytes,
+      heapBudgetFraction,
+      heapSafetyApplied,
       maxEntries,
       pinned: [...pins.values()].reduce((total, owners) => total + owners.size, 0),
       failures: failures.size,

@@ -87,7 +87,8 @@ function createPlaybackCacheService({
     if (policy.policyStatus === "WARMING") {
       return `自適應補水：樣本累積中 · 低 ${policy.effectiveLowWatermark} 觸發 / 高 ${policy.effectiveHighWatermark}${target}`;
     }
-    const budget = Number.isFinite(Number(policy.ramBudgetFrames))
+    const budget = policy.ramBudgetFrames != null
+      && Number.isFinite(Number(policy.ramBudgetFrames))
       ? ` · RAM 50% 可容納 ${Number(policy.ramBudgetFrames)} 張`
       : "";
     const degradation = policy.degradationReason ? ` · ${policy.degradationReason}` : "";

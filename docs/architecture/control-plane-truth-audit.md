@@ -328,7 +328,7 @@ effective_source_scope
 override_reason
 ```
 
-收斂結果：CC 以 `viewport BBOX ∩ coverage` 形成 effective query bbox，並對齊 Scout 推導的基礎格網。Adapter 依來源 page capacity 以純函數產生內部 row-band pages、只補缺少範圍，再由 `FrameAssembler` 合成一份 Canonical Frame。內部 page identity 不依賴來源 `shard_id`；目前來源僅有 `limit/offset`，因此事件與文件也不宣稱已具備來源端 bbox pushdown。camera zoom 只改 `RenderGridProfile`，不改 query/cache identity。
+收斂結果：CC 以 `viewport BBOX ∩ coverage` 形成 effective query bbox，並對齊 Scout 推導的基礎格網。Adapter 依來源 capacity 以純函數產生內部 pages，將其翻譯為來源可理解的半開 grid-index window，只補缺少範圍，再由 `FrameAssembler` 合成一份 Canonical Frame。內部 page identity 不依賴來源 `shard_id`，來源也不接收 CC BBOX；來源僅負責套用 row/column predicates、`limit/offset` 與 Mapping 決定的欄位投影。camera zoom 只改 `RenderGridProfile`，不改 query/cache identity。
 
 ### CPD-010：Developer endpoint status 真相統一
 

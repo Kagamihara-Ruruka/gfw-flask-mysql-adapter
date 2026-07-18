@@ -276,6 +276,14 @@ test("Plotly widgets share one visibility-aware resize lifecycle", () => {
   }
 });
 
+test("metrics observation is coalesced and does not redraw unchanged history", () => {
+  const metrics = read("static/js/ui/widgets/capabilities/metrics.js");
+  assert.match(metrics, /METRICS_TELEMETRY_REFRESH_MS\s*=\s*500/);
+  assert.match(metrics, /updateTelemetryView\(container, latestPacket, \{ updateHistory: historyDirty \}\)/);
+  assert.match(metrics, /metricsHistorySignature/);
+  assert.doesNotMatch(metrics, /schedule\?\.\(update, 160\)/);
+});
+
 test("widget deletion policy is owned by the ability registry", () => {
   const registry = read("static/js/ui/widgets/registry/widget-registry.js");
   const runtime = read("static/js/ui/widgets/runtime/widgets-runtime.js");

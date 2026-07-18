@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
@@ -707,6 +707,159 @@ def canonicalize_sampled_grid_rows(
         columns=tuple(tuple(columns[field_name]) for field_name in row_fields),
         frame_fields=frame_fields,
         row_count=row_count,
+    )
+
+
+def canonicalize_sampled_grid_columns(
+    source_columns: Mapping[str, Sequence[Any]],
+    mapping: CompiledSampledGridMapping,
+    *,
+    context: Mapping[str, Any] | None = None,
+    row_count: int | None = None,
+) -> CanonicalGridFrame:
+    """Map a source column packet without inflating it into row dictionaries."""
+
+    columns = {
+        str(name): values
+        for name, values in source_columns.items()
+        if isinstance(values, Sequence) and not isinstance(values, (str, bytes, bytearray))
+    }
+    inferred_count = len(next(iter(columns.values()))) if columns else 0
+    count = inferred_count if row_count is None else int(row_count)
+    if count < 0 or any(len(values) != count for values in columns.values()):
+        raise ValueError("sampled-grid source column lengths do not match row_count")
+
+    source_paths = tuple(
+        path
+        for path in (*mapping.source_fields.values(), *mapping.extension_fields.values())
+        if path
+    )
+    direct_paths = all("." not in str(path) for path in source_paths)
+    plan = mapping.row_plan
+    row_path = str(mapping.source_fields.get("row") or "")
+    column_path = str(mapping.source_fields.get("column") or "")
+    if (
+        plan.geometry_encoding != "global_index"
+        or not direct_paths
+        or row_path not in columns
+        or column_path not in columns
+        or plan.origin_lat is None
+        or plan.origin_lon is None
+        or plan.index_units_per_degree is None
+        or plan.index_units_per_degree <= 0
+        or plan.base_resolution_km is None
+        or plan.base_resolution_km <= 0
+    ):
+        names = tuple(columns)
+        return canonicalize_sampled_grid_rows(
+            (
+                {name: columns[name][index] for name in names}
+                for index in range(count)
+            ),
+            mapping,
+            context=context,
+        )
+
+    request_context = dict(context or {})
+
+    def role_values(role: str) -> Sequence[Any] | None:
+        primary = str(mapping.source_fields.get(role) or "")
+        if primary in columns:
+            return columns[primary]
+        for candidate in plan.role_candidates.get(role, ()):
+            if candidate in columns:
+                return columns[candidate]
+        return None
+
+    def role_constant(role: str) -> Any:
+        path = plan.request_paths.get(role)
+        return _context_value(request_context, path) if path else None
+
+    row_indexes = tuple(_number(value) for value in columns[row_path])
+    column_indexes = tuple(_number(value) for value in columns[column_path])
+    resolution_source = role_values("resolution")
+    if resolution_source is None:
+        resolution_constant = role_constant("resolution")
+        if resolution_constant is None and len(mapping.available_resolutions_km) == 1:
+            resolution_constant = mapping.available_resolutions_km[0]
+        resolutions = tuple(_number(resolution_constant) for _ in range(count))
+    else:
+        resolutions = tuple(_number(value) for value in resolution_source)
+
+    units = plan.index_units_per_degree
+    base_resolution = plan.base_resolution_km
+    spans = tuple(
+        None if resolution is None or resolution <= 0 else (resolution / base_resolution) / units
+        for resolution in resolutions
+    )
+    north = tuple(
+        None if row_index is None else plan.origin_lat - (row_index / units)
+        for row_index in row_indexes
+    )
+    west = tuple(
+        None if column_index is None else plan.origin_lon + (column_index / units)
+        for column_index in column_indexes
+    )
+    south = tuple(
+        None if top is None or span is None else top - span
+        for top, span in zip(north, spans, strict=True)
+    )
+    east = tuple(
+        None if left is None or span is None else left + span
+        for left, span in zip(west, spans, strict=True)
+    )
+    latitudes = tuple(
+        None if top is None or bottom is None else (top + bottom) / 2
+        for top, bottom in zip(north, south, strict=True)
+    )
+    longitudes = tuple(
+        None if left is None or right is None else (left + right) / 2
+        for left, right in zip(west, east, strict=True)
+    )
+
+    def direct_or_constant(role: str, *, numeric: bool = False) -> tuple[Any, ...]:
+        values = role_values(role)
+        if values is None:
+            constant = role_constant(role)
+            return tuple(_number(constant) if numeric else constant for _ in range(count))
+        if numeric:
+            return tuple(_number(value) for value in values)
+        return tuple(values)
+
+    canonical: dict[str, tuple[Any, ...]] = {
+        "cell_id": direct_or_constant("id"),
+        "lat": latitudes,
+        "lon": longitudes,
+        "value": direct_or_constant("value"),
+        "coverage_ratio": direct_or_constant("coverage", numeric=True),
+        "data_status": direct_or_constant("status"),
+        "bounds.west": west,
+        "bounds.south": south,
+        "bounds.east": east,
+        "bounds.north": north,
+    }
+    for canonical_name, source_path in mapping.extension_fields.items():
+        canonical[str(canonical_name)] = tuple(columns.get(str(source_path), (None,) * count))
+
+    frame_fields: dict[str, Any] = {}
+    row_fields = [*CANONICAL_GRID_ROW_FIELDS, *mapping.extension_fields]
+    frame_values = {
+        "date": direct_or_constant("time"),
+        "resolution_km": resolutions,
+    }
+    for field_name, values in frame_values.items():
+        first = values[0] if values else None
+        if not values or all(value == first for value in values[1:]):
+            frame_fields[field_name] = first
+        else:
+            row_fields.append(field_name)
+            canonical[field_name] = values
+
+    return CanonicalGridFrame(
+        row_fields=tuple(row_fields),
+        columns=tuple(canonical[field_name] for field_name in row_fields),
+        frame_fields=frame_fields,
+        row_count=count,
     )
 
 

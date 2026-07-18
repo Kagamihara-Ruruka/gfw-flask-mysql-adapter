@@ -1084,8 +1084,11 @@ test("cache commit rendering cannot recursively schedule line-chart fills", () =
     /addEventListener\("rrkal:data-frame-store-changed",\s*\(event\)\s*=>\s*\{([\s\S]*?)\n\s*\},\s*listenerOptions\);/,
   );
   assert.ok(handler, "cache commit handler must remain explicit");
-  assert.match(handler[1], /renderLineChartWidgets/);
-  assert.doesNotMatch(handler[1], /ensureCurrentWindow|refreshLineChartWidgets|\.fill\(/);
+  assert.match(handler[1], /queueFrameStoreRefresh/);
+  const projection = runtime.match(/queueFrameStoreRefresh\(event\)\s*\{([\s\S]*?)\n\s*\}\n\n\s*bind\(\)/);
+  assert.ok(projection, "cache commit projection must remain explicit");
+  assert.match(projection[1], /renderLineChartWidgets/);
+  assert.doesNotMatch(projection[1], /ensureCurrentWindow|refreshLineChartWidgets|\.fill\(/);
 });
 
 test("pie and horizontal bar widgets query dynamic canonical layer matrices", () => {
@@ -1197,6 +1200,29 @@ test("sampled-grid WebGL contexts are explicitly released and support probing is
   assert.match(webgl, /let sampledGridWebglSupported = null/);
   assert.match(webgl, /if \(sampledGridWebglSupported !== null\) return sampledGridWebglSupported/);
   assert.match(webgl, /releaseWebglContext\(gl\);\s*return sampledGridWebglSupported/);
+});
+
+test("sampled-grid playback reuses a DI-owned two-layer renderer pool", () => {
+  const layer = fs.readFileSync(
+    path.join(root, "static/js/layers/sampled-grid-layer.js"),
+    "utf8",
+  );
+  const effects = fs.readFileSync(
+    path.join(root, "static/js/layers/sampled-grid-layer-effects.js"),
+    "utf8",
+  );
+  const composition = fs.readFileSync(
+    path.join(root, "static/js/runtime/runtime-composition-root.js"),
+    "utf8",
+  );
+
+  assert.match(composition, /this\.own\("SampledGridLayerPool",\s*new SampledGridLayerPoolCore/);
+  assert.match(composition, /maxLayers:\s*2/);
+  assert.match(layer, /SampledGridLayerPool\.acquire\(choice\.LayerClass/);
+  assert.match(layer, /SampledGridLayerPool\.discard\(nextLayer\)/);
+  assert.match(layer, /retainPrevious:\s*typeof SampledGridLayerPool !== "undefined"/);
+  assert.match(effects, /retainPrevious = false/);
+  assert.match(effects, /if \(retainPrevious\)[\s\S]*?setLayerOpacity\(previousLayer, 0\)/);
 });
 
 test("sampled-grid viewport changes redraw locally while viewport-dependent layers keep a settle window", () => {

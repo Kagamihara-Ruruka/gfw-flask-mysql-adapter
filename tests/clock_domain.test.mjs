@@ -354,6 +354,71 @@ test("playback keeps recent scope supply metrics after an actual-resolution fall
   assert.equal(metrics.cache_ready_latency_samples, 2);
 });
 
+test("runtime performance metrics increment events without rescanning the lifecycle log", () => {
+  const context = loadClockRuntime();
+  const createClockDomain = vm.runInContext("createClockDomain", context);
+  const LifecycleEventLogCore = vm.runInContext("LifecycleEventLogCore", context);
+  const createRuntimePerformanceMetrics = vm.runInContext("createRuntimePerformanceMetrics", context);
+  const clock = fakeClockDomain(createClockDomain);
+  const eventLog = new LifecycleEventLogCore({
+    maxEntriesProvider: () => 20_000,
+    clock: clock.domain.monotonic,
+  });
+  const scopeKey = "scope|bounded";
+  const runId = eventLog.beginRun({
+    run_id: "incremental-metrics",
+    consumption_rate: 1,
+    scope_key: scopeKey,
+  });
+  const originalQuery = eventLog.query.bind(eventLog);
+  let queryCalls = 0;
+  let summaryCalls = 0;
+  eventLog.query = (...args) => {
+    queryCalls += 1;
+    return originalQuery(...args);
+  };
+  eventLog.summary = () => {
+    summaryCalls += 1;
+    throw new Error("hot metrics path must not request a full lifecycle summary");
+  };
+  const metrics = createRuntimePerformanceMetrics({
+    eventLog,
+    preheater: {
+      snapshot: () => ({ status: "FETCHING", readyAhead: 8, scopeKey }),
+    },
+    playbackEngine: {
+      snapshot: () => ({ status: "PLAYING", bufferWaitMs: 0 }),
+    },
+    clock: clock.domain.monotonic,
+  });
+  assert.equal(queryCalls, 1, "construction replays the existing bounded log once");
+
+  for (let index = 0; index < 300; index += 1) {
+    const intentKey = `bounded-${index}`;
+    eventLog.record("TASK_QUEUED", {
+      run_id: runId,
+      intent_key: intentKey,
+      lane: "playback-window",
+      scope_key: scopeKey,
+    });
+    clock.advance(10);
+    eventLog.record("CACHE_READY", {
+      run_id: runId,
+      intent_key: intentKey,
+      lane: "playback-window",
+      scope_key: scopeKey,
+    });
+    metrics.inputs({ runId, scopeKey });
+  }
+
+  const snapshot = metrics.snapshot({ runId, scopeKey });
+  assert.equal(queryCalls, 1);
+  assert.equal(summaryCalls, 0);
+  assert.equal(snapshot.supply_samples, 240);
+  assert.equal(metrics.scopeHistory.get(scopeKey).length, 240);
+  metrics.dispose();
+});
+
 test("runtime timing owners do not read playback speed outside the playback clock path", () => {
   const auditedFiles = [
     "static/TimingMetrics.js",

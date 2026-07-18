@@ -6,3 +6,4 @@ cryptography==49.0.0
 pandas==2.3.3
 duckdb==1.5.3
 psycopg[binary]==3.2.9
+orjson==3.11.9

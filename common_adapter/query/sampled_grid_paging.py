@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 from common_adapter.query.grid_frame import (
     CanonicalGridFrame,
@@ -10,6 +10,7 @@ from common_adapter.query.grid_frame import (
 )
 from common_adapter.query.sampled_grid import (
     CompiledSampledGridMapping,
+    canonicalize_sampled_grid_columns,
     canonicalize_sampled_grid_rows,
 )
 
@@ -25,6 +26,12 @@ class SampledGridShardPlan:
     limit: int
     row_start: int
     row_stop: int
+    column_start: int
+    column_stop: int
+    source_row_start: int
+    source_row_stop: int
+    source_column_start: int
+    source_column_stop: int
     source_has_more: bool
 
 
@@ -138,6 +145,13 @@ def _ceil_slot(value: float) -> int:
     return math.ceil(value - 1e-9)
 
 
+def _integral_index(value: float, *, name: str) -> int:
+    rounded = round(value)
+    if not math.isclose(value, rounded, rel_tol=0, abs_tol=1e-7):
+        raise ValueError(f"sampled-grid {name} does not resolve to an integral source index")
+    return int(rounded)
+
+
 def plan_sampled_grid_shards(
     *,
     viewport_bbox: Mapping[str, Any] | None,
@@ -145,8 +159,9 @@ def plan_sampled_grid_shards(
     resolution_km: float,
     mapping: CompiledSampledGridMapping,
     pagination: Mapping[str, Any],
+    spatial_window: Mapping[str, Any],
 ) -> SampledGridShardQueryPlan:
-    """Resolve stable source shards for the snapped CC query extent."""
+    """Resolve source-native windows for the snapped CC query extent."""
 
     mode = str(pagination.get("mode") or "").strip().lower()
     if mode != "offset_limit":
@@ -162,6 +177,25 @@ def plan_sampled_grid_shards(
     )
     if not all(expected_order) or stable_order[:2] != expected_order:
         raise ValueError("sampled-grid pagination order does not match mapped row/column identity")
+
+    window_mode = str(spatial_window.get("mode") or "").strip().lower()
+    if window_mode != "grid_index_range":
+        raise ValueError("sampled-grid source must advertise grid_index_range spatial windows")
+    if str(spatial_window.get("bounds") or "").strip().lower() != "half_open":
+        raise ValueError("sampled-grid spatial window must use half_open bounds")
+    if (
+        str(spatial_window.get("row_field") or "") != expected_order[0]
+        or str(spatial_window.get("column_field") or "") != expected_order[1]
+    ):
+        raise ValueError("sampled-grid spatial window fields do not match mapped geometry")
+    window_parameters = (
+        "row_start_parameter",
+        "row_stop_parameter",
+        "column_start_parameter",
+        "column_stop_parameter",
+    )
+    if any(not str(spatial_window.get(name) or "").strip() for name in window_parameters):
+        raise ValueError("sampled-grid spatial window parameter names are required")
 
     row_plan = mapping.row_plan
     if row_plan.geometry_encoding != "global_index":
@@ -215,27 +249,53 @@ def plan_sampled_grid_shards(
     if query_column_start >= query_column_stop or query_row_start >= query_row_stop:
         raise ValueError("sampled-grid snapped viewport has no cells")
 
-    max_rows_per_shard = max_page_size // source_column_count
+    query_column_count = query_column_stop - query_column_start
+    query_row_count = query_row_stop - query_row_start
+    max_rows_per_shard = max_page_size // query_column_count
     if max_rows_per_shard < 1:
-        raise ValueError("source page limit cannot hold one complete sampled-grid row")
-    topology_shard_count = math.ceil(source_row_count / max_rows_per_shard)
-    rows_per_shard = math.ceil(source_row_count / topology_shard_count)
+        raise ValueError("source page limit cannot hold one requested sampled-grid row")
+    topology_shard_count = math.ceil(query_row_count / max_rows_per_shard)
+    rows_per_shard = math.ceil(query_row_count / topology_shard_count)
     shards: list[SampledGridShardPlan] = []
-    for row_start in range(0, source_row_count, rows_per_shard):
-        row_stop = min(source_row_count, row_start + rows_per_shard)
-        if row_stop <= query_row_start or row_start >= query_row_stop:
-            continue
-        offset = row_start * source_column_count
-        limit = (row_stop - row_start) * source_column_count
+    column_index_start = (coverage["west"] - row_plan.origin_lon) * row_plan.index_units_per_degree
+    row_index_start = (row_plan.origin_lat - coverage["north"]) * row_plan.index_units_per_degree
+    for row_start in range(query_row_start, query_row_stop, rows_per_shard):
+        row_stop = min(query_row_stop, row_start + rows_per_shard)
+        source_row_start = _integral_index(
+            row_index_start + row_start * index_step,
+            name="row_start",
+        )
+        source_row_stop = _integral_index(
+            row_index_start + row_stop * index_step,
+            name="row_stop",
+        )
+        source_column_start = _integral_index(
+            column_index_start + query_column_start * index_step,
+            name="column_start",
+        )
+        source_column_stop = _integral_index(
+            column_index_start + query_column_stop * index_step,
+            name="column_stop",
+        )
+        limit = (row_stop - row_start) * query_column_count
         shards.append(
             SampledGridShardPlan(
-                index=row_start // rows_per_shard,
-                shard_id=f"rows-{row_start:06d}-{row_stop:06d}",
-                offset=offset,
+                index=len(shards),
+                shard_id=(
+                    f"rows-{source_row_start:06d}-{source_row_stop:06d}"
+                    f"-cols-{source_column_start:06d}-{source_column_stop:06d}"
+                ),
+                offset=0,
                 limit=limit,
                 row_start=row_start,
                 row_stop=row_stop,
-                source_has_more=offset + limit < source_expected_row_count,
+                column_start=query_column_start,
+                column_stop=query_column_stop,
+                source_row_start=source_row_start,
+                source_row_stop=source_row_stop,
+                source_column_start=source_column_start,
+                source_column_stop=source_column_stop,
+                source_has_more=False,
             )
         )
 
@@ -255,10 +315,8 @@ def plan_sampled_grid_shards(
         query_row_stop=query_row_stop,
         expected_row_count=(query_column_stop - query_column_start)
         * (query_row_stop - query_row_start),
-        column_index_start=(coverage["west"] - row_plan.origin_lon)
-        * row_plan.index_units_per_degree,
-        row_index_start=(row_plan.origin_lat - coverage["north"])
-        * row_plan.index_units_per_degree,
+        column_index_start=column_index_start,
+        row_index_start=row_index_start,
         index_step=index_step,
         effective_bbox=snapped_bbox,
         shards=tuple(shards),
@@ -277,6 +335,43 @@ def _value_at(row: Mapping[str, Any], path: str) -> Any:
     return current
 
 
+def _validate_shard_metadata(
+    *,
+    returned_count: int,
+    page_metadata: Mapping[str, Any],
+    shard_plan: SampledGridShardPlan,
+    spatial_window: Mapping[str, Any],
+) -> None:
+    if str(page_metadata.get("mode") or "") != "offset_limit":
+        raise ValueError("sampled-grid source returned an incompatible page mode")
+    if int(page_metadata.get("offset", -1)) != shard_plan.offset:
+        raise ValueError("sampled-grid source returned the wrong page offset")
+    if int(page_metadata.get("limit", -1)) != shard_plan.limit:
+        raise ValueError("sampled-grid source returned the wrong page limit")
+    if int(page_metadata.get("returned", -1)) != returned_count:
+        raise ValueError("sampled-grid source page metadata does not match its data")
+    if returned_count != shard_plan.limit:
+        raise ValueError(
+            f"sampled-grid shard {shard_plan.shard_id} is incomplete: "
+            f"expected {shard_plan.limit}, received {returned_count}"
+        )
+    if bool(page_metadata.get("has_more")) != shard_plan.source_has_more:
+        raise ValueError("sampled-grid source continuation does not match the Scout topology")
+    metadata_path = str(spatial_window.get("metadata_path") or "spatial_window")
+    returned_window = _value_at(page_metadata, metadata_path)
+    expected_window = {
+        "row_start": shard_plan.source_row_start,
+        "row_stop": shard_plan.source_row_stop,
+        "column_start": shard_plan.source_column_start,
+        "column_stop": shard_plan.source_column_stop,
+    }
+    if not isinstance(returned_window, Mapping) or any(
+        int(returned_window.get(role, -1)) != value
+        for role, value in expected_window.items()
+    ):
+        raise ValueError("sampled-grid source returned the wrong spatial window")
+
+
 def canonicalize_sampled_grid_shard(
     *,
     rows: Iterable[Mapping[str, Any]],
@@ -284,26 +379,18 @@ def canonicalize_sampled_grid_shard(
     mapping: CompiledSampledGridMapping,
     query_plan: SampledGridShardQueryPlan,
     shard_plan: SampledGridShardPlan,
+    spatial_window: Mapping[str, Any],
     context: Mapping[str, Any],
 ) -> CanonicalSampledGridShard:
     """Validate one stable source shard and map it exactly once."""
 
     materialized = tuple(row for row in rows if isinstance(row, Mapping))
-    if str(page_metadata.get("mode") or "") != "offset_limit":
-        raise ValueError("sampled-grid source returned an incompatible page mode")
-    if int(page_metadata.get("offset", -1)) != shard_plan.offset:
-        raise ValueError("sampled-grid source returned the wrong page offset")
-    if int(page_metadata.get("limit", -1)) != shard_plan.limit:
-        raise ValueError("sampled-grid source returned the wrong page limit")
-    if int(page_metadata.get("returned", -1)) != len(materialized):
-        raise ValueError("sampled-grid source page metadata does not match its rows")
-    if len(materialized) != shard_plan.limit:
-        raise ValueError(
-            f"sampled-grid shard {shard_plan.shard_id} is incomplete: "
-            f"expected {shard_plan.limit}, received {len(materialized)}"
-        )
-    if bool(page_metadata.get("has_more")) != shard_plan.source_has_more:
-        raise ValueError("sampled-grid source continuation does not match the Scout topology")
+    _validate_shard_metadata(
+        returned_count=len(materialized),
+        page_metadata=page_metadata,
+        shard_plan=shard_plan,
+        spatial_window=spatial_window,
+    )
 
     row_path = str(mapping.source_fields.get("row") or "")
     column_path = str(mapping.source_fields.get("column") or "")
@@ -325,16 +412,21 @@ def canonicalize_sampled_grid_shard(
         column_number = int(round(column_slot))
         if (
             not shard_plan.row_start <= row_number < shard_plan.row_stop
-            or not 0 <= column_number < query_plan.source_column_count
+            or not shard_plan.column_start <= column_number < shard_plan.column_stop
         ):
-            raise ValueError("sampled-grid source row is outside its stable shard")
+            raise ValueError("sampled-grid source row is outside its requested window")
         identity = (row_index, column_index)
         if identity in seen:
             duplicate_row_count += 1
         seen.add(identity)
-        linear_index = row_number * query_plan.source_column_count + column_number
-        if linear_index != shard_plan.offset + position:
-            raise ValueError("sampled-grid source shard order or completeness drifted")
+        linear_index = (
+            (row_number - shard_plan.row_start)
+            * (shard_plan.column_stop - shard_plan.column_start)
+            + column_number
+            - shard_plan.column_start
+        )
+        if linear_index != position:
+            raise ValueError("sampled-grid source window order or completeness drifted")
 
     frame = canonicalize_sampled_grid_rows(materialized, mapping, context=context)
     if duplicate_row_count or len(seen) != shard_plan.limit or frame.row_count != shard_plan.limit:
@@ -343,6 +435,69 @@ def canonicalize_sampled_grid_shard(
         frame=frame,
         source_row_count=len(materialized),
         duplicate_row_count=duplicate_row_count,
+    )
+
+
+def canonicalize_sampled_grid_column_shard(
+    *,
+    columns: Mapping[str, Sequence[Any]],
+    row_count: int,
+    page_metadata: Mapping[str, Any],
+    mapping: CompiledSampledGridMapping,
+    query_plan: SampledGridShardQueryPlan,
+    shard_plan: SampledGridShardPlan,
+    spatial_window: Mapping[str, Any],
+    context: Mapping[str, Any],
+) -> CanonicalSampledGridShard:
+    """Validate a column packet and map it without constructing source rows."""
+
+    _validate_shard_metadata(
+        returned_count=row_count,
+        page_metadata=page_metadata,
+        shard_plan=shard_plan,
+        spatial_window=spatial_window,
+    )
+    row_path = str(mapping.source_fields.get("row") or "")
+    column_path = str(mapping.source_fields.get("column") or "")
+    row_indexes = columns.get(row_path)
+    column_indexes = columns.get(column_path)
+    if row_indexes is None or column_indexes is None:
+        raise ValueError("sampled-grid source columns have no mapped row/column identity")
+    if len(row_indexes) != row_count or len(column_indexes) != row_count:
+        raise ValueError("sampled-grid source identity columns have the wrong length")
+
+    width = shard_plan.column_stop - shard_plan.column_start
+    for position, (raw_row, raw_column) in enumerate(
+        zip(row_indexes, column_indexes, strict=True)
+    ):
+        row_index = _number(raw_row)
+        column_index = _number(raw_column)
+        expected_row = query_plan.row_index_start + (
+            shard_plan.row_start + position // width
+        ) * query_plan.index_step
+        expected_column = query_plan.column_index_start + (
+            shard_plan.column_start + position % width
+        ) * query_plan.index_step
+        if (
+            row_index is None
+            or column_index is None
+            or not math.isclose(row_index, expected_row, rel_tol=0, abs_tol=1e-7)
+            or not math.isclose(column_index, expected_column, rel_tol=0, abs_tol=1e-7)
+        ):
+            raise ValueError("sampled-grid source window order or completeness drifted")
+
+    frame = canonicalize_sampled_grid_columns(
+        columns,
+        mapping,
+        context=context,
+        row_count=row_count,
+    )
+    if frame.row_count != shard_plan.limit:
+        raise ValueError("sampled-grid source shard contains missing cells")
+    return CanonicalSampledGridShard(
+        frame=frame,
+        source_row_count=row_count,
+        duplicate_row_count=0,
     )
 
 
@@ -373,15 +528,14 @@ class SampledGridFrameAssembler:
         if missing:
             raise ValueError(f"sampled-grid frame is missing shards: {missing}")
         selected_views = [
-            self._shards[shard.shard_id]
-            .frame.view()
-            .intersecting(
-                self._plan.effective_bbox,
-                epsilon=GEOGRAPHIC_INTERSECTION_EPSILON,
-            )
+            self._shards[shard.shard_id].frame.view()
             for shard in self._plan.shards
         ]
-        frame = merge_canonical_grid_frame_views(selected_views)
+        frame = (
+            selected_views[0].frame
+            if len(selected_views) == 1
+            else merge_canonical_grid_frame_views(selected_views)
+        )
         if frame.row_count != self._plan.expected_row_count:
             raise ValueError(
                 "sampled-grid frame is incomplete after stitching: "

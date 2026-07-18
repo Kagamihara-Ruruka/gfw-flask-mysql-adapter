@@ -6,12 +6,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from threading import BoundedSemaphore, RLock
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from common_adapter.endpoint.client import EndpointHttpClient, EndpointRequestError
 from common_adapter.endpoint.runtime import value_at
 from common_adapter.query.registry import query_adapter
-from common_adapter.query.batch import dataset_query_concurrency
+from common_adapter.query.batch import dataset_query_concurrency, normalized_query_concurrency
 from common_adapter.query.sampled_grid import (
     SAMPLED_GRID_CONTRACT_VERSION,
     canonicalize_sampled_grid_rows,
@@ -21,6 +21,7 @@ from common_adapter.query.sampled_grid_paging import (
     CanonicalSampledGridShard,
     SampledGridFrameAssembler,
     SampledGridShardPlan,
+    canonicalize_sampled_grid_column_shard,
     canonicalize_sampled_grid_shard,
     effective_query_bbox,
     plan_sampled_grid_shards,
@@ -49,6 +50,8 @@ class _FetchedSampledGridShard:
     source_response_bytes: int
     source_capacity_wait_ms: float
     source_request_count: int
+    columns: Mapping[str, Sequence[Any]] | None = None
+    row_count: int | None = None
     empty_reason: str | None = None
 
 
@@ -187,7 +190,15 @@ def _resolution_for_request(
 
 def _source_page_limiter(dataset: dict[str, Any]) -> tuple[BoundedSemaphore, int]:
     source_key = dataset_query_transport_key(dataset)
-    capacity = dataset_query_concurrency(dataset)
+    source = dataset.get("endpoint_source")
+    source_config = source if isinstance(source, dict) else {}
+    policy = source_config.get("query_policy")
+    query_policy = policy if isinstance(policy, dict) else {}
+    operation_capacity = dataset_query_concurrency(dataset)
+    capacity = normalized_query_concurrency(
+        query_policy.get("max_request_in_flight"),
+        fallback=operation_capacity,
+    )
     with _SOURCE_PAGE_LIMITERS_LOCK:
         registered = _SOURCE_PAGE_LIMITERS.get(source_key)
         if registered is None:
@@ -213,6 +224,58 @@ def _query_parameters(
             value = int(value)
         params[str(parameter_names.get(role) or role)] = value
     return params
+
+
+def _columnar_projection_parameters(
+    snapshot: Mapping[str, Any],
+    mapping: Any,
+) -> dict[str, Any]:
+    projection = _mapping(snapshot.get("field_projection"))
+    columnar = _mapping(snapshot.get("columnar_response"))
+    if (
+        str(projection.get("mode") or "").strip().lower() != "field_list"
+        or str(columnar.get("mode") or "").strip().lower() != "columns"
+    ):
+        return {}
+    field_parameter = str(projection.get("parameter") or "").strip()
+    shape_parameter = str(columnar.get("parameter") or "").strip()
+    shape_value = str(columnar.get("value") or "").strip()
+    separator = str(projection.get("separator") or ",")
+    available = {
+        str(value).strip()
+        for value in projection.get("available_fields") or ()
+        if str(value).strip()
+    }
+    derived_roles = (
+        {"lat", "lon"}
+        if str(mapping.row_plan.geometry_encoding or "").strip().lower() == "global_index"
+        else set()
+    )
+    request_roles = set(mapping.request_fields)
+    required_fields = [
+        str(path).strip()
+        for role, path in mapping.source_fields.items()
+        if role not in request_roles and role not in derived_roles
+        if str(path).strip()
+    ]
+    required_fields.extend(
+        str(path).strip()
+        for path in mapping.extension_fields.values()
+        if str(path).strip()
+    )
+    fields = tuple(dict.fromkeys(required_fields))
+    if (
+        not field_parameter
+        or not shape_parameter
+        or not shape_value
+        or not fields
+        or any("." in field or field not in available for field in fields)
+    ):
+        return {}
+    return {
+        field_parameter: separator.join(fields),
+        shape_parameter: shape_value,
+    }
 
 
 def _bounds_intersect(row: dict[str, Any], bbox: dict[str, float] | None) -> bool:
@@ -414,6 +477,7 @@ class SampledGridHttpQueryAdapter:
         snapshot: dict[str, Any],
         path: str,
         pagination: dict[str, Any],
+        spatial_window: dict[str, Any],
         shard_plan: SampledGridShardPlan,
         limiter: BoundedSemaphore,
     ) -> _FetchedSampledGridShard:
@@ -432,6 +496,22 @@ class SampledGridHttpQueryAdapter:
             raise ValueError("sampled-grid pagination parameter names are required")
         params[limit_parameter] = shard_plan.limit
         params[offset_parameter] = shard_plan.offset
+        window_parameters = {
+            "row_start_parameter": shard_plan.source_row_start,
+            "row_stop_parameter": shard_plan.source_row_stop,
+            "column_start_parameter": shard_plan.source_column_start,
+            "column_stop_parameter": shard_plan.source_column_stop,
+        }
+        for role, value in window_parameters.items():
+            parameter = str(spatial_window.get(role) or "").strip()
+            if not parameter:
+                raise ValueError("sampled-grid spatial window parameter names are required")
+            params[parameter] = value
+        columnar_parameters = _columnar_projection_parameters(
+            snapshot,
+            self.mapping_context,
+        )
+        params.update(columnar_parameters)
         no_data_policy = _mapping(snapshot.get("no_data"))
         retry_policy = _mapping(snapshot.get("retry"))
         try:
@@ -490,19 +570,42 @@ class SampledGridHttpQueryAdapter:
             finally:
                 limiter.release()
 
-            return _FetchedSampledGridShard(
-                plan=shard_plan,
-                rows=tuple(
+            source_columns = None
+            source_row_count = None
+            columnar = _mapping(snapshot.get("columnar_response"))
+            if columnar_parameters:
+                candidate = value_at(body, columnar.get("columns_path", "columns"))
+                if not isinstance(candidate, Mapping):
+                    raise ValueError("sampled-grid source did not return advertised columns")
+                source_columns = {
+                    str(name): values
+                    for name, values in candidate.items()
+                    if isinstance(values, Sequence)
+                    and not isinstance(values, (str, bytes, bytearray))
+                }
+                source_row_count = int(
+                    value_at(body, columnar.get("row_count_path", "row_count")) or 0
+                )
+            source_rows = (
+                ()
+                if source_columns is not None
+                else tuple(
                     row
                     for row in _list(value_at(body, snapshot.get("rows_path", "rows")))
                     if isinstance(row, Mapping)
-                ),
+                )
+            )
+            return _FetchedSampledGridShard(
+                plan=shard_plan,
+                rows=source_rows,
                 metadata=_mapping(value_at(body, pagination.get("metadata_path", "page"))),
                 source_http_ms=source_http_ms,
                 source_json_decode_ms=source_json_decode_ms,
                 source_response_bytes=source_response_bytes,
                 source_capacity_wait_ms=source_capacity_wait_ms,
                 source_request_count=attempt,
+                columns=source_columns,
+                row_count=source_row_count,
             )
 
     def _load_paginated_canonical_snapshot(
@@ -522,12 +625,14 @@ class SampledGridHttpQueryAdapter:
             resolution=requested_resolution,
         )
         pagination = _mapping(snapshot.get("pagination"))
+        spatial_window = _mapping(snapshot.get("spatial_window"))
         query_plan = plan_sampled_grid_shards(
             viewport_bbox=requested_bbox,
             coverage_bounds=_mapping(coverage.get("bounds")),
             resolution_km=requested_resolution,
             mapping=self.mapping_context,
             pagination=pagination,
+            spatial_window=spatial_window,
         )
         limiter, source_capacity = _source_page_limiter(self.dataset)
 
@@ -547,6 +652,7 @@ class SampledGridHttpQueryAdapter:
                     snapshot=snapshot,
                     path=path,
                     pagination=pagination,
+                    spatial_window=spatial_window,
                     shard_plan=shard_plan,
                     limiter=limiter,
                 )
@@ -571,13 +677,31 @@ class SampledGridHttpQueryAdapter:
                         },
                     )
                 canonicalize_started = time.perf_counter()
-                canonical = canonicalize_sampled_grid_shard(
-                    rows=fetched.rows,
-                    page_metadata=fetched.metadata,
-                    mapping=self.mapping_context,
-                    query_plan=query_plan,
-                    shard_plan=shard_plan,
-                    context={"date": date_value, "resolution": requested_resolution},
+                canonical_context = {
+                    "date": date_value,
+                    "resolution": requested_resolution,
+                }
+                canonical = (
+                    canonicalize_sampled_grid_column_shard(
+                        columns=fetched.columns,
+                        row_count=int(fetched.row_count or 0),
+                        page_metadata=fetched.metadata,
+                        mapping=self.mapping_context,
+                        query_plan=query_plan,
+                        shard_plan=shard_plan,
+                        spatial_window=spatial_window,
+                        context=canonical_context,
+                    )
+                    if fetched.columns is not None
+                    else canonicalize_sampled_grid_shard(
+                        rows=fetched.rows,
+                        page_metadata=fetched.metadata,
+                        mapping=self.mapping_context,
+                        query_plan=query_plan,
+                        shard_plan=shard_plan,
+                        spatial_window=spatial_window,
+                        context=canonical_context,
+                    )
                 )
                 return SnapshotLoad(
                     shard_identity,
@@ -685,6 +809,7 @@ class SampledGridHttpQueryAdapter:
                 "source_overfetch_row_count": max(0, assembled_source_rows - assembled_frame.row_count),
                 "duplicate_source_rows": duplicate_source_rows,
                 "canonicalize_rows_ms": round(sum(float(payload.get("canonicalize_rows_ms") or 0) for _, payload in misses), 3),
+                "spatially_scoped": True,
                 "degrade_reason": None,
                 "empty_reason": empty_payloads[0].get("empty_reason") if empty_payloads else None,
             },
@@ -1082,7 +1207,12 @@ class SampledGridHttpQueryAdapter:
         if frame is None or not hasattr(frame, "view"):
             raise RuntimeError("mapped snapshot has no canonical grid frame")
         filter_started = time.perf_counter()
-        view = frame.view().intersecting(effective_bbox, epsilon=GEOGRAPHIC_INTERSECTION_EPSILON)
+        view = frame.view()
+        if not bool(source_slice.get("spatially_scoped")):
+            view = view.intersecting(
+                effective_bbox,
+                epsilon=GEOGRAPHIC_INTERSECTION_EPSILON,
+            )
         source_row_count = view.row_count
         offset_value = max(0, int(offset))
         effective_limit = _effective_limit(limit)

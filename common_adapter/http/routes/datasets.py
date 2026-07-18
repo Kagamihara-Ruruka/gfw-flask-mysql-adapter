@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import json
 import time
 import zlib
 from collections.abc import Callable, Mapping
 from typing import Any
 
+import orjson
 from flask import Flask, Response, jsonify, request, stream_with_context
 
 from common_adapter.db.connect import (
@@ -33,8 +33,9 @@ from common_adapter.spatial.overlay import elapsed_ms
 class BatchStreamTiming:
     """Owns monotonic timing for the 5081 NDJSON transport boundary."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, compression_level: int = 3) -> None:
         self.started_at = time.perf_counter()
+        self.compression_level = max(1, min(9, int(compression_level)))
         self.batch_encode_ms = 0.0
         self.batch_gzip_ms = 0.0
         self.batch_yield_ms = 0.0
@@ -43,9 +44,7 @@ class BatchStreamTiming:
 
     def encode(self, event: dict[str, Any]) -> bytes:
         started_at = time.perf_counter()
-        encoded = (
-            json.dumps(event, ensure_ascii=True, separators=(",", ":")) + "\n"
-        ).encode("utf-8")
+        encoded = orjson.dumps(event, option=orjson.OPT_APPEND_NEWLINE)
         self.batch_encode_ms += elapsed_ms(started_at)
         self.uncompressed_bytes += len(encoded)
         return encoded
@@ -53,7 +52,9 @@ class BatchStreamTiming:
     def snapshot(self) -> dict[str, Any]:
         return {
             "batch_encode_ms": round(self.batch_encode_ms, 3),
+            "batch_codec": "orjson",
             "batch_gzip_ms": round(self.batch_gzip_ms, 3),
+            "batch_gzip_level": self.compression_level,
             "batch_yield_ms": round(self.batch_yield_ms, 3),
             "response_bytes": self.response_bytes,
             "uncompressed_bytes": self.uncompressed_bytes,
@@ -282,7 +283,10 @@ class DatasetRoutes:
 
     @staticmethod
     def gzip_stream(chunks, timing: BatchStreamTiming):
-        compressor = zlib.compressobj(wbits=16 + zlib.MAX_WBITS)
+        compressor = zlib.compressobj(
+            level=timing.compression_level,
+            wbits=16 + zlib.MAX_WBITS,
+        )
         for chunk in chunks:
             encoded = chunk.encode("utf-8") if isinstance(chunk, str) else chunk
             gzip_started = time.perf_counter()
@@ -380,7 +384,9 @@ class DatasetRoutes:
             except Exception as exc:
                 return jsonify({"error": str(exc)}), 400
 
-            stream_timing = BatchStreamTiming()
+            stream_timing = BatchStreamTiming(
+                compression_level=policy["batch_gzip_level"],
+            )
 
             def event_stream():
                 def emit(event: dict[str, Any]):

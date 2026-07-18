@@ -29,6 +29,7 @@ class LineChartDataSource {
     this.eventSink = eventSink;
     this.errors = new Map();
     this.inflight = new Map();
+    this.pointCache = new Map();
     this.generation = 0;
     this.windowDays = 30;
   }
@@ -42,6 +43,7 @@ class LineChartDataSource {
     this.cancelFills({ reason: "source_cleared" });
     this.errors.clear();
     this.inflight.clear();
+    this.pointCache.clear();
   }
 
   cancelFills({ lane = "", reason = "cancelled" } = {}) {
@@ -283,6 +285,30 @@ class LineChartDataSource {
     };
   }
 
+  pointCacheKey(request, date) {
+    return [
+      request.datasetId,
+      request.metric,
+      request.bboxString,
+      request.resolution ?? "auto",
+      request.queryResolution ?? "auto",
+      date,
+    ].join("|");
+  }
+
+  cachedPoint(request, date) {
+    const key = this.pointCacheKey(request, date);
+    if (this.pointCache.has(key)) return this.pointCache.get(key);
+    const cached = this.dataFrameStore.inspect(this.packetRequest(request, date));
+    if (cached.status !== "ready" || !cached.packet) return null;
+    const point = Object.freeze({
+      ...this.packetValue(cached.packet),
+      timing: cached.packet.timing || {},
+    });
+    this.pointCache.set(key, point);
+    return point;
+  }
+
   snapshotSeries(request) {
     const points = new Map();
     const missingDates = [];
@@ -290,21 +316,21 @@ class LineChartDataSource {
     let rowCount = 0;
     let timing = {};
     for (const date of request.dates) {
-      const cached = this.dataFrameStore.inspect(this.packetRequest(request, date));
-      if (cached.status !== "ready" || !cached.packet) {
+      const point = this.cachedPoint(request, date);
+      if (!point) {
         missingDates.push(date);
         continue;
       }
-      const point = this.packetValue(cached.packet);
       points.set(widgetDateKey(date), point.value);
       rowCount += point.rowCount;
-      timing = cached.packet.timing || timing;
+      timing = point.timing || timing;
       cachedDates.push(date);
     }
     return { points, missingDates, cachedDates, rowCount, timing };
   }
 
   cacheEventAffectsCurrent(event) {
+    if (this.queryContext.playbackOwnsQueryLifecycle?.() === true) return false;
     const request = this.requestForCurrentState();
     if (request.blocked) return false;
     const detail = event?.detail || {};

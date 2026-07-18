@@ -1,5 +1,6 @@
 (() => {
 const { DashboardWidget } = window.WidgetCore;
+const METRICS_TELEMETRY_REFRESH_MS = 500;
 class MetricsWidget extends DashboardWidget {
   renderTemplate(container, { expanded = false, cinema = false } = {}) {
     container.classList.add("widget-template", "widget-template-metrics");
@@ -225,6 +226,7 @@ class MetricsWidget extends DashboardWidget {
     let latestPacket = api?.snapshot?.() || null;
     let wasConnected = false;
     let timer = 0;
+    let historyDirty = true;
     const unsubscribers = [];
     const dispose = () => {
       this.services.cancelSchedule?.(timer);
@@ -238,24 +240,28 @@ class MetricsWidget extends DashboardWidget {
         dispose();
         return;
       }
-      this.updateTelemetryView(container, latestPacket);
+      this.updateTelemetryView(container, latestPacket, { updateHistory: historyDirty });
+      historyDirty = false;
     };
-    const scheduleUpdate = () => {
+    const scheduleUpdate = ({ history = false } = {}) => {
+      historyDirty = historyDirty || history;
       if (timer) return;
-      timer = this.services.schedule?.(update, 160) || 0;
+      timer = this.services.schedule?.(update, METRICS_TELEMETRY_REFRESH_MS) || 0;
       if (!timer) update();
     };
     if (api?.subscribe) {
       unsubscribers.push(api.subscribe((packet) => {
         latestPacket = packet;
-        scheduleUpdate();
+        scheduleUpdate({ history: true });
       }));
     }
-    if (eventLog?.subscribe) unsubscribers.push(eventLog.subscribe(scheduleUpdate, { emitCurrent: false }));
+    if (eventLog?.subscribe) {
+      unsubscribers.push(eventLog.subscribe(() => scheduleUpdate(), { emitCurrent: false }));
+    }
     update();
   }
 
-  updateTelemetryView(container, packet) {
+  updateTelemetryView(container, packet, { updateHistory = true } = {}) {
     const setText = (key, value) => {
       container.querySelectorAll(`[data-widget-metric-value="${key}"]`).forEach((node) => {
         node.textContent = value;
@@ -282,7 +288,7 @@ class MetricsWidget extends DashboardWidget {
     setText("cacheReadyP95", this.formatMsValue(runtime?.cache_ready_latency_p95));
     setText("readyAheadSlices", `${this.formatNumber(runtime?.ready_ahead_slices || 0, 0)} 張`);
     setText("readyAheadSeconds", `${this.formatNumber(runtime?.ready_ahead_seconds || 0, 1)} s`);
-    this.updateHistoryChart(container, packet, setText);
+    if (updateHistory) this.updateHistoryChart(container, packet, setText);
 
     const values = ["query", "api", "draw"].map((key) => this.metricNumber(packet, key));
     const scale = Math.max(...values, 1);
@@ -315,6 +321,16 @@ class MetricsWidget extends DashboardWidget {
     if (!chart.__snapshotPerformanceChart) {
       chart.__snapshotPerformanceChart = createChart({ elementId: chart.id });
     }
+    const latest = samples[samples.length - 1] || {};
+    const signature = [
+      samples.length,
+      latest.index || "",
+      latest.label || "",
+      latest.monotonic_ms || "",
+      latest.total || "",
+    ].join("|");
+    if (chart.dataset.metricsHistorySignature === signature) return;
+    chart.dataset.metricsHistorySignature = signature;
     chart.__snapshotPerformanceChart.renderWhenReady(samples);
   }
 }
