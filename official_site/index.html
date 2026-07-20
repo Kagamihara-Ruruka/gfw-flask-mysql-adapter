@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BDDE38 Group 01 - Ocean Data Lakehouse</title>
+    <link rel="stylesheet" href="./styles.css?v=86" />
+  </head>
+  <body class="project-page home-page">
+    <header class="site-header">
+      <a class="site-brand" href="./intro.html" aria-label="Back to intro">
+        <img src="./assets/ispan-logo.svg" alt="iSpan" />
+        <span>
+          <strong>BDDE38</strong>
+          <small>GROUP 01</small>
+        </span>
+      </a>
+      <nav class="site-nav" aria-label="Project navigation">
+        <a href="./about.html">ABOUT</a>
+        <a href="./data-sources.html">DATA SOURCES</a>
+        <a href="./tech-stack.html">TECH STACK</a>
+        <a href="./product.html">PRODUCT</a>
+        <a href="./member.html">MEMBER</a>
+        <a class="dashboard-link" href="/dashboard/">DASHBOARD</a>
+      </nav>
+      <button class="menu-toggle" type="button" aria-label="Open menu" aria-expanded="false">
+        <span></span><span></span><span></span>
+      </button>
+    </header>
+
+    <main>
+      <section class="home-hero" aria-labelledby="home-title">
+        <div class="home-copy">
+          <p class="eyebrow">END-TO-END SPATIOTEMPORAL PIPELINE</p>
+          <h1 id="home-title">
+            Billion-Scale.
+            <span>Ocean Data Engineering</span>
+          </h1>
+          <p class="hero-subtitle">海洋巨量時空資料湖倉：從異質資料治理到高效查詢管線</p>
+          <p class="hero-lead">
+            把 NASA Ocean Color 與 Global Fishing Watch 的巨量時空資料，
+            從來源驗證、湖倉治理、批次運維，一路送到可動態註冊、快取優先、時間感知的前端 Runtime。
+          </p>
+          <div class="hero-actions">
+            <a class="button-primary" href="./about.html">START</a>
+            <a class="button-secondary" href="./intro.html">VIEW INTRO</a>
+          </div>
+          <div class="hero-caption-deck" aria-hidden="true">
+            <span>BIG DATA</span>
+            <span>DISTRIBUTED SYSTEMS</span>
+            <span>FULL-STACK PLATFORM</span>
+          </div>
+        </div>
+
+        <figure class="hero-orbit" aria-label="可互動旋轉的 Landsat 8 地球觀測衛星 3D 模型">
+          <div class="hero-satellite-canvas" data-satellite-scene></div>
+        </figure>
+      </section>
+
+      <section class="mission-strip" aria-label="專題摘要">
+        <article><span>資料期間</span><strong>2020-2024</strong></article>
+        <article><span>NASA 資料產品</span><strong>六項指標</strong></article>
+        <article><span>湖倉分層</span><strong>原始層 / 清洗層 / 聚合層</strong></article>
+        <article><span>運行核心</span><strong>宣告式架構，分散式佈署。</strong></article>
+      </section>
+
+      <section class="system-story" aria-labelledby="system-story-title">
+        <header class="system-story-heading">
+          <p class="eyebrow">SYSTEM STORY</p>
+          <h2 id="system-story-title">把異質海洋資料，變成可運行的資料服務</h2>
+          <p>真正的成果不是一張地圖，而是一條從資料源、分散式運算到前端產品的端到端管線。</p>
+        </header>
+
+        <article class="system-feature copy-right">
+          <div class="system-visual data-foundation-visual" role="img" aria-label="NASA 與 GFW 資料經原始層、清洗層與聚合層治理">
+            <span class="visual-stage-label">DATA FOUNDATION / MEDALLION FLOW</span>
+            <div class="source-rail">
+              <div class="source-tag">
+                <i>01</i>
+                <strong>NASA OCEAN COLOR</strong>
+                <span>CHLOR_A · NFLH · POC · SST · NSST · SST4</span>
+              </div>
+              <div class="source-tag">
+                <i>02</i>
+                <strong>GLOBAL FISHING WATCH</strong>
+                <span>VESSEL ACTIVITY</span>
+              </div>
+            </div>
+            <div class="medallion-flow">
+              <div class="medallion-node bronze-node"><small>BRONZE</small><strong>原始資料</strong><span>保留來源與版本</span></div>
+              <div class="medallion-node silver-node"><small>SILVER</small><strong>清洗與統一</strong><span>4 km AOI 網格</span></div>
+              <div class="medallion-node gold-node"><small>GOLD</small><strong>跨來源聚合</strong><span>可查詢指標</span></div>
+            </div>
+            <p class="visual-contract">TIME · GEOMETRY · METRIC · VALIDITY</p>
+          </div>
+          <div class="system-feature-copy">
+            <span>01 / DATA FOUNDATION</span>
+            <h3>兩種資料源，一條可追溯的資料鏈</h3>
+            <p>NASA Ocean Color 六項海洋指標與 GFW 漁船活動資料，先保留原始資料，再統一為 4 km 空間網格，最後產生跨來源聚合指標。</p>
+            <div class="feature-facts" aria-label="資料治理摘要">
+              <span><strong>2020-2024</strong>資料期間</span>
+              <span><strong>6</strong>海洋指標</span>
+              <span><strong>4 km</strong>空間網格</span>
+            </div>
+            <a href="./data-sources.html">查看資料來源</a>
+          </div>
+        </article>
+
+        <article class="system-feature copy-left">
+          <div class="system-feature-copy">
+            <span>02 / DISTRIBUTED SYSTEM</span>
+            <h3>兩台實體主機，撐起分散式運算叢集</h3>
+            <p>以 Kubernetes 管理 control plane 與四個工作節點，讓 Spark 批次任務在有限硬體下具備可用性、負載平衡、橫向擴展與容錯能力。</p>
+            <div class="feature-facts" aria-label="叢集摘要">
+              <span><strong>2</strong>實體主機</span>
+              <span><strong>4</strong>工作節點</span>
+              <span><strong>Spark</strong>on K8S</span>
+            </div>
+            <a href="./tech-stack.html">走進技術管線</a>
+          </div>
+          <div class="system-visual cluster-visual" role="img" aria-label="兩台實體主機上的 Kubernetes 與 Spark 分散式叢集">
+            <span class="visual-stage-label">DISTRIBUTED COMPUTE / KUBERNETES</span>
+            <div class="physical-hosts">
+              <section class="physical-host">
+                <header><span>PHYSICAL HOST</span><strong>SEQ 01</strong><small>64 GB RAM / 16 CORE</small></header>
+                <div class="host-node control-node"><span>CONTROL PLANE</span><strong>4 GB / 8 CORE</strong></div>
+                <div class="host-node"><span>WORKER / MASTER</span><strong>14 GB / 8 CORE</strong></div>
+                <div class="host-node"><span>WORKER 01</span><strong>14 GB / 8 CORE</strong></div>
+              </section>
+              <section class="physical-host">
+                <header><span>PHYSICAL HOST</span><strong>SEQ 02</strong><small>64 GB RAM / 16 CORE</small></header>
+                <div class="host-node"><span>WORKER 02</span><strong>14 GB / 8 CORE</strong></div>
+                <div class="host-node"><span>WORKER 03</span><strong>14 GB / 8 CORE</strong></div>
+                <div class="host-node runtime-node"><span>SPARK EXECUTORS</span><strong>DISTRIBUTED JOBS</strong></div>
+              </section>
+            </div>
+            <div class="runtime-badges"><span>SPARK</span><span>ICEBERG</span><span>HDFS</span><span>KUBERNETES</span></div>
+          </div>
+        </article>
+
+        <article class="system-feature copy-right">
+          <div class="system-visual product-runtime-visual" role="img" aria-label="從 Gold Serving Table 經查詢與快取服務送到 Flask API 與前端介面">
+            <span class="visual-stage-label">FULL-STACK MARITIME PLATFORM</span>
+            <div class="platform-flow">
+              <div class="platform-node"><small>DATA</small><strong>GOLD SERVING TABLE</strong></div>
+              <div class="platform-node"><small>CONTEXT</small><strong>QUERY CONTEXT</strong></div>
+              <div class="platform-node active"><small>RUNTIME</small><strong>QUERY BROKER + CACHE</strong></div>
+              <div class="platform-node"><small>API</small><strong>FLASK SERVICE</strong></div>
+              <div class="platform-node"><small>PRODUCT</small><strong>MAP + WIDGETS</strong></div>
+            </div>
+            <div class="canonical-contract">
+              <span>CANONICAL FRAME</span>
+              <strong>TIME</strong><strong>GEOMETRY</strong><strong>METRIC</strong><strong>VALIDITY</strong>
+            </div>
+            <div class="runtime-metrics">
+              <span><strong>5.61x</strong>映射加速</span>
+              <span><strong>-68%</strong>回應大小</span>
+              <span><strong>1 / 12</strong>重複請求</span>
+            </div>
+          </div>
+          <div class="system-feature-copy">
+            <span>03 / FULL-STACK PLATFORM</span>
+            <h3>從 Serving Table，到可操作的海事平台</h3>
+            <p>查詢先經過 Query Context、QueryBroker 與快取，再由 Flask API 提供時間播放、區域選取、地圖與分析 Widgets 共用的 Canonical Frame。</p>
+            <div class="feature-facts" aria-label="平台效能摘要">
+              <span><strong>5.61x</strong>映射加速</span>
+              <span><strong>-68%</strong>回應大小</span>
+              <span><strong>Cache</strong>優先</span>
+            </div>
+            <a href="./product.html">查看平台架構</a>
+          </div>
+        </article>
+      </section>
+    </main>
+
+    <footer class="site-footer"><small class="site-release">© 2026 BDDE38 GROUP 01 · WEB BUILD 2026.07</small></footer>
+    <script type="importmap">
+      {"imports":{"three":"./assets/vendor/three.module.js"}}
+    </script>
+    <script src="./script.js?v=36"></script>
+    <script type="module" src="./satellite.js?v=12"></script>
+  </body>
+</html>

@@ -27,8 +27,8 @@ class SystemRoutes:
         config = self.config
         developer_url = self.developer_url
 
-        @app.get("/")
-        def index():
+        @app.get("/dashboard/")
+        def dashboard():
             return render_template("index.html", developer_url=developer_url)
 
         @app.get("/favicon.ico")

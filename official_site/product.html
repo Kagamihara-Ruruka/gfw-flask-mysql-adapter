@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PRODUCT - BDDE38 Ocean Data Lakehouse</title>
+    <link rel="stylesheet" href="./styles.css?v=86" />
+  </head>
+  <body class="project-page detail-page product-page">
+    <header class="site-header">
+      <a class="site-brand" href="/" aria-label="Back to index">
+        <img src="./assets/ispan-logo.svg" alt="iSpan" />
+        <span><strong>BDDE38</strong><small>GROUP 01</small></span>
+      </a>
+      <nav class="site-nav" aria-label="Project navigation">
+        <a href="./about.html">ABOUT</a>
+        <a href="./data-sources.html">DATA SOURCES</a>
+        <a href="./tech-stack.html">TECH STACK</a>
+        <a class="is-active" href="./product.html">PRODUCT</a>
+        <a href="./member.html">MEMBER</a>
+        <a class="dashboard-link" href="/dashboard/">DASHBOARD</a>
+      </nav>
+      <button class="menu-toggle" type="button" aria-label="Open menu" aria-expanded="false"><span></span><span></span><span></span></button>
+    </header>
+
+    <main>
+      <section
+        class="page-hero light-hero product-platform-hero"
+        data-sky-latitude="45.449586"
+        data-sky-longitude="141.645228"
+        data-sky-time="2009-05-23T10:08:00Z"
+        data-camera-azimuth="270"
+        data-camera-pitch="27"
+        data-lens-x="0.511"
+        data-lens-y="0.410"
+      >
+        <img class="product-lighthouse-photo" data-lighthouse-photo src="./assets/product-lighthouse-janus-y.jpg" alt="" decoding="async" fetchpriority="high" />
+        <canvas class="lighthouse-stars-canvas" data-lighthouse-sky aria-hidden="true"></canvas>
+        <canvas class="lighthouse-beacon-canvas" data-lighthouse-beacon aria-hidden="true"></canvas>
+        <p class="eyebrow">PRODUCT PLATFORM</p>
+        <h1>讓海事資料隨選即用</h1>
+        <p>統一接入、查詢與快取，讓地圖、圖表與分析元件共用同一套海事資料服務。</p>
+        <div class="hero-caption-deck dark-caption" aria-hidden="true">
+          <span>CONFIG-DRIVEN</span>
+          <span>TIME-AWARE</span>
+          <span>CACHE-FIRST</span>
+        </div>
+        <a class="product-photo-credit" href="https://unsplash.com/photos/lighthouse-during-night-time-30fTBWZv-2c" target="_blank" rel="noreferrer">Janus Y / Unsplash</a>
+      </section>
+
+      <section class="content-section product-runtime">
+        <div class="platform-problem">
+          <article>
+            <span>WHY THIS PLATFORM</span>
+            <h2>異質資料，共享同一套語意</h2>
+          </article>
+          <div class="problem-points">
+            <article><strong>來源不一致</strong><span>MySQL、PostGIS、HTTP、WebSocket、Iceberg 各自有欄位、能力與限制。</span></article>
+            <article><strong>時空不一致</strong><span>日期、BBOX、格網原點、解析度、Null 與 Coverage 需要唯一真相。</span></article>
+            <article><strong>消費者會互搶</strong><span>地圖、播放器、選格、表格與圖表若各自查 Server，就會出現查詢風暴與競態。</span></article>
+          </div>
+        </div>
+
+        <div class="runtime-flow" aria-label="Runtime data flow">
+          <article><span>01</span><strong>註冊</strong><small>Config / Source</small></article>
+          <article><span>02</span><strong>翻譯</strong><small>Probe / Mapping</small></article>
+          <article><span>03</span><strong>調度</strong><small>Demand / Broker</small></article>
+          <article><span>04</span><strong>快取</strong><small>Canonical Store</small></article>
+          <article><span>05</span><strong>消費</strong><small>Map / Widget</small></article>
+        </div>
+
+        <div class="context-cache-layout">
+          <article class="context-panel">
+            <p class="eyebrow">QUERY CONTEXT</p>
+            <h2>可追蹤的查詢上下文</h2>
+            <div class="context-grid">
+              <span>dataset</span>
+              <span>date</span>
+              <span>bbox</span>
+              <span>zoom</span>
+              <span>resolution</span>
+              <span>effective_bbox</span>
+            </div>
+          </article>
+          <article class="context-panel">
+            <p class="eyebrow">QUERY & CACHE</p>
+            <h2>合併重複查詢，快取優先</h2>
+            <ul>
+              <li>同一 Frame Key 同時最多一個 HTTP</li>
+              <li>高優先需求可提升已排隊工作</li>
+              <li>插隊不清除完成快取</li>
+              <li>Widget miss 才提出補貨需求</li>
+            </ul>
+          </article>
+        </div>
+
+        <div class="canonical-board">
+          <div>
+            <p class="eyebrow">CANONICAL DATA</p>
+            <h2>所有消費者，共用 Canonical Frame</h2>
+          </div>
+          <div class="canonical-table" role="table" aria-label="Canonical roles">
+            <div><strong>time</strong><span>date</span><small>Playback</small></div>
+            <div><strong>geometry</strong><span>grid index + bounds</span><small>Map / Selection</small></div>
+            <div><strong>metric</strong><span>value</span><small>Renderer / Widget</small></div>
+            <div><strong>validity</strong><span>validity mask</span><small>All consumers</small></div>
+          </div>
+        </div>
+
+        <div class="runtime-cards">
+          <article><span>PLAYBACK</span><h3>播放與預熱分工</h3><p>播放控制器管理時間軸，預熱器維持下一批可用資料。</p></article>
+          <article><span>WIDGET</span><h3>元件共享同一份快取</h3><p>地圖、圖表與事件檢視器只在缺資料時補貨。</p></article>
+          <article><span>OBSERVABILITY</span><h3>事件記錄完整生命週期</h3><p>從查詢、HTTP、快取到 GPU，卡頓位置可追蹤。</p></article>
+        </div>
+
+        <div class="performance-strip">
+          <article><strong>5.61x</strong><span>Mapping 加速</span></article>
+          <article><strong>-68%</strong><span>來源回應體積</span></article>
+          <article><strong>1.292 fps</strong><span>冷快取吞吐</span></article>
+          <article><strong>1 / 12</strong><span>重複風暴來源請求</span></article>
+        </div>
+
+        <div class="product-layout">
+          <div class="product-copy">
+            <p class="eyebrow">SERVING PATH</p>
+            <h2>資料工程輸出，直接供給 Runtime</h2>
+            <p>Serving Table 經 Flask API 進入註冊、查詢、快取與播放流程。</p>
+          </div>
+          <a class="product-dashboard-launch" href="/dashboard/">
+            <span class="product-dashboard-kicker">LIVE SERVICE</span>
+            <strong>開啟儀表板</strong>
+            <span>直接進入地圖、播放器、Widgets 與資料服務 Runtime。</span>
+            <span class="product-dashboard-action">ENTER DASHBOARD <span aria-hidden="true">→</span></span>
+          </a>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer"><small class="site-release">© 2026 BDDE38 GROUP 01 · WEB BUILD 2026.07</small></footer>
+    <script src="./script.js?v=36"></script>
+    <script type="module" src="./product-visual.js?v=6"></script>
+  </body>
+</html>

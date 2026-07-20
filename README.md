@@ -620,9 +620,26 @@ Use `config\state\router_manifest.local.json` to select active route fragments. 
 
 Local config files are ignored by git. Keep real passwords in local fragments or in environment variables.
 
+Start the consumer and developer listeners with one `core.py` command:
+
+```powershell
+.\.venv\Scripts\python.exe core.py --config config\runtime\adapter.local.json serve
+```
+
+With the example ports, the runtime surface is:
+
+| Address | Owner |
+|---|---|
+| `http://127.0.0.1:5057/` | Public group website from `official_site/` |
+| `http://127.0.0.1:5057/dashboard/` | Consumer dashboard |
+| `http://127.0.0.1:5057/api/...` | Consumer API and runtime transport |
+| `http://127.0.0.1:5058/` | Developer control plane |
+
+The public website and dashboard deliberately share the consumer origin. Its `DASHBOARD` navigation uses the root-relative `/dashboard/` route; do not replace it with a machine-specific host or port. `core.py` starts the developer listener on the next port by default, or on `--developer-port` when supplied. Use `--no-developer-server` only when the control plane must not be started.
+
 ## Deployment Guide
 
-This repository separates the dashboard process from its stateful dependencies and upstream collectors. `docker-compose.yml` starts local MySQL and PostGIS support services only; it does not build or deploy the Flask application.
+This repository serves the public website, consumer dashboard, and consumer API from one consumer listener. The same `core.py` process also starts the developer control plane on a separate listener. Stateful dependencies and upstream collectors remain separate. `docker-compose.yml` starts local MySQL and PostGIS support services only; it does not build or deploy the Flask application.
 
 ### Human runbook
 
@@ -656,7 +673,7 @@ This repository separates the dashboard process from its stateful dependencies a
    .\.venv\Scripts\python.exe core.py --config config\runtime\adapter.local.json serve
    ```
 
-   The consumer UI uses the configured server port; the developer control plane uses the next port unless `--developer-port` is supplied. Use `--no-developer-server` when the deployment must expose only the consumer UI. Do not expose the developer port to an untrusted network.
+   The configured consumer port serves `/` (public website), `/dashboard/` (dashboard), and `/api/...` (consumer API). The same command starts the developer control plane on the next port unless `--developer-port` is supplied. Use `--no-developer-server` when the deployment must not start the control plane. Do not expose the developer port to an untrusted network.
 
 6. Verify the deployed process before routing users to it:
 
@@ -665,7 +682,7 @@ This repository separates the dashboard process from its stateful dependencies a
    Invoke-RestMethod http://127.0.0.1:5057/api/datasets
    ```
 
-   Also open the dashboard in a fresh browser profile and verify layer activation, one sampled-grid frame, EEZ rendering, playback, zoom, drag, selection, and Widget interaction. HTTP health alone does not validate the rendering lifecycle.
+   Also open `/` in a fresh browser profile, follow the relative `DASHBOARD` link to `/dashboard/`, and verify layer activation, one sampled-grid frame, EEZ rendering, playback, zoom, drag, selection, and Widget interaction. Open the Developer tab and confirm that it embeds the configured developer listener rather than a consumer route. HTTP health alone does not validate routing or the rendering lifecycle.
 
 7. Run AIS and other upstream collectors as independent supervised jobs. The dashboard reads their SQL/service outputs; it does not own collector continuity. Store upstream keys in environment variables, K8 Secrets, Airflow Variables, or an equivalent secret manager.
 
@@ -687,7 +704,7 @@ An automation agent must use the same configuration and health truth as a human 
 3. Keep secrets out of commands, logs, commits, and generated reports. Prefer injected environment variables or the platform secret store.
 4. Run `check-dependencies` before `serve`. If a declared dependency is unavailable, stop and report the failing route instead of silently removing it or creating a fallback config.
 5. Start at most one application process for the selected config. Reuse the configured ports, close obsolete browser tabs, and avoid parallel benchmark traffic during acceptance.
-6. Validate `/api/health`, `/api/datasets`, the consumer page, and the required user workflow. For a release candidate, run the test commands in [Validation](#validation) and preserve the commit, config identity, cache state, browser profile, and results.
+6. Validate `/`, `/dashboard/`, `/api/health`, `/api/datasets`, the separate developer listener, and the required user workflow. Confirm that website navigation remains same-origin and root-relative. For a release candidate, run the test commands in [Validation](#validation) and preserve the commit, config identity, cache state, browser profile, and results.
 7. Treat a missing dataset, Mapping mismatch, stale frame, permanent `FETCHING`, duplicate HTTP, alpha error, mask seam, or render corruption as a failed deployment. Do not compensate by raising RAM, concurrency, watermarks, or timeouts.
 8. On failure, stop the new process, preserve logs and event evidence, and redeploy the previous known-good commit/image. Never repair a deployed instance with uncommitted production edits.
 
@@ -695,7 +712,7 @@ Deployment is complete only when dependency checks, API checks, and the browser 
 
 ## Developer Control Plane Guide
 
-The developer page is a configuration control plane, not a second dashboard and not a data-query client. `core.py serve` exposes it on `server.port + 1` by default; the dashboard's Developer tab embeds that service. It can also be opened directly at `http://127.0.0.1:5058` when the consumer port is `5057`.
+The developer page is a configuration control plane, not a second dashboard and not a data-query client. One `core.py serve` command starts both listeners: the public website, dashboard, and API stay on `server.port`, while the developer control plane uses `server.port + 1` by default. The dashboard's Developer tab embeds that separate service. It can also be opened directly at `http://127.0.0.1:5058` when the consumer port is `5057`.
 
 Use the panels from top to bottom. Each panel consumes the persisted result of the preceding panel:
 

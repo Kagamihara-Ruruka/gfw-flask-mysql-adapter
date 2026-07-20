@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MEMBER - BDDE38 Ocean Data Lakehouse</title>
+    <link rel="stylesheet" href="./styles.css?v=86" />
+  </head>
+  <body class="project-page detail-page member-page">
+    <header class="site-header">
+      <a class="site-brand" href="/" aria-label="Back to index">
+        <img src="./assets/ispan-logo.svg" alt="iSpan" />
+        <span><strong>BDDE38</strong><small>GROUP 01</small></span>
+      </a>
+      <nav class="site-nav" aria-label="Project navigation">
+        <a href="./about.html">ABOUT</a>
+        <a href="./data-sources.html">DATA SOURCES</a>
+        <a href="./tech-stack.html">TECH STACK</a>
+        <a href="./product.html">PRODUCT</a>
+        <a class="is-active" href="./member.html">MEMBER</a>
+        <a class="dashboard-link" href="/dashboard/">DASHBOARD</a>
+      </nav>
+      <button class="menu-toggle" type="button" aria-label="Open menu" aria-expanded="false"><span></span><span></span><span></span></button>
+    </header>
+
+    <main class="member-page-stage" data-member-evolution-stage>
+      <div class="member-evolution-viewport" data-member-evolution aria-hidden="true">
+        <img class="member-evolution-svg" data-member-evolution-track src="./member-evolution.svg?v=1" alt="" draggable="false" />
+        <img class="member-evolution-svg member-evolution-svg-copy" data-member-evolution-copy src="./member-evolution.svg?v=1" alt="" draggable="false" />
+      </div>
+      <section class="page-hero member-hero">
+        <p class="eyebrow">MEMBER</p>
+        <h1>強悍的開發團隊</h1>
+        <div class="hero-caption-deck" aria-hidden="true">
+          <span>DEV</span>
+          <span>GROUP 01</span>
+          <span>iSpan</span>
+        </div>
+      </section>
+
+      <section class="content-section">
+        <div class="member-grid">
+          <button class="member-card leader-card" type="button" data-member-name="黃小峰" data-member-role="LEADER / PROJECT INTEGRATION" data-member-description="負責專案管理、跨模組整合與資料管線設計，協調資料蒐集、處理與系統交付節奏。" data-member-tags="PROJECT LEAD,DATA PIPELINE,INTEGRATION" data-member-image="./assets/member-huang.png" data-member-github="https://github.com/montagnahuanghsiao">
+            <img class="member-portrait" src="./assets/member-huang.png" alt="" />
+            <span class="member-card-body"><span>LEADER</span><strong>黃小峰</strong><small>專案管理與整合、資料管線設計</small></span>
+          </button>
+          <button class="member-card" type="button" data-member-name="王韋閎" data-member-role="MEMBER / RESEARCH &amp; DATA" data-member-description="負責專題主題研究、資料蒐集與處理，並參與 Kubernetes 叢集基礎建設與日常維運。" data-member-tags="RESEARCH,DATA PROCESSING,K8S" data-member-image="./assets/member-wang.png" data-member-github="https://github.com/work20210412-commits">
+            <img class="member-portrait" src="./assets/member-wang.png" alt="" />
+            <span class="member-card-body"><span>MEMBER</span><strong>王韋閎</strong><small>研究、資料處理、K8S 維運</small></span>
+          </button>
+          <button class="member-card" type="button" data-member-name="盧韋丞" data-member-role="MEMBER / INFRASTRUCTURE" data-member-description="負責系統監控與自動化工作，維護 Kubernetes 叢集與批次任務的運行穩定度。" data-member-tags="MONITORING,AUTOMATION,K8S" data-member-image="./assets/member-lu-weicheng.png" data-member-github="https://github.com/jeeset">
+            <img class="member-portrait" src="./assets/member-lu-weicheng.png" alt="" />
+            <span class="member-card-body"><span>MEMBER</span><strong>盧韋丞</strong><small>系統監控、自動化、K8S</small></span>
+          </button>
+          <button class="member-card" type="button" data-member-name="廖皓鈞" data-member-role="MEMBER / BACKEND" data-member-description="負責後端服務整合、資料流效能優化與 Flask API，將 Serving Table 接到產品查詢路徑。" data-member-tags="BACKEND,PERFORMANCE,FLASK API" data-member-image="./assets/member-liao.png" data-member-github="https://github.com/ltmcliao-cmyk">
+            <img class="member-portrait" src="./assets/member-liao.png" alt="" />
+            <span class="member-card-body"><span>MEMBER</span><strong>廖皓鈞</strong><small>後端整合、效能、Flask API</small></span>
+          </button>
+          <button class="member-card" type="button" data-member-name="盧彥安" data-member-role="MEMBER / FRONTEND" data-member-description="負責前端建置、API 架構與資料視覺化，將海洋時空資料轉成可操作的產品介面。" data-member-tags="FRONTEND,API,DATA VISUALIZATION" data-member-image="./assets/member-lu-yanan.png" data-member-github="https://github.com/Kagamihara-Ruruka">
+            <img class="member-portrait" src="./assets/member-lu-yanan.png" alt="" />
+            <span class="member-card-body"><span>MEMBER</span><strong>盧彥安</strong><small>前端建置、API、資料視覺化</small></span>
+          </button>
+        </div>
+
+        <div class="contribution-map">
+          <article><strong>Research</strong><span>主題研究、漁業現況、資料意義</span></article>
+          <article><strong>Data Pipeline</strong><span>來源驗證、Bronze / Silver / Gold</span></article>
+          <article><strong>Infrastructure</strong><span>K8S、Spark、HDFS、Iceberg、運維腳本</span></article>
+          <article><strong>Product</strong><span>Flask API、查詢路徑、前端視覺化</span></article>
+        </div>
+      </section>
+      <footer class="site-footer"><small class="site-release">© 2026 BDDE38 GROUP 01 · WEB BUILD 2026.07</small></footer>
+    </main>
+
+    <dialog class="member-dialog" data-member-dialog>
+      <div class="member-dialog-inner">
+        <button class="member-dialog-close" type="button" aria-label="關閉簡介" data-member-close>×</button>
+        <img class="member-dialog-portrait" src="" alt="" data-member-dialog-image />
+        <div class="member-dialog-copy">
+          <span class="member-dialog-role" data-member-dialog-role></span>
+          <h2 data-member-dialog-name></h2>
+          <p data-member-dialog-description></p>
+          <div class="member-dialog-tags" data-member-dialog-tags></div>
+          <a class="member-dialog-github" href="" target="_blank" rel="noopener noreferrer" data-member-dialog-github hidden>
+            <span class="member-dialog-github-mark" aria-hidden="true">
+              <svg class="member-dialog-github-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+                <path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3.28-.36 6.72-1.61 6.72-7.25A5.65 5.65 0 0 0 19.22 3.38 5.26 5.26 0 0 0 19.13 0S17.95-.38 15 1.48a13.38 13.38 0 0 0-6 0C6.05-.38 4.87 0 4.87 0a5.26 5.26 0 0 0-.09 3.38 5.65 5.65 0 0 0-1.5 3.87c0 5.63 3.44 6.88 6.72 7.25A4.8 4.8 0 0 0 9 18v4" />
+                <path d="M9 18c-4.51 2-5-2-7-2" />
+              </svg>
+            </span>
+            <span class="member-dialog-github-copy">
+              <strong>GitHub Profile</strong>
+              <small data-member-dialog-github-handle></small>
+            </span>
+            <svg class="member-dialog-github-external" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+              <path d="M15 3h6v6" />
+              <path d="M10 14 21 3" />
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+            </svg>
+          </a>
+        </div>
+      </div>
+    </dialog>
+
+    <script src="./script.js?v=39"></script>
+  <script type="module" src="./member-evolution.js?v=7"></script>
+  </body>
+</html>

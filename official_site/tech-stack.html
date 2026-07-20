@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TECH STACK - BDDE38 Ocean Data Lakehouse</title>
+    <link rel="stylesheet" href="./styles.css?v=86" />
+  </head>
+  <body class="project-page detail-page tech-stack-page">
+    <header class="site-header">
+      <a class="site-brand" href="/" aria-label="Back to index">
+        <img src="./assets/ispan-logo.svg" alt="iSpan" />
+        <span><strong>BDDE38</strong><small>GROUP 01</small></span>
+      </a>
+      <nav class="site-nav" aria-label="Project navigation">
+        <a href="./about.html">ABOUT</a>
+        <a href="./data-sources.html">DATA SOURCES</a>
+        <a class="is-active" href="./tech-stack.html">TECH STACK</a>
+        <a href="./product.html">PRODUCT</a>
+        <a href="./member.html">MEMBER</a>
+        <a class="dashboard-link" href="/dashboard/">DASHBOARD</a>
+      </nav>
+      <button class="menu-toggle" type="button" aria-label="Open menu" aria-expanded="false"><span></span><span></span><span></span></button>
+    </header>
+
+    <main>
+      <section class="page-hero tech-stack-hero">
+        <button class="sputnik-transmitter" data-sputnik-transmitter type="button" aria-label="播放 Vostok 1 真實任務通訊；拖曳可翻轉 Sputnik 1">
+          <canvas data-sputnik-scene aria-hidden="true"></canvas>
+          <span class="sputnik-model-loading">SPUTNIK 1</span>
+          <span class="visually-hidden" data-sputnik-audio-status aria-live="polite"></span>
+        </button>
+        <p class="eyebrow">TECH STACK</p>
+        <h1>技術棧－使研究得以可能的地基</h1>
+        <p>從分散式湖倉、異質資料接入，到可追溯查詢、瀏覽器 Runtime 與 GPU 視覺化，技術棧共同支撐研究全流程。</p>
+        <div class="hero-caption-deck" aria-hidden="true">
+          <span>DISTRIBUTED LAKEHOUSE</span>
+          <span>TRACEABLE QUERY</span>
+          <span>GPU RUNTIME</span>
+        </div>
+      </section>
+
+      <section class="content-section">
+        <div class="pipeline-track pipeline-track-six" aria-label="End-to-end system stages">
+          <article><span>01</span><strong>Data Sources</strong><small>NASA NetCDF / GFW Data</small></article>
+          <article><span>02</span><strong>Bronze</strong><small>保留語意、轉 Parquet、上 HDFS</small></article>
+          <article><span>03</span><strong>Silver</strong><small>清洗、AOI、4km 網格、品質報告</small></article>
+          <article><span>04</span><strong>Gold</strong><small>Join、衍生指標、Serving Export</small></article>
+          <article><span>05</span><strong>Service Runtime</strong><small>Mapping、Query、Canonical Frame</small></article>
+          <article><span>06</span><strong>Interactive Client</strong><small>Playback、WebGL、Widgets</small></article>
+        </div>
+
+        <div class="tech-tabs" data-tech-tabs>
+          <div class="tech-tab-list" role="tablist" aria-label="技術棧內容">
+            <button id="tech-tab-data" role="tab" type="button" aria-selected="true" aria-controls="tech-panel-data" tabindex="0">
+              <span>01</span><strong>資料系統</strong><small>DATA PLATFORM</small>
+            </button>
+            <button id="tech-tab-runtime" role="tab" type="button" aria-selected="false" aria-controls="tech-panel-runtime" tabindex="-1">
+              <span>02</span><strong>全端 Runtime</strong><small>FULL-STACK</small>
+            </button>
+            <button id="tech-tab-ops" role="tab" type="button" aria-selected="false" aria-controls="tech-panel-ops" tabindex="-1">
+              <span>03</span><strong>叢集與運維</strong><small>INFRA & OPS</small>
+            </button>
+          </div>
+
+          <section id="tech-panel-data" class="tech-tab-panel" role="tabpanel" aria-labelledby="tech-tab-data">
+            <div class="stack-layout">
+              <div class="stack-copy">
+                <p class="eyebrow">LAKEHOUSE</p>
+                <h2>Spark、Iceberg、HDFS 共同承接巨量時空資料</h2>
+                <p>Hadoop 儲存大量檔案，Spark 執行分散運算，Iceberg 以 metadata 與 snapshot 補上 ACID、追溯與表格管理。</p>
+                <div class="stack-tags">
+                  <span>Requests</span><span>PyArrow</span><span>Spark 3.5.8</span><span>Iceberg 1.11.0</span><span>Hadoop 3.5.0</span><span>Kubernetes</span>
+                </div>
+              </div>
+              <div class="tech-logo-board" aria-label="資料管線使用的技術工具">
+                <div class="tech-logo"><img src="./assets/python.svg" alt="Python" /><strong>INGEST / PYTHON</strong></div>
+                <div class="tech-logo"><img src="./assets/apache-parquet.svg" alt="Apache Parquet" /><strong>BRONZE / PARQUET</strong></div>
+                <div class="tech-logo"><img src="./assets/apache-hadoop.svg" alt="Apache Hadoop" /><strong>STORAGE / HDFS</strong></div>
+                <div class="tech-logo"><img src="./assets/apache-spark.svg" alt="Apache Spark" /><strong>SILVER / SPARK</strong></div>
+                <div class="tech-logo"><img src="./assets/apache-iceberg.svg" alt="Apache Iceberg" /><strong>GOLD / ICEBERG</strong></div>
+                <div class="tech-logo"><img src="./assets/kubernetes.svg" alt="Kubernetes" /><strong>COMPUTE / K8S</strong></div>
+                <div class="tech-logo"><img src="./assets/flask.svg" alt="Flask" /><strong>SERVICE / FLASK</strong></div>
+                <div class="tech-logo"><span class="tech-html-mark">HTML<br />CSS<br />JS</span><strong>PRODUCT / FRONTEND</strong></div>
+              </div>
+            </div>
+          </section>
+
+          <section id="tech-panel-runtime" class="tech-tab-panel" role="tabpanel" aria-labelledby="tech-tab-runtime" hidden>
+            <div class="fullstack-system" aria-labelledby="fullstack-title">
+              <header class="fullstack-heading">
+                <p class="eyebrow">FULL-STACK RUNTIME</p>
+                <h2 id="fullstack-title">同一份資料真相，穿過服務、瀏覽器與視覺化</h2>
+              </header>
+              <div class="fullstack-grid">
+                <article>
+                  <span>API & QUERY</span><h3>Flask 服務與查詢協調</h3>
+                  <p>Registry、Mapping 與能力矩陣定義資料合約；QueryBroker 去重、分流並壓成 NDJSON 批次。</p>
+                  <ul><li>Flask 3.1</li><li>orjson / NDJSON</li><li>QueryBroker</li><li>Canonical Frame</li></ul>
+                </article>
+                <article>
+                  <span>DATA ADAPTERS</span><h3>異質來源，統一讀取邊界</h3>
+                  <p>DuckDB、MySQL、Iceberg serving endpoint 與 PostGIS 各自負責來源能力，UI 不讀來源 Schema。</p>
+                  <ul><li>DuckDB</li><li>MySQL</li><li>PostGIS / MVT</li><li>Iceberg</li></ul>
+                </article>
+                <article>
+                  <span>BROWSER RUNTIME</span><h3>可回收、可追蹤的互動生命週期</h3>
+                  <p>JavaScript、DI 與明確 owner 管理播放、預熱、快取、圖層與 Widget，不讓 UI 旁路查詢。</p>
+                  <ul><li>JavaScript Modules</li><li>DI / OOP</li><li>DataFrameStore</li><li>Event Viewer</li></ul>
+                </article>
+                <article>
+                  <span>MAP & VISUALS</span><h3>地圖、GPU 與分析工具</h3>
+                  <p>Leaflet 管理視角；sampled-grid 優先交給 WebGL，必要時降級 Canvas；Plotly 唯讀 Canonical 資料。</p>
+                  <ul><li>Leaflet</li><li>WebGL2 / Canvas</li><li>Plotly</li><li>Spatial Mask</li></ul>
+                </article>
+              </div>
+              <div class="runtime-path" aria-label="Runtime data path">
+                <span>Scout / Mapping</span><i></i><span>Flask API</span><i></i><span>QueryBroker</span><i></i><span>Canonical Frame</span><i></i><span>WebGL / Widgets</span>
+              </div>
+            </div>
+          </section>
+
+          <section id="tech-panel-ops" class="tech-tab-panel" role="tabpanel" aria-labelledby="tech-tab-ops" hidden>
+            <div class="infra-grid">
+              <article><strong>5 節點</strong><span>K8S 巢狀叢集</span></article>
+              <article><strong>2 台實體電腦</strong><span>每台 64G RAM / 16 核</span></article>
+              <article><strong>34.6 萬格/日</strong><span>西北太平洋 AOI</span></article>
+              <article><strong>1,070 萬列/月</strong><span>單月基礎網格</span></article>
+            </div>
+            <div class="tech-native-duo">
+              <section class="cluster-board" aria-labelledby="cluster-board-title">
+                <header class="native-board-header"><span>K8S CLUSTER</span><strong id="cluster-board-title">硬體與節點配置</strong></header>
+                <div class="mini-hosts">
+                  <article class="mini-host"><strong>SEQ 01</strong><span>64 GB RAM / 16 CORE</span><div class="mini-nodes"><i>CONTROL PLANE</i><i>MASTER</i><i>WORKER 01</i></div></article>
+                  <article class="mini-host"><strong>SEQ 02</strong><span>64 GB RAM / 16 CORE</span><div class="mini-nodes"><i>WORKER 02</i><i>WORKER 03</i><i>SPARK EXECUTORS</i></div></article>
+                </div>
+                <div class="runtime-badges"><span>高可用</span><span>負載均衡</span><span>橫向擴展</span><span>容錯</span></div>
+              </section>
+              <section class="batch-board" aria-labelledby="batch-board-title">
+                <header class="native-board-header"><span>OPERATIONS</span><strong id="batch-board-title">分月批次與自動化</strong></header>
+                <p class="batch-command">./run_gold_monthly.sh 2021 01 12</p>
+                <div class="batch-steps">
+                  <article class="batch-step"><i>01</i><strong>Script</strong><span>統一批次入口與參數</span></article>
+                  <article class="batch-step"><i>02</i><strong>Patch ConfigMap</strong><span>依月份更新設定</span></article>
+                  <article class="batch-step"><i>03</i><strong>Spark Gold Job</strong><span>產生聚合與跨源指標</span></article>
+                  <article class="batch-step"><i>04</i><strong>Serving Export</strong><span>輸出查詢資料表</span></article>
+                  <article class="batch-step"><i>05</i><strong>Verify HDFS</strong><span>驗證產物並寫入 Batch Log</span></article>
+                </div>
+              </section>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer"><small class="site-release">© 2026 BDDE38 GROUP 01 · WEB BUILD 2026.07</small></footer>
+    <script src="./script.js?v=36"></script>
+    <script type="importmap">
+      {"imports":{"three":"./assets/vendor/three.module.js"}}
+    </script>
+    <script type="module" src="./tech-network.js?v=10"></script>
+  </body>
+</html>

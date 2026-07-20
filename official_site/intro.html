@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BDDE38 Intro - Billion-Scale Ocean Data Engineering</title>
+    <link rel="stylesheet" href="./intro.css?v=24" />
+  </head>
+  <body class="intro-page">
+    <div class="flight-stage">
+      <canvas id="shader" aria-hidden="true"></canvas>
+      <div class="star-layer" aria-hidden="true"></div>
+      <div class="speed-lines" aria-hidden="true"></div>
+      <div class="atmosphere-rim" aria-hidden="true"></div>
+      <div class="reentry-window" aria-hidden="true">
+        <div class="reentry-rim"></div>
+        <div class="reentry-plasma plasma-a"></div>
+        <div class="reentry-plasma plasma-b"></div>
+        <div class="reentry-sparks"></div>
+      </div>
+
+      <div class="earth-visual" aria-label="Interactive East Asia globe">
+        <canvas id="earthCanvas"></canvas>
+        <div class="earth-clouds"></div>
+        <div class="earth-lines"></div>
+      </div>
+
+      <header class="intro-header">
+        <a class="intro-brand" href="/">
+          <img class="brand-logo" src="./assets/ispan-logo.svg?v=19" alt="iSpan" />
+          <span class="brand-copy">
+            <strong>BDDE38</strong>
+            <span class="brand-group">GROUP 01</span>
+          </span>
+        </a>
+      </header>
+
+      <main class="intro-shell">
+        <section class="intro-copy" aria-labelledby="intro-title">
+          <p class="intro-kicker">END-TO-END SPATIOTEMPORAL PIPELINE</p>
+          <h1 id="intro-title">
+            <span>Billion-Scale.</span>
+            <span>Ocean Data Engineering</span>
+          </h1>
+          <p class="intro-title-zh">海洋巨量時空資料湖倉：從異質資料治理到高效查詢管線</p>
+        </section>
+      </main>
+
+    </div>
+
+    <div class="flight-scroll" aria-hidden="true">
+      <section></section>
+      <section></section>
+      <section></section>
+      <section></section>
+    </div>
+
+    <script src="./intro.js?v=22"></script>
+  </body>
+</html>

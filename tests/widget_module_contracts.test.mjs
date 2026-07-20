@@ -404,7 +404,8 @@ test("latest-date is an accessible icon command", () => {
   const template = read("templates/index.html");
   const button = template.match(/<button id="latest-date"[\s\S]*?<\/button>/)?.[0] || "";
   assert.match(button, /aria-label="最後一日"/);
-  assert.match(button, /data-lucide="calendar-check-2"/);
+  assert.match(button, /data-lucide="skip-forward"/);
+  assert.match(button, /control-icon-fallback" aria-hidden="true">⏭<\/span>/);
   assert.doesNotMatch(button, />最後一日</);
 });
 

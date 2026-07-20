@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ABOUT - BDDE38 Ocean Data Lakehouse</title>
+    <link rel="stylesheet" href="./styles.css?v=86" />
+  </head>
+  <body class="project-page detail-page about-page">
+    <header class="site-header">
+      <a class="site-brand" href="/" aria-label="Back to index">
+        <img src="./assets/ispan-logo.svg" alt="iSpan" />
+        <span><strong>BDDE38</strong><small>GROUP 01</small></span>
+      </a>
+      <nav class="site-nav" aria-label="Project navigation">
+        <a class="is-active" href="./about.html">ABOUT</a>
+        <a href="./data-sources.html">DATA SOURCES</a>
+        <a href="./tech-stack.html">TECH STACK</a>
+        <a href="./product.html">PRODUCT</a>
+        <a href="./member.html">MEMBER</a>
+        <a class="dashboard-link" href="/dashboard/">DASHBOARD</a>
+      </nav>
+      <button class="menu-toggle" type="button" aria-label="Open menu" aria-expanded="false"><span></span><span></span><span></span></button>
+    </header>
+
+    <main>
+      <section class="page-hero about-hero">
+        <div class="about-explorer-stage" aria-hidden="true">
+          <div class="about-viewport-scene" data-about-panorama tabindex="-1"></div>
+          <div class="about-submersible-frame"></div>
+        </div>
+        <p class="eyebrow">ABOUT</p>
+        <h1>運用海洋資料打造決策基石</h1>
+        <p>
+          當海域治理、近海漁業與生態壓力問題同時出現時，如何運用資訊科學輔助決策？
+        </p>
+        <div class="hero-caption-deck" aria-hidden="true">
+          <span>RESEARCH CONTEXT</span>
+          <span>OPEN DATA GAP</span>
+          <span>DECISION SUPPORT</span>
+        </div>
+        <a class="about-photo-credit" href="https://sanctuaries.noaa.gov/vr/stellwagen-bank/palmer-port-side/" target="_blank" rel="noreferrer">
+          Phil Hartmeyer / NOAA · The Ocean Agency
+        </a>
+      </section>
+
+      <section class="content-section">
+        <div class="story-grid" data-story-selector role="radiogroup" aria-label="專題脈絡">
+          <article class="story-card is-active" data-story-card role="radio" aria-checked="true" tabindex="0">
+            <span>01 / CONTEXT</span>
+            <h2>海域議題讓資料需求變得具體</h2>
+            <p>
+              日菲經濟海域談判與台灣周邊海域劃界，牽動近海漁業、執法權與開發權。
+              對團隊而言，這讓「海洋資料工程」不只是技術練習，而是海事治理的資料前置作業。
+            </p>
+          </article>
+          <article class="story-card" data-story-card role="radio" aria-checked="false" tabindex="-1">
+            <span>02 / PROBLEM</span>
+            <h2>資料很多，不代表能直接使用</h2>
+            <p>
+              NASA 與 GFW 的來源、格式、解析度、欄位語意都不同。
+              若沒有來源驗證、清洗、AOI 篩選、網格標準化與查詢服務，前端只能面對難以使用的原始巨量資料。
+            </p>
+          </article>
+          <article class="story-card" data-story-card role="radio" aria-checked="false" tabindex="-1">
+            <span>03 / OBJECTIVE</span>
+            <h2>把異質資料治理成湖倉管線</h2>
+            <p>
+              專題透過 Bronze / Silver / Gold 分層治理，把原始資料轉成可稽核、可追溯、
+              可被 API 與前端消費的海洋時空資料平台。
+            </p>
+          </article>
+        </div>
+
+        <div class="takeaway-band">
+          <article>
+            <strong>Research</strong>
+            <span>近海漁業、生態壓力、海域治理</span>
+          </article>
+          <article>
+            <strong>Engineering</strong>
+            <span>資料驗證、分層治理、湖倉架構</span>
+          </article>
+          <article>
+            <strong>Service</strong>
+            <span>Serving Table、Flask API、前端視覺化</span>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer"><small class="site-release">© 2026 BDDE38 GROUP 01 · WEB BUILD 2026.07</small></footer>
+    <script src="./script.js?v=36"></script>
+    <script type="module" src="./about-panorama.js?v=10"></script>
+  </body>
+</html>
