@@ -226,16 +226,8 @@
   font-size: 12px;
 }
 
-.developer-status-table.is-database {
-  --developer-status-table-min: 58rem;
-}
-
-.developer-status-table.is-websocket {
+.developer-status-table:is(.is-database, .is-websocket, .is-spatial) {
   --developer-status-table-min: 64rem;
-}
-
-.developer-status-table.is-spatial {
-  --developer-status-table-min: 66rem;
 }
 
 .developer-status-table.is-schema-columns th:nth-child(1),

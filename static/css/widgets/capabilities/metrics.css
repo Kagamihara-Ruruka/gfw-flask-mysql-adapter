@@ -11,7 +11,19 @@
 
 .widget-template-metrics[data-metrics-view="expanded"] {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto auto;
+  align-content: start;
+  overflow: auto;
+}
+
+.widget-popover.metrics-popover[data-widget-size="1x2"] {
+  width: min(720px, calc(100vw - 48px));
+  height: min(460px, calc(100vh - 48px));
+  aspect-ratio: auto;
+}
+
+.metrics-popover .widget-popover-body {
+  overflow: auto;
 }
 
 .widget-template-metrics[data-metrics-view="cinema"] {

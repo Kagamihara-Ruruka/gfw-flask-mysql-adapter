@@ -1,6 +1,6 @@
 {
   "schema": "rrkal.backend.sink_config.v1",
-  "description": "Backend/system owner fills this file to declare the stable data sink/read-model contract consumed by XiaoKeAi. Copy to backend_sink.local.json or an environment-specific path before adding secrets.",
+  "description": "Proposal-only handoff artifact for negotiating a stable sink/read-model contract. It is not a runtime config; translate an accepted contract into config/sources plus Mapping before activation. Copy to an ignored environment-specific path before adding secrets.",
   "active_sink_ref": "mysql_local_read_model",
   "sinks": {
     "mysql_local_read_model": {

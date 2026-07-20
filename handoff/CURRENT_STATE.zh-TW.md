@@ -1,119 +1,121 @@
 # 大可愛目前交接狀態
 
-更新時間：2026-07-08
+更新時間：2026-07-19
+
+Git checkpoint：`85072c3 refactor: close runtime truth ownership gaps`
+
+本文件是目前 checkpoint 的操作索引，不取代下列權威文件：
+
+- Runtime owner 與 DI：`docs/architecture/runtime-oop.md`
+- 控制面真相與收斂紀錄：`docs/architecture/control-plane-truth-audit.md`
+- Runtime 健檢與 remediation closure：`docs/architecture/runtime-truth-audit-2026-07-18.md`
+- 最新使用者風暴證據：`benchmarks/runtime_truth_acceptance_2026-07-19.md`
 
 ## 專案定位
 
-本 repo 是「大可愛海事資料儀表板」MVP。主服務是消費端儀表板，開在 `5057`；開發者路由控制台是輔助入口，開在主服務 port + 1，也就是目前的 `5058`。
+本 repo 是消費端海事資料儀表板與本機資料 adapter。預設主服務 port 為 `5057`；開發者控制台使用主服務 port + 1。CLI `--port` 可以覆寫實際 port，狀態頁應顯示有效值而不是只顯示檔案值。
 
 核心邊界：
 
-- 儀表板只消費資料與渲染資料圖層。
-- 上游爬蟲負責養資料庫，不應與儀表板進程綁死。
-- config / route / schema / mapping / layer contract 正在逐步拆成可注入管線。
-- WebSocket、DATABASE、SPATIAL 是不同合約類型，不要再混在同一個語意裡。
+- Config 描述外部來源與 Runtime policy。
+- Probe／Scout 觀察來源實際提供的 schema、coverage 與格網。
+- Mapping 將來源外語翻譯成 Canonical roles／columns。
+- Registry 與能力矩陣決定合法能力與 Runtime Layer identity。
+- 地圖與 Playback 提交 sampled-grid demand；Widget 優先消費 `DataFrameStore`。
+- AIS collector 是獨立 upstream feeder；Dashboard 只讀 MySQL read model。
 
 ## 啟動方式
 
 ```powershell
-python core.py serve --port 5057
+Copy-Item config\examples\runtime\adapter.example.json config\runtime\adapter.local.json -Force
+.\.venv\Scripts\python.exe core.py --config config\runtime\adapter.local.json serve
 ```
 
-`core.py` 目前會維持主服務與開發者服務的雙 port 流程，並保留 kill-port-if-busy 的開發期行為。
+Source 啟用與 Layer 導入由 `config/state/router_manifest.local.json` 保存。不要把 connections、datasets 或 Mapping 寫回 Runtime JSON。
 
-## 目前穩定功能
+## 目前主鏈
 
-- 主儀表板：
-  - GFW + EEZ 圖層顯示。
-  - 單日資料與時間序列播放。
-  - 播放快取、區間預熱、播放緩衝門檻。
-  - 地圖 16:9 版面、BI 占位區、全螢幕浮動播放器。
-  - 測速欄已改成甘特圖與 Plotly 快照耗時線圖。
+```text
+Source Config
+-> Router Manifest active_configs
+-> Probe / Scout
+-> Mapping Controller artifact
+-> Runtime Layer Registry
+-> imported_layers
+-> Dashboard Layer Activation
+-> FrameDemandService
+-> QueryBroker
+-> Canonical Frame
+-> DataFrameStore
+-> Renderer / Widget Application Services
+```
 
-- EEZ：
-  - 目前以 PostGIS / spatial route 作為主要高效路徑。
-  - EEZ 是持久圖層，快照更新時不應重複查詢；縮放變動才需要依 zoom / bbox 更新 LOD。
-  - 對外部署時需要補齊自動下載 EEZ 公開資料與入庫流程，避免別台機器手動處理 PostGIS。
+## 目前能力
 
-- GFW：
-  - 動態資料流，時間序列播放會查詢不同快照。
-  - 已有快取命中路徑；快取命中時 SQL 查詢應接近 0。
-  - 未來應往區間一次查詢、本地切片、多核拆快照、GPU 背景烘焙方向優化。
+| 領域 | 目前狀態與邊界 |
+|---|---|
+| Sampled-grid | Mapping 驅動；目前包含 GFW MySQL read model 與五個 Pipeline Iceberg serving datasets。Renderer 優先 WebGL，必要時退回 Canvas。 |
+| Playback | `PlaybackEngineCore` 擁有日期、狀態、buffer episode 與 timeout；`PlaybackRuntimeController` 擁有 timer/session；`PlaybackPreheater` 依水位獨立補貨。 |
+| Query | `FrameDemandServiceCore` cache-first；Browser sampled-grid transport 只由 `QueryBroker` 發送；Flask 由 `QueryBatchExecutor` 解包並執行。 |
+| Cache | `DataFrameStoreCore` 只接受 Canonical Frame，擁有 alias、pin、failure 與 LRU；插隊與 scope cancellation 不清除已完成快取。 |
+| Resolution | requested、effective query 與 observed actual resolution 已分離；actual observation 不反向覆寫 query policy。 |
+| Spatial demand | CC viewport 與 coverage 共同決定 query scope；內部分頁由本系統計算，不依賴來源提供 shard id。 |
+| Virtual grid | 選取格網與 Renderer 共用 `RenderGridProfile`、聚合倍率與原點。Primary Layer 目前維持 XOR；multi-layer LCM 是保留的未來 composition 能力。 |
+| Widgets | UI 只呼叫注入的 Application service。表格與事件檢視器嚴格唯讀；圖表依明確 policy 讀 cache 或提交有限的補貨 demand。 |
+| EEZ | PostGIS／MVT overlay，生命週期與 sampled-grid 分離。 |
+| AIS | 唯一路徑為 AISStream delta collector -> MySQL read model -> Dashboard；沒有 AISHub fallback。Kafka 只列為未來 upstream 方向。 |
+| Developer UI | Source Config、Route Status、Schema Probe、Mapping、Layer Import 與 Runtime Registry 已形成單向註冊鏈。 |
 
-- 開發者頁：
-  - 位於 `http://127.0.0.1:5058/`，主頁籤中以 iframe 套入。
-  - Config 瀏覽器已拆分 DATABASE / WEBSOCKET / SPATIAL / DEMO。
-  - DEMO 不可啟用，也不進路由狀態機。
-  - 路由狀態機與 WebSocket 狀態機分欄顯示。
-  - Schema / Mapping 控制器雛形已建立，用於關聯式資料庫 schema 探測與欄位映射。
+## 狀態所有權摘要
 
-## 剛完成的優化
+| 狀態／資源 | 唯一 owner |
+|---|---|
+| Source 啟用、鎖定、註記、Layer 導入 | `RouterManifestStore` |
+| Runtime dataset／layer snapshot | `RuntimeLayerRegistry` |
+| Primary Layer | `LayerActivationController` |
+| Playback state／date／buffer episode | `PlaybackEngineCore` |
+| Playback timer／session | `PlaybackRuntimeController` |
+| Replenishment lifecycle | `PlaybackPreheater` |
+| Watermark decision | `AdaptiveWatermarkController` |
+| Browser sampled-grid batch | `QueryBroker` |
+| Canonical RAM Frame | `DataFrameStoreCore` |
+| Widget data access | Widget Application Services |
+| GPU／Leaflet render resources | Renderer／Layer pool owners |
 
-- 測速視覺化：
-  - 移除上方純文字測速欄與舊的渲染就緒狀態機。
-  - 甘特圖放到地圖下方，代表一張快照生命週期。
-  - 持久圖層沒有參與本輪快照時不顯示，但比例仍可參考最近一次持久圖層耗時。
-  - 新增互動延遲：使用者按下控制按鈕到第一次進入渲染呼叫的時間。
-  - Plotly hover label 已改成深色模式。
+## 已知邊界
 
-- 播放器：
-  - `PlaybackPreheater` 以低／高水位獨立補充 canonical RAM frames，不阻塞播放器。
-  - 不允許誰先完成就誰先播放，快照必須依時間順序。
-  - 只有 target frame 缺少時才進入 `BUFFERING`；預熱器 `FETCHING` 不等於播放停頓。
+- 直接 Hive／Spark SQL backend 仍是 explicit unsupported stub；HTTP serving 的 Pipeline Iceberg adapter 是另一條已實作路徑。
+- 4x 冷快取若來源供給低於消耗率，仍可能進入可解釋的 buffering；不得以跳日期或錯誤節拍掩蓋。
+- Arrow／Topology Split 尚未導入；目前 Runtime transport 維持既有 Canonical 合約。
+- Multi-layer LCM 尚未有正式 Layer Composition owner；目前不能由 Primary Layer XOR 流程產生多 participant。
+- EEZ 在新環境需要可用 PostGIS 與匯入資產；`core.py serve` 會依 Config 執行 dependency check／bootstrap。
 
-- Config / route：
-  - manifest 逐步成為路由真相來源。
-  - Runtime 只接受目前 canonical 合約；已淘汰 wrapper 與永久相容 shim 不再並存。
-  - Schema Inspector 是後端能力；Mapping Controller 是前後端共同能力；Layer Contract 是後端輸出給儀表板的圖層合約。
+## 最新驗收
 
-## 目前已知問題
+2026-07-19 checkpoint：
 
-- 4x 播放在全球尺度、無快取、查詢 9 萬列左右時仍可能出現 10 秒級 SQL 查詢。
-- 快取命中後體驗良好，線圖大約落在 100 ms 級，但初次查詢仍是主要瓶頸。
-- Plotly 線圖目前綁播放器 reset，但仍需繼續確認所有重播/跳轉情境都會正確清空。
-- EEZ 在別台機器部署可能因 PostGIS / EEZ 入庫缺失而失敗。
-- `handoff/README.zh-TW.md` 既有內容有 mojibake，建議之後用這份文件重建索引。
+- Node contracts／architecture：233 checks passed。
+- Python service／route：96 passed。
+- 受控 batch=2：冷快取 1.912 fps、暖快取 15.309 fps。
+- Duplicate storm：12 consumers 只產生 1 次來源請求。
+- Mixed storm：五資料集 15 個不同 Frame，以 2.618 fps 完成且零失敗。
+- 側邊瀏覽器：五個 Pipeline Iceberg 資料集完成 2020 全年，期間執行切速、Buffering、Zoom、選格、Seek、Widget、Event Viewer 與播放中切換資料集，沒有永久 FETCHING 或瀏覽器 warning/error。
 
-## 下一步建議
+這些數字是該 checkpoint 的歷史證據，不是永久效能保證。完整條件見 `benchmarks/runtime_truth_acceptance_2026-07-19.md`。
 
-1. 先做 EEZ 自動依賴：
-   - 啟動時檢查本地是否已有 EEZ `.gpkg` 或入庫結果。
-   - 沒有就下載公開穩定資料源。
-   - 再依 config 決定是否匯入 PostGIS。
+## 重要入口
 
-2. 優化 GFW 查詢策略：
-   - 播放前用區間查詢取代逐日查詢。
-   - 只 select mapping controller 實際需要的欄位。
-   - 在本地依日期切片為快照。
-   - 快照切片可使用 pandas / pyarrow，但必須受快取容量上限約束。
-
-3. 優化渲染策略：
-   - CPU 多核拆快照。
-   - GPU / WebGL 背景烘焙快照。
-   - 播放、回到開始日期時先釋放既有 GPU 快取，再重新烘焙。
-
-4. 完成關聯式資料動態注入：
-   - 路由 config 只描述如何連線。
-   - Schema Inspector 探測 table / columns。
-   - Mapping Controller 讓使用者勾選欄位與指定 lat/lon/time/value。
-   - Layer Contract 生成儀表板可渲染的資料圖層。
-
-## 重要檔案
-
-- `core.py`：主啟動入口。
+- `core.py`：CLI 與服務啟動入口。
 - `common_adapter/http/interface.py`：Flask app factory 與 route assembly。
-- `common_adapter/http/routes/`：主服務、dataset、overlay、live 與 developer routes。
-- `common_adapter/http/server.py`：server lifecycle、PID 與 port helper。
-- `common_adapter/db/connect.py`：資料庫連線與查詢入口。
-- `common_adapter/db/backends/`：MySQL 已實作 backend，以及 Hive/Spark unsupported stubs。
-- `DeveloperConfigService.py`：開發者 config / route 管理。
-- `common_adapter/developer/schema_inspector.py`：關聯式 schema 探測。
-- `common_adapter/layers/contracts.py`：圖層合約生成。
-- `common_adapter/layers/runtime.py`：runtime 圖層狀態。
-- `common_adapter/spatial/lod.py`：EEZ / overlay LOD。
-- `static/TimingMetrics.js`：測速甘特圖與互動延遲。
-- `static/js/ui/snapshot-performance-chart.js`：Plotly 快照耗時線圖。
-- `static/js/playback/playback-cache-service.js`：播放快取與預熱。
-- `static/js/services/render-intent-service.js`：渲染意圖服務。
-- `templates/index.html`：主儀表板。
-- `templates/developer.html`：開發者路由控制台。
+- `common_adapter/query/registry.py`：database／endpoint 共用 query-adapter registry。
+- `common_adapter/layers/runtime.py`：Runtime Layer Registry。
+- `common_adapter/developer/schema_inspector.py`：Schema Probe／Scout。
+- `common_adapter/developer/artifacts/layer_mappings.py`：Mapping artifact owner。
+- `static/js/runtime/runtime-composition-root.js`：前端 DI composition root。
+- `static/js/services/frame-demand-service.js`：logical Frame demand owner。
+- `static/js/services/query-broker.js`：sampled-grid Browser transport owner。
+- `static/js/services/data-frame-store.js`：Canonical RAM Frame owner。
+- `static/js/playback/playback-engine.js`：播放狀態 owner。
+- `static/js/playback/playback-runtime-controller.js`：播放 timer/session owner。
+- `static/js/playback/playback-preheater.js`：補貨生命週期 owner。
+- `static/js/ui/telemetry/snapshot-performance-chart.js`：效能縮圖 UI。

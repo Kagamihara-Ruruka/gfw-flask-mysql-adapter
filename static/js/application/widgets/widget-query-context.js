@@ -79,9 +79,8 @@ class WidgetQueryContext {
     const participant = selection?.selection_grid?.participants?.find((item) => (
       item.dataset_id === layer.datasetId || item.layer_id === layer.layerId
     ));
-    const declared = participant?.query_resolution_km
-      ?? participant?.actual_resolution_km
-      ?? participant?.requested_resolution_km;
+    const declared = participant?.requested_resolution_km
+      ?? participant?.query_resolution_km;
     if (Number.isFinite(Number(declared))) return Number(declared);
     const mapSnapshot = this.mapSnapshot();
     return this.sampledGridContract.queryResolution({

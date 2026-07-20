@@ -34,13 +34,15 @@ The CC-scoped paging, shared render-grid, and query-storm acceptance report is a
 [`benchmarks/sampled_grid_spatial_storm_acceptance_2026-07-18.md`](benchmarks/sampled_grid_spatial_storm_acceptance_2026-07-18.md).
 The Runtime identity, buffer-episode, timing-truth, and five-dataset full-year user-storm acceptance report is available at
 [`benchmarks/runtime_truth_acceptance_2026-07-19.md`](benchmarks/runtime_truth_acceptance_2026-07-19.md).
+The sampled-grid Canonical-validity, immutable render-transaction, mask-seam, and five-dataset visual-storm acceptance report is available at
+[`benchmarks/sampled_grid_render_correctness_acceptance_2026-07-20.md`](benchmarks/sampled_grid_render_correctness_acceptance_2026-07-20.md).
 
 ## Upstream Handoff
 
 Use `handoff/` when sharing this repo with upstream owners:
 
 - `handoff/airflow_ais_crawler/` is for the Airflow/crawler owner. It explains the AISStream to SQL collector, the handoff JSON, SQL sink, timing, and health checks.
-- `handoff/backend_config_contract/` is for the backend/system owner. It explains database config JSON, MySQL/Hive/Spark boundary planning, dataset fields, and the capability matrix for disabled future skin/display settings.
+- `handoff/backend_config_contract/` is for the backend/system owner. It explains source config, Router Manifest activation, Probe/Mapping ownership, MySQL/Hive/Spark boundaries, and the proposal-only capability matrix for disabled future skin/display settings.
 
 Do not send real API keys through tracked files. `config/runtime/adapter.local.json` and `config/runtime/ais_collector.local.json` are local ignored files.
 
@@ -59,6 +61,7 @@ core.py
   -> common_adapter/ais/ingest.py           AISStream collector to SQL latest-state table
   -> common_adapter/spatial/overlay.py      EEZ overlay fallback helpers
   -> common_adapter/spatial/lod.py          PostGIS / MVT EEZ tile helpers
+  -> common_adapter/spatial/land_mask.py    EEZ-derived land/high-seas topology and LOD masks
   -> templates/index.html      Leaflet UI shell
   -> static/js/*               Frontend state, API, layer, and UI modules
 ```
@@ -174,7 +177,7 @@ The layer selector is built from imported layer contracts. It is not a hard-code
 - AIS vessel positions when an active websocket/read-model route is available
 - EEZ boundary overlays when an active spatial route is available
 
-Primary data layers are activation-controlled and may all be off; disabled imported layers do not query or render. EEZ is an independent overlay. For bounded sampled-grid datasets, Mapping owns the coverage union and `default_coverage_id`: the default coverage supplies the initial center, while the union supplies legal camera bounds. CC owns the effective spatial demand as `viewport bbox intersect coverage`. The adapter snaps that demand to the Scout-derived base grid and computes stable internal pages from grid geometry and source capacity. These identities remain adapter-owned formula results. A capable source may accept the resulting half-open grid-index window, Mapping-selected field list, and column response shape, but it never receives consumer-owned BBOX or `shard_id` semantics.
+Primary data layers are activation-controlled and may all be off; disabled imported layers do not query or render. EEZ is an independent overlay. Scout exposes source-field and value-semantics evidence; Mapping explicitly adopts field roles and provider-status aliases, normalizes them to the Canonical `observed / filled / no_data / unknown` vocabulary, and the Layer capability compiler decides whether a sampled-grid layer may expose render-only linear interpolation. The UI never infers this from a layer name or source type; EEZ, categorical values, and unresolved semantics remain nearest-only. Interpolation changes Renderer paint only and does not alter Canonical Frames, selection, Widgets, queries, or cache identity. Marine sampled-grid renderers consume the land-mask child capability registered with EEZ. Canonical cells remain Scout-derived squares; mask segment sampling prevents interpolation corners from being shared across detected land, and WebGL clips visible fragments against the current EEZ z/x/y LOD ocean geometry. The final coastline fidelity is therefore bounded by the selected mask LOD, without changing analytical grid identity. Exact `eez_v12` geometry owns attribution coverage, while the versioned coarse topology artifact only classifies the exact EEZ union's complement as land or high seas; it is not visual coastline geometry. For bounded sampled-grid datasets, Mapping owns the coverage union and `default_coverage_id`: the default coverage supplies the initial center, while the union supplies legal camera bounds. CC owns the effective spatial demand as `viewport bbox intersect coverage`. The adapter snaps that demand to the Scout-derived base grid and computes stable internal pages from grid geometry and source capacity. These identities remain adapter-owned formula results. A capable source may accept the resulting half-open grid-index window, Mapping-selected field list, and column response shape, but it never receives consumer-owned BBOX or `shard_id` semantics.
 
 Layer rows can be drag-reordered in the selector. The order controls map stacking by Leaflet pane z-index. Each layer has a gear panel:
 
@@ -270,7 +273,7 @@ Current frontend module boundaries:
 | `static/js/services/runtime-performance-metrics.js` | The single trusted projection for supply, consumption, cache-ready tail latency, ready-ahead, and buffer-wait values. It replays the bounded lifecycle log once, then maintains bounded per-scope metrics incrementally; adaptive reconciliation and the metrics Widget never rescan or resort the full event history. |
 | `static/js/ui/widgets/capabilities/event-viewer.js` | Read-only lifecycle Event Viewer Widget with run/dataset/event filters and manual JSON export. Playback completion never opens a download or file dialog. |
 | `static/js/services/browser-profile-store.js` | DI-owned browser-profile persistence for the explicit device/visual whitelist; storage failure falls back to session state. |
-| `static/js/layers/sampled-grid-layer-effects.js` | Visual-only sampled-grid layer effects: zoom/LOD blur, reveal, retired-layer cleanup, and crossfade. |
+| `static/js/layers/sampled-grid-layer-effects.js` | DI-owned visual transition lifecycle. It generation-guards the RAF/timer work for zoom/LOD blur, reveal, cleanup, and crossfade so stale callbacks cannot mutate reused layers. |
 | `static/js/rendering/render-grid-profile.js` | Pure zoom-bucket policy for visual aggregation. Renderer color cells and virtual selection cells consume the same profile and origin. |
 | `static/TimingMetrics.js` | DI-created query/render timing service. It accepts ClockDomain and does not keep a second playback-event timeline. |
 
@@ -317,7 +320,7 @@ The timing drawer reports:
 - client fetch-to-render time
 - EEZ tile timing
 - render-state gate for GFW, AIS, and EEZ readiness
-- selected GFW render backend and draw timing
+- selected sampled-grid render backend and draw timing
 - row count
 
 `rendering` timing is client draw time for the selected backend. It is not a claimed time saving. `fetch-to-render` remains the broader user-facing latency from API request through visible map update.
@@ -330,6 +333,7 @@ Sampled-grid records use a mapping-, source-scope-, resolution-, and date-aware 
 
 - A bounded dataset clips CC viewport demand to Mapping coverage, snaps it to the base grid, and requests only missing internal row-band pages. A pan reuses retained pages and requests only newly required pages.
 - A viewport-native source without bounded coverage, such as a bbox-backed database route, still refreshes when the viewport leaves its cached packet.
+- Map move, zoom, and Leaflet layout resize all replace the sampled-grid viewport scope. They invalidate the active immutable `RenderContext` and schedule one settled reload; a resize must never clear a stale frame without requesting its replacement.
 - Query/cache resolution stays at the Scout-derived base grid unless the user explicitly selects another valid source multiple. Camera zoom changes only `RenderGridProfile`; a zoom-bucket change with cached base data sends no source request.
 - Render aggregation is a GPU presentation concern. Mapping declares the reducer, the base Canonical Frame remains unchanged, and virtual-grid selection uses the same aggregation factor, scale, and origin as the rendered cells.
 - Date-to-date playback frame changes do not use Gaussian blur; they rely on cache readiness, renderer work, and layer crossfade.
@@ -607,12 +611,171 @@ From the repo root:
 ```powershell
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-Copy-Item config\examples\runtime\adapter.example.json config\runtime\adapter.local.json -Force
+if (!(Test-Path config\runtime\adapter.local.json)) {
+  Copy-Item config\examples\runtime\adapter.example.json config\runtime\adapter.local.json
+}
 ```
 
 Use `config\state\router_manifest.local.json` to select active route fragments. Keep local database settings under `config\sources\database\`, spatial overlay settings under `config\sources\spatial\`, and websocket/source settings under `config\sources\websocket\`. The parent folder and JSON `role` must agree.
 
 Local config files are ignored by git. Keep real passwords in local fragments or in environment variables.
+
+## Deployment Guide
+
+This repository separates the dashboard process from its stateful dependencies and upstream collectors. `docker-compose.yml` starts local MySQL and PostGIS support services only; it does not build or deploy the Flask application.
+
+### Human runbook
+
+1. Choose a reviewed Git commit and create an isolated Python environment.
+
+   ```powershell
+   py -3 -m venv .venv
+   .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+   ```
+
+2. Create local configuration without committing secrets. Copy `config/examples/runtime/adapter.example.json` to `config/runtime/adapter.local.json`, create only the source fragments required by the deployment, and list those fragments in `config/state/router_manifest.local.json`. The config roles and ownership rules are documented in [config/README.zh-TW.md](config/README.zh-TW.md).
+
+3. Start external dependencies. For the bundled local PostGIS profile:
+
+   ```powershell
+   docker compose up -d postgis
+   ```
+
+   Review `docker-compose.yml` before using its MySQL profile: its bind-mount path and development credentials are local examples and must be replaced for another machine. Production deployments should use managed or separately administered MySQL/PostGIS services.
+
+4. Prepare EEZ assets when the active spatial route enables PostGIS EEZ, then fail closed on dependency errors:
+
+   ```powershell
+   .\.venv\Scripts\python.exe core.py --config config\runtime\adapter.local.json bootstrap-eez
+   .\.venv\Scripts\python.exe core.py --config config\runtime\adapter.local.json check-dependencies
+   ```
+
+5. Start one application instance:
+
+   ```powershell
+   .\.venv\Scripts\python.exe core.py --config config\runtime\adapter.local.json serve
+   ```
+
+   The consumer UI uses the configured server port; the developer control plane uses the next port unless `--developer-port` is supplied. Use `--no-developer-server` when the deployment must expose only the consumer UI. Do not expose the developer port to an untrusted network.
+
+6. Verify the deployed process before routing users to it:
+
+   ```powershell
+   Invoke-RestMethod http://127.0.0.1:5057/api/health
+   Invoke-RestMethod http://127.0.0.1:5057/api/datasets
+   ```
+
+   Also open the dashboard in a fresh browser profile and verify layer activation, one sampled-grid frame, EEZ rendering, playback, zoom, drag, selection, and Widget interaction. HTTP health alone does not validate the rendering lifecycle.
+
+7. Run AIS and other upstream collectors as independent supervised jobs. The dashboard reads their SQL/service outputs; it does not own collector continuity. Store upstream keys in environment variables, K8 Secrets, Airflow Variables, or an equivalent secret manager.
+
+### Pod and service requirements
+
+- Run one `core.py serve` process per pod. The current runtime owns in-process scheduling, endpoint supervision, playback-facing caches, and a local PID file; do not add multiple workers inside one pod.
+- Set `server.host` to `0.0.0.0`, set `kill_port_if_busy` to `false`, and let the orchestrator own restarts and port conflicts.
+- Mount the configured EEZ cache path, normally `data/eez/`, on persistent storage. Keep MySQL and PostGIS outside the application container or in separately managed services.
+- Use `GET /api/health` for liveness/readiness only after `check-dependencies` succeeds. Keep the developer port private or disable it.
+- Pin the image to a Git commit and retain the previous image digest. Roll back by redeploying the previous digest; do not mutate a running container or clear data caches as a rollback mechanism.
+- The repository does not currently ship an application Dockerfile, Helm chart, TLS termination, or public-network authentication. Those are deployment-platform responsibilities and must not be implied by the local Compose file.
+
+### Agent runbook
+
+An automation agent must use the same configuration and health truth as a human operator:
+
+1. Record `git rev-parse HEAD` and `git status --short` before acting. Do not overwrite existing `*.local.json`, Mapping artifacts, databases, or EEZ caches unless the task explicitly authorizes it.
+2. Read this section, [config/README.zh-TW.md](config/README.zh-TW.md), and [handoff/CURRENT_STATE.zh-TW.md](handoff/CURRENT_STATE.zh-TW.md). Discover active routes from `config/state/router_manifest.local.json`; do not infer them from filenames.
+3. Keep secrets out of commands, logs, commits, and generated reports. Prefer injected environment variables or the platform secret store.
+4. Run `check-dependencies` before `serve`. If a declared dependency is unavailable, stop and report the failing route instead of silently removing it or creating a fallback config.
+5. Start at most one application process for the selected config. Reuse the configured ports, close obsolete browser tabs, and avoid parallel benchmark traffic during acceptance.
+6. Validate `/api/health`, `/api/datasets`, the consumer page, and the required user workflow. For a release candidate, run the test commands in [Validation](#validation) and preserve the commit, config identity, cache state, browser profile, and results.
+7. Treat a missing dataset, Mapping mismatch, stale frame, permanent `FETCHING`, duplicate HTTP, alpha error, mask seam, or render corruption as a failed deployment. Do not compensate by raising RAM, concurrency, watermarks, or timeouts.
+8. On failure, stop the new process, preserve logs and event evidence, and redeploy the previous known-good commit/image. Never repair a deployed instance with uncommitted production edits.
+
+Deployment is complete only when dependency checks, API checks, and the browser workflow all pass against the same commit and configuration.
+
+## Developer Control Plane Guide
+
+The developer page is a configuration control plane, not a second dashboard and not a data-query client. `core.py serve` exposes it on `server.port + 1` by default; the dashboard's Developer tab embeds that service. It can also be opened directly at `http://127.0.0.1:5058` when the consumer port is `5057`.
+
+Use the panels from top to bottom. Each panel consumes the persisted result of the preceding panel:
+
+```text
+Config Router
+-> Route State Machine
+-> Schema Scout / Mapping Controller
+-> Layer Contract Import
+-> Dashboard data-layer drawer
+```
+
+### 1. Config Router
+
+- **Wizard** creates a DATABASE route fragment and imports it into the managed config list. Creation does not automatically activate the route.
+- **Import** first copies a JSON file into `config/staging/`. Inspect or edit the staged JSON, select its source group, then promote it into `config/sources/<role>/`. A file outside that tree is not a runtime source.
+- The selected source group and the JSON `role` must agree. Moving a config between groups updates the file location, role, and known downstream references as one control-plane operation.
+- **Active** writes the route reference to `config/state/router_manifest.local.json.active_configs`. This manifest is the only source-activation truth.
+- **Locked** prevents control-plane edits; it does not test connectivity or enable a source.
+- Notes are operator metadata only. They do not affect routing.
+- The JSON editor writes the selected local source file. Review the diff before saving and never place a raw secret in a file that may be committed.
+
+An imported or syntactically valid config is not necessarily routable. Activation should be followed immediately by the Route State Machine check.
+
+### 2. Route State Machine
+
+The DATABASE, WEBSOCKET, SPATIAL, and ENDPOINT tables show declared route identity separately from runtime availability:
+
+- **Enabled** means the route appears in the active manifest.
+- **Connected/available** means the corresponding probe adapter reached the configured dependency.
+- **Schema/probe support** means the route can provide the downstream inspection capability shown in the table.
+- Details contain probe evidence or the failing boundary. An unavailable route must be fixed at its config or infrastructure owner; do not create a second route or silent fallback to make the badge green.
+
+The state machine reads live infrastructure but does not redefine source capabilities. A route may be correctly declared and temporarily unavailable. Conversely, a reachable endpoint is not active until the manifest enables it.
+
+### 3. Schema Scout and Mapping Controller
+
+Only active, connected, probeable DATABASE routes enter this panel. Source Scout reports the source's actual tables, columns, types, keys, nullability, candidate roles, and observed value semantics. Candidate hints are evidence, not automatic Mapping decisions.
+
+For an editable table:
+
+1. Open the table and assign a stable layer ID and display name.
+2. Assign only roles supported by the source truth and intended consumer:
+   - `time` for snapshot identity;
+   - `lat`/`lon`, `west`/`south`/`east`/`north`, or `row`/`column` for spatial identity;
+   - `id` for stable record identity;
+   - `value` for the canonical sampled-grid value;
+   - `resolution`, `coverage`, and `status` for their explicit source semantics;
+   - `metric`, `category`, and `display` for additional canonical projection fields.
+3. Leave an editable field as **Do not query** only when it must be excluded from the query projection. This label is not a statement that the source lacks the field.
+4. Save the Mapping. The artifact is persisted to `config/artifacts/layer_mappings.local.json` and becomes the source for query fields, canonical roles, status normalization, resolution evidence, and layer-contract generation.
+
+For a generated or source-contract Mapping, the panel is read-only. **Unmapped** means the visual editor does not own that field; it does not disable the provider's query. The displayed provenance identifies whether runtime truth comes from a Mapping artifact or a source declaration.
+
+Provider-specific status text must be normalized by `sampled_grid.status_semantics` into canonical `observed`, `filled`, `no_data`, or `unknown`. Renderer and Widgets must never interpret provider strings. If status vocabulary or resolution evidence changes, update and save the Mapping instead of patching a consumer.
+
+After saving, confirm that the panel reports success and that the generated contract appears below. A Mapping may be enabled without being imported into the dashboard.
+
+### 4. Data Layer Import
+
+- The **Contract-provided layers** table is the bridge from registered capability to dashboard availability.
+- Turn **Import** on only for a reviewed layer contract. Importing makes the layer available in the dashboard data-layer drawer; it does not activate or query the layer.
+- Turning Import off removes the layer from dashboard availability and reconciles the current runtime. It does not delete the source config or Mapping artifact.
+- A DATABASE-backed layer reaches the dashboard only when all three conditions hold: its source route is active, its Mapping is enabled, and its layer contract is imported.
+
+The dashboard data-layer drawer remains the owner of runtime activation. A newly imported layer should stay dormant until a user checks it there.
+
+### 5. Change verification and recovery
+
+When the developer page is embedded in the dashboard, successful config, Mapping, and import changes notify the consumer registry. When it is opened as a standalone page, refresh the consumer page after the save.
+
+After each change, verify in order:
+
+1. Route State Machine shows the expected declaration and availability.
+2. Schema Scout still shows the full source truth.
+3. Mapping provenance, roles, status semantics, coverage, and resolutions are correct.
+4. The expected layer contract is imported exactly once.
+5. The dashboard drawer shows the layer but does not query it before activation.
+6. Activating the layer produces the expected dataset, date, spatial extent, base/query/actual resolution, colors, alpha, and Widget values.
+
+If a save produces an invalid route, Mapping, or layer contract, stop using the affected layer and restore the reviewed local JSON/artifact or previous deployment. Do not delete unrelated manifest entries, clear caches, or create compatibility mappings. Persisted local files are control-plane state and should be backed up with deployment configuration.
 
 ## EEZ PostGIS Dependency
 
@@ -824,5 +987,5 @@ git diff --check -- static templates scripts *.py config requirements.txt docker
 - Do not commit runtime logs, PID files, database files, or downloaded datasets.
 - Use environment variables for local secrets.
 - This app is designed as a small local exploratory adapter. Keep data access, rendering, and UI behavior separated as the feature set grows.
-- EEZ country/claim attribution is available through the registered `1x1` maritime jurisdiction Widget. It consumes saved virtual-grid selections and distinguishes jurisdiction, disputed, joint-regime, and other mapped cases; it is an exploratory dataset interpretation, not a legal determination.
+- EEZ country/claim attribution is available through the registered `1x1` maritime jurisdiction Widget. It consumes saved virtual-grid selections, computes exact EEZ union coverage in the attribution query, and exposes the remaining land/high-seas complement without summing overlapping claims. It distinguishes jurisdiction, disputed, joint-regime, and other mapped cases; it is an exploratory dataset interpretation, not a legal determination.
 - AIS has one runtime path: AISStream deltas are merged by the collector into the registered MySQL read model, and the map consumes that read model. Alternative brokers such as Kafka are a future upstream architecture option, not a dormant runtime fallback.

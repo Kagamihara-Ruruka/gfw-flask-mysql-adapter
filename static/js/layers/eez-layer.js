@@ -76,6 +76,68 @@ function canUseEezVectorTiles() {
   return Boolean(window.L?.vectorGrid?.protobuf || window.L?.VectorGrid?.Protobuf);
 }
 
+function eezLandMaskCapability() {
+  return window.LayerRuntimeContractRegistry?.capability?.("eez", "land_mask_provider") || {};
+}
+
+function eezHighSeasCapability() {
+  return window.LayerRuntimeContractRegistry?.capability?.("eez", "high_seas_overlay") || {};
+}
+
+function eezDomainTileUrl(kind, coordinates) {
+  const capability = kind === "high_seas"
+    ? eezHighSeasCapability()
+    : eezLandMaskCapability();
+  const template = capability.tile_template;
+  if (capability.status !== "supported" || !template) return "";
+  const path = String(template)
+    .replace("{z}", String(coordinates.z))
+    .replace("{x}", String(coordinates.x))
+    .replace("{y}", String(coordinates.y));
+  const separator = path.includes("?") ? "&" : "?";
+  return `${path}${separator}source_version=${encodeURIComponent(capability.source_version || "unknown")}`;
+}
+
+const EezDomainGridLayer = L.GridLayer.extend({
+  initialize({ kind, pane }) {
+    L.GridLayer.prototype.initialize.call(this, {
+      pane,
+      tileSize: 256,
+      updateWhenIdle: true,
+      updateWhenZooming: false,
+      keepBuffer: 0,
+    });
+    this.kind = kind;
+  },
+  createTile(coordinates, done) {
+    const tile = document.createElement("canvas");
+    const size = this.getTileSize();
+    tile.width = size.x;
+    tile.height = size.y;
+    const url = eezDomainTileUrl(this.kind, coordinates);
+    if (!url) {
+      queueMicrotask(() => done(null, tile));
+      return tile;
+    }
+    const image = new Image();
+    image.onload = () => {
+      const context = tile.getContext("2d", { alpha: true });
+      context.clearRect(0, 0, size.x, size.y);
+      context.drawImage(image, 0, 0, size.x, size.y);
+      context.globalCompositeOperation = "source-in";
+      context.globalAlpha = Math.min(0.28, Math.max(0, Number(state.eezPaint.fillOpacity) || 0.08));
+      context.fillStyle = state.eezPaint.polTypeColors?.high_seas || "#5578a8";
+      context.fillRect(0, 0, size.x, size.y);
+      context.globalAlpha = 1;
+      context.globalCompositeOperation = "source-over";
+      done(null, tile);
+    };
+    image.onerror = () => done(new Error(`EEZ ${this.kind} tile failed`), tile);
+    image.src = url;
+    return tile;
+  },
+});
+
 function createEezVectorGrid(url, options) {
   if (window.L?.vectorGrid?.protobuf) {
     return L.vectorGrid.protobuf(url, options);
@@ -95,7 +157,8 @@ function setEezPaneVisibility(activePaneName, visible) {
   }
 }
 
-function clearEezLayerForReload() {
+function clearEezLayerForReload({ invalidatePending = true } = {}) {
+  if (invalidatePending) state.eezSeq += 1;
   if (state.eezLayer && map.hasLayer(state.eezLayer)) {
     map.removeLayer(state.eezLayer);
   }
@@ -147,27 +210,24 @@ async function refreshEezTileReadiness(reason = "瓦片快取") {
 
 function createEezVectorTileLayer(paneName) {
   const rendererFactory = L.canvas?.tile || L.svg.tile;
-  const fillLayer = createEezVectorGrid("/api/overlays/eez/tiles/{z}/{x}/{y}.pbf?v=eez-lod-pixel-v2", {
+  const eezLayer = createEezVectorGrid("/api/overlays/eez/render/tiles/{z}/{x}/{y}.pbf?v=eez-render-v1", {
     pane: paneName,
     rendererFactory,
     maxNativeZoom: 14,
     interactive: false,
     vectorTileLayerStyles: {
       eez: eezVectorTileStyle,
-    },
-  });
-  const boundaryLayer = createEezVectorGrid("/api/overlays/eez/boundary/tiles/{z}/{x}/{y}.pbf?v=eez-lod-pixel-v2", {
-    pane: paneName,
-    rendererFactory,
-    maxNativeZoom: 14,
-    interactive: false,
-    vectorTileLayerStyles: {
       eez_boundary: eezBoundaryTileStyle,
     },
   });
+  const highSeasCapability = eezHighSeasCapability();
+  const highSeasLayer = highSeasCapability.status === "supported" && highSeasCapability.tile_template
+    ? new EezDomainGridLayer({ kind: "high_seas", pane: paneName })
+    : null;
+  const tileLayers = [highSeasLayer, eezLayer].filter(Boolean);
   return {
-    layer: L.layerGroup([fillLayer, boundaryLayer]),
-    tileLayers: [fillLayer, boundaryLayer],
+    layer: L.layerGroup(tileLayers),
+    tileLayers,
   };
 }
 
@@ -182,7 +242,7 @@ async function reloadEezLayer(options = {}) {
   TimingMetrics.setText("eez-ms", "載入中");
   const seq = ++state.eezSeq;
   const transaction = RenderState.begin("eez", ["eez"]);
-  clearEezLayerForReload();
+  clearEezLayerForReload({ invalidatePending: false });
   if (!$("eez-toggle")?.checked) {
     TimingMetrics.setText("eez-ms", "關閉");
     RenderState.off("eez", "關閉");

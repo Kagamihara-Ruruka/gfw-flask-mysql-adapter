@@ -80,6 +80,7 @@ def dataset_contract_identity(dataset: dict[str, Any]) -> dict[str, Any]:
             "source_fields": _mapping(sampled_grid.get("source_fields")),
             "request_fields": _mapping(sampled_grid.get("request_fields")),
             "extension_fields": _mapping(sampled_grid.get("extension_fields")),
+            "status_semantics": _mapping(sampled_grid.get("status_semantics")),
             "geometry": _mapping(sampled_grid.get("geometry")),
             "alignment": _mapping(sampled_grid.get("alignment")),
             "cell_identity": _mapping(sampled_grid.get("cell_identity")),

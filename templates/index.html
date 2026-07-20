@@ -8,17 +8,19 @@
   <link rel="stylesheet" href="/static/vendor/leaflet-1.9.4.css?v=1.9.4">
   <link rel="stylesheet" href="/static/css/widgets/core/panel.css?v=widgets-modules-v1">
   <link rel="stylesheet" href="/static/css/widgets/core/launchpad.css?v=widgets-launchpad-svg-v2">
-  <link rel="stylesheet" href="/static/css/widgets/core/widget-core.css?v=widgets-modules-v1">
+  <link rel="stylesheet" href="/static/css/widgets/core/widget-core.css?v=runtime-ui-v5">
   <link rel="stylesheet" href="/static/css/widgets/capabilities/line-chart.css?v=line-chart-active-slice-v1">
-  <link rel="stylesheet" href="/static/css/widgets/capabilities/horizontal-bar-chart.css?v=widget-contract-stitch-v2">
-  <link rel="stylesheet" href="/static/css/widgets/capabilities/pie-chart.css?v=widgets-modules-v1">
+  <link rel="stylesheet" href="/static/css/widgets/capabilities/horizontal-bar-chart.css?v=runtime-ui-v5">
+  <link rel="stylesheet" href="/static/css/widgets/capabilities/pie-chart.css?v=runtime-ui-v5">
   <link rel="stylesheet" href="/static/css/widgets/capabilities/table.css?v=widgets-modules-v1">
   <link rel="stylesheet" href="/static/css/widgets/capabilities/map-jump.css?v=widgets-modules-v1">
-  <link rel="stylesheet" href="/static/css/widgets/capabilities/eez-attribution.css?v=widgets-modules-v1">
+  <link rel="stylesheet" href="/static/css/widgets/capabilities/eez-attribution.css?v=eez-domain-v2">
   <link rel="stylesheet" href="/static/css/widgets/capabilities/metrics.css?v=widgets-modules-v1">
   <link rel="stylesheet" href="/static/css/widgets/capabilities/event-viewer.css?v=lifecycle-widget-v3">
+  <link rel="stylesheet" href="/static/css/widgets/capabilities/usage-guide.css?v=runtime-ui-v5">
+  <link rel="stylesheet" href="/static/css/widgets/capabilities/spotify-player.css?v=runtime-ui-v5">
   <link rel="stylesheet" href="/static/css/widgets/core/size-adaptations.css?v=widgets-modules-v1">
-  <link rel="stylesheet" href="/static/css/widgets/runtime/popover.css?v=widget-contract-stitch-v2">
+  <link rel="stylesheet" href="/static/css/widgets/runtime/popover.css?v=spotify-session-v2">
   <link rel="stylesheet" href="/static/styles.css?v=map-settings-gear-hover-v1">
 </head>
 <body>
@@ -57,7 +59,7 @@
           <span id="single-date-label">資料日期</span>
           <input id="date" type="date">
         </label>
-        <button id="latest-date" class="latest-date-button" type="button" title="跳到資料集最後一日">最後一日</button>
+        <button id="latest-date" class="latest-date-button" type="button" title="跳到資料集最後一日" aria-label="最後一日"><span class="control-icon-fallback" aria-hidden="true">▣</span><i class="control-icon" data-lucide="calendar-check-2" aria-hidden="true"></i></button>
       </div>
       <div class="time-sequence" aria-label="時間序列模式">
         <span class="control-group-title">時間序列</span>
@@ -247,19 +249,6 @@
           </summary>
           <div class="settings-toggle-content">
             <section class="settings-section playback-settings-section">
-              <h3>播放時間軸</h3>
-              <label>
-                播放倍率
-                <select id="playback-rate">
-                  <option value="0.5">0.5x</option>
-                  <option value="1" selected>1x</option>
-                  <option value="2">2x</option>
-                  <option value="4">4x</option>
-                </select>
-              </label>
-              <p class="setting-note">時間軸逐張呈現每個 snapshot；frame 未準備完成時會先緩衝，不跳過日期。</p>
-            </section>
-            <section class="settings-section playback-settings-section">
               <h3>資料快取 / 預熱</h3>
               <label>
                 水位策略
@@ -359,10 +348,6 @@
               </label>
               <p class="setting-note">淡入淡出只修飾圖層替換；高斯模糊只作為縮放 / LOD 重算時的短暫遮罩，不參與播放時間線，也不等待補間。</p>
             </section>
-            <section class="settings-section playback-settings-section">
-              <h3>測速觀測</h3>
-              <p class="setting-note">儀表板的「測速」box 是目前的觀測面：SQL、API、client fetch-to-render、renderer draw、row count 與 render-state 都在那裡更新。這裡只宣告責任邊界，避免把測速數值混成播放控制。</p>
-            </section>
           </div>
         </details>
         <details class="settings-toggle-card" open>
@@ -456,6 +441,14 @@
               <option value="nonzero_extent">非零值域</option>
             </select>
           </label>
+          <label id="sampled-grid-spatial-interpolation-field" hidden>
+            格網過渡
+            <select id="sampled-grid-spatial-interpolation">
+              <option value="linear">平滑（線性插值）</option>
+              <option value="nearest">原始色塊</option>
+            </select>
+            <span id="sampled-grid-spatial-interpolation-status" class="setting-note"></span>
+          </label>
           <div id="sampled-grid-scale-preview" class="sampled-grid-scale-preview" aria-hidden="true"></div>
           <div id="sampled-grid-color-stops" class="color-grid sampled-grid-color-stops" aria-label="取樣網格多節點色階"></div>
           <div class="sampled-grid-domain-row">
@@ -510,6 +503,10 @@
             <label>
               共管海域
               <input id="eez-joint-color" class="color-input" type="color" value="#f5a524">
+            </label>
+            <label id="eez-high-seas-style-field" hidden>
+              公海
+              <input id="eez-high-seas-color" class="color-input" type="color" value="#5578a8">
             </label>
             <label>
               未分類類型
@@ -688,46 +685,50 @@
   <script src="/static/vendor/plotly-basic-3.6.0.min.js?v=3.6.0"></script>
   <script src="/static/js/ui/telemetry/snapshot-performance-chart.js?v=display-number-v1"></script>
   <script src="/static/js/core/clock-domain.js?v=clock-domain-v1"></script>
+  <script src="/static/js/core/runtime-primitives.js?v=runtime-lifecycle-v1"></script>
   <script src="/static/TimingMetrics.js?v=clock-domain-v1"></script>
   <script src="/static/js/core/state.js?v=runtime-convergence-v3"></script>
-  <script src="/static/js/services/browser-profile-store.js?v=browser-profile-v1"></script>
+  <script src="/static/js/services/browser-profile-store.js?v=browser-profile-nullable-domain-v3"></script>
   <script src="/static/js/services/lifecycle-event-log.js?v=runtime-convergence-v3"></script>
   <script src="/static/js/services/runtime-performance-metrics.js?v=runtime-convergence-v3"></script>
   <script src="/static/js/services/frame-identity.js?v=lifecycle-core-v1"></script>
   <script src="/static/js/core/canonical-grid-frame.js?v=canonical-grid-frame-v1"></script>
   <script src="/static/js/core/dom.js?v=display-number-v1"></script>
   <script src="/static/js/core/render-state.js?v=zh-tw-v99"></script>
-  <script src="/static/js/core/map.js?v=layer-viewport-v1"></script>
+  <script src="/static/js/core/map.js?v=runtime-ui-v5"></script>
   <script src="/static/js/core/geo.js?v=zh-tw-v99"></script>
   <script src="/static/js/rendering/render-capability.js?v=zh-tw-v99"></script>
+  <script src="/static/js/services/renderer-capability-state.js?v=renderer-lifecycle-v2"></script>
   <script src="/static/js/rendering/sampled-grid-contract.js?v=resolution-route-v2"></script>
   <script src="/static/js/rendering/virtual-grid-contract.js?v=resolution-contract-v1"></script>
+  <script src="/static/js/services/spatial-land-mask-service.js?v=mask-capacity-v3"></script>
   <script src="/static/js/ui/map/layer-viewport-controller.js?v=coverage-routing-v3"></script>
-  <script src="/static/js/rendering/sampled-grid-paint.js?v=zero-paint-opacity-v2"></script>
-  <script src="/static/js/rendering/sampled-grid-webgl-renderer.js?v=alpha-composite-v2"></script>
+  <script src="/static/js/rendering/sampled-grid-paint.js?v=canonical-domain-v3"></script>
+  <script src="/static/js/services/continuous-field-service.js?v=continuous-field-v1"></script>
+  <script src="/static/js/rendering/sampled-grid-webgl-renderer.js?v=render-scope-v2"></script>
   <script src="/static/js/rendering/renderer-registry.js?v=zh-tw-v99"></script>
   <script src="/static/js/rendering/render-grid-profile.js?v=zoom-aggregation-v1"></script>
-  <script src="/static/js/core/render-refresh.js?v=dynamic-layer-menu-v1"></script>
-  <script src="/static/js/layers/eez-layer.js?v=eez-lod-pixel-v2"></script>
+  <script src="/static/js/core/render-refresh.js?v=render-scope-v3"></script>
+  <script src="/static/js/layers/eez-layer.js?v=eez-domain-mask-v1"></script>
   <script src="/static/js/layers/graticule-layer.js?v=zh-tw-v99"></script>
   <script src="/static/js/layers/ais-layer.js?v=zh-tw-v99"></script>
-  <script src="/static/js/layers/sampled-grid-layer-effects.js?v=clock-domain-v1"></script>
-  <script src="/static/js/layers/sampled-grid-layer.js?v=clock-domain-v1"></script>
-  <script src="/static/js/services/sampled-grid-layer-pool.js?v=renderer-pool-v1"></script>
+  <script src="/static/js/layers/sampled-grid-layer-effects.js?v=transition-owner-v1"></script>
+  <script src="/static/js/layers/sampled-grid-layer.js?v=p0-render-transaction-v1"></script>
+  <script src="/static/js/services/sampled-grid-layer-pool.js?v=p0-render-transaction-v1"></script>
   <script src="/static/js/ui/map/table-view.js?v=records-updated-v1"></script>
   <script src="/static/js/ui/map/control-buttons.js?v=map-fullscreen-icon-v1"></script>
   <script src="/static/js/ui/map/map-settings.js?v=widgets-map-jump-v70"></script>
   <script src="/static/js/ui/map/map-export.js?v=zh-tw-v99"></script>
   <script src="/static/js/ui/layers/layer-style-controls.js?v=zh-tw-v99"></script>
-  <script src="/static/js/ui/layers/eez-settings.js?v=eez-color-controls-v1"></script>
-  <script src="/static/js/ui/layers/sampled-grid-settings.js?v=resolution-contract-v1"></script>
+  <script src="/static/js/ui/layers/eez-settings.js?v=eez-domain-mask-v1"></script>
+  <script src="/static/js/ui/layers/sampled-grid-settings.js?v=canonical-domain-v2"></script>
   <script src="/static/js/ui/layers/ais-settings.js?v=display-number-v2"></script>
-  <script src="/static/js/ui/layers/layer-menu.js?v=layer-activation-controller-v2"></script>
+  <script src="/static/js/ui/layers/layer-menu.js?v=lifecycle-boundary-v1"></script>
   <script src="/static/js/ui/background/aerial-backdrop.js?v=aerial-backdrop-v6"></script>
   <script src="/static/js/playback/playback-worker-policy.js?v=playback-worker-policy-v1"></script>
   <script src="/static/js/playback/playback-snapshot-splitter.js?v=playback-snapshot-splitter-v1"></script>
-  <script src="/static/js/playback/playback-scheduler.js?v=playback-runtime-v1"></script>
-  <script src="/static/js/playback/playback-runtime-controller.js?v=playback-runtime-v1"></script>
+  <script src="/static/js/playback/playback-scheduler.js?v=playback-runtime-v2"></script>
+  <script src="/static/js/playback/playback-runtime-controller.js?v=scope-lineage-v1"></script>
   <script src="/static/js/services/sampled-grid-render-artifact-cache.js?v=sampled-grid-render-artifact-cache-v1"></script>
   <script src="/static/js/services/render-intent-service.js?v=resolution-route-v2"></script>
   <script src="/static/js/services/layer-query-coordinator.js?v=clock-domain-v1"></script>
@@ -742,36 +743,39 @@
   <script src="/static/js/playback/playback-frame-buffer.js?v=runtime-convergence-v4"></script>
   <script src="/static/js/playback/playback-time-policy.js?v=clock-domain-v1"></script>
   <script src="/static/js/playback/adaptive-watermark-controller.js?v=runtime-convergence-v3"></script>
-  <script src="/static/js/playback/playback-renderer.js?v=runtime-oop-v1"></script>
-  <script src="/static/js/services/api-client.js?v=display-number-v2"></script>
+  <script src="/static/js/playback/playback-renderer.js?v=p0-render-transaction-v1"></script>
+  <script src="/static/js/services/api-client.js?v=p0-render-transaction-v1"></script>
   <script src="/static/js/application/widgets/widget-model-functions.js?v=widget-application-v1"></script>
   <script src="/static/js/application/widgets/widget-query-context.js?v=widget-application-v1"></script>
   <script src="/static/js/application/widgets/line-chart-data-source.js?v=widget-application-v1"></script>
   <script src="/static/js/application/widgets/slice-chart-data-sources.js?v=widget-application-v1"></script>
   <script src="/static/js/application/widgets/table-widget-data-source.js?v=widget-application-v1"></script>
-  <script src="/static/js/application/widgets/eez-attribution-data-source.js?v=widget-application-v1"></script>
-  <script src="/static/js/application/widgets/widget-application-runtime.js?v=widget-application-v1"></script>
-  <script src="/static/js/runtime/runtime-composition-root.js?v=runtime-convergence-v3"></script>
+  <script src="/static/js/application/widgets/eez-attribution-data-source.js?v=lifecycle-boundary-v1"></script>
+  <script src="/static/js/application/widgets/spotify-player-session.js?v=spotify-session-v1"></script>
+  <script src="/static/js/application/widgets/widget-application-runtime.js?v=lifecycle-boundary-v1"></script>
+  <script src="/static/js/runtime/runtime-composition-root.js?v=p0-render-transaction-v1"></script>
   <script src="/static/js/ui/map/tile-selection-layer.js?v=runtime-oop-v1"></script>
   <script src="/static/js/playback/playback-delivery-policy.js?v=playback-delivery-policy-v2"></script>
-  <script src="/static/js/ui/settings/hardware-settings.js?v=dynamic-layer-menu-v1"></script>
+  <script src="/static/js/ui/settings/hardware-settings.js?v=renderer-lifecycle-v2"></script>
   <script src="/static/js/ui/settings/virtual-grid-settings.js?v=virtual-grid-settings-v1"></script>
   <script src="/static/js/playback/playback-interpolation-controller.js?v=playback-interpolation-v2"></script>
-  <script src="/static/js/playback/playback-controls.js?v=display-number-v2"></script>
+  <script src="/static/js/playback/playback-controls.js?v=p0-render-transaction-v1"></script>
   <script src="/static/js/playback/fullscreen-playback-controls.js?v=fullscreen-svg-v1"></script>
   <script src="/static/js/ui/layers/layer-activation-controller.js?v=layer-activation-controller-v1"></script>
-  <script src="/static/js/ui/widgets/core/widget-core.js?v=widget-plotly-lifecycle-v1"></script>
+  <script src="/static/js/ui/widgets/core/widget-core.js?v=runtime-ui-v5"></script>
   <script src="/static/js/ui/widgets/capabilities/shared.js?v=resolution-route-v2"></script>
   <script src="/static/js/ui/widgets/capabilities/line-chart.js?v=line-chart-active-slice-v3"></script>
-  <script src="/static/js/ui/widgets/capabilities/horizontal-bar-chart.js?v=widget-plotly-lifecycle-v1"></script>
-  <script src="/static/js/ui/widgets/capabilities/pie-chart.js?v=widget-plotly-lifecycle-v1"></script>
-  <script src="/static/js/ui/widgets/capabilities/eez-attribution.js?v=widgets-modules-v1"></script>
+  <script src="/static/js/ui/widgets/capabilities/horizontal-bar-chart.js?v=runtime-ui-v5"></script>
+  <script src="/static/js/ui/widgets/capabilities/pie-chart.js?v=runtime-ui-v5"></script>
+  <script src="/static/js/ui/widgets/capabilities/eez-attribution.js?v=eez-domain-v2"></script>
   <script src="/static/js/ui/widgets/capabilities/table.js?v=display-number-v1"></script>
-  <script src="/static/js/ui/widgets/capabilities/map-jump.js?v=widgets-modules-v1"></script>
+  <script src="/static/js/ui/widgets/capabilities/map-jump.js?v=runtime-ui-v5"></script>
   <script src="/static/js/ui/widgets/capabilities/metrics.js?v=display-number-v1"></script>
   <script src="/static/js/ui/widgets/capabilities/event-viewer.js?v=display-number-v1"></script>
-  <script src="/static/js/ui/widgets/registry/widget-registry.js?v=widgets-launchpad-registered-v3"></script>
-  <script src="/static/js/ui/widgets/runtime/widgets-runtime.js?v=line-chart-active-slice-v2"></script>
+  <script src="/static/js/ui/widgets/capabilities/usage-guide.js?v=runtime-ui-v5"></script>
+  <script src="/static/js/ui/widgets/capabilities/spotify-player.js?v=runtime-ui-v5"></script>
+  <script src="/static/js/ui/widgets/registry/widget-registry.js?v=widgets-launchpad-registered-v4"></script>
+  <script src="/static/js/ui/widgets/runtime/widgets-runtime.js?v=runtime-ui-v5"></script>
   <script src="/static/js/ui/widgets/widget-launchpad.js?v=widgets-launchpad-registered-v3"></script>
   <script src="/static/app.js?v=runtime-convergence-v3"></script>
 </body>

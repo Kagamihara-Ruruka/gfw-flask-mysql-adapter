@@ -28,9 +28,9 @@ class PlaybackRendererController {
     dateInput.value = date;
     updateControls?.();
     this.publishActiveDate(date, { source });
-    await reloadActiveLayer?.();
+    const renderResult = await reloadActiveLayer?.();
     afterRender?.({ date });
-    return true;
+    return renderResult === undefined ? true : renderResult;
   }
 
   async showDateIndex({

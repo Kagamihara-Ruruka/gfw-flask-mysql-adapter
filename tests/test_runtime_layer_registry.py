@@ -224,6 +224,52 @@ class _FakeProcess:
 
 
 class ManagedEndpointSupervisorTests(unittest.TestCase):
+    def test_endpoint_state_transition_notifies_subscribers_once(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "provider"
+            source = project / "src"
+            source.mkdir(parents=True)
+            route = {
+                "name": "provider",
+                "endpoint": {"host": "127.0.0.1", "port": 8791},
+                "runtime": {
+                    "ownership": "managed_local",
+                    "startup_timeout_seconds": 0.2,
+                    "launcher": {
+                        "kind": "python_flask",
+                        "app": "provider.api:app",
+                        "working_directory": "${APP_ROOT}/provider",
+                        "python_path": "${APP_ROOT}/provider/src",
+                    },
+                },
+            }
+            spec = managed_runtime_spec(PIPELINE_CONFIG, route, root=root)
+            reachable = [False]
+            process = _FakeProcess()
+            process.returncode = 1
+            supervisor = ManagedEndpointSupervisor(
+                {},
+                root=root,
+                executable="python",
+                popen_factory=lambda *_args, **_kwargs: process,
+                port_probe=lambda _host, _port: reachable[0],
+            )
+            notifications: list[str] = []
+            unsubscribe = supervisor.subscribe_status_changes(lambda: notifications.append("changed"))
+
+            self.assertEqual("failed", supervisor.ensure(spec)["state"])
+            self.assertEqual("failed", supervisor.ensure(spec)["state"])
+            reachable[0] = True
+            self.assertEqual("ready", supervisor.ensure(spec)["state"])
+            self.assertEqual("ready", supervisor.ensure(spec)["state"])
+            unsubscribe()
+            reachable[0] = False
+            self.assertEqual("failed", supervisor.ensure(spec)["state"])
+            supervisor.stop()
+
+        self.assertEqual(["changed", "changed"], notifications)
+
     def test_managed_local_spec_and_launch_use_config_not_dataset_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

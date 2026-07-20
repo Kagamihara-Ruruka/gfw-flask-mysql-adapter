@@ -15,7 +15,7 @@
       "enabled": true,
       "owner": "backend/system",
       "runtime_entry": "common_adapter.db.backends.mysql.MySqlReadBackend",
-      "activation_gate": "config/schemas/adapter.schema.json validates and MySQL smoke test passes"
+      "activation_gate": "database source config is active, Probe/Mapping succeeds, and the MySQL smoke test passes"
     },
     "hive": {
       "declared": true,

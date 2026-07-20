@@ -88,14 +88,21 @@ flowchart LR
 | sampled-grid column storage 與 selection view | `CanonicalGridFrame` immutable value | Mapping builder 建立，經 transport 交給 `DataFrameStoreCore` | 無獨立 lifecycle；只能共用或由 Store 淘汰，不得由 consumer 修改 |
 | lifecycle events、run、listener | `LifecycleEventLogCore` | `RuntimeCompositionRoot` | `dispose` 清空 bounded log 與 subscription |
 | active date 到 renderer 的 handoff | `PlaybackRendererController` | `RuntimeCompositionRoot` | `dispose` 清除 active date；不擁有 WebGL resource |
+| server/browser probe、hardware policy 與 WebGL context 狀態 | `RendererCapabilityStateCore` | `RuntimeCompositionRoot` | `dispose` 解除 context event listener 並清空 context snapshot；`RendererRegistry` 只消費其判定 |
+| sampled-grid active layer、retired layer 與 context-loss fallback | `SampledGridLayerPoolCore` | `RuntimeCompositionRoot` | `dispose` 取消 mask/capability subscription、render callback 並移除 pooled layer；inactive layer 不得回應 viewport redraw |
+| sampled-grid visual transition generation、RAF 與 timer | `SampledGridLayerTransitionControllerCore` | `RuntimeCompositionRoot` | `invalidate / dispose` 使舊世代失效並取消全部 callback；舊 callback 不得修改已重用 layer |
+| EEZ LOD 海域幾何、版本化公海 topology 與 domain tile cache | `EezDomainMaskService` | Flask composition root | process 結束時釋放；單次 tile query 只處理目前 z/x/y，不建立全域視覺 union |
+| viewport-scoped `SpatialValidityMask`、tile single-flight 與 image LRU | `SpatialLandMaskServiceCore` | `RuntimeCompositionRoot` | `dispose` 使 refresh epoch 失效、abort pending image、清空 bounded cache 並解除 map/event listener |
+| mask-aware continuous field 衍生結果 | `ContinuousFieldServiceCore` | `RuntimeCompositionRoot` | `dispose` 清空 bounded derived cache；重建 kernel 維持 pure function，不擁有 Frame、Mask 或 Renderer |
 | 圖層 transition queue | `DashboardLayerActivationController` | `AppRuntime.install` | `dispose` 停止接受 command；單一路徑停播放、切 dataset、載 schema、reload |
 | Widget panel、popover、page lifecycle | `WidgetRuntimeController` | `AppRuntime.install` | `dispose` 釋放 panel、popover 與 coordinator |
+| mounted Plotly graph 與其 resize/listener callback | `WidgetRuntimeController`／`WidgetsPanel` | Widget render boundary | 每次 DOM replacement、popover close 與 Runtime dispose 前呼叫 `Plotly.purge()`；不得留下 detached plot |
 | Widget refresh listeners、map listener、debounce timer | `WidgetRefreshCoordinator` | `WidgetRuntimeController` 的 DI factory | `dispose` abort listener 並取消所有 timer |
 | Widget query cache/inflight | 各 Application DataSource instance | `WidgetApplicationRuntime` | Runtime dispose 時逐一釋放；Capability 不擁有 query state |
 | 選取模式、cells、time binding | `SelectionSession` | Tile selection aggregate，由 `AppRuntime.install` 接管 | Layer dispose 清除 rectangle、label、cursor 與 listener |
 | viewport coverage 約束 | `LayerViewportController` | `RuntimeCompositionRoot` | `dispose` 還原 map bounds/min zoom |
 | 虛擬網格策略、revision、map subscription | `VirtualGridController` | `RuntimeCompositionRoot` | `dispose` 對稱解除 event/map subscription |
-| 航拍背景 fetch、object URL、paint timer／rAF | `AerialBackdropController` UI owner | UI install | `dispose` abort fetch、取消 timer／rAF、解除 listener 並 revoke object URL；不進資料 Runtime |
+| 航拍背景 fetch、object URL、paint timer／rAF | `AerialBackdrop` UI owner | UI install | `dispose` abort fetch、取消 timer／rAF、解除 listener 並 revoke object URL；不進資料 Runtime |
 | 效能縮圖 timer／rAF／ResizeObserver | `SnapshotPerformanceChart` UI owner | Widget capability render | `dispose` 取消排程並解除 observer |
 | Metrics Widget telemetry subscription | metrics capability instance | Widget capability render | re-render 前釋放舊 binding，Widget dispose 時全部解除 |
 
@@ -142,6 +149,8 @@ Playback UI
 
 `PlaybackRuntime` 提供 start/stop/rate、scope configure、target demand、buffer snapshot 與 render lifecycle 命令。`PlaybackEngine` 仍決定合法狀態轉換；facade 不複製 Engine 狀態。
 
+CC 視角 settle 後，Map 與 Playback 必須共用同一份 `RenderIntent` request context。真正的 scope change 由 `PlaybackRuntimeController` 換代 generation、取消舊 timer callback 並以目前日期重錨唯一時間軸；`PREPARING` 期間只保留最新待套用 scope。Coverage 模式只限制合法相機範圍，不代表 sampled-grid query 與 viewport 無關。
+
 `PlaybackFrameBuffer` 是純投影，只回傳 waiting/failed state。真正寫入 UI buffer projection 的唯一入口是 `PlaybackCacheService.setBufferState()`。
 
 固定水位設定只經 `normalizedFixedWatermarkPolicy()` 正規化一次，Cache status 與 Preheater policy 共用同一結果。自適應 policy 只能由 Preheater reconciliation 套用；UI 只能 preview。
@@ -151,6 +160,7 @@ Playback UI
 - 地圖 application flow 建立 `map-current` demand，這是一般 source transport 的最高優先入口。
 - `FrameDemandServiceCore` 先查 `DataFrameStore`，cache miss 才直接交給 `QueryBroker`；相同 intent 在 Demand 層共用同一份 logical request。
 - Mapping 使用預編譯 context 對 source rows 做單一 pass，直接建立 columnar `CanonicalGridFrame`。Server cache、transport、browser Store、Renderer 與 Widgets 不得再膨脹或深拷貝 sampled-grid row graph；表格只在可見列的展示邊界 materialize row。
+- Compiled Mapping 同時擁有 source status 值域正規化。Canonical Frame 只攜帶 `observed / filled / no_data / unknown`；Paint Policy 唯一決定 render/interpolate/hide，Renderer 不得辨識 provider status 字串。
 - `QueryBroker` 是 sampled-grid 唯一瀏覽器 transport owner。它使用 Registry 衍生的 provider transport key 與 capacity 合併跨資料集 operation，依可用槽位限制 batch 與 in-flight operation；每筆 completion-order result 都會立即釋放槽位並補入最高優先工作。不同資料集仍保有不同 cache identity。
 - Flask `QueryBatchExecutor` 是 batch 解包後的唯一執行 owner；全域 worker 上限來自 runtime query policy，各 provider capacity 來自 source `query_policy.max_in_flight`，而且跨瀏覽器 request 共用同一份 in-flight 計數。Provider permit 必須在提交 worker 前取得，等待來源容量不得占用全域 worker。
 - `QueryScheduler` 保留給其他 query family；不得再包住 sampled-grid Demand/Broker 鏈形成第二個 queued/active owner。
@@ -159,6 +169,15 @@ Playback UI
 - 播放中 Widget 日期刷新只讀 Store；明確 Tile 選取缺當日資料時，才允許一張 `widget-interactive` demand。
 - idle/paused 圖表可用 `widget-auto` 補設定窗口；表格與事件檢視器永遠唯讀。
 - Widget Capability 只渲染注入的 model，不得直接存取 Store、Demand、Coordinator 或 HTTP。
+
+## Renderer 與衍生場邊界
+
+- `RenderContext` 是 immutable value，固定 frame 對應的 frameKey、scopeKey、date、BBOX、dataset、paint、grid、resolution 與 continuous-field signature；pooled layer 不得在 draw 時重新讀取目前全域圖層設定。Map move、zoom 與 Leaflet layout resize 都是 viewport scope change，必須先使舊 Context 失效，再由同一條 settled reload 取得替代 Frame；不得清空舊畫布後停在沒有有效 Context 的「就緒」狀態。
+- `SampledGridLayerTransitionControllerCore` 是 crossfade/reveal/cleanup 的唯一 callback owner。Layer pool 在 acquire、activate、scope invalidation 與 clear 時必須先換代；被取消的 callback 即使晚到，也不得操作已被 pool 重用的 layer。
+- `SpatialLandMaskServiceCore` 只負責把 EEZ 註冊的 tile capability 合成為目前 viewport 的 `SpatialValidityMask`。Viewport epoch 擁有合成世代；tile URL 的 pending Promise 由 bounded image cache 擁有，因此同 URL 同時只載入一次。
+- `ContinuousFieldServiceCore` 以 frame identity、continuous-field signature 與 mask version/scope/revision 快取衍生場。Alpha 與 zoom bucket 不屬於連續場 identity；Mask 線段採樣會隔離跨越已偵測陸地的角點共用，fragment 裁切仍擁有最終海岸線，精度受選定 Mask LOD 約束。
+- `RendererCapabilityStateCore` 是 WebGL 可用性、hardware policy 與 context lost/restored 的唯一 runtime owner。`RendererRegistry` 只選 backend；`SampledGridLayerPoolCore` 只負責 active layer 及 cache-only fallback。
+- Continuous field、Mask 與 GPU resource 都是衍生或呈現資源，不得回寫 `CanonicalGridFrame` 或成為 Widget、Selection、Query 的資料真相。
 
 ## Clock Domain
 

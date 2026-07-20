@@ -23,12 +23,8 @@ class PieChartWidget extends ChartWidget {
     }));
   }
 
-  rows() {
-    return this.dimensions().rows || 1;
-  }
-
   usePlotlyRenderer({ expanded = false } = {}) {
-    return expanded || this.rows() >= 2;
+    return expanded;
   }
 
   pieChartElementId() {
@@ -82,6 +78,32 @@ class PieChartWidget extends ChartWidget {
       },
       hovertemplate: "%{label}<br>Y: %{value}<br>%{percent}<extra></extra>",
     }];
+  }
+
+  semiDonutPath(startPercent, endPercent) {
+    const centerX = 100;
+    const centerY = 100;
+    const outerRadius = 92;
+    const innerRadius = 56;
+    const pointAt = (radius, percent) => {
+      const angle = Math.PI + (Math.PI * Number(percent || 0)) / 100;
+      return {
+        x: Number((centerX + radius * Math.cos(angle)).toFixed(3)),
+        y: Number((centerY + radius * Math.sin(angle)).toFixed(3)),
+      };
+    };
+    const outerStart = pointAt(outerRadius, startPercent);
+    const outerEnd = pointAt(outerRadius, endPercent);
+    const innerEnd = pointAt(innerRadius, endPercent);
+    const innerStart = pointAt(innerRadius, startPercent);
+    const largeArc = Number(endPercent) - Number(startPercent) > 50 ? 1 : 0;
+    return [
+      `M ${outerStart.x} ${outerStart.y}`,
+      `A ${outerRadius} ${outerRadius} 0 ${largeArc} 1 ${outerEnd.x} ${outerEnd.y}`,
+      `L ${innerEnd.x} ${innerEnd.y}`,
+      `A ${innerRadius} ${innerRadius} 0 ${largeArc} 0 ${innerStart.x} ${innerStart.y}`,
+      "Z",
+    ].join(" ");
   }
 
   pieChartLayout(model, { expanded = false, cinema = false } = {}) {
@@ -141,7 +163,9 @@ class PieChartWidget extends ChartWidget {
   renderSvgPieTemplate(container, model, segments) {
     const total = segments.reduce((sum, slice) => sum + slice.value, 0);
     const dominant = this.dominantSlice(segments);
-    const gradient = `conic-gradient(${segments.map((slice) => `${slice.color} ${slice.start}% ${slice.end}%`).join(", ")})`;
+    const arcs = segments.map((slice) => (
+      `<path d="${this.semiDonutPath(slice.start, slice.end)}" fill="${slice.color}"></path>`
+    )).join("");
 
     container.innerHTML = `
       <div class="widget-chart-header">
@@ -149,7 +173,8 @@ class PieChartWidget extends ChartWidget {
         <strong>${dominant.percent}%</strong>
         <em>${lineChartEscape(dominant.label)}</em>
       </div>
-      <div class="widget-pie-shape" style="--widget-pie-gradient: ${gradient}" aria-label="圓餅圖空白範本">
+      <div class="widget-pie-shape" aria-label="半圓比例圖">
+        <svg viewBox="0 0 200 108" role="img" aria-hidden="true">${arcs}</svg>
         <span class="widget-pie-center">
           <strong>${this.formatValue(total)}</strong>
           <em>${lineChartEscape(model.totalLabel)}</em>

@@ -1,6 +1,6 @@
 function repaintSampledGridLayer() {
-  if ((typeof isSampledGridLayer !== "function" || !isSampledGridLayer(state.dataLayer)) || !state.gridLayer?.setFrame) return;
-  state.gridLayer.setFrame(state.gridLayer._frame);
+  if (typeof isSampledGridLayer !== "function" || !isSampledGridLayer(state.dataLayer)) return;
+  repaintActiveSampledGridLayer({ layerId: state.dataLayer, datasetId: state.datasetId });
 }
 
 class SampledGridResolutionController {
@@ -103,18 +103,27 @@ class SampledGridPaintController {
     if (this.bound) return;
     this.bound = true;
     const mode = $("sampled-grid-scale-mode");
+    const interpolation = $("sampled-grid-spatial-interpolation");
     const maximum = $("sampled-grid-max-value");
     const stops = $("sampled-grid-color-stops");
-    for (const input of [mode, maximum, stops]) {
+    for (const input of [mode, interpolation, maximum, stops]) {
       if (input) stopStyleControlPropagation(input);
     }
     mode?.addEventListener("change", () => {
       this.profile().mode = mode.value === "nonzero_extent" ? "nonzero_extent" : "contract";
       this.repaintAndSync();
     });
+    interpolation?.addEventListener("change", () => {
+      this.profile().spatialInterpolation = interpolation.value === "nearest" ? "nearest" : "linear";
+      this.repaintAndSync();
+    });
     maximum?.addEventListener("input", () => {
-      const value = Number(maximum.value);
-      this.profile().maxValue = Number.isFinite(value) ? value : null;
+      const profile = this.profile();
+      const value = sampledGridNumberOrNull(maximum.value);
+      const minimum = SampledGridContract.model(profile.datasetId).valueDomain.min;
+      profile.maxValue = value != null && (!Number.isFinite(minimum) || value > minimum)
+        ? value
+        : null;
       this.repaintAndSync({ preserveInput: true });
     });
     stops?.addEventListener("input", (event) => {
@@ -138,9 +147,28 @@ class SampledGridPaintController {
     this.layerId = String(layerId || state.dataLayer || "").trim().toLowerCase();
     const profile = this.profile();
     const mode = $("sampled-grid-scale-mode");
+    const interpolation = $("sampled-grid-spatial-interpolation");
+    const interpolationField = $("sampled-grid-spatial-interpolation-field");
+    const interpolationStatus = $("sampled-grid-spatial-interpolation-status");
     const maximum = $("sampled-grid-max-value");
     const maximumField = $("sampled-grid-max-value-field");
     if (mode) mode.value = profile.mode;
+    const capability = window.LayerRuntimeContractRegistry?.spatialInterpolation?.(this.layerId) || {};
+    const interpolationSupported = capability.status === "supported"
+      && Array.isArray(capability.methods)
+      && capability.methods.includes("linear");
+    const rendererSupported = typeof RendererRegistry !== "undefined"
+      && Boolean(RendererRegistry.gpuAvailable?.());
+    if (interpolationField) interpolationField.hidden = !interpolationSupported;
+    if (interpolation) {
+      interpolation.value = profile.spatialInterpolation === "nearest" ? "nearest" : "linear";
+      interpolation.disabled = interpolationSupported && !rendererSupported;
+    }
+    if (interpolationStatus) {
+      interpolationStatus.textContent = rendererSupported
+        ? "只影響地圖著色；選格、圖表與快取仍使用原始 cell。"
+        : "目前渲染後端不支援平滑，將保留原始色塊。";
+    }
     if (maximum && !preserveInput) {
       const modelDomain = SampledGridContract.model(profile.datasetId).valueDomain;
       maximum.value = profile.maxValue ?? modelDomain.max ?? profile.observedMax ?? "";

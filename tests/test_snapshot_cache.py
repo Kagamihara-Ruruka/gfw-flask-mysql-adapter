@@ -21,6 +21,7 @@ from common_adapter.query.grid_frame import (
 )
 from common_adapter.query.sampled_grid import (
     SAMPLED_GRID_CONTRACT_VERSION,
+    canonicalize_sampled_grid_columns,
     canonicalize_sampled_grid_packet,
     canonicalize_sampled_grid_row,
     canonicalize_sampled_grid_rows,
@@ -359,6 +360,59 @@ class SnapshotCacheContractTests(unittest.TestCase):
 
         self.assertNotEqual(dataset_cache_namespace(first), dataset_cache_namespace(second))
 
+    def test_dataset_namespace_changes_with_status_semantics(self) -> None:
+        first = _dataset(resolutions=[16])
+        second = _dataset(resolutions=[16])
+        second["sampled_grid"]["status_semantics"] = {
+            "observed": ["source_observed"],
+            "fallback": "unknown",
+        }
+
+        self.assertNotEqual(dataset_cache_namespace(first), dataset_cache_namespace(second))
+
+    def test_status_semantics_normalize_all_canonicalization_paths(self) -> None:
+        dataset = _dataset(resolutions=[16])
+        dataset["sampled_grid"]["source_fields"]["status"] = "source_status"
+        dataset["sampled_grid"]["status_semantics"] = {
+            "observed": ["observed"],
+            "filled": ["contains_filled", "derived_with_fill", "grid_*d_mean"],
+            "no_data": ["no_data"],
+            "fallback": "unknown",
+        }
+        mapping = compile_sampled_grid_mapping(dataset)
+        source_rows = [
+            {**_source_rows(16)[0], "source_status": "observed"},
+            {**_source_rows(16)[1], "source_status": "contains_filled"},
+            {**_source_rows(16)[0], "source_status": "derived_with_fill"},
+            {**_source_rows(16)[1], "source_status": "grid_7d_mean"},
+            {**_source_rows(16)[0], "source_status": "no_data"},
+            {**_source_rows(16)[1], "source_status": "provider_specific"},
+        ]
+        expected = ("observed", "filled", "filled", "filled", "no_data", "unknown")
+
+        self.assertEqual("filled", canonicalize_sampled_grid_row(source_rows[1], mapping)["data_status"])
+        self.assertEqual(expected, canonicalize_sampled_grid_rows(source_rows, mapping).column("data_status"))
+        columns = {name: [row[name] for row in source_rows] for name in source_rows[0]}
+        self.assertEqual(
+            expected,
+            canonicalize_sampled_grid_columns(columns, mapping).column("data_status"),
+        )
+
+    def test_canonical_status_vocabulary_is_idempotent_without_source_aliases(self) -> None:
+        dataset = _dataset(resolutions=[16])
+        dataset["sampled_grid"]["source_fields"]["status"] = "source_status"
+        source_rows = [
+            {**_source_rows(16)[0], "source_status": "observed"},
+            {**_source_rows(16)[1], "source_status": "filled"},
+        ]
+
+        frame = canonicalize_sampled_grid_rows(
+            source_rows,
+            compile_sampled_grid_mapping(dataset),
+        )
+
+        self.assertEqual(("observed", "filled"), frame.column("data_status"))
+
     def test_mapping_extensions_flow_to_canonical_frame_without_source_schema_leakage(self) -> None:
         dataset = _dataset(resolutions=[16])
         dataset["sampled_grid"]["extension_fields"] = {
@@ -491,6 +545,10 @@ class SnapshotCacheContractTests(unittest.TestCase):
                 "status": "source_status",
             }
         )
+        dataset["sampled_grid"]["status_semantics"] = {
+            "observed": ["observed"],
+            "fallback": "unknown",
+        }
         source = {
             **_source_rows(16)[0],
             "source_coverage": 0.75,

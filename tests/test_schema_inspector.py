@@ -12,8 +12,8 @@ class SchemaInspectorBoundaryTests(unittest.TestCase):
         tables = _catalog_tables(
             {
                 "metrics": [
-                    {"metric_id": "chlor_a", "label": "Chlorophyll", "max": 100},
-                    {"metric_id": "sst", "label": "Temperature", "max": None},
+                    {"metric_id": "chlor_a", "label": "Chlorophyll", "max": 100, "ratio": 0.25},
+                    {"metric_id": "sst", "label": "Temperature", "max": None, "ratio": 0.75},
                 ],
                 "resolutions": [4, 16, 32],
             }
@@ -21,8 +21,14 @@ class SchemaInspectorBoundaryTests(unittest.TestCase):
 
         by_name = {table["name"]: table for table in tables}
         metric_columns = {column["name"]: column for column in by_name["metrics"]["columns"]}
-        self.assertEqual({"label", "max", "metric_id"}, set(metric_columns))
+        self.assertEqual({"label", "max", "metric_id", "ratio"}, set(metric_columns))
         self.assertTrue(metric_columns["max"]["nullable"])
+        self.assertEqual("unknown", metric_columns["max"]["value_semantics_candidate"]["kind"])
+        self.assertEqual("continuous", metric_columns["ratio"]["value_semantics_candidate"]["kind"])
+        self.assertEqual(
+            "source_scout",
+            metric_columns["ratio"]["value_semantics_candidate"]["provenance"],
+        )
         self.assertEqual("integer", by_name["resolutions"]["columns"][0]["data_type"])
 
     def test_http_route_selection_depends_on_adapter_not_mapping_artifact(self) -> None:

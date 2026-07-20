@@ -104,3 +104,71 @@ test("browser profile codec rejects unrelated and malformed persisted state", ()
   assert.equal(context.BrowserProfileContract.read(unrelated), null);
   assert.equal(context.BrowserProfileContract.read(malformed), null);
 });
+
+test("browser profile cannot install an empty sampled-grid color scale", () => {
+  const context = loadModule();
+  const normalized = context.BrowserProfileContract.normalize({
+    sampledGridPaintProfiles: {
+      temperature: {
+        layerId: "temperature",
+        datasetId: "dataset-temperature",
+        colorStops: [],
+      },
+    },
+  });
+
+  assert.equal(normalized.sampledGridPaintProfiles.temperature.colorStops, undefined);
+});
+
+test("browser profile preserves nullable sampled-grid display limits", () => {
+  const context = loadModule();
+  const normalized = context.BrowserProfileContract.normalize({
+    sampledGridPaintProfiles: {
+      nullLimit: { maxValue: null },
+      emptyLimit: { maxValue: "" },
+      numericLimit: { maxValue: "75" },
+    },
+  });
+
+  assert.equal(normalized.sampledGridPaintProfiles.nullLimit.maxValue, null);
+  assert.equal(normalized.sampledGridPaintProfiles.emptyLimit.maxValue, null);
+  assert.equal(normalized.sampledGridPaintProfiles.numericLimit.maxValue, 75);
+});
+
+test("browser profile owns and normalizes Spotify track order", () => {
+  const context = loadModule();
+  let persisted = "";
+  const targetState = {
+    mapSettings: {},
+    layerAlpha: {},
+    eezPaint: {},
+    sampledGridPaintProfiles: {},
+    widgetPreferences: {
+      "spotify-player": {
+        trackOrder: [
+          "348NF6vX0Yh22xvH0EZEro",
+          "348NF6vX0Yh22xvH0EZEro",
+          "invalid",
+          "43b6I3gZnUiVxNBUeq9FsL",
+        ],
+      },
+    },
+    browserProfile: { hardwareMode: "auto", aisRenderStrategy: "density_grid" },
+  };
+  const storage = {
+    setItem(_key, value) {
+      persisted = value;
+    },
+  };
+  const store = new context.BrowserProfileStoreCore({
+    targetState,
+    storage,
+    eventTarget: new EventTarget(),
+  });
+
+  assert.equal(store.persist(), true);
+  assert.deepEqual(
+    JSON.parse(persisted).widgetPreferences["spotify-player"].trackOrder,
+    ["348NF6vX0Yh22xvH0EZEro", "43b6I3gZnUiVxNBUeq9FsL"],
+  );
+});

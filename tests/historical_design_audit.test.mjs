@@ -28,6 +28,7 @@ test("renderers consume canonical frames and never own sampled-grid transport", 
   const capabilityProbe = read("static/js/rendering/render-capability.js");
   assert.equal((capabilityProbe.match(/\bfetch\s*\(/g) || []).length, 1);
   assert.match(capabilityProbe, /fetch\("\/api\/render\/capability"\)/);
+  assert.match(capabilityProbe, /WEBGL_lose_context/);
   assert.doesNotMatch(capabilityProbe, /\/api\/datasets|\/records\?/);
 });
 

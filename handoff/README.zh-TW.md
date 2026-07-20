@@ -22,7 +22,7 @@
 - `common_adapter/ais/stream.py`
 - `common_adapter/ais/live.py`
 - `common_adapter/db/connect.py`
-- `database/registry.py`
+- `common_adapter/query/registry.py`
 - `config/examples/runtime/adapter.ais_collector.example.json`
 - `scripts/run_ais_collector.ps1`
 - `scripts/install_ais_collector_task.ps1`
@@ -34,32 +34,35 @@
 
 ### Backend / system
 
-目標：理解資料庫 JSON 契約、connection/dataset 欄位、MySQL 到 Hive 的能力矩陣切換方式，以及未啟用的 skin/display 設定回傳語意。
+目標：理解 source config、Router Manifest、Probe／Mapping 分工、MySQL 到 Hive 的能力邊界，以及未啟用的 skin/display 提案。
 
 請閱讀：
 
 - `handoff/backend_config_contract/README.zh-TW.md`
 - `handoff/backend_config_contract/backend_sink_config.example.json`
 - `handoff/backend_config_contract/backend_capability_matrix.example.json`
-- `config/schemas/adapter.schema.json`
-- `config/examples/runtime/adapter.example.json`
+- `config/README.zh-TW.md`
+- `config/examples/sources/database/hive.example.json`
+- `config/examples/sources/database/pipeline-iceberg.example.json`
+- `config/examples/state/router_manifest.example.json`
 
 他需要關心的程式：
 
 - `common_adapter/db/connect.py`
-- `database/registry.py`
+- `common_adapter/query/registry.py`
 - `common_adapter/ais/live.py`
 
 不需要交付 AISStream API key，也不需要直接改 crawler。
 
 ## 共同邊界
 
-- 小可愛是 consumer，只讀 SQL/read model。
+- 小可愛是 consumer，只讀已註冊的 SQL read model、HTTP serving source 與空間服務；AIS 路徑固定只讀 SQL read model。
 - AIS crawler 是 upstream feeder，負責連外部 AISStream 並寫入 SQL。
 - 後端/系統負責資料庫連線、欄位契約、read model 與未來 Hive/skin 能力矩陣。
-- `config/examples/runtime/adapter.example.json` 是模板，不放真密碼。
+- `config/examples/runtime/adapter.example.json` 只描述服務、查詢政策與渲染政策，不承載 source connection 或 dataset 欄位。
+- 後端 source 應以 `config/sources/<role>/*.json` 形狀交付，再由 Router Manifest 啟用；資料欄位由 Probe／Scout 探測，Mapping 轉成內部合約。
 - `config/runtime/adapter.local.json` 與 `config/runtime/ais_collector.local.json` 是本機 secrets/override，已被 `.gitignore` 忽略。
-- `backend_sink.local.json` 類型的後端交付檔是穩定 sink 契約。後端/系統填好後，我們後續改小可愛 UI、LOD、快取或 crawler 內部實作，都不應改既有 sink 欄位語意。
+- `backend_sink.local.json` 類型的檔案目前只是交接協商產物，不是 Runtime 可直接載入的 config。確認後必須轉成 source config 與 Mapping；既有 sink 欄位語意仍不得被 UI、LOD、快取或 crawler 內部改動破壞。
 - `ais_collector.handoff.example.json` 不放真 key。
 - `ais_collector.handoff.json` 是授權後產生的實交接檔，可以放真 key；不要公開推到公共 repo。
 

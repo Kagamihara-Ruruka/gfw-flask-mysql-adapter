@@ -4,11 +4,11 @@ const {
   WidgetSizeAbleDict,
   bindWidgetPointerBehavior,
   bindWidgetDragBehavior,
-  forceCloseWidgetPopoverLayers,
   WidgetSocketLayout,
   WidgetCatalogItem,
   DashboardWidget,
   ChartWidget,
+  WidgetPlotlyLifecycle,
 } = window.WidgetCore;
 const {
   WidgetTableView,
@@ -51,26 +51,37 @@ class WidgetPopoverController {
       }
     };
     document.addEventListener("keydown", this.boundKeydown);
+    this.activeView = null;
+    this.retainedViews = new Map();
   }
 
   openExpanded(widget, { onSettings } = {}) {
-    this.openWidget = widget;
+    this.deactivateActiveView();
+    const retentionKey = String(widget?.popoverRetentionKey?.() || "").trim();
+    let view = retentionKey ? this.retainedViews.get(retentionKey) : null;
+    if (!view) {
+      const pane = widget.renderExpanded();
+      pane.dataset.widgetView = "detail";
+      view = { widget, pane, retentionKey };
+      if (retentionKey) this.retainedViews.set(retentionKey, view);
+      bindWidgetPointerBehavior(pane, {
+        onPrimary: () => this.expandToCinema(view.widget, pane),
+        onSettings: () => {
+          if (typeof onSettings === "function") {
+            onSettings(view.widget);
+            return;
+          }
+          this.openSettings(view.widget);
+        },
+      });
+    }
+    this.activeView = view;
+    this.openWidget = view.widget;
     this.layer.style.display = "";
     this.layer.style.pointerEvents = "";
-    const pane = widget.renderExpanded();
-    pane.dataset.widgetView = "detail";
-    this.layer.replaceChildren(pane);
+    if (view.pane.parentElement !== this.layer) this.layer.append(view.pane);
+    view.pane.hidden = false;
     this.layer.hidden = false;
-    bindWidgetPointerBehavior(pane, {
-      onPrimary: () => this.expandToCinema(widget, pane),
-      onSettings: () => {
-        if (typeof onSettings === "function") {
-          onSettings(widget);
-          return;
-        }
-        this.openSettings(widget);
-      },
-    });
   }
 
   expandToCinema(widget, pane) {
@@ -83,22 +94,44 @@ class WidgetPopoverController {
     pane.classList.add("is-cinema");
     const body = pane.querySelector(".widget-popover-body");
     if (body) {
-      body.replaceChildren();
-      widget.renderTemplate(body, { expanded: true, cinema: true });
+      widget.renderCinema(body);
     }
   }
 
   openSettings(widget, { onDelete, onConfigure, catalogItems = [] } = {}) {
+    this.deactivateActiveView();
     this.openWidget = null;
     this.layer.style.display = "";
     this.layer.style.pointerEvents = "";
-    this.layer.replaceChildren(widget.renderSettings({ onDelete, onConfigure, catalogItems }));
+    const pane = widget.renderSettings({ onDelete, onConfigure, catalogItems });
+    this.activeView = { widget: null, pane, retentionKey: "" };
+    this.layer.append(pane);
     this.layer.hidden = false;
   }
 
-  close() {
+  deactivateActiveView() {
+    const view = this.activeView;
+    for (const retainedView of this.retainedViews.values()) {
+      retainedView.pane.hidden = true;
+    }
+    if (!view) {
+      this.openWidget = null;
+      return;
+    }
+    view.pane.hidden = true;
+    if (!view.retentionKey) {
+      view.widget?.disposeRenderedView?.(view.pane);
+      view.pane.remove();
+    }
+    this.activeView = null;
     this.openWidget = null;
-    forceCloseWidgetPopoverLayers();
+  }
+
+  close() {
+    this.deactivateActiveView();
+    this.layer.hidden = true;
+    this.layer.style.display = "none";
+    this.layer.style.pointerEvents = "none";
   }
 
   refreshOpenWidgetType(widgetType) {
@@ -106,16 +139,22 @@ class WidgetPopoverController {
     const pane = this.layer.querySelector(".widget-popover");
     const body = pane?.querySelector(".widget-popover-body");
     if (!pane || !body) return;
-    body.replaceChildren();
-    this.openWidget.renderTemplate(body, {
+    this.openWidget.replaceRenderedTemplate(body, {
       expanded: true,
       cinema: pane.dataset.widgetView === "cinema",
     });
   }
 
   dispose() {
+    this.close();
     document.removeEventListener("keydown", this.boundKeydown);
     this.layer.removeEventListener("click", this.boundLayerClick);
+    for (const view of this.retainedViews.values()) {
+      view.widget?.disposeRenderedView?.(view.pane);
+      view.pane.remove();
+      view.widget?.dispose?.();
+    }
+    this.retainedViews.clear();
     this.layer.remove();
     this.openWidget = null;
   }
@@ -193,6 +232,7 @@ class WidgetsPanel {
   }
 
   renderWidgets() {
+    WidgetPlotlyLifecycle.purge(this.grid);
     this.grid?.replaceChildren(...this.widgets.map((widget) => widget.render(this)));
   }
 
@@ -202,8 +242,7 @@ class WidgetsPanel {
       const node = this.grid?.querySelector(`[data-widget-id="${widget.id}"]`);
       const body = node?.querySelector(".dashboard-widget-body");
       if (!body) continue;
-      body.replaceChildren();
-      widget.renderTemplate(body, { expanded: false });
+      widget.replaceRenderedTemplate(body, { expanded: false });
     }
   }
 
@@ -564,7 +603,6 @@ class WidgetsPanel {
     this.clearDropState();
     this.renderWidgets();
     this.popover.close();
-    forceCloseWidgetPopoverLayers();
     return true;
   }
 
@@ -584,6 +622,8 @@ const DefaultDashboardWidgetLayout = Object.freeze([
   Object.freeze({ type: "map-jump", id: "map-jump-1x1", title: "窗格跳轉工具", size: "1x1", status: "", slotIndex: 5 }),
   Object.freeze({ type: "eez-attribution", id: "eez-attribution-1x1", title: "海域管轄判定工具", size: "1x1", status: "EEZ 管轄判定。", slotIndex: 11 }),
   Object.freeze({ type: "metrics", id: "metrics-1x2", title: "測速工具", size: "1x2", status: "", slotIndex: 12 }),
+  Object.freeze({ type: "horizontal-bar-chart", id: "horizontal-bar-chart-1x3", title: "橫條圖工具", size: "1x3", status: "多標籤比較。", slotIndex: 14 }),
+  Object.freeze({ type: "spotify-player", id: "spotify-player-1x1", title: "彩蛋", size: "1x1", status: "", slotIndex: 17 }),
 ]);
 
 function createDashboardWidgetFromDefault(item, scope, applicationRuntime) {

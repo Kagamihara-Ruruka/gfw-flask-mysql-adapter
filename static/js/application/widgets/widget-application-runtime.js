@@ -9,6 +9,10 @@ class WidgetApplicationRuntime {
     runtimeMetricsProvider,
     schedule,
     cancelSchedule,
+    widgetPreferenceReader,
+    widgetPreferenceWriter,
+    spotifyPlayerSession,
+    mapViewActions,
   } = {}) {
     if (!queryContext || !(sources instanceof Map)) {
       throw new TypeError("WidgetApplicationRuntime requires query context and sources");
@@ -21,6 +25,15 @@ class WidgetApplicationRuntime {
     this.runtimeMetricsProvider = runtimeMetricsProvider;
     this.schedule = schedule;
     this.cancelSchedule = cancelSchedule;
+    this.widgetPreferenceReader = widgetPreferenceReader;
+    this.widgetPreferenceWriter = widgetPreferenceWriter;
+    this.spotifyPlayerSession = spotifyPlayerSession || null;
+    this.mapViewActions = Object.freeze((Array.isArray(mapViewActions) ? mapViewActions : [])
+      .map((action) => Object.freeze({
+        id: String(action?.id || ""),
+        label: String(action?.label || ""),
+      }))
+      .filter((action) => action.id && action.label));
     this.serviceCache = new Map();
     this.unsubscribeEventLog = this.eventLog?.subscribe?.((event) => {
       if (event?.type !== "RUN_STARTED" || event.kind !== "playback") return;
@@ -45,6 +58,8 @@ class WidgetApplicationRuntime {
     const common = {
       emit: (type, detail) => this.emit(type, detail),
       queryContext: this.queryContext,
+      readPreference: (key) => this.widgetPreferenceReader?.(normalized, key),
+      writePreference: (key, value) => this.widgetPreferenceWriter?.(normalized, key, value),
     };
     const dataSource = this.source(normalized);
     const services = Object.freeze({
@@ -64,11 +79,15 @@ class WidgetApplicationRuntime {
         cancelSchedule: this.cancelSchedule,
       } : {}),
       ...(normalized === "map-jump" ? {
+        viewActions: this.mapViewActions,
         runViewAction: (id) => {
           if (!id) return false;
           this.emit("rrkal:map-view-action", { id });
           return true;
         },
+      } : {}),
+      ...(normalized === "spotify-player" && this.spotifyPlayerSession ? {
+        playerSession: this.spotifyPlayerSession,
       } : {}),
     });
     this.serviceCache.set(normalized, services);
@@ -113,6 +132,12 @@ function createWidgetApplicationRuntime({
   runtimeMetricsProvider,
   schedule,
   cancelSchedule,
+  widgetPreferenceReader,
+  widgetPreferenceWriter,
+  spotifyPlayerSession,
+  mapViewActions,
+  clock,
+  eezAttributionVersionProvider,
 } = {}) {
   const queryContext = new WidgetQueryContext({
     stateProvider,
@@ -152,6 +177,8 @@ function createWidgetApplicationRuntime({
     queryContext,
     queryCoordinator,
     eventSink,
+    clock,
+    cacheVersionProvider: eezAttributionVersionProvider,
   }));
   return new WidgetApplicationRuntime({
     queryContext,
@@ -162,6 +189,10 @@ function createWidgetApplicationRuntime({
     runtimeMetricsProvider,
     schedule,
     cancelSchedule,
+    widgetPreferenceReader,
+    widgetPreferenceWriter,
+    spotifyPlayerSession,
+    mapViewActions,
   });
 }
 

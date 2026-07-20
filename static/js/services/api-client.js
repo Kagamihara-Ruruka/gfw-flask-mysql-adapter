@@ -369,7 +369,7 @@ async function reloadSampledGridRecords() {
     clearPrimaryLayerRecords();
     RenderState.off(requestedLayer || "sampled-grid", "未導入");
     setStatus("尚未導入可查詢的取樣網格圖層");
-    return;
+    return { visible: false, reason: "dataset_unavailable" };
   }
   const requestedDate = $("date")?.value || "";
   state.primaryFetchController?.abort();
@@ -384,7 +384,7 @@ async function reloadSampledGridRecords() {
     });
     RenderState.off(requestedLayer, "等待日期");
     setStatus(`${requestedLayerLabel} 尚未取得可查詢日期`);
-    return;
+    return { visible: false, reason: "date_unavailable" };
   }
   const timing = TimingMetrics.stopwatch();
   TimingMetrics.resetSnapshotPersistent?.({ render: false });
@@ -398,11 +398,18 @@ async function reloadSampledGridRecords() {
   const requestContext = RenderIntentService.toSampledGridPacketRequest(renderIntent);
   renderTable([], state.datasets[state.datasetId].display_columns, { layer: requestedLayer, date: requestedDate, loading: true });
   if (requestContext.outsideCoverage || !requestContext.bbox) {
-    renderSampledGridMap(CanonicalGridFrame.empty());
+    renderSampledGridMap(CanonicalGridFrame.empty(), { requestContext });
     renderTable([], state.datasets[state.datasetId].display_columns, { layer: requestedLayer, date: requestedDate });
     RenderState.ready(requestedLayer, "0 rows / outside coverage");
     setStatus(`${requestedLayerLabel} 視窗位於資料範圍外`);
-    return;
+    return { visible: true, empty: true, reason: "outside_coverage" };
+  }
+  if (Array.isArray(state.availableDates) && state.availableDates.length > 0) {
+    PlaybackRuntime.configure({
+      dates: typeof datesInSelectedRange === "function" ? datesInSelectedRange() : state.availableDates,
+      requestContext,
+      currentDate: requestedDate,
+    });
   }
   const controller = new AbortController();
   state.primaryFetchController = controller;
@@ -413,12 +420,16 @@ async function reloadSampledGridRecords() {
       scopeId: `map-current:${requestedDataset}:${seq}`,
       consumerId: `map:${requestedDate}`,
     });
-    if (state.dataLayer !== requestedLayer || state.datasetId !== requestedDataset) return;
-    if (typeof isSampledGridLayer !== "function" || !isSampledGridLayer(state.dataLayer)) return;
-    if (seq !== state.fetchSeq) return;
+    if (state.dataLayer !== requestedLayer || state.datasetId !== requestedDataset) {
+      return { visible: false, reason: "layer_superseded" };
+    }
+    if (typeof isSampledGridLayer !== "function" || !isSampledGridLayer(state.dataLayer)) {
+      return { visible: false, reason: "layer_deactivated" };
+    }
+    if (seq !== state.fetchSeq) return { visible: false, reason: "request_superseded" };
     const metricsSource = currentDatasetBackendDetail(packet);
     TimingMetrics.markRenderStart?.(metricsSource ? `${requestedLayerLabel} ${metricsSource}` : requestedLayerLabel);
-    const renderResult = renderSampledGridMap(packet.frame);
+    const renderResult = renderSampledGridMap(packet.frame, { requestContext });
     renderTable(renderResult.frame, state.datasets[state.datasetId].display_columns, { layer: requestedLayer, date: requestedDate });
     const serverCacheHit = Boolean(packet.timing?.cache_hit);
     if (cacheHit || serverCacheHit) {
@@ -433,6 +444,24 @@ async function reloadSampledGridRecords() {
     TimingMetrics.setCount("row-count", renderResult.rowCount);
     TimingMetrics.setMs("client-ms", timing.elapsed(), { source: metricsSource });
     TimingMetrics.updateSummary();
+    if (renderResult.deferred) {
+      RenderState.loading(requestedLayer, renderResult.detail || "等待陸地遮罩");
+      setStatus(`${requestedLayerLabel} 資料已就緒，等待陸地遮罩`);
+      const completion = await renderResult.completion;
+      const stale = seq !== state.fetchSeq
+        || state.dataLayer !== requestedLayer
+        || state.datasetId !== requestedDataset
+        || $("date")?.value !== requestedDate;
+      if (stale || completion?.status !== "committed") {
+        if (!stale && completion?.reason === "land_mask_failed") {
+          RenderState.error(requestedLayer, "陸地遮罩載入失敗");
+          setStatus(`${requestedLayerLabel} 陸地遮罩載入失敗`, true);
+        }
+        return { ...renderResult, visible: false, completionStatus: completion?.status || "stale" };
+      }
+      setStatus(`${requestedLayerLabel} 就緒，${requestedDate}，陸地遮罩完成`);
+      return { ...completion.result, visible: true };
+    }
     const sourceDetail = cacheHit
       ? "瀏覽器快取"
       : serverCacheHit
@@ -450,18 +479,14 @@ async function reloadSampledGridRecords() {
       `${Number(packet.row_count || 0).toLocaleString()} 筆，z${currentLodZoom()}，${resolutionDetail}，${sourceDetail}，${renderResult.detail}`
     );
     setStatus(`${requestedLayerLabel} 就緒，${requestedDate}，z${currentLodZoom()}，${resolutionDetail}，${sourceDetail}，${renderResult.detail}`);
-    if (Array.isArray(state.availableDates) && state.availableDates.length > 0) {
-      PlaybackRuntime.configure({
-        dates: typeof datesInSelectedRange === "function" ? datesInSelectedRange() : state.availableDates,
-        requestContext,
-        currentDate: requestedDate,
-      });
-    }
+    return { ...renderResult, visible: true };
   } catch (error) {
     const stale = seq !== state.fetchSeq
       || state.dataLayer !== requestedLayer
       || state.datasetId !== requestedDataset;
-    if (error?.name === "AbortError" || stale) return;
+    if (error?.name === "AbortError" || stale) {
+      return { visible: false, reason: stale ? "request_superseded" : "request_aborted" };
+    }
     RenderState.error(requestedLayer, error?.message || "查詢失敗");
     renderTable([], state.datasets[requestedDataset]?.display_columns || [], {
       layer: requestedLayer,

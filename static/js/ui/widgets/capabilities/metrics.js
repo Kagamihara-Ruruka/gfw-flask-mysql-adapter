@@ -2,6 +2,12 @@
 const { DashboardWidget } = window.WidgetCore;
 const METRICS_TELEMETRY_REFRESH_MS = 500;
 class MetricsWidget extends DashboardWidget {
+  renderExpanded() {
+    const pane = super.renderExpanded();
+    pane.classList.add("metrics-popover");
+    return pane;
+  }
+
   renderTemplate(container, { expanded = false, cinema = false } = {}) {
     this.releaseTelemetryContainer(container);
     container.classList.add("widget-template", "widget-template-metrics");

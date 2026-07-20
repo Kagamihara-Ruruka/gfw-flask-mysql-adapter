@@ -33,9 +33,28 @@ def _column_hints(name: str, data_type: str) -> list[str]:
         hints.append("time_candidate")
     if lowered in {"id", "mmsi", "grid_id"} or lowered.endswith("_id"):
         hints.append("identity_candidate")
-    if data_type.lower() in {"float", "double", "decimal", "int", "bigint", "smallint", "tinyint"}:
+    numeric_types = {
+        "float", "float4", "float8", "real", "double", "decimal", "numeric",
+        "int", "integer", "bigint", "smallint", "tinyint",
+    }
+    if data_type.lower() in numeric_types:
         hints.append("numeric_candidate")
+    if data_type.lower() in {"float", "float4", "float8", "real", "double", "decimal", "numeric"}:
+        hints.append("continuous_candidate")
     return hints
+
+
+def _value_semantics_candidate(name: str, data_type: str, hints: list[str]) -> dict[str, Any]:
+    normalized_type = str(data_type or "").strip().lower()
+    return {
+        "kind": "continuous" if "continuous_candidate" in hints else "unknown",
+        "provenance": "source_scout",
+        "evidence": {
+            "source_field": str(name or ""),
+            "data_type": normalized_type or "unknown",
+            "semantic_hints": list(hints),
+        },
+    }
 
 
 def inspect_mysql_route(
@@ -143,6 +162,7 @@ def inspect_mysql_route(
                 )
                 column_name = str(row["COLUMN_NAME"])
                 data_type = str(row.get("DATA_TYPE") or "")
+                semantic_hints = _column_hints(column_name, data_type)
                 table["columns"].append(
                     {
                         "name": column_name,
@@ -153,7 +173,12 @@ def inspect_mysql_route(
                         "key": str(row.get("COLUMN_KEY") or ""),
                         "default": json_ready(row.get("COLUMN_DEFAULT")),
                         "extra": str(row.get("EXTRA") or ""),
-                        "semantic_hints": _column_hints(column_name, data_type),
+                        "semantic_hints": semantic_hints,
+                        "value_semantics_candidate": _value_semantics_candidate(
+                            column_name,
+                            data_type,
+                            semantic_hints,
+                        ),
                     }
                 )
 
@@ -252,6 +277,7 @@ def _catalog_tables(catalog_body: Any) -> list[dict[str, Any]]:
             for ordinal, field_name in enumerate(field_names, start=1):
                 field_values = [row.get(field_name) for row in object_rows]
                 data_type = _json_data_type(field_values)
+                semantic_hints = _column_hints(field_name, data_type)
                 columns.append(
                     {
                         "name": field_name,
@@ -260,11 +286,17 @@ def _catalog_tables(catalog_body: Any) -> list[dict[str, Any]]:
                         "data_type": data_type,
                         "nullable": any(value is None for value in field_values),
                         "key": "",
-                        "semantic_hints": _column_hints(field_name, data_type),
+                        "semantic_hints": semantic_hints,
+                        "value_semantics_candidate": _value_semantics_candidate(
+                            field_name,
+                            data_type,
+                            semantic_hints,
+                        ),
                     }
                 )
         else:
             data_type = _json_data_type(rows)
+            semantic_hints = _column_hints("value", data_type)
             columns = [
                 {
                     "name": "value",
@@ -273,7 +305,12 @@ def _catalog_tables(catalog_body: Any) -> list[dict[str, Any]]:
                     "data_type": data_type,
                     "nullable": any(item is None for item in rows),
                     "key": "",
-                    "semantic_hints": _column_hints("value", data_type),
+                    "semantic_hints": semantic_hints,
+                    "value_semantics_candidate": _value_semantics_candidate(
+                        "value",
+                        data_type,
+                        semantic_hints,
+                    ),
                 }
             ]
         tables.append(

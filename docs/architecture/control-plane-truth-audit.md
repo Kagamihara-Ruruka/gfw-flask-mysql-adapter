@@ -407,6 +407,9 @@ Probe source schema
 | Source schema snapshot | Source Probe／`SchemaInspector` | 對齊 | Mapping 只消費，不反向過濾 |
 | Mapping artifact | `LayerMappingStore` | 對齊 | pipeline 使用 generated projection |
 | Mapping capability/provenance | Capability model | 對齊 | supported、editable、provenance 分離 |
+| Sampled-grid 插值能力 | Scout evidence → Mapping → Layer capability compiler | 對齊 | UI 只消費 resolved capability；偏好屬 Browser Profile，實際執行屬 Renderer |
+| EEZ 海陸有效域 | EEZ capability declaration → `EezDomainMaskService` → `SpatialLandMaskServiceCore` | 對齊 | Server 擁有版本化 domain tile；Browser owner 以 viewport epoch 合成 Mask，tile URL single-flight 與 bounded LRU 不屬於 Renderer |
+| Sampled-grid 連續場 | pure reconstruction kernel → `ContinuousFieldServiceCore` | 對齊 | derived cache identity 只含 Frame、插值 policy 與 Mask version/scope/revision；不含 alpha 或 zoom bucket |
 | Runtime datasets/layers | `RuntimeLayerRegistry` | 對齊 | `/api/datasets` 使用此 owner |
 | Active primary layer | `LayerActivationController` | 對齊 | XOR primary |
 | Selection grid | `VirtualGridRuntimeController` | 對齊目前 XOR 流程 | multiplier 已接線；LCM 保留未來 composition |
@@ -417,7 +420,8 @@ Probe source schema
 | Canonical frame cache | `DataFrameStore` | 對齊 | Widget/Renderer cache-first |
 | Playback lifecycle | `PlaybackEngine` | 對齊 | Clock domain 已分離 |
 | Replenishment lifecycle | `PlaybackPreheater` | 對齊 | policy owner 與 engine 分離 |
-| Renderer selection | `RendererRegistry` | 對齊 | hardware preference 來自 Browser Profile |
+| Renderer capability state | `RendererCapabilityStateCore` | 對齊 | 合併 server/browser probe、Browser Profile policy 與 WebGL context lost/restored；唯一寫入 `state.renderCapability` |
+| Renderer selection／active layer | `RendererRegistry`／`SampledGridLayerPoolCore` | 對齊 | Registry 只選 backend；Pool 擁有 active layer、inactive redraw suppression 與 context-loss fallback |
 | Device/visual preference | `BrowserProfileStoreCore` | 對齊 | localStorage failure 降級為 session |
 | Runtime lifecycle events | `LifecycleEventLogCore` | 對齊 | 未涵蓋 control-plane revision |
 | Overall health | `RouteStatusRegistry` + `RuntimeLayerRegistry` | 對齊 | Developer 與 Health 共用 snapshot |
@@ -454,6 +458,7 @@ flowchart LR
     Registry --> RouteStatus
     Probe --> RouteStatus
     Viewport["Viewport BBOX"] --> Intent
+    Intent --> PlaybackRuntime["PlaybackRuntime scope handoff"]
 ```
 
 ## 11. 狀態轉移
@@ -628,12 +633,14 @@ Codec 不得決定欄位，不得包含 `pipeline_iceberg`、GFW 或特定 metri
 | Architecture | 無反向依賴、雙軌 owner、隱性 fallback 或 source schema leak |
 | Regression | 現有單元、HTTP、架構與外部瀏覽器驗收全部通過 |
 
-## 16. 本輪未做事項
+## 16. T0 基線當時未做事項
 
-- 未修正任何上述 drift。
-- 未修改 UI、API、Mapping、Canonical Frame、Query、Playback 或 Renderer。
-- 未建立 Arrow Codec。
-- 未刪除 shim。
-- 未把本文件視為 Runtime 穩定版通過證明。
+以下只描述 2026-07-18 建立 T0 唯讀基線時的狀態，不是目前結論：
 
-本文件的用途是提供可比較、可回退、可 `git bisect` 的架構真相基線，後續每一項修復都應對應獨立測試與 checkpoint。
+- T0 尚未修正上述 drift。
+- T0 沒有修改 UI、API、Mapping、Canonical Frame、Query、Playback 或 Renderer。
+- T0 沒有建立 Arrow Codec。
+- T0 尚未刪除當時辨識出的 shim。
+- T0 本身不是 Runtime checkpoint 的通過證明。
+
+後續 T1 至 T5 的收斂結果已記錄於第 14 節與各 CPD 的「收斂結果」。本文件同時保存歷史基線與修復結果，閱讀現況時應以控制面總表及已完成 checkpoint 為準；Arrow Codec 仍不在本文件的實作範圍。

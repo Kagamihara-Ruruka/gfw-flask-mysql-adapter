@@ -71,7 +71,26 @@ function fixture() {
       calls.push(["preheater-stop", reason]);
     },
   };
-  const runtime = new PlaybackRuntimeController({ clock, engine, preheater, scheduler });
+  let configuredScope = "";
+  const frameIdentity = {
+    normalizeRequest(request = {}) {
+      return { ...request };
+    },
+    scopeKey(request = {}) {
+      return String(request.bbox || "");
+    },
+  };
+  const originalConfigure = engine.configure;
+  engine.configure = (value) => {
+    configuredScope = frameIdentity.scopeKey(value?.requestContext);
+    originalConfigure(value);
+  };
+  engine.snapshot = () => ({
+    status,
+    runId: status === "IDLE" ? "" : "run-1",
+    scopeKey: configuredScope,
+  });
+  const runtime = new PlaybackRuntimeController({ clock, engine, preheater, scheduler, frameIdentity });
   return {
     calls,
     clock,
@@ -112,6 +131,33 @@ test("PlaybackRuntimeController owns timeline and timer until terminal playback"
   assert.equal(target.runtime.snapshot().hasTimer, false);
   assert.equal(target.runtime.snapshot().timeline, null);
   assert.deepEqual(target.calls.at(-1), ["engine-stop", "ended"]);
+});
+
+test("late sequential callbacks reanchor cadence instead of replaying wall-clock debt", async () => {
+  const target = fixture();
+  let currentIndex = 0;
+  await target.runtime.start({
+    configure: { dates: ["2020-01-01", "2020-01-02", "2020-01-03"] },
+    engineOptions: {},
+    rate: 1,
+    intervalMs: 100,
+    stepMode: "sequential",
+    currentIndexProvider: () => currentIndex,
+    datesLengthProvider: () => 3,
+    onFrameDue: async () => {
+      currentIndex += 1;
+      return { advanced: true };
+    },
+  });
+
+  const firstTask = [...target.tasks.values()][0];
+  target.advance(5_000);
+  await firstTask.callback();
+
+  const nextTask = [...target.tasks.values()].at(-1);
+  assert.equal(currentIndex, 1);
+  assert.equal(nextTask.delayMs, 100);
+  assert.equal(target.runtime.snapshot().timeline.nextFrameNumber, 2);
 });
 
 test("scope shutdown stops the producer before ending the playback run", async () => {
@@ -165,6 +211,51 @@ test("rate changes rebuild the owned timeline without exposing state mirrors", a
     interval_ms: 50,
     rate: 2,
   }]);
+});
+
+test("scope replacement invalidates an old callback and reanchors one owned timeline", async () => {
+  const target = fixture();
+  let currentIndex = 0;
+  let releaseOldFrame;
+  const oldFrame = new Promise((resolve) => { releaseOldFrame = resolve; });
+  await target.runtime.start({
+    configure: {
+      dates: ["2020-01-01", "2020-01-02", "2020-01-03"],
+      requestContext: { bbox: "100,10,110,20" },
+      currentDate: "2020-01-01",
+    },
+    engineOptions: {},
+    rate: 1,
+    intervalMs: 100,
+    stepMode: "sequential",
+    currentIndexProvider: () => currentIndex,
+    datesLengthProvider: () => 3,
+    onFrameDue: async () => {
+      await oldFrame;
+      currentIndex += 1;
+      return { advanced: true };
+    },
+  });
+
+  const oldGeneration = target.runtime.snapshot().generation;
+  const [oldTaskId, oldTask] = [...target.tasks.entries()][0];
+  target.tasks.delete(oldTaskId);
+  const oldCallback = oldTask.callback();
+  target.runtime.configure({
+    dates: ["2020-01-01", "2020-01-02", "2020-01-03"],
+    requestContext: { bbox: "120,10,130,20" },
+    currentDate: "2020-01-01",
+  });
+
+  const replaced = target.runtime.snapshot();
+  assert.equal(replaced.generation, oldGeneration + 1);
+  assert.equal(replaced.hasTimer, true);
+  assert.equal(target.tasks.size, 1);
+  assert.equal(replaced.timeline.baseDateIndex, 0);
+  releaseOldFrame();
+  await oldCallback;
+  assert.equal(target.tasks.size, 1);
+  assert.equal(target.runtime.snapshot().generation, oldGeneration + 1);
 });
 
 test("visibility suspension preserves playback intent and reanchors the timeline on resume", async () => {

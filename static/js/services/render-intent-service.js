@@ -27,7 +27,9 @@ function createRenderIntentService({
 
   function currentViewport() {
     const rawBbox = bboxProvider();
-    const boundedBbox = viewportController?.queryBbox(rawBbox, targetState.datasetId) ?? rawBbox;
+    const boundedBbox = viewportController
+      ? viewportController.queryBbox(rawBbox, targetState.datasetId)
+      : rawBbox;
     const bbox = boundedBbox ? frameIdentity.bboxSignature(boundedBbox) : "";
     const viewport = {
       bbox,

@@ -163,7 +163,11 @@ function contextFor(fetchJson) {
     SampledGridContract: { recordResolvedResolution() {} },
     document: { getElementById: () => null },
   };
-  context.window = { dispatchEvent() {} };
+  context.window = {
+    addEventListener() {},
+    removeEventListener() {},
+    dispatchEvent() {},
+  };
   vm.createContext(context);
   for (const file of [
     "static/js/core/clock-domain.js",
@@ -186,6 +190,7 @@ function contextFor(fetchJson) {
     "static/js/playback/playback-scheduler.js",
     "static/js/playback/playback-runtime-controller.js",
     "static/js/services/runtime-performance-metrics.js",
+    "static/js/services/renderer-capability-state.js",
     "static/js/runtime/runtime-composition-root.js",
   ]) {
     vm.runInContext(fs.readFileSync(path.join(root, file), "utf8"), context);
@@ -1148,7 +1153,7 @@ test("preheater rejects late callbacks when a previous signature becomes active 
   preheater.stop("test_complete");
 });
 
-test("playback adopts an effective query resolution as a new physical scope", () => {
+test("playback records actual resolution without changing its query policy scope", () => {
   const context = contextFor(async () => ({ rows: [], row_count: 0 }));
   const Engine = api(context, "PlaybackEngineCore");
   const identity = api(context, "FrameIdentity");
@@ -1184,18 +1189,10 @@ test("playback adopts an effective query resolution as a new physical scope", ()
     actual_resolution_km: 16,
   });
 
-  assert.equal(adopted.length, 1);
-  assert.equal(adopted[0].request.resolution, 4);
-  assert.equal(adopted[0].request.queryResolution, 16);
-  assert.notEqual(engine.snapshot().scopeKey, identity.scopeKey(requested));
-  assert.equal(engine.snapshot().scopeKey, identity.scopeKey({ ...requested, queryResolution: 16 }));
+  assert.equal(adopted.length, 0);
+  assert.equal(engine.snapshot().scopeKey, identity.scopeKey(requested));
   assert.equal(log.query({ type: "PLAYBACK_SCOPE_CHANGED" }).length, 0);
-  const migration = log.query({ type: "PLAYBACK_QUERY_RESOLUTION_ADOPTED" }).at(-1);
-  assert.equal(migration?.requested_resolution_km, 4);
-  assert.equal(migration?.effective_query_resolution_km, 16);
-  assert.equal(migration?.previous_scope, identity.scopeKey(requested));
-  assert.equal(migration?.scope_id, identity.scopeKey({ ...requested, queryResolution: 16 }));
-  assert.notEqual(migration?.previous_scope, migration?.scope_id);
+  assert.equal(log.query({ type: "PLAYBACK_QUERY_RESOLUTION_ADOPTED" }).length, 0);
   engine.dispose();
 });
 

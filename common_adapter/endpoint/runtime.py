@@ -6,6 +6,7 @@ from typing import Any
 
 from common_adapter.developer.config_service import load_layer_mappings
 from common_adapter.endpoint.client import EndpointHttpClient, EndpointRequestError
+from common_adapter.layers.capabilities import land_mask_consumer_capability, spatial_interpolation_capability
 from common_adapter.query.grid_registry import GridRegistry
 
 
@@ -240,7 +241,10 @@ def _dataset_from_catalog_item(
         "source_parameters": source_parameters,
         "resolution_policy": deepcopy(_mapping(sampled_grid.get("resolution_policy"))),
         "snapshot_cache": deepcopy(_mapping(sampled_grid.get("snapshot_cache"))),
+        "status_semantics": deepcopy(_mapping(sampled_grid.get("status_semantics"))),
         "value_domain": value_domain,
+        "value_semantics": deepcopy(sampled_grid.get("value_semantics")),
+        "spatial_domain": deepcopy(_mapping(sampled_grid.get("spatial_domain"))),
         "visualization": deepcopy(_mapping(sampled_grid.get("visualization"))),
         "zero_is_data": bool(sampled_grid.get("zero_is_data", True)),
     }
@@ -374,8 +378,11 @@ def endpoint_layer_contracts(datasets: dict[str, dict[str, Any]]) -> list[dict[s
                         "alignment": descriptor.get("alignment") or {},
                         "geometry": descriptor.get("geometry") or {},
                         "value_domain": descriptor.get("value_domain") or {},
+                        "value_semantics": descriptor.get("value_semantics") or {},
+                        "spatial_domain": descriptor.get("spatial_domain") or {},
                         "snapshot_cache": descriptor.get("snapshot_cache") or {},
                         "visualization": descriptor.get("visualization") or {},
+                        "zero_is_data": bool(descriptor.get("zero_is_data", True)),
                     },
                 },
                 "capabilities": {
@@ -385,6 +392,8 @@ def endpoint_layer_contracts(datasets: dict[str, dict[str, Any]]) -> list[dict[s
                     "sampled_grid": True,
                     "viewport_lod": True,
                     "time_series": bool(_mapping(descriptor.get("query")).get("time_series")),
+                    "spatial_interpolation": spatial_interpolation_capability(descriptor),
+                    "land_mask_consumer": land_mask_consumer_capability(descriptor),
                 },
             }
         )

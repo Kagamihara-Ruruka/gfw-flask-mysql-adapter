@@ -80,6 +80,22 @@ const LayerRuntimeContractRegistry = (() => {
     return enabled;
   }
 
+  function contractForLayer(targetLayerId) {
+    const id = String(targetLayerId || "").trim().toLowerCase();
+    return (state.layerContracts || []).find((contract) => layerId(contract) === id) || null;
+  }
+
+  function capability(targetLayerId, name) {
+    return contractForLayer(targetLayerId)?.capabilities?.[name] ?? null;
+  }
+
+  function spatialInterpolation(targetLayerId) {
+    const value = capability(targetLayerId, "spatial_interpolation");
+    return value && typeof value === "object"
+      ? value
+      : { status: "unknown", methods: ["nearest"], default_method: "nearest" };
+  }
+
   function sampledGridLayers({ importedOnly = true, enabledOnly = false } = {}) {
     const enabled = enabledOnly ? enabledLayerIds() : null;
     return (state.layerContracts || [])
@@ -101,7 +117,14 @@ const LayerRuntimeContractRegistry = (() => {
       .filter(Boolean);
   }
 
-  return Object.freeze({ datasetIdForContract, enabledLayerIds, sampledGridLayers });
+  return Object.freeze({
+    datasetIdForContract,
+    enabledLayerIds,
+    contractForLayer,
+    capability,
+    spatialInterpolation,
+    sampledGridLayers,
+  });
 })();
 
 class ExactCommonGridResolver {

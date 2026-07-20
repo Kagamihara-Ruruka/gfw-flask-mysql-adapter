@@ -166,6 +166,8 @@ function createContext({ fetchJson, statePatch = {} } = {}) {
     document: { getElementById: () => null },
   };
   context.window = {
+    addEventListener() {},
+    removeEventListener() {},
     dispatchEvent() {},
   };
   vm.createContext(context);
@@ -191,6 +193,7 @@ function createContext({ fetchJson, statePatch = {} } = {}) {
     "static/js/playback/playback-scheduler.js",
     "static/js/playback/playback-runtime-controller.js",
     "static/js/services/runtime-performance-metrics.js",
+    "static/js/services/renderer-capability-state.js",
     "static/js/runtime/runtime-composition-root.js",
   ]) {
     vm.runInContext(fs.readFileSync(path.join(root, file), "utf8"), context);

@@ -1,7 +1,7 @@
 class PlaybackRuntimeController {
-  constructor({ engine, preheater, clock, scheduler } = {}) {
-    if (!engine || !preheater || !clock || !scheduler) {
-      throw new TypeError("PlaybackRuntimeController requires engine, preheater, clock and scheduler");
+  constructor({ engine, preheater, clock, scheduler, frameIdentity } = {}) {
+    if (!engine || !preheater || !clock || !scheduler || !frameIdentity) {
+      throw new TypeError("PlaybackRuntimeController requires engine, preheater, clock, scheduler and frame identity");
     }
     if (typeof clock.now !== "function" || typeof clock.schedule !== "function" || typeof clock.cancel !== "function") {
       throw new TypeError("PlaybackRuntimeController requires a playback clock");
@@ -10,10 +10,12 @@ class PlaybackRuntimeController {
     this.preheater = preheater;
     this.clock = clock;
     this.scheduler = scheduler;
+    this.frameIdentity = frameIdentity;
     this.generation = 0;
     this.timeline = null;
     this.timer = null;
     this.session = null;
+    this.pendingConfiguration = null;
     this.suspensionReasons = new Set();
   }
 
@@ -28,7 +30,32 @@ class PlaybackRuntimeController {
   }
 
   configure(options) {
-    return this.engine.configure(options);
+    const current = this.lifecycleSnapshot();
+    const normalizedOptions = options || {};
+    const dates = Array.isArray(normalizedOptions.dates) ? normalizedOptions.dates : [];
+    const nextContext = this.frameIdentity.normalizeRequest({
+      ...(normalizedOptions.requestContext || {}),
+      date: normalizedOptions.currentDate || dates[0] || "",
+    });
+    const nextScopeKey = this.frameIdentity.scopeKey(nextContext);
+    const scopeChanged = Boolean(current.scopeKey && current.scopeKey !== nextScopeKey);
+    if (scopeChanged && current.status === "PREPARING" && this.session) {
+      this.pendingConfiguration = normalizedOptions;
+      return current;
+    }
+
+    const configured = this.engine.configure(normalizedOptions);
+    if (scopeChanged && this.session) {
+      const generation = this.nextGeneration();
+      this.clock.cancel(this.timer);
+      this.timer = null;
+      this.timeline = null;
+      if (this.isActive() && !this.suspensionReasons.size) {
+        this.startTimeline(generation, { firstDelayMs: this.session.intervalMs });
+        this.schedule(generation);
+      }
+    }
+    return configured;
   }
 
   inspectTarget(index) {
@@ -165,7 +192,10 @@ class PlaybackRuntimeController {
           onTerminal?.({ reason: "stopped", result });
           return;
         }
-        this.scheduler.markFrameShown(timeline, { frameNumber });
+        this.scheduler.markFrameShown(timeline, {
+          frameNumber,
+          shownAtMs: this.clock.now(),
+        });
         if (this.isActive() && this.isGenerationActive(generation)) this.schedule(generation);
       } catch (error) {
         const onError = this.session?.onError;
@@ -193,6 +223,7 @@ class PlaybackRuntimeController {
     this.clock.cancel(this.timer);
     this.timer = null;
     this.timeline = null;
+    this.pendingConfiguration = null;
     this.suspensionReasons.clear();
     this.session = {
       bufferPollMs: Math.max(1, Number(bufferPollMs || 180)),
@@ -215,6 +246,12 @@ class PlaybackRuntimeController {
     if (!started || !this.isGenerationActive(generation) || !this.isActive()) {
       if (this.isGenerationActive(generation)) this.stop({ reason: "prepare_cancelled" });
       return false;
+    }
+    if (this.pendingConfiguration) {
+      const pendingConfiguration = this.pendingConfiguration;
+      this.pendingConfiguration = null;
+      this.configure(pendingConfiguration);
+      return this.isActive();
     }
     this.startTimeline(generation);
     this.schedule(generation);
@@ -271,6 +308,7 @@ class PlaybackRuntimeController {
     this.timer = null;
     this.timeline = null;
     this.session = null;
+    this.pendingConfiguration = null;
     this.suspensionReasons.clear();
     if (clearPreheater) this.preheater.stop?.(reason);
     if (wasActive || this.lifecycleSnapshot()?.runId) this.engine.stop(reason);
@@ -282,6 +320,7 @@ class PlaybackRuntimeController {
       active: this.isActive(),
       generation: this.generation,
       hasTimer: Boolean(this.timer),
+      pendingScopeChange: Boolean(this.pendingConfiguration),
       suspended: this.suspensionReasons.size > 0,
       suspensionReasons: Object.freeze([...this.suspensionReasons]),
       timeline: this.timeline ? Object.freeze({ ...this.timeline }) : null,

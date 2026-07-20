@@ -349,3 +349,14 @@
   font-family: var(--mono);
   font-style: normal;
 }
+
+.widget-line-indicator-settings p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.widget-line-indicator-settings input[type="checkbox"] {
+  accent-color: #fbbf24;
+}

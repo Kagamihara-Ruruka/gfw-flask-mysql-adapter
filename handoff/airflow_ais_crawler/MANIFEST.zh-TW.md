@@ -8,7 +8,7 @@
 - `common_adapter/ais/stream.py`：AISStream websocket 連線、subscription message、AIS message normalize。
 - `common_adapter/ais/live.py`：AIS SQL read model 與 MySQL connection helper。
 - `common_adapter/db/connect.py`：config loader、MySQL connection、identifier validation。
-- `database/registry.py`：backend registry，讓 config loader 能辨識 SQL backend。
+- `common_adapter/query/registry.py`：database／endpoint 共用 query-adapter registry，讓 config loader 能解析 SQL backend。
 - `core.py`：CLI 入口，使用 `ingest-ais` command 啟動 crawler。
 
 ## 必要設定

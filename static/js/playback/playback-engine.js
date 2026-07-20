@@ -106,52 +106,7 @@ class PlaybackEngineCore {
     if (event?.type !== "CACHE_READY" || !this.requestContext) return;
     const scopeKey = this.frameIdentity.scopeKey(this.requestContext);
     if (event.scope_key && event.scope_key !== scopeKey) return;
-    const requestedResolution = Number(event.requested_resolution_km);
-    const effectiveQueryResolution = Number(event.effective_query_resolution_km);
-    const actualResolution = Number(event.actual_resolution_km);
-    const activeRequestedResolution = Number(this.requestContext.resolution);
-    const activeQueryResolution = Number(this.frameIdentity.queryResolution(this.requestContext));
-    const resolvedQueryResolution = Number.isFinite(effectiveQueryResolution) && effectiveQueryResolution > 0
-      ? effectiveQueryResolution
-      : actualResolution;
-    if (Number.isFinite(resolvedQueryResolution)
-      && resolvedQueryResolution > 0
-      && Number.isFinite(requestedResolution)
-      && Number.isFinite(activeRequestedResolution)
-      && requestedResolution === activeRequestedResolution
-      && resolvedQueryResolution !== activeQueryResolution) {
-      this.adoptResolvedQueryResolution(resolvedQueryResolution, { reason: "cache_ready_fallback" });
-    }
     this.refreshActiveReadiness();
-  }
-
-  adoptResolvedQueryResolution(resolution, { reason = "source_resolution_resolved" } = {}) {
-    const effectiveQueryResolution = Number(resolution);
-    if (!this.requestContext || !Number.isFinite(effectiveQueryResolution) || effectiveQueryResolution <= 0) return false;
-    const requestedResolution = Number(this.requestContext.resolution);
-    const previousQueryResolution = Number(this.frameIdentity.queryResolution(this.requestContext));
-    if (Number.isFinite(previousQueryResolution) && previousQueryResolution === effectiveQueryResolution) return false;
-    const previousScope = this.frameIdentity.scopeKey(this.requestContext);
-    this.requestContext = this.frameIdentity.normalizeRequest({
-      ...this.requestContext,
-      date: this.dates[this.currentIndex] || this.requestContext.date || "",
-      queryResolution: effectiveQueryResolution,
-    });
-    this.preheater.adoptRequestContext?.(this.requestContext, { reason });
-    this.eventLog.record("PLAYBACK_QUERY_RESOLUTION_ADOPTED", {
-      run_id: this.runId,
-      previous_scope: previousScope,
-      scope_id: this.frameIdentity.scopeKey(this.requestContext),
-      dataset: this.requestContext.datasetId,
-      date: this.dates[this.currentIndex] || "",
-      requested_resolution_km: Number.isFinite(requestedResolution) ? requestedResolution : null,
-      previous_effective_query_resolution_km: Number.isFinite(previousQueryResolution)
-        ? previousQueryResolution
-        : null,
-      effective_query_resolution_km: effectiveQueryResolution,
-      reason,
-    });
-    return true;
   }
 
   refreshActiveReadiness() {

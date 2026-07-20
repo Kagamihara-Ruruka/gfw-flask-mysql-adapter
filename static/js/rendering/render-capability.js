@@ -16,7 +16,7 @@ function probeBrowserWebgl() {
       vendor = gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL) || "";
       renderer = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) || "";
     }
-    return {
+    const capability = {
       available: true,
       context: contextName,
       vendor,
@@ -24,6 +24,8 @@ function probeBrowserWebgl() {
       maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE),
       maxViewportDims: Array.from(gl.getParameter(gl.MAX_VIEWPORT_DIMS) || []),
     };
+    gl.getExtension("WEBGL_lose_context")?.loseContext?.();
+    return capability;
   }
   return { available: false, context: null, vendor: "", renderer: "" };
 }
@@ -52,11 +54,14 @@ async function loadRenderCapability() {
     webgl: probeBrowserWebgl(),
     webgpu: { available: Boolean(navigator.gpu) },
   };
-  state.renderCapability = {
+  const capability = {
     server,
     policy: server.policy || {},
     browser,
     loadedMonotonicMs: ClockDomain.monotonic.now(),
   };
-  return state.renderCapability;
+  if (!globalThis.RendererCapabilityState?.install) {
+    throw new Error("RendererCapabilityState is not composed");
+  }
+  return globalThis.RendererCapabilityState.install(capability);
 }

@@ -1,68 +1,68 @@
-﻿# Backend / System Config Contract Handoff
+# Backend / System Source Config Contract Handoff
 
 ## 目的
 
-這份交接給後端/系統負責人。目標是讓他知道：
+這份交接給後端／系統負責人，說明目前可執行的資料源註冊合約，以及提案文件與 Runtime 真相的邊界。
 
-1. 小可愛目前如何用 JSON 選資料庫、資料集與欄位。
-2. MySQL 現在怎麼跑。
-3. Hive/Spark 怎麼切，但為什麼目前還不能啟用。
-4. 他要回傳什麼樣的欄位/skin 設定給我們。
-5. 能力矩陣如何防止未完成能力被誤開。
+核心原則：後端提供可連線、可探測的 source；本系統以 Probe／Scout 讀取資料事實，再由 Mapping 翻譯成內部 Canonical 合約。Runtime 不直接理解來源內部 schema，也不把來源後設描述當成不可質疑的資料真相。
 
-## 權威檔案
+## 權威與提案
 
-目前 runtime config 權威：
+目前 Runtime 權威：
 
-- `config/schemas/adapter.schema.json`
-- `config/examples/runtime/adapter.example.json`
-- `common_adapter/db/connect.py`
-- `database/registry.py`
-- `common_adapter/ais/live.py`
+- `config/schemas/adapter.schema.json`：只驗證服務、查詢政策與渲染政策。
+- `config/examples/runtime/adapter.example.json`：Runtime JSON 範例，不包含 source connection 或 dataset 欄位。
+- `config/sources/<role>/*.json`：正式外部資料源設定。
+- `config/state/router_manifest.local.json`：`active_configs` 與 `imported_layers` 的持久化真相。
+- `config/artifacts/layer_mappings.local.json`：Probe／Scout 結果經 Mapping Controller 確認後形成的內部合約。
+- `common_adapter/query/registry.py`：database 與 endpoint 共用的 query-adapter registry。
+- `common_adapter/db/connect.py`：SQL source config loading 與 backend dispatch。
 
-提案/交接用能力矩陣：
+以下只是交接協商提案，不會被 Runtime 直接載入：
 
 - `handoff/backend_config_contract/backend_capability_matrix.example.json`
 - `handoff/backend_config_contract/backend_sink_config.example.json`
 
-注意：`backend_capability_matrix.example.json` 目前不是 runtime config。它是給後端回填欄位與 skin 設定的協定草案。
+若後端回填 sink 或 capability proposal，必須先轉成正式 source config，經 Probe、Mapping、Layer Import 驗證後才會進 Dashboard。不得把 proposal 直接複製進 runtime JSON。
 
-`backend_sink_config.example.json` 是後端/系統 owner 要填的 sink 契約模板。它回答「資料最後在哪裡、用哪個 backend、哪張 table、哪些欄位」。正式值可以複製成 `backend_sink.local.json` 或由部署系統掛載，但不要把密碼或真 token commit 進 repo。
+## 唯一註冊鏈
 
-## Stable sink rule
+```text
+Runtime policy JSON
+  + Router Manifest.active_configs
+  -> Source Config
+  -> Probe / Scout
+  -> Mapping Controller artifact
+  -> Runtime Layer Registry
+  -> imported_layers
+  -> Dashboard
+```
 
-後端/系統填好 sink JSON 後，我們把它視為穩定接縫：
+各層責任：
 
-- 小可愛可以改 UI、LOD、快取、WebGL、資料集選單與皮膚設定。
-- AIS crawler 可以改部署方式、重連策略、批次寫入與健康檢查。
-- 只要 sink config 的既有欄位語意不變，以上改動都不應影響後端/系統載入資料。
-- 如果後端/系統必須改 table 或欄位語意，請新增 `sink_ref` 或 `dataset_id`，不要原地覆寫舊契約。
-- 這個規則讓「資料供給」與「前端消費」分離，避免小可愛變成上游資料流程的一部分。
+| 真相 | Owner |
+|---|---|
+| Server port、全域 query policy、rendering policy | Runtime JSON |
+| Host、port、driver、auth、source capability | Source config |
+| 實際 tables、fields、型別、資料格網與 coverage | Probe／Scout observation |
+| Query fields、Canonical roles、extension columns | Mapping Controller |
+| Source 是否啟用、Layer 是否導入 | Router Manifest |
+| Query adapter class | `common_adapter/query/registry.py` |
 
-## 回填協議
+## SQL source config
 
-我們先提供 JSON shape，後端/系統可以依照自己的實際環境大致改裡面的值後回傳。
-
-如果對方回傳的 shape 與本文件不完全一致，不視為錯誤；那代表我們目前格式還不夠清楚。下一步是根據回傳值判讀對方實際協議，整理出新的 sink config 或 capability matrix patch，再固化成下一版契約。
-
-## 現有 runtime JSON 分層
-
-### `connections`
-
-描述資料庫連線。
+MySQL、Hive 或 Spark SQL 類型的 source 放在 `config/sources/database/`。範例：
 
 ```json
 {
+  "schema": "rrkal.adapter.database.v1",
+  "role": "database",
+  "name": "class_hive",
+  "sql_backend": {
+    "kind": "hive",
+    "driver": "placeholder"
+  },
   "connections": {
-    "local_mysql": {
-      "kind": "mysql",
-      "driver": "pymysql",
-      "host": "127.0.0.1",
-      "port": 3307,
-      "user": "root",
-      "password": "env:MYSQL_PASSWORD",
-      "database": "common_fishery"
-    },
     "class_hive": {
       "kind": "hive",
       "driver": "placeholder",
@@ -76,222 +76,101 @@
 }
 ```
 
-### `datasets`
+Source config 只宣告如何抵達來源。實際 table 與欄位由 Schema Inspector 探測；使用者確認的 time、lat、lon、id、value 與其他欄位角色保存於 Mapping artifact，不再複製到 runtime JSON。
 
-描述某個資料集要用哪個 backend、哪張表、哪些欄位。
+## HTTP serving source config
+
+已提供 catalog／query wire contract 的服務可使用 HTTP endpoint adapter。Pipeline Iceberg 範例位於 `config/examples/sources/database/pipeline-iceberg.example.json`：
 
 ```json
 {
-  "datasets": {
-    "gfw_full": {
-      "label": "GFW January 2024 grid",
-      "backend": "mysql",
-      "connection_ref": "local_mysql",
-      "table": "gold_grid",
-      "time_column": "obs_date",
-      "lat_column": "lat",
-      "lon_column": "lon",
-      "id_column": "grid_id",
-      "display_columns": ["obs_date", "grid_id", "lat", "lon", "fish_sum"],
-      "metric_columns": ["fish_sum"],
-      "category_columns": ["dominant_flag", "dominant_gear"]
-    }
+  "schema": "rrkal.source.database.v1",
+  "role": "database",
+  "name": "pipeline_iceberg",
+  "backend": { "kind": "iceberg" },
+  "adapter": { "kind": "http_endpoint" },
+  "query_policy": {
+    "max_in_flight": 2,
+    "max_request_in_flight": 3
+  },
+  "endpoint": {
+    "scheme": "http",
+    "host": "<host-ip>",
+    "port": 30801,
+    "base_path": "/api/v1",
+    "catalog_paths": ["catalog"],
+    "health_paths": ["/healthz"],
+    "timeout_seconds": 3
   }
 }
 ```
 
-### `live.ais`
+`backend.kind` 描述資料語意，`adapter.kind` 描述傳輸方式。HTTP serving 的 Pipeline Iceberg 已可使用；這不代表 `SparkReadBackend` 或直接 Hive/Spark SQL driver 已完成。
 
-描述小可愛如何讀 AIS SQL read model。
+## Query adapter registry
 
-```json
-{
-  "live": {
-    "ais": {
-      "enabled": true,
-      "provider": "mysql",
-      "connection_ref": "local_mysql",
-      "database": "BDDE38No1",
-      "table": "ais_positions",
-      "time_column": "event_time",
-      "lat_column": "lat",
-      "lon_column": "lon",
-      "mmsi_column": "mmsi",
-      "speed_column": "sog",
-      "course_column": "cog",
-      "heading_column": "heading",
-      "name_column": "vessel_name",
-      "source_column": "source",
-      "include_sources": ["aisstream"],
-      "max_age_minutes": 1440,
-      "limit": "max"
-    }
-  }
-}
-```
-
-## MySQL 到 Hive/Spark 的切換方式
-
-現有程式已經有 backend registry：
+目前共用註冊介面是：
 
 ```python
-@database_backend("mysql")
+@query_adapter("mysql")
 class MySqlReadBackend:
     ...
 
-@database_backend("hive")
+@query_adapter("hive")
 class HiveReadBackend:
     ...
 
-@database_backend("spark")
+@query_adapter("spark")
 class SparkReadBackend:
     ...
 ```
 
-MySQL 是已實作。Hive 與 Spark 是明確 unsupported stub。Spark 在這裡代表未來可能由 Spark SQL / Iceberg read model 接入的邊界，不代表目前已經完成查詢。
+MySQL 已實作。Hive 與 Spark 是 explicit unsupported stub；設定檔存在只代表宣告位置存在，不代表可以啟用。啟用前至少需要 driver、schema probe、date／BBOX records query 與錯誤語意測試。
 
-若要切到 Hive 或 Spark/Iceberg，後端/系統需要提供：
+## 啟用與導入
 
-1. Hive/Trino 或 Spark SQL/Iceberg driver 選型。
-2. connection JSON。
-3. dataset table/read-model 欄位。
-4. `schema_packet()` 查 schema 的實作。
-5. `records_packet()` 用 date/bbox/limit/offset 查 viewport 的實作。
+1. 將 source JSON 放入與 `role` 相同的 `config/sources/<role>/`。
+2. 在開發者控制頁勾選啟用，讓該路徑進入 `router_manifest.local.json.active_configs`。
+3. Probe／Scout 顯示來源實際提供的 tables、fields、coverage 與解析度。
+4. Mapping Controller 將選定欄位轉成 Canonical roles 或 extension columns。
+5. 在資料圖層導入區勾選 Layer，使其進入 `imported_layers`。
+6. Runtime Layer Registry materialize 成 `/api/datasets` 可見圖層。
 
-Runtime config 切換語意如下：
+只修改 source JSON 不等於啟用；只啟用 source 也不等於已導入圖層。
 
-```json
-{
-  "datasets": {
-    "gfw_full": {
-      "backend": "hive",
-      "connection_ref": "class_hive",
-      "table": "gold_grid",
-      "time_column": "obs_date",
-      "lat_column": "lat",
-      "lon_column": "lon",
-      "id_column": "grid_id"
-    }
-  }
-}
-```
+## Stable sink proposal
 
-但在 `HiveReadBackend` 或 `SparkReadBackend` 實作完成前，能力矩陣必須維持：
+`backend_sink_config.example.json` 可以用來協商 read-model table 與欄位語意，但目前不是 Runtime schema。接受提案後：
 
-```json
-{
-  "database_backend": {
-    "hive": {
-      "declared": true,
-      "implemented": false,
-      "enabled": false
-    },
-    "spark": {
-      "declared": true,
-      "implemented": false,
-      "enabled": false
-    }
-  }
-}
-```
+- connection 轉成 source config；
+- table 與欄位由 Probe 再驗證；
+- 欄位角色轉成 Mapping；
+- 啟用與導入仍由 Router Manifest 管理。
 
-這就是能力矩陣的用途：設定可以先存在，但未完成能力不能啟用。
+既有 sink 欄位語意若必須改變，應新增 `sink_ref`、table 或 dataset identity，不要原地改寫舊契約。密碼與 token 只放環境變數、ignored local config、K8 Secret 或 Airflow Variable。
 
-### 用能力矩陣切 Hive/Spark 的實際步驟
+## Skin / display proposal
 
-1. 後端/系統先在 `backend_sink_config.example.json` 的副本中填好 Hive 或 Spark sink，例如 `hive_class_read_model` 或 `spark_iceberg_read_model`。
-2. 後端/系統回傳 dataset 欄位 patch，確認 `time_column`、`lat_column`、`lon_column`、`id_column` 與 read-model table。
-3. `backend_capability_matrix.example.json` 中對應 backend 的 `implemented` 仍維持 `false`，直到 read backend 真正實作並通過測試。
-4. Driver、`schema_packet()`、`records_packet()`、date/bbox/limit 查詢都通過後，才能把 `implemented` 改為 `true`。
-5. 最後一關才是把 `enabled` 改為 `true`，並把 dataset 的 `sink_ref` 或 `connection_ref` 指向該 backend。
+Skin 是顯示語意，不是 source query schema。目前 `backend_capability_matrix.example.json` 內的 skin/display 仍為 disabled proposal，不會自動進 Runtime。正式接入前必須另有 schema、Mapping／ViewModel owner 與 UI 驗證，不能因 proposal 有值就宣稱已啟用。
 
-換句話說：改 JSON 只是宣告 sink，不等於啟用 Hive、Spark 或 Iceberg。是否啟用由能力矩陣決定。
+## 驗收
 
-## 後端需要回傳的原始欄位
+後端交付至少應驗證：
 
-後端/系統如果要修正欄位，請回傳這種 shape：
-
-```json
-{
-  "schema": "rrkal.backend.dataset_contract_patch.v1",
-  "dataset_id": "gfw_full",
-  "connection_ref": "class_hive",
-  "backend": "hive",
-  "table": "gold_grid",
-  "time_column": "obs_date",
-  "lat_column": "lat",
-  "lon_column": "lon",
-  "id_column": "grid_id",
-  "display_columns": [],
-  "metric_columns": [],
-  "category_columns": [],
-  "notes": []
-}
-```
-
-這份 patch 回來後，我們再決定是否合進 `config/runtime/adapter.local.json` 或新的 schema。
-
-若欄位 patch 會改變既有 sink 語意，請不要覆寫舊 `dataset_id`。請改用新的 `dataset_id`，例如 `gfw_full_hive_v1`，讓前端和舊資料集可以並存。
-
-## Skin/display 設定回傳
-
-Skin 設定是「顯示語意」，不是資料庫查詢語意。它可以描述圖層顏色、alpha、label 欄位、tooltip 欄位、單位等。
-
-目前 skin/display 設定尚未接進 runtime schema。後端可以先回傳，但能力矩陣必須不啟用。
-
-建議回傳 shape：
-
-```json
-{
-  "schema": "rrkal.backend.dataset_skin_patch.v1",
-  "dataset_id": "gfw_full",
-  "enabled": false,
-  "layer_style": {
-    "alpha": 0.58,
-    "low_color": "#2d8296",
-    "high_color": "#d85a30"
-  },
-  "tooltip_fields": [],
-  "legend": {
-    "title": "",
-    "unit": ""
-  }
-}
-```
-
-原則：
-
-- 可以先收資料。
-- 可以先放進 handoff/proposed config。
-- 不要直接放進 `config/examples/runtime/adapter.example.json`，除非 schema 已更新。
-- 不要因為有 skin 設定就宣稱該資料集 ready。
-
-## 能力矩陣規則
-
-能力矩陣至少要包含：
-
-- `declared`: 契約或欄位是否已宣告。
-- `implemented`: 程式是否已實作。
-- `enabled`: runtime 是否啟用。
-- `owner`: 誰負責。
-- `activation_gate`: 啟用前必須滿足什麼。
-
-啟用條件：
-
-- `declared = true`
-- `implemented = true`
-- `enabled = true`
-- 測試與 schema 都通過
-
-若任一項不滿足，前端或後端都不應啟用該能力。
+1. Runtime JSON 可通過 `config/schemas/adapter.schema.json`，且不包含 source 欄位。
+2. Source JSON 的資料夾與 `role` 一致。
+3. Source 被啟用後，Developer Route Status 能反映真實可用性。
+4. Probe／Scout 能看到來源實際 tables、fields 或 catalog contract。
+5. Mapping artifact 能指出 source field 到 Canonical role／column 的 lineage。
+6. Layer 導入後，`/api/datasets`、Dashboard 與 Router Manifest identity 一致。
+7. 未完成的 Hive／Spark backend 保持不可用，不因 JSON 存在而被誤啟用。
 
 ## 不要混淆的邊界
 
-- `connections` 決定去哪個 database backend。
-- `datasets` 決定查哪張 read-model table 和欄位。
-- `live.ais` 決定小可愛如何消費 AIS SQL。
-- `backend_sink_config` 是後端/系統填值的穩定 sink 接縫，不是前端 UI 設定。
-- 能力矩陣決定宣告能力是否能被 runtime 使用；JSON 有值不代表能力已啟用。
-- AIS crawler 的 API key 不屬於後端 config patch。
-- Skin/display patch 不等於 database schema。
-- Hive/Spark config 存在不代表 Hive、Spark 或 Iceberg 已經可用。
+- Runtime JSON 不保存 source connection、dataset 或 Mapping。
+- Source config 不決定 Canonical 欄位語意。
+- Probe／Scout 觀察資料事實，不受既有 Mapping 反向過濾。
+- Mapping 負責翻譯，不負責建立來源連線。
+- Capability proposal 不等於 Runtime capability。
+- HTTP Pipeline Iceberg adapter 可用，不等於直接 Spark/Hive backend 可用。
+- AIS crawler 的 raw API key 不屬於 Dashboard Runtime config。

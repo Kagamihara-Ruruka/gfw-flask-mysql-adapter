@@ -22,17 +22,30 @@ const coreOwners = [
   ["static/js/core/render-state.js", "RenderStateController"],
   ["static/js/services/sampled-grid-render-artifact-cache.js", "RenderArtifactCache"],
   ["static/js/services/sampled-grid-layer-pool.js", "SampledGridLayerPoolCore"],
+  [
+    "static/js/layers/sampled-grid-layer-effects.js",
+    "SampledGridLayerTransitionControllerCore",
+  ],
+  [
+    "static/js/services/renderer-capability-state.js",
+    "RendererCapabilityStateCore",
+    /globalTarget\.RendererCapabilityStateCore[\s\S]*new RendererCapabilityStateClass\s*\(/,
+  ],
   ["static/js/rendering/virtual-grid-contract.js", "VirtualGridRuntimeController"],
   ["static/js/ui/map/layer-viewport-controller.js", "DatasetViewportController"],
 ];
 
 test("stateful core owners are defined without self-instantiating singletons", () => {
   const compositionRoot = read("static/js/runtime/runtime-composition-root.js");
-  for (const [relativePath, className] of coreOwners) {
+  for (const [relativePath, className, compositionPattern] of coreOwners) {
     const source = read(relativePath);
     assert.match(source, new RegExp(`class ${className}\\b`), relativePath);
     assert.doesNotMatch(source, new RegExp(`new ${className}\\s*\\(`), relativePath);
-    assert.match(compositionRoot, new RegExp(`new ${className}\\s*\\(`), className);
+    assert.match(
+      compositionRoot,
+      compositionPattern || new RegExp(`new ${className}\\s*\\(`),
+      className,
+    );
   }
   assert.equal((compositionRoot.match(/new RuntimeCompositionRoot\s*\(/g) || []).length, 1);
 });
@@ -77,6 +90,7 @@ test("runtime definitions load before the composition root and consumers load af
     "/static/js/services/frame-demand-decorators.js",
     "/static/js/services/render-intent-service.js",
     "/static/js/services/sampled-grid-layer-pool.js",
+    "/static/js/services/renderer-capability-state.js",
     "/static/js/playback/playback-cache-service.js",
     "/static/js/playback/playback-preheater.js",
     "/static/js/playback/playback-engine.js",
@@ -111,6 +125,7 @@ test("runtime-owned resources expose symmetric teardown", () => {
     "static/js/playback/playback-renderer.js",
     "static/js/rendering/virtual-grid-contract.js",
     "static/js/services/sampled-grid-layer-pool.js",
+    "static/js/services/renderer-capability-state.js",
     "static/js/ui/map/layer-viewport-controller.js",
     "static/js/ui/map/tile-selection-layer.js",
     "static/js/ui/layers/layer-activation-controller.js",

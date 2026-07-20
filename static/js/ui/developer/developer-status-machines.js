@@ -11,6 +11,17 @@
   let statusMachineErrorMessage = "";
   let schemaProfilesLoadedAt = 0;
   const SCHEMA_PROFILE_REFRESH_MS = 60000;
+  const ROUTE_STATUS_COLUMN_WIDTHS = Object.freeze(["22%", "13%", "18%", "7%", "7%", "7%", "26%"]);
+
+  function routeStatusColumns(columns) {
+    if (!Array.isArray(columns) || columns.length !== ROUTE_STATUS_COLUMN_WIDTHS.length) {
+      throw new TypeError("Route status tables require the shared seven-column track");
+    }
+    return columns.map((column, index) => ({
+      ...column,
+      width: ROUTE_STATUS_COLUMN_WIDTHS[index],
+    }));
+  }
 
   const mappingController = new DeveloperMappingController({
     api: window.DeveloperConfigApi,
@@ -26,15 +37,15 @@
     new DeveloperStatusTable({
       bodyId: "developer-router-status-body",
       emptyText: "沒有啟用中的 DATABASE 路由。",
-      columns: [
-        { key: "config_path", width: "24%", render: (row) => escapeHtml(row.config_path) },
-        { key: "route_ref", width: "12%", render: (row) => escapeHtml(row.route_ref || row.connection_ref) },
-        { key: "backend", width: "10%", render: (row) => escapeHtml(row.backend) },
-        { key: "enabled", width: "5rem", className: "developer-status-bit-cell", render: (row) => bitCell(row.enabled) },
-        { key: "connected", width: "5rem", className: "developer-status-bit-cell", render: (row) => bitCell(row.connected) },
-        { key: "schema_inspectable", width: "5rem", className: "developer-status-bit-cell", render: (row) => bitCell(row.schema_inspectable) },
+      columns: routeStatusColumns([
+        { key: "config_path", render: (row) => escapeHtml(row.config_path) },
+        { key: "route_ref", render: (row) => escapeHtml(row.route_ref || row.connection_ref) },
+        { key: "backend", render: (row) => escapeHtml(row.backend) },
+        { key: "enabled", className: "developer-status-bit-cell", render: (row) => bitCell(row.enabled) },
+        { key: "connected", className: "developer-status-bit-cell", render: (row) => bitCell(row.connected) },
+        { key: "schema_inspectable", className: "developer-status-bit-cell", render: (row) => bitCell(row.schema_inspectable) },
         { key: "detail", className: "developer-long-value", render: (row) => escapeHtml(row.detail || "") },
-      ],
+      ]),
     }).render(rows);
   }
 
@@ -42,15 +53,15 @@
     new DeveloperStatusTable({
       bodyId: "developer-websocket-status-body",
       emptyText: "沒有啟用中的 WebSocket config。",
-      columns: [
-        { key: "config_path", width: "24%", render: (row) => escapeHtml(row.config_path) },
-        { key: "provider", width: "10rem", render: (row) => escapeHtml(row.provider || "-") },
-        { key: "endpoint", width: "28%", className: "developer-long-value", render: (row) => escapeHtml(row.endpoint || "-") },
-        { key: "configured", width: "5rem", className: "developer-status-bit-cell", render: (row) => bitCell(row.configured) },
-        { key: "pipeline_ready", width: "5rem", className: "developer-status-bit-cell", render: (row) => bitCell(row.pipeline_ready) },
-        { key: "enabled", width: "5rem", className: "developer-status-bit-cell", render: (row) => bitCell(row.enabled) },
+      columns: routeStatusColumns([
+        { key: "config_path", render: (row) => escapeHtml(row.config_path) },
+        { key: "provider", render: (row) => escapeHtml(row.provider || "-") },
+        { key: "endpoint", className: "developer-long-value", render: (row) => escapeHtml(row.endpoint || "-") },
+        { key: "configured", className: "developer-status-bit-cell", render: (row) => bitCell(row.configured) },
+        { key: "pipeline_ready", className: "developer-status-bit-cell", render: (row) => bitCell(row.pipeline_ready) },
+        { key: "enabled", className: "developer-status-bit-cell", render: (row) => bitCell(row.enabled) },
         { key: "detail", className: "developer-long-value", render: (row) => escapeHtml(row.detail || "") },
-      ],
+      ]),
     }).render(rows);
   }
 
@@ -84,19 +95,19 @@
     new DeveloperStatusTable({
       bodyId: "developer-spatial-status-body",
       emptyText: "沒有啟用中的 Spatial / PostGIS config。",
-      columns: [
-        { key: "config_path", width: "22%", render: (row) => escapeHtml(row.config_path) },
-        { key: "overlay_ref", width: "8rem", render: (row) => escapeHtml(row.overlay_ref || "-") },
-        { key: "backend", width: "8rem", render: (row) => escapeHtml(row.backend || "-") },
-        { key: "enabled", width: "5rem", className: "developer-status-bit-cell", render: (row) => bitCell(row.enabled) },
-        { key: "connected", width: "5rem", className: "developer-status-bit-cell", render: (row) => bitCell(row.connected) },
-        { key: "ready", width: "5rem", className: "developer-status-bit-cell", render: (row) => bitCell(row.ready) },
+      columns: routeStatusColumns([
+        { key: "config_path", render: (row) => escapeHtml(row.config_path) },
+        { key: "overlay_ref", render: (row) => escapeHtml(row.overlay_ref || "-") },
+        { key: "backend", render: (row) => escapeHtml(row.backend || "-") },
+        { key: "enabled", className: "developer-status-bit-cell", render: (row) => bitCell(row.enabled) },
+        { key: "connected", className: "developer-status-bit-cell", render: (row) => bitCell(row.connected) },
+        { key: "ready", className: "developer-status-bit-cell", render: (row) => bitCell(row.ready) },
         {
           key: "detail",
           className: "developer-long-value",
           render: (row) => `${renderSpatialTableStates(row)}<br>${escapeHtml(row.detail || "-")}`,
         },
-      ],
+      ]),
     }).render(rows);
   }
 

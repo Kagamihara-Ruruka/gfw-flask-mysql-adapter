@@ -1,15 +1,41 @@
 (() => {
 class EezAttributionDataSource {
-  constructor({ queryContext, queryCoordinator, eventSink } = {}) {
-    if (!queryContext || !queryCoordinator) {
-      throw new TypeError("EezAttributionDataSource requires query context and coordinator");
+  constructor({
+    queryContext,
+    queryCoordinator,
+    eventSink,
+    clock,
+    cacheVersionProvider = () => "",
+    cacheMaxEntries = 128,
+    retryDelayMs = 3000,
+  } = {}) {
+    if (!queryContext || !queryCoordinator || !clock || typeof clock.now !== "function") {
+      throw new TypeError("EezAttributionDataSource requires query context, coordinator and clock");
     }
     this.queryContext = queryContext;
     this.queryCoordinator = queryCoordinator;
     this.eventSink = eventSink;
-    this.cache = new Map();
+    this.clock = clock;
+    this.cacheVersionProvider = cacheVersionProvider;
+    this.retryDelayMs = Math.max(250, Number(retryDelayMs) || 3000);
+    this.cache = new BoundedLruMap({ maxEntries: cacheMaxEntries });
+    this.failures = new BoundedLruMap({ maxEntries: cacheMaxEntries });
     this.inflight = new Map();
     this.eventSelections = [];
+    this.disposed = false;
+    this.cacheEpoch = new AsyncEpoch({ label: "eez-attribution" });
+    this.cacheVersion = String(this.cacheVersionProvider?.() || "");
+    this.cacheToken = this.cacheEpoch.begin(this.cacheVersion || "initial");
+  }
+
+  syncCacheVersion() {
+    const nextVersion = String(this.cacheVersionProvider?.() || "");
+    if (nextVersion === this.cacheVersion) return;
+    this.cacheVersion = nextVersion;
+    this.cache.clear();
+    this.failures.clear();
+    this.inflight.clear();
+    this.cacheToken = this.cacheEpoch.begin(nextVersion || "updated");
   }
 
   selectedCells() {
@@ -46,6 +72,8 @@ class EezAttributionDataSource {
       selection: extra.selection || null,
       hit: extra.hit || null,
       attribution: extra.attribution || [],
+      domain: extra.domain || null,
+      jurisdictionKind: extra.jurisdictionKind || null,
       fallback: extra.fallback || null,
       query: extra.query || null,
       preview: extra.preview || null,
@@ -79,11 +107,18 @@ class EezAttributionDataSource {
   }
 
   model() {
+    if (this.disposed) return this.statusModel("unavailable", "EEZ unavailable", "data source disposed");
+    this.syncCacheVersion();
     const plan = this.requestForCurrentState();
     if (plan.blocked) return plan.blocked;
     const results = plan.requests.map((request) => {
       const cached = this.cache.get(request.key);
       if (cached) return { ...cached, selection: request.selected };
+      const failed = this.failures.get(request.key);
+      if (failed && failed.retryAt > this.clock.now()) {
+        return { ...failed.model, selection: request.selected };
+      }
+      if (failed) this.failures.delete(request.key);
       this.fetch(request);
       return this.statusModel("loading", "判定中", request.selected.tile_key || request.bboxString, {
         selection: request.selected,
@@ -94,25 +129,40 @@ class EezAttributionDataSource {
       ...primary,
       results,
       selectionCount: results.length,
-      readyCount: results.filter((result) => ["ready", "high-seas"].includes(result.state)).length,
+      readyCount: results.filter((result) => ["ready", "high-seas", "land", "mixed"].includes(result.state)).length,
     };
   }
 
   fetch(request) {
+    if (this.disposed) return Promise.resolve(null);
     if (this.inflight.has(request.key)) return this.inflight.get(request.key);
+    const token = this.cacheToken;
     const params = new URLSearchParams({ bbox: request.bboxString, limit: "6" });
-    const loader = this.queryCoordinator.fetchEezAttribution(params, { lane: "overlay" })
+    let loader = null;
+    loader = this.queryCoordinator.fetchEezAttribution(params, {
+      lane: "overlay",
+      scopeId: "widget:eez-attribution",
+      signal: token.signal,
+    })
       .then((packet) => {
+        if (this.disposed || !this.cacheEpoch.isCurrent(token)) return;
+        this.failures.delete(request.key);
         this.cache.set(request.key, this.packetToModel(request, packet));
       })
       .catch((error) => {
-        this.cache.set(request.key, this.statusModel("error", "判定失敗", error.message || "EEZ attribution failed", {
-          selection: request.selected,
-        }));
+        if (this.disposed || !this.cacheEpoch.isCurrent(token) || error?.name === "AbortError") return;
+        this.failures.set(request.key, {
+          retryAt: this.clock.now() + this.retryDelayMs,
+          model: this.statusModel("error", "判定失敗", error.message || "EEZ attribution failed", {
+            selection: request.selected,
+          }),
+        });
       })
       .finally(() => {
-        this.inflight.delete(request.key);
-        this.eventSink?.("rrkal:eez-attribution-data-changed", { key: request.key });
+        if (this.inflight.get(request.key) === loader) this.inflight.delete(request.key);
+        if (!this.disposed && this.cacheEpoch.isCurrent(token)) {
+          this.eventSink?.("rrkal:eez-attribution-data-changed", { key: request.key });
+        }
       });
     this.inflight.set(request.key, loader);
     return loader;
@@ -121,16 +171,33 @@ class EezAttributionDataSource {
   packetToModel(request, packet) {
     const attribution = Array.isArray(packet?.attribution) ? packet.attribution : [];
     const hit = attribution[0] || null;
+    const domain = packet?.domain && typeof packet.domain === "object" ? packet.domain : null;
     if (!hit) {
-      return this.statusModel("high-seas", "未命中 EEZ", "公海或 EEZ 資料無匹配", {
+      const kind = ["high_seas", "land", "mixed"].includes(domain?.kind)
+        ? domain.kind
+        : "unresolved";
+      const modelByKind = {
+        high_seas: ["high-seas", "公海", "位於 EEZ 管轄範圍之外"],
+        land: ["land", "陸地", "不屬於海域管轄範圍"],
+        mixed: ["mixed", "混合區域", "選取格跨越不同空間域"],
+        unresolved: ["unresolved", "無法判定", "EEZ 空間域資料未能解析"],
+      };
+      const [stateName, title, detail] = modelByKind[kind];
+      return this.statusModel(stateName, title, detail, {
         selection: request.selected,
         attribution,
-        fallback: packet?.fallback || "high_seas_or_no_eez_match",
+        domain,
+        jurisdictionKind: kind,
+        fallback: packet?.fallback || (kind === "unresolved" ? "domain_unresolved" : null),
         query: packet?.query || null,
         preview: packet?.preview || null,
         timing: packet?.timing || {},
       });
     }
+    const polType = String(hit.pol_type || "").trim().toLowerCase();
+    const jurisdictionKind = polType === "overlapping claim"
+      ? "disputed"
+      : polType === "joint regime" ? "joint" : "eez";
     const label = hit.sovereign || hit.territory || hit.name || "EEZ";
     const ratio = Number(hit.overlap_ratio);
     const detailParts = [
@@ -141,6 +208,8 @@ class EezAttributionDataSource {
       selection: request.selected,
       hit,
       attribution,
+      domain,
+      jurisdictionKind,
       query: packet?.query || null,
       preview: packet?.preview || null,
       timing: packet?.timing || {},
@@ -148,7 +217,11 @@ class EezAttributionDataSource {
   }
 
   dispose() {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.cacheEpoch.dispose("disposed");
     this.cache.clear();
+    this.failures.clear();
     this.inflight.clear();
     this.eventSelections = [];
   }

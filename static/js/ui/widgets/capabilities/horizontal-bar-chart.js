@@ -255,6 +255,12 @@ class HorizontalBarChartWidget extends ChartWidget {
     this.renderHorizontalBarPlotlyWhenReady(container, model, { cinema });
   }
 
+  renderExpanded() {
+    const pane = super.renderExpanded();
+    pane.classList.add("horizontal-bar-popover");
+    return pane;
+  }
+
   renderTemplate(container, { expanded = false, cinema = false } = {}) {
     container.classList.add("widget-template", "widget-template-horizontal-bar");
     if (expanded) container.classList.add("is-expanded");

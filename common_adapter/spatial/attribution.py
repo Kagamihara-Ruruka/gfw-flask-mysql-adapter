@@ -99,7 +99,7 @@ def _bbox_hits(
     geom_col: str,
     bbox: tuple[float, float, float, float],
     limit: int,
-) -> tuple[list[dict[str, Any]], float | None, list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], float | None, float, list[dict[str, Any]]]:
     west, south, east, north = bbox
     sql = f"""
         WITH target AS (
@@ -156,11 +156,26 @@ def _bbox_hits(
                 ST_X(ST_PointOnSurface(clipped_geom)) AS label_lon,
                 ST_Y(ST_PointOnSurface(clipped_geom)) AS label_lat
             FROM intersections
+        ),
+        coverage AS (
+            SELECT
+                target_area.area_m2 AS target_area_m2,
+                COALESCE(
+                    ST_Area(
+                        ST_UnaryUnion(
+                            ST_Collect(ST_CollectionExtract(intersections.clipped_geom, 3))
+                        )::geography
+                    ),
+                    0
+                ) AS eez_coverage_m2
+            FROM target_area
+            LEFT JOIN intersections ON TRUE
+            GROUP BY target_area.area_m2
         )
-        SELECT *
-        FROM ranked
-        WHERE overlap_m2 > 0
-        ORDER BY overlap_m2 DESC, fid
+        SELECT ranked.*, coverage.target_area_m2, coverage.eez_coverage_m2
+        FROM coverage
+        LEFT JOIN ranked ON TRUE
+        ORDER BY ranked.overlap_m2 DESC NULLS LAST, ranked.fid
         LIMIT %s
     """
     with psycopg.connect(postgis_dsn(pg), row_factory=dict_row) as conn:
@@ -170,9 +185,13 @@ def _bbox_hits(
     hits: list[dict[str, Any]] = []
     preview_features: list[dict[str, Any]] = []
     target_area_m2 = None
+    eez_coverage_m2 = 0.0
     for row in rows:
         target_area_m2 = _float_or_none(row.get("target_area_m2")) or target_area_m2
+        eez_coverage_m2 = _float_or_none(row.get("eez_coverage_m2")) or eez_coverage_m2
         overlap_m2 = _float_or_none(row.get("overlap_m2")) or 0.0
+        if row.get("fid") is None or overlap_m2 <= 0:
+            continue
         ratio = overlap_m2 / target_area_m2 if target_area_m2 else None
         ratio_value = _round_or_none(ratio, 6)
         label_lon = _round_or_none(row.get("label_lon"), 6)
@@ -200,7 +219,7 @@ def _bbox_hits(
                     "geometry": geometry,
                 }
             )
-    return hits, target_area_m2, preview_features
+    return hits, target_area_m2, eez_coverage_m2, preview_features
 
 
 def eez_attribution_packet(
@@ -219,16 +238,23 @@ def eez_attribution_packet(
 
     if bbox is not None:
         safe_bbox = _validate_bbox(bbox)
-        hits, target_area_m2, preview_features = _bbox_hits(
+        hits, target_area_m2, eez_coverage_m2, preview_features = _bbox_hits(
             pg,
             table=table,
             geom_col=geom_col,
             bbox=safe_bbox,
             limit=row_limit,
         )
+        coverage_ratio = (
+            min(1.0, max(0.0, eez_coverage_m2 / target_area_m2))
+            if target_area_m2
+            else 0.0
+        )
         query: dict[str, Any] = {
             "bbox": [round(value, 6) for value in safe_bbox],
             "target_area_km2": round(target_area_m2 / 1_000_000, 6) if target_area_m2 else None,
+            "eez_coverage_area_km2": round(eez_coverage_m2 / 1_000_000, 6),
+            "eez_coverage_ratio": round(coverage_ratio, 6),
         }
         preview = {
             "schema": "eez_attribution_tile_preview.v1",

@@ -18,6 +18,7 @@ from common_adapter.http.routes.system import register_system_routes
 from common_adapter.layers.registry import RuntimeLayerRegistry
 from common_adapter.layers.status import RouteStatusRegistry
 from common_adapter.query.batch import QueryBatchExecutor
+from common_adapter.spatial.land_mask import EezDomainMaskService
 
 ROOT = Path(__file__).resolve().parents[2]
 SERVER_PID_FILE = Path("flask_pid.txt")
@@ -37,6 +38,7 @@ def create_app(
     developer_url: str | None = None,
     layer_registry: RuntimeLayerRegistry | None = None,
     route_status_registry: RouteStatusRegistry | None = None,
+    eez_domain_mask_service: EezDomainMaskService | None = None,
 ) -> Flask:
     app = create_flask_app()
     app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
@@ -85,7 +87,18 @@ def create_app(
         batch_executor=batch_executor,
     )
 
-    register_overlay_routes(app, config)
+    resolved_eez_domain_mask_service = eez_domain_mask_service or EezDomainMaskService(config)
+    if (
+        getattr(resolved_eez_domain_mask_service, "prepare_on_startup", False)
+        and callable(getattr(resolved_eez_domain_mask_service, "prepare", None))
+    ):
+        resolved_eez_domain_mask_service.prepare()
+    app.extensions["eez_domain_mask_service"] = resolved_eez_domain_mask_service
+    register_overlay_routes(
+        app,
+        config,
+        domain_mask_service=resolved_eez_domain_mask_service,
+    )
 
     register_live_routes(app, sock, config)
 

@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from common_adapter.spatial.lod import (
     eez_lod_source,
+    eez_render_mvt_tile_packet,
     eez_tile_query_concurrency,
     geographic_pixel_degrees_for_zoom,
     mvt_detail_for_zoom,
@@ -47,6 +48,40 @@ class EezRequestBoundaryTests(unittest.TestCase):
         config = {"overlays": {"eez": {"tile_query_concurrency": 6}}}
         self.assertEqual(eez_tile_query_concurrency(config), 6)
         self.assertEqual(eez_tile_query_concurrency({}), 6)
+
+    @patch("common_adapter.spatial.lod.eez_boundary_mvt_tile_packet")
+    @patch("common_adapter.spatial.lod.eez_mvt_tile_packet")
+    def test_render_tile_combines_cached_fill_and_boundary_layers(self, fill_packet, boundary_packet) -> None:
+        fill_packet.return_value = (
+            b"fill",
+            {
+                "cache": "hit",
+                "cache_tier": "memory",
+                "table": "eez_fill",
+                "lod": "fill_z6",
+                "timing": {"tile_ms": 0.2},
+            },
+        )
+        boundary_packet.return_value = (
+            b"boundary",
+            {
+                "cache": "hit",
+                "cache_tier": "disk",
+                "table": "eez_boundary",
+                "lod": "boundary_z6",
+                "timing": {"tile_ms": 0.3},
+            },
+        )
+
+        tile, meta = eez_render_mvt_tile_packet({}, z=6, x=53, y=27)
+
+        self.assertEqual(b"fillboundary", tile)
+        self.assertEqual("hit", meta["cache"])
+        self.assertEqual("disk+memory", meta["cache_tier"])
+        self.assertEqual("eez_fill+eez_boundary", meta["table"])
+        self.assertEqual(len(tile), meta["bytes"])
+        fill_packet.assert_called_once_with({}, z=6, x=53, y=27)
+        boundary_packet.assert_called_once_with({}, z=6, x=53, y=27)
 
 
 if __name__ == "__main__":

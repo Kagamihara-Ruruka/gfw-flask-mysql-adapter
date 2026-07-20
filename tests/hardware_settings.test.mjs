@@ -23,11 +23,30 @@ function loadHardwareSettings() {
     browserProfile: { hardwareMode: "auto" },
     renderCapability: null,
   };
+  const rendererCapabilityState = {
+    setHardwareMode(mode) {
+      state.renderCapability = {
+        server: { policy: {} },
+        browser: {
+          webgl: { available: false },
+          webgpu: { available: false },
+        },
+        runtime: { webgl: { available: false } },
+        policy: {
+          hardware_acceleration: mode,
+          force_cpu: mode === "off",
+          allow_webgl: mode !== "off",
+        },
+      };
+      return state.renderCapability;
+    },
+  };
   let profileNotifications = 0;
   const context = createContext({
     console,
     state,
     window: {},
+    RendererCapabilityState: rendererCapabilityState,
     globalThis: null,
     $: (id) => elements.get(id) || null,
     notifyBrowserProfileChanged: () => {

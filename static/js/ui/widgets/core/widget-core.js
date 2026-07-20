@@ -27,6 +27,8 @@ const WidgetSizeAbleDict = Object.freeze({
   table: Object.freeze(["2x2"]),
   "map-jump": Object.freeze(["1x1", "1x2"]),
   "eez-attribution": Object.freeze(["1x1"]),
+  "usage-guide": Object.freeze(["1x1"]),
+  "spotify-player": Object.freeze(["1x1"]),
 });
 
 let suppressNativeWidgetContextMenuUntil = 0;
@@ -116,15 +118,6 @@ function setWidgetSelectionLock(locked) {
   if (!locked) {
     document.getSelection?.().removeAllRanges();
   }
-}
-
-function forceCloseWidgetPopoverLayers() {
-  document.querySelectorAll(".widget-popover-layer").forEach((layer) => {
-    layer.hidden = true;
-    layer.style.display = "none";
-    layer.style.pointerEvents = "none";
-    layer.replaceChildren();
-  });
 }
 
 function bindWidgetActionButton(button, onClick) {
@@ -484,6 +477,10 @@ class DashboardWidget {
     return WidgetSizePresets[size]?.id || WidgetSizePresets["1x1"].id;
   }
 
+  showsDashboardHeader() {
+    return true;
+  }
+
   render(controller) {
     const item = document.createElement("article");
     item.className = "dashboard-widget";
@@ -492,19 +489,25 @@ class DashboardWidget {
     item.dataset.widgetDeletable = this.deletable ? "1" : "0";
     item.dataset.widgetType = this.widgetType;
 
-    const header = document.createElement("div");
-    header.className = "dashboard-widget-header";
-
-    const title = document.createElement("h3");
-    title.className = "dashboard-widget-title";
-    title.textContent = this.title;
-
     const body = document.createElement("div");
     body.className = "dashboard-widget-body";
     this.renderTemplate(body, { expanded: false });
 
-    header.append(title);
-    item.append(header, body);
+    if (this.showsDashboardHeader()) {
+      const header = document.createElement("div");
+      header.className = "dashboard-widget-header";
+
+      const title = document.createElement("h3");
+      title.className = "dashboard-widget-title";
+      title.textContent = this.title;
+
+      header.append(title);
+      item.append(header, body);
+    } else {
+      item.classList.add("is-headerless");
+      item.setAttribute("aria-label", this.title);
+      item.append(body);
+    }
     this.applyPlacement(item, controller.columns());
     bindWidgetPointerBehavior(item, {
       onPrimary: () => this.handlePrimaryAction(controller),
@@ -565,24 +568,38 @@ class DashboardWidget {
     const title = document.createElement("h3");
     title.textContent = this.title;
 
-    const sizeBadge = document.createElement("span");
-    sizeBadge.className = "dashboard-widget-size";
-    sizeBadge.textContent = this.size;
-
     const body = document.createElement("div");
     body.className = "widget-popover-body";
     this.renderTemplate(body, { expanded: true });
 
-    header.append(title, sizeBadge);
+    header.append(title);
     pane.append(header, body);
     return pane;
+  }
+
+  renderCinema(container) {
+    this.replaceRenderedTemplate(container, { expanded: true, cinema: true });
   }
 
   renderTemplate(container) {
     container.textContent = this.status;
   }
 
+  replaceRenderedTemplate(container, options = {}) {
+    this.disposeRenderedView(container);
+    container.replaceChildren();
+    this.renderTemplate(container, options);
+  }
+
+  disposeRenderedView(container) {
+    WidgetPlotlyLifecycle.purge(container);
+  }
+
   dispose() {}
+
+  popoverRetentionKey() {
+    return "";
+  }
 
   handlePrimaryAction(controller) {
     controller.expandWidget(this);
@@ -664,6 +681,24 @@ class DashboardWidget {
 const widgetPlotlyResizeWarnings = new WeakSet();
 
 class WidgetPlotlyLifecycle {
+  static purge(root) {
+    if (!root || typeof window.Plotly?.purge !== "function") return 0;
+    const charts = [];
+    if (root.matches?.(".js-plotly-plot")) charts.push(root);
+    charts.push(...(root.querySelectorAll?.(".js-plotly-plot") || []));
+    for (const chart of charts) {
+      try {
+        window.Plotly.purge(chart);
+      } catch (error) {
+        if (!widgetPlotlyResizeWarnings.has(chart)) {
+          widgetPlotlyResizeWarnings.add(chart);
+          console.warn("Widget Plotly purge failed", error);
+        }
+      }
+    }
+    return charts.length;
+  }
+
   static isDisplayed(chart) {
     if (!chart?.isConnected || typeof chart.getBoundingClientRect !== "function") return false;
     if (typeof chart.getClientRects === "function" && chart.getClientRects().length === 0) return false;
@@ -777,7 +812,6 @@ window.WidgetCore = Object.freeze({
   bindWidgetPointerBehavior,
   bindWidgetDragBehavior,
   bindWidgetActionButton,
-  forceCloseWidgetPopoverLayers,
   lineChartEscape,
   WidgetSocketLayout,
   WidgetCatalogItem,

@@ -103,8 +103,20 @@
 }
 
 .widget-template-eez-attribution[data-attribution-state="high-seas"] .widget-eez-card b,
+.widget-template-eez-attribution[data-attribution-state="land"] .widget-eez-card b,
+.widget-template-eez-attribution[data-attribution-state="mixed"] .widget-eez-card b,
 .widget-template-eez-attribution[data-attribution-state="waiting"] .widget-eez-card b {
   color: rgba(148, 163, 184, 0.84);
+}
+
+.widget-template-eez-attribution[data-attribution-state="high-seas"] .widget-eez-card {
+  border-color: rgba(85, 120, 168, 0.42);
+  background: linear-gradient(145deg, rgba(15, 23, 42, 0.3), rgba(38, 72, 119, 0.34));
+}
+
+.widget-template-eez-attribution[data-attribution-state="land"] .widget-eez-card {
+  border-color: rgba(148, 163, 184, 0.3);
+  background: linear-gradient(145deg, rgba(30, 41, 59, 0.34), rgba(71, 85, 105, 0.3));
 }
 
 .widget-eez-expanded {

@@ -20,7 +20,7 @@ function viewportReloadSettleMs() {
 function primaryLayerDependsOnViewport() {
   if (!state.dataLayer) return false;
   if (typeof isSampledGridLayer === "function" && isSampledGridLayer(state.dataLayer)) {
-    return state.layerViewport?.mode !== "coverage";
+    return true;
   }
   return true;
 }
@@ -28,6 +28,11 @@ function primaryLayerDependsOnViewport() {
 function invalidatePrimaryRenderForViewport({ lodChanging = false } = {}) {
   if (typeof isSampledGridLayer === "function" && isSampledGridLayer(state.dataLayer)) {
     state.fetchSeq += 1;
+    if (typeof SampledGridLayerPool !== "undefined") {
+      SampledGridLayerPool.invalidateActiveContext("viewport_scope_changed");
+    } else if (typeof SampledGridLayerTransitions !== "undefined") {
+      SampledGridLayerTransitions.invalidate("viewport_scope_changed");
+    }
     if (lodChanging) {
       clearSampledGridLayerForLodReload();
     } else {
@@ -104,6 +109,13 @@ function bindMapRefresh() {
     eezZoomPrepared = false;
   }
 
+  function refreshAfterViewportResize() {
+    if (state.isBootstrapping) return;
+    preparePrimaryRender({ lodChanging: false });
+    scheduleViewportRender();
+  }
+
   map.on("movestart zoomstart", prepareViewportRender);
   map.on("moveend zoomend", scheduleViewportRender);
+  map.on("resize", refreshAfterViewportResize);
 }

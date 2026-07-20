@@ -156,18 +156,34 @@ def public_url(host: str, port: int) -> str:
     display_host = "127.0.0.1" if host in {"0.0.0.0", ""} else host
     return f"http://{display_host}:{port}"
 
-def run_server(config: dict[str, Any], *, host: str, port: int, debug: bool, kill_port_if_busy: bool) -> None:
+def run_server(
+    config: dict[str, Any],
+    *,
+    host: str,
+    port: int,
+    debug: bool,
+    kill_port_if_busy: bool,
+    endpoint_supervisor: ManagedEndpointSupervisor | None = None,
+) -> None:
     force_exit_previous_server_instance(enabled=kill_port_if_busy)
     free_configured_port_if_needed(host, port, enabled=kill_port_if_busy)
     write_server_pid_file(host=host, port=port)
     layer_registry = RuntimeLayerRegistry(config)
     route_status_registry = RouteStatusRegistry(config, layer_registry)
+    unsubscribe_endpoint_status = (
+        endpoint_supervisor.subscribe_status_changes(route_status_registry.invalidate)
+        if endpoint_supervisor is not None
+        else lambda: None
+    )
     app = create_app(
         config,
         layer_registry=layer_registry,
         route_status_registry=route_status_registry,
     )
-    app.run(host=host, port=port, debug=debug, use_reloader=False)
+    try:
+        app.run(host=host, port=port, debug=debug, use_reloader=False)
+    finally:
+        unsubscribe_endpoint_status()
 
 
 def run_server_pair(
@@ -189,6 +205,11 @@ def run_server_pair(
     developer_url = public_url(host, developer_port)
     layer_registry = RuntimeLayerRegistry(config)
     route_status_registry = RouteStatusRegistry(config, layer_registry)
+    unsubscribe_endpoint_status = (
+        endpoint_supervisor.subscribe_status_changes(route_status_registry.invalidate)
+        if endpoint_supervisor is not None
+        else lambda: None
+    )
     developer_app = create_developer_app(
         config,
         consumer_url=consumer_url,
@@ -209,4 +230,7 @@ def run_server_pair(
         layer_registry=layer_registry,
         route_status_registry=route_status_registry,
     )
-    app.run(host=host, port=port, debug=debug, use_reloader=False)
+    try:
+        app.run(host=host, port=port, debug=debug, use_reloader=False)
+    finally:
+        unsubscribe_endpoint_status()

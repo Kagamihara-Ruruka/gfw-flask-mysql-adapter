@@ -1,5 +1,12 @@
 function bindEezPaintControls() {
   const scheduleRepaint = scheduleStyleRepaintFactory(repaintEezLayer, 140);
+  const highSeasField = $("eez-high-seas-style-field");
+  const syncCapabilityControls = () => {
+    const capability = window.LayerRuntimeContractRegistry?.capability?.("eez", "high_seas_overlay") || {};
+    if (highSeasField) highSeasField.hidden = capability.status !== "supported";
+  };
+  syncCapabilityControls();
+  window.addEventListener("rrkal:datasets-loaded", syncCapabilityControls);
 
   bindStateStyleControls({
     source: state.eezPaint,
@@ -14,6 +21,7 @@ function bindEezPaintControls() {
   for (const [id, key] of [
     ["eez-disputed-color", "disputed"],
     ["eez-joint-color", "joint"],
+    ["eez-high-seas-color", "high_seas"],
     ["eez-other-color", "other"],
   ]) {
     const input = $(id);

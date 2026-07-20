@@ -423,6 +423,43 @@ def eez_boundary_mvt_tile_packet(
     return result
 
 
+def eez_render_mvt_tile_packet(
+    config: dict[str, Any],
+    *,
+    z: int,
+    x: int,
+    y: int,
+) -> tuple[bytes, dict[str, Any]]:
+    """Combine independently cached EEZ fill and boundary layers into one MVT tile."""
+    started = time.perf_counter()
+    fill_tile, fill_meta = eez_mvt_tile_packet(config, z=z, x=x, y=y)
+    boundary_tile, boundary_meta = eez_boundary_mvt_tile_packet(config, z=z, x=x, y=y)
+    tile = bytes(fill_tile) + bytes(boundary_tile)
+    components = (fill_meta, boundary_meta)
+    cache_hit = all(component.get("cache") == "hit" for component in components)
+    cache_tiers = sorted({str(component.get("cache_tier", "none")) for component in components})
+    tables = [str(component.get("table", "unknown")) for component in components]
+    lods = [str(component.get("lod", "unknown")) for component in components]
+    return tile, {
+        "source": "postgis",
+        "format": "mvt",
+        "layer": "eez_render",
+        "lod": "+".join(lods),
+        "cache": "hit" if cache_hit else "miss",
+        "cache_tier": "+".join(cache_tiers),
+        "table": "+".join(tables),
+        "z": z,
+        "x": x,
+        "y": y,
+        "bytes": len(tile),
+        "timing": {
+            "tile_ms": elapsed_ms(started),
+            "fill_ms": float((fill_meta.get("timing") or {}).get("tile_ms") or 0.0),
+            "boundary_ms": float((boundary_meta.get("timing") or {}).get("tile_ms") or 0.0),
+        },
+    }
+
+
 def eez_geojson_packet(
     config: dict[str, Any],
     *,

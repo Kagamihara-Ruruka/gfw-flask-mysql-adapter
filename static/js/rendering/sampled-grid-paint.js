@@ -72,16 +72,25 @@ const SampledGridColorScale = (() => {
     return Number.isFinite(number) ? number : null;
   }
 
+  function normalizedMaximum(value, datasetId) {
+    const maximum = numberOrNull(value);
+    if (maximum == null) return null;
+    const minimum = SampledGridContract.model(datasetId).valueDomain.min;
+    return Number.isFinite(minimum) && maximum <= minimum ? null : maximum;
+  }
+
   function createProfile(targetLayerId, datasetId = state.datasetId) {
     const configured = contract(datasetId);
     const configuredDomain = configured.domain || {};
     const fallback = state.sampledGridPaint || {};
+    const interpolation = window.LayerRuntimeContractRegistry?.spatialInterpolation?.(targetLayerId) || {};
     return {
       layerId: targetLayerId,
       datasetId,
       mode: normalizeMode(configured.mode || fallback.scaleMode),
       colorStops: normalizeSampledGridColorStops(configured.stops, fallback.colorStops),
-      maxValue: numberOrNull(configured.max_value ?? fallback.maxValue),
+      maxValue: normalizedMaximum(configured.max_value ?? fallback.maxValue, datasetId),
+      spatialInterpolation: interpolation.default_method === "linear" ? "linear" : "nearest",
       fixedDomainMin: numberOrNull(configuredDomain.min),
       fixedDomainMax: numberOrNull(configuredDomain.max),
       observedMin: null,
@@ -95,7 +104,12 @@ const SampledGridColorScale = (() => {
     state.sampledGridPaintProfiles = state.sampledGridPaintProfiles || {};
     const id = String(targetLayerId || layerId(datasetId)).trim().toLowerCase();
     const existing = state.sampledGridPaintProfiles[id];
-    if (existing && existing.datasetId === datasetId) return existing;
+    if (existing && existing.datasetId === datasetId) {
+      existing.spatialInterpolation = existing.spatialInterpolation === "nearest" ? "nearest" : "linear";
+      existing.colorStops = normalizeSampledGridColorStops(existing.colorStops);
+      existing.maxValue = normalizedMaximum(existing.maxValue, datasetId);
+      return existing;
+    }
     const created = createProfile(id, datasetId);
     state.sampledGridPaintProfiles[id] = created;
     return created;
@@ -195,21 +209,18 @@ const SampledGridColorScale = (() => {
       const bounds = canonicalFrame.boundsAt(index, boundsScratch);
       const rawValue = canonicalFrame.valueAt("value", index);
       const value = rawValue === null || rawValue === undefined || rawValue === "" ? null : Number(rawValue);
-      const coverage = canonicalFrame.valueAt("coverage_ratio", index);
-      const coverageRatio = coverage === null || coverage === undefined || coverage === "" ? null : Number(coverage);
       const status = String(canonicalFrame.valueAt("data_status", index) || "").trim().toLowerCase();
-      if (!bounds || !Number.isFinite(value) || status === "no_data") continue;
-      if (Number.isFinite(coverageRatio) && coverageRatio <= 0) continue;
+      if (!model.renderableValues({ bounds, value, dataStatus: status })) continue;
       if (value === 0 && !model.zeroIsData) continue;
       validIndices.push(index);
-      if (opacityForValue(value, configuredZeroOpacity) <= 0) continue;
-      renderIndices.push(index);
       minimum = minimum == null ? value : Math.min(minimum, value);
       maximum = maximum == null ? value : Math.max(maximum, value);
       if (value !== 0) {
         nonzeroMinimum = nonzeroMinimum == null ? value : Math.min(nonzeroMinimum, value);
         nonzeroMaximum = nonzeroMaximum == null ? value : Math.max(nonzeroMaximum, value);
       }
+      if (opacityForValue(value, configuredZeroOpacity) <= 0) continue;
+      renderIndices.push(index);
     }
     if (minimum != null && maximum != null) {
       targetProfile.observedMin = minimum;
@@ -242,6 +253,95 @@ const SampledGridColorScale = (() => {
     };
   }
 
+  function spatialInterpolationMethod(targetProfile = profile()) {
+    const capability = window.LayerRuntimeContractRegistry?.spatialInterpolation?.(targetProfile.layerId) || {};
+    const methods = Array.isArray(capability.methods) ? capability.methods : [];
+    if (capability.status !== "supported" || !methods.includes("linear")) return "nearest";
+    return targetProfile.spatialInterpolation === "nearest" ? "nearest" : "linear";
+  }
+
+  function spatialSurface(canonicalFrame, paintFrame = frame(canonicalFrame), validityMask = null) {
+    if (!CanonicalGridFrame.isFrame(canonicalFrame)) {
+      throw new TypeError("Sampled-grid spatial surface requires CanonicalGridFrame");
+    }
+    const cornerIds = new Map();
+    const cornerSums = [];
+    const cornerCounts = [];
+    const landSegmentSampleRatios = [0.25, 0.5, 0.75];
+    const capacity = paintFrame.validIndices.length;
+    const indices = new Uint32Array(capacity);
+    const cellCorners = new Uint32Array(capacity * 4);
+    const boundsScratch = {};
+    const keyFor = (longitude, latitude) => `${Number(longitude).toFixed(10)}:${Number(latitude).toFixed(10)}`;
+    const cornerIdFor = (key, value) => {
+      let cornerId = cornerIds.get(key);
+      if (cornerId === undefined) {
+        cornerId = cornerSums.length;
+        cornerIds.set(key, cornerId);
+        cornerSums.push(0);
+        cornerCounts.push(0);
+      }
+      cornerSums[cornerId] += value;
+      cornerCounts[cornerId] += 1;
+      return cornerId;
+    };
+    const segmentTouchesLand = (centerLongitude, centerLatitude, cornerLongitude, cornerLatitude) => {
+      if (!validityMask?.ready || typeof validityMask.sampleLand !== "function") return false;
+      if (typeof validityMask.sampleSegmentLand === "function") {
+        return validityMask.sampleSegmentLand(
+          centerLongitude,
+          centerLatitude,
+          cornerLongitude,
+          cornerLatitude,
+        ) === true;
+      }
+      for (const ratio of landSegmentSampleRatios) {
+        const longitude = centerLongitude * (1 - ratio) + cornerLongitude * ratio;
+        const latitude = centerLatitude * (1 - ratio) + cornerLatitude * ratio;
+        if (validityMask.sampleLand(longitude, latitude) === true) return true;
+      }
+      return false;
+    };
+    let count = 0;
+    for (const index of paintFrame.validIndices) {
+      const bounds = canonicalFrame.boundsAt(index, boundsScratch);
+      const value = Number(canonicalFrame.valueAt("value", index));
+      if (!bounds || !Number.isFinite(value)) continue;
+      const centerLongitude = (bounds.west + bounds.east) / 2;
+      const centerLatitude = (bounds.south + bounds.north) / 2;
+      const corners = [
+        [bounds.west, bounds.north],
+        [bounds.east, bounds.north],
+        [bounds.west, bounds.south],
+        [bounds.east, bounds.south],
+      ];
+      const offset = count * 4;
+      indices[count] = index;
+      for (let cornerOffset = 0; cornerOffset < 4; cornerOffset += 1) {
+        const [cornerLongitude, cornerLatitude] = corners[cornerOffset];
+        const key = segmentTouchesLand(
+          centerLongitude,
+          centerLatitude,
+          cornerLongitude,
+          cornerLatitude,
+        )
+          ? `land:${index}:${cornerOffset}`
+          : keyFor(cornerLongitude, cornerLatitude);
+        cellCorners[offset + cornerOffset] = cornerIdFor(key, value);
+      }
+      count += 1;
+    }
+    const values = new Float32Array(count * 4);
+    for (let cellIndex = 0; cellIndex < count; cellIndex += 1) {
+      const offset = cellIndex * 4;
+      for (let cornerOffset = 0; cornerOffset < 4; cornerOffset += 1) {
+        const cornerId = cellCorners[offset + cornerOffset];
+        values[offset + cornerOffset] = cornerSums[cornerId] / cornerCounts[cornerId];
+      }
+    }
+    return Object.freeze({ count, indices: indices.subarray(0, count), values });
+  }
+
   return {
     defaults: DEFAULT_SAMPLED_GRID_COLOR_STOPS,
     normalizeStops: normalizeSampledGridColorStops,
@@ -252,6 +352,8 @@ const SampledGridColorScale = (() => {
     colorParts,
     opacity,
     frame,
+    spatialInterpolationMethod,
+    spatialSurface,
   };
 })();
 
@@ -270,6 +372,151 @@ function sampledGridCellOpacity(row) {
 
 function sampledGridPaintFrame(frame) {
   return SampledGridColorScale.frame(frame);
+}
+
+function reconstructContinuousField(frame, paintFrame, validityMask = null) {
+  return SampledGridColorScale.spatialSurface(frame, paintFrame, validityMask);
+}
+
+function immutableRenderGridProfile(profile) {
+  if (!profile || typeof profile !== "object") return null;
+  return Object.freeze({
+    ...profile,
+    participants: Object.freeze((profile.participants || []).map((item) => Object.freeze({ ...item }))),
+    baseGeometry: profile.baseGeometry ? Object.freeze({ ...profile.baseGeometry }) : null,
+    geometry: profile.geometry ? Object.freeze({ ...profile.geometry }) : null,
+  });
+}
+
+function createSampledGridRenderContext(canonicalFrame, {
+  layerId = state.dataLayer,
+  datasetId = null,
+  alpha = null,
+  renderGridProfile = state.renderGridProfile,
+  requestContext = null,
+  frameIdentity = typeof FrameIdentity !== "undefined" ? FrameIdentity : null,
+  validityMask = null,
+  renderEpoch = 0,
+} = {}) {
+  if (!CanonicalGridFrame.isFrame(canonicalFrame)) {
+    throw new TypeError("Sampled-grid RenderContext requires CanonicalGridFrame");
+  }
+  if (canonicalFrame.rowCount > 0 && (!requestContext || !frameIdentity)) {
+    throw new TypeError("Non-empty sampled-grid RenderContext requires request identity");
+  }
+  const resolvedLayerId = String(layerId || "sampled-grid").trim().toLowerCase();
+  const resolvedDatasetId = String(
+    datasetId || SampledGridColorScale.datasetIdForLayer(resolvedLayerId) || state.datasetId || "",
+  ).trim();
+  const requestedLayerId = String(requestContext?.layerId || "").trim().toLowerCase();
+  const requestedDatasetId = String(
+    requestContext?.datasetId || requestContext?.dataset_id || "",
+  ).trim();
+  if (requestedLayerId && requestedLayerId !== resolvedLayerId) {
+    throw new Error("Sampled-grid RenderContext layer identity mismatch");
+  }
+  if (requestedDatasetId && requestedDatasetId !== resolvedDatasetId) {
+    throw new Error("Sampled-grid RenderContext dataset identity mismatch");
+  }
+  const normalizedRequest = requestContext && frameIdentity
+    ? frameIdentity.normalizeRequest({
+      ...requestContext,
+      layerId: resolvedLayerId,
+      datasetId: resolvedDatasetId,
+    })
+    : null;
+  const immutableRequest = normalizedRequest ? Object.freeze({ ...normalizedRequest }) : null;
+  if (canonicalFrame.rowCount > 0 && (!immutableRequest?.date || !immutableRequest?.bbox)) {
+    throw new TypeError("Non-empty sampled-grid RenderContext requires date and bbox identity");
+  }
+  const scopeKey = immutableRequest ? frameIdentity.scopeKey(immutableRequest) : "";
+  const frameKey = immutableRequest
+    ? frameIdentity.frameKey(immutableRequest, { frame: canonicalFrame })
+    : "";
+  const paintProfile = SampledGridColorScale.profile(resolvedLayerId, resolvedDatasetId);
+  const paintFrame = Object.freeze(SampledGridColorScale.frame(canonicalFrame, paintProfile));
+  const profile = immutableRenderGridProfile(renderGridProfile);
+  const interpolation = SampledGridColorScale.spatialInterpolationMethod(paintProfile);
+  const resolvedAlpha = Math.max(0, Math.min(1, Number(
+    alpha ?? state.layerAlpha?.[resolvedLayerId] ?? state.sampledGridPaint?.alpha ?? 1,
+  )));
+  const smoothInterpolation = interpolation === "linear"
+    && Number(profile?.aggregationFactor || 1) <= 1;
+  const maskRequired = Boolean(validityMask?.enabled);
+  const maskReady = !maskRequired || Boolean(
+    validityMask?.ready
+    && validityMask?.canvas
+    && validityMask?.scopeSignature,
+  );
+  const maskSnapshot = maskReady && maskRequired ? validityMask : null;
+  const resolvedRenderEpoch = Math.max(0, Math.floor(Number(renderEpoch) || 0));
+  const continuousFieldSignature = JSON.stringify({
+    layerId: resolvedLayerId,
+    datasetId: resolvedDatasetId,
+    spatialInterpolation: interpolation,
+    zeroIsData: paintFrame.model?.zeroIsData !== false,
+  });
+  return Object.freeze({
+    schema: "rrkal.sampled_grid_render_context.v2",
+    layerId: resolvedLayerId,
+    datasetId: resolvedDatasetId,
+    date: immutableRequest?.date || "",
+    bbox: immutableRequest?.bbox || "",
+    scopeKey,
+    frameKey,
+    requestContext: immutableRequest,
+    alpha: resolvedAlpha,
+    paintFrame,
+    renderGridProfile: profile,
+    spatialInterpolation: interpolation,
+    smoothInterpolation,
+    continuousFieldSignature,
+    renderEpoch: resolvedRenderEpoch,
+    maskRequired,
+    maskReady,
+    maskId: maskSnapshot?.maskId || "",
+    maskVersion: maskSnapshot?.maskVersion || "",
+    maskRevision: Number(maskSnapshot?.revision || 0),
+    maskScopeSignature: maskSnapshot?.scopeSignature || "",
+    validityMask: maskSnapshot,
+    signature: JSON.stringify({
+      layerId: resolvedLayerId,
+      datasetId: resolvedDatasetId,
+      frameKey,
+      alpha: resolvedAlpha,
+      renderGridProfile: profile?.signature || null,
+      spatialInterpolation: interpolation,
+      renderEpoch: resolvedRenderEpoch,
+      maskId: maskSnapshot?.maskId || "",
+      maskVersion: maskSnapshot?.maskVersion || "",
+      maskRevision: Number(maskSnapshot?.revision || 0),
+      maskScopeSignature: maskSnapshot?.scopeSignature || "",
+    }),
+  });
+}
+
+function isSampledGridRenderContext(value) {
+  return value?.schema === "rrkal.sampled_grid_render_context.v2"
+    && value.paintFrame
+    && typeof value.layerId === "string"
+    && typeof value.scopeKey === "string"
+    && typeof value.frameKey === "string"
+    && Number.isInteger(value.renderEpoch)
+    && typeof value.maskRequired === "boolean"
+    && typeof value.maskReady === "boolean";
+}
+
+function sampledGridRenderContextMatchesMask(context, currentMask) {
+  if (!isSampledGridRenderContext(context)) return false;
+  if (!context.maskRequired) return true;
+  return Boolean(
+    context.maskReady
+    && currentMask?.ready
+    && context.maskId === currentMask.maskId
+    && context.maskVersion === currentMask.maskVersion
+    && context.maskRevision === Number(currentMask.revision || 0)
+    && context.maskScopeSignature === currentMask.scopeSignature
+  );
 }
 
 function sampledGridHitCellAt(targetMap, frame, containerPoint) {
@@ -314,3 +561,7 @@ function sampledGridHitCellAt(targetMap, frame, containerPoint) {
 }
 
 window.SampledGridColorScale = SampledGridColorScale;
+window.createSampledGridRenderContext = createSampledGridRenderContext;
+window.isSampledGridRenderContext = isSampledGridRenderContext;
+window.sampledGridRenderContextMatchesMask = sampledGridRenderContextMatchesMask;
+window.reconstructContinuousField = reconstructContinuousField;

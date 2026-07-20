@@ -4,7 +4,12 @@ const { lineChartEscape } = window.WidgetCapabilityShared;
 const {
   widgetDateKey: lineChartDateKey,
   widgetFormatDateLabel: lineChartFormatDateLabel,
+  widgetSimpleMovingAverage: lineChartSimpleMovingAverage,
 } = globalThis.WidgetApplicationFunctions;
+const LINE_CHART_MOVING_AVERAGES = Object.freeze([
+  Object.freeze({ windowSize: 5, label: "MA5", color: "#fbbf24", dash: "solid" }),
+  Object.freeze({ windowSize: 10, label: "MA10", color: "#60a5fa", dash: "dash" }),
+]);
 class LineChartWidget extends ChartWidget {
   chartModel() {
     return this.services.dataSource.model();
@@ -29,6 +34,68 @@ class LineChartWidget extends ChartWidget {
     const values = (series?.values || []).map(Number).filter((value) => Number.isFinite(value));
     if (!values.length) return null;
     return values.reduce((sum, value) => sum + value, 0) / values.length;
+  }
+
+  indicatorSettings() {
+    if (!this.technicalIndicatorSettings) {
+      this.technicalIndicatorSettings = { movingAverageWindows: new Set() };
+    }
+    return this.technicalIndicatorSettings;
+  }
+
+  enabledMovingAverages() {
+    const enabled = this.indicatorSettings().movingAverageWindows;
+    return LINE_CHART_MOVING_AVERAGES.filter(({ windowSize }) => enabled.has(windowSize));
+  }
+
+  movingAverageSeries(model) {
+    const primary = this.primarySeries(model);
+    return this.enabledMovingAverages().map((definition) => ({
+      ...definition,
+      values: lineChartSimpleMovingAverage(primary.values, definition.windowSize),
+    }));
+  }
+
+  refreshPresentation() {
+    this.services.emit?.("rrkal:line-chart-data-changed", {
+      reason: "presentation_settings_changed",
+      widgetId: this.id,
+    });
+  }
+
+  renderCapabilitySettings({ pane } = {}) {
+    if (!pane) return;
+    const section = document.createElement("section");
+    section.className = "widget-query-settings widget-line-indicator-settings";
+
+    const heading = document.createElement("h4");
+    heading.textContent = "技術指標";
+    const description = document.createElement("p");
+    description.textContent = "依目前快取中的連續快照計算；缺值不補零，也不跨越資料缺口。";
+    const list = document.createElement("div");
+    list.className = "widget-query-option-list";
+    const settings = this.indicatorSettings();
+
+    for (const definition of LINE_CHART_MOVING_AVERAGES) {
+      const option = document.createElement("label");
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = settings.movingAverageWindows.has(definition.windowSize);
+      checkbox.dataset.lineIndicator = definition.label.toLowerCase();
+      checkbox.setAttribute("aria-label", `顯示 ${definition.label}`);
+      checkbox.addEventListener("change", () => {
+        if (checkbox.checked) settings.movingAverageWindows.add(definition.windowSize);
+        else settings.movingAverageWindows.delete(definition.windowSize);
+        this.refreshPresentation();
+      });
+      const label = document.createElement("span");
+      label.textContent = `${definition.label}（${definition.windowSize} 期移動平均）`;
+      option.append(checkbox, label);
+      list.append(option);
+    }
+
+    section.append(heading, description, list);
+    pane.append(section);
   }
 
   lineChartElementId() {
@@ -86,7 +153,7 @@ class LineChartWidget extends ChartWidget {
   }
 
   lineChartData(model) {
-    return (model.series || []).map((series) => ({
+    const sourceTraces = (model.series || []).map((series) => ({
       type: "scatter",
       mode: "lines+markers",
       name: series.label,
@@ -99,6 +166,20 @@ class LineChartWidget extends ChartWidget {
         `${model.xLabel}：%{x}<br>` +
         `${model.yLabel}：%{y:.1f} ${model.unit}<extra></extra>`,
     }));
+    const indicatorTraces = this.movingAverageSeries(model).map((series) => ({
+      type: "scatter",
+      mode: "lines",
+      name: series.label,
+      x: model.labels,
+      y: series.values,
+      connectgaps: false,
+      line: { color: series.color, width: 2.4, shape: "linear", dash: series.dash },
+      hovertemplate:
+        `${series.label}（${series.windowSize} 期）<br>` +
+        `${model.xLabel}：%{x}<br>` +
+        `${model.yLabel}：%{y:.1f} ${model.unit}<extra></extra>`,
+    }));
+    return [...sourceTraces, ...indicatorTraces];
   }
 
   lineChartLayout(model, { cinema = false } = {}) {
@@ -283,13 +364,21 @@ class LineChartWidget extends ChartWidget {
         <em>${label} / ${unit}</em>
       </span>
     `).join("");
-    const seriesList = model.series.map((series) => `
+    const sourceSeriesList = model.series.map((series) => `
       <span>
         <i style="--series-color: ${series.color}"></i>
         <b>${lineChartEscape(series.label)}</b>
         <em>${series.values.length} points</em>
       </span>
     `).join("");
+    const indicatorSeriesList = this.movingAverageSeries(model).map((series) => `
+      <span>
+        <i style="--series-color: ${series.color}"></i>
+        <b>${lineChartEscape(series.label)}</b>
+        <em>${series.windowSize} 期</em>
+      </span>
+    `).join("");
+    const seriesList = `${sourceSeriesList}${indicatorSeriesList}`;
 
     container.innerHTML = `
       <div class="widget-line-panel${cinema ? " is-cinema" : ""}">

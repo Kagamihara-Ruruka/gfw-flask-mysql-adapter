@@ -4,6 +4,12 @@ from copy import deepcopy
 from typing import Any
 
 from common_adapter.developer.config_service import load_layer_mappings, spatial_status_from_config
+from common_adapter.layers.capabilities import (
+    eez_high_seas_overlay_capability,
+    eez_land_mask_provider_capability,
+    land_mask_consumer_capability,
+    spatial_interpolation_capability,
+)
 from common_adapter.query.grid_registry import grid_profile_contract
 from common_adapter.query.sampled_grid import sampled_grid_available_resolutions
 
@@ -73,6 +79,8 @@ def _mapping_contracts(database_routes: list[tuple[str, Any, dict[str, Any]]]) -
                     "mapping_controller": True,
                     "sampled_grid": bool(sampled_grid),
                     "viewport_lod": bool(sampled_grid and sampled_grid_available_resolutions({"sampled_grid": sampled_grid})),
+                    "spatial_interpolation": spatial_interpolation_capability(sampled_grid),
+                    "land_mask_consumer": land_mask_consumer_capability(sampled_grid),
                 },
             }
         )
@@ -113,6 +121,7 @@ def _websocket_contracts(active_routes: list[tuple[str, Any, dict[str, Any]]]) -
                     "mapping_controller": False,
                     "delta_ingest": True,
                     "sql_read_model": True,
+                    "spatial_interpolation": spatial_interpolation_capability(None),
                 },
             }
         )
@@ -147,6 +156,9 @@ def _spatial_contracts(active_routes: list[tuple[str, Any, dict[str, Any]]]) -> 
                         "relational_query": False,
                         "schema_inspection": False,
                         "mapping_controller": False,
+                        "spatial_interpolation": spatial_interpolation_capability(None),
+                        "land_mask_provider": eez_land_mask_provider_capability(route_config, overlay_ref),
+                        "high_seas_overlay": eez_high_seas_overlay_capability(route_config, overlay_ref),
                     },
                 }
             )

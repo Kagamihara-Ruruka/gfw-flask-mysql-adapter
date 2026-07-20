@@ -51,6 +51,7 @@ const state = {
     polTypeColors: {
       disputed: "#ef5b5b",
       joint: "#f5a524",
+      high_seas: "#5578a8",
       other: "#94a3b8",
     },
   },
@@ -120,7 +121,6 @@ const state = {
   sampledGridMeta: null,
   sampledGridMetaByDataset: {},
   sampledGridResolutionByDataset: {},
-  sampledGridQueryResolutionByDataset: {},
   renderCapability: null,
   rendering: {
     sampledGridMode: "canvas",

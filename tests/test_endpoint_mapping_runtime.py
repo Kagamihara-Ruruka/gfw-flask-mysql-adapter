@@ -76,6 +76,10 @@ def _mapping() -> dict:
                 "origin_lon": -180,
                 "index_units_per_degree": 24,
             },
+            "value_semantics": {
+                "kind": "continuous",
+                "provenance": "source_scout",
+            },
         },
     }
 
@@ -195,6 +199,12 @@ class EndpointMappingRuntimeTests(unittest.TestCase):
             )
         )
         self.assertTrue(all(contract["source_route_group"] == "database" for contract in contracts))
+        self.assertTrue(
+            all(
+                contract["capabilities"]["spatial_interpolation"]["status"] == "supported"
+                for contract in contracts
+            )
+        )
 
         resolved = resolved_mapping_for_dataset(
             "pipeline.chlor_a",

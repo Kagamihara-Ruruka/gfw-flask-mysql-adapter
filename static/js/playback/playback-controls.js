@@ -198,7 +198,6 @@ function syncPlaybackSettingsInputs() {
   PlaybackDeliveryPolicy.apply(state);
   const interpolation = PlaybackInterpolationController.options(state);
   if ($("play-speed")) $("play-speed").value = String(normalizedPlaybackRate());
-  if ($("playback-rate")) $("playback-rate").value = String(normalizedPlaybackRate());
   if ($("playback-interpolation-mode")) $("playback-interpolation-mode").value = interpolation.mode;
   if ($("playback-cache-strategy")) $("playback-cache-strategy").value = options.strategy;
   if ($("query-network-concurrency")) {
@@ -261,7 +260,6 @@ function releasePlaybackRenderArtifacts(reason) {
 }
 
 function bindPlaybackSettingsControls() {
-  $("playback-rate")?.addEventListener("change", () => updatePlaybackSpeed("playback-rate"));
   $("playback-cache-strategy")?.addEventListener("change", (event) => {
     state.playbackCache.watermarkStrategy = event.target.value === "fixed" ? "fixed" : "adaptive";
     PlaybackCacheService.resetPolicy("strategy_changed");
@@ -561,14 +559,16 @@ function markPlaybackTargetWaiting(dates, targetIndex, decision, waitState = nul
 async function renderPlaybackDateIndex(dates, targetIndex) {
   const startedAt = ClockDomain.render.now();
   PlaybackRuntime.markRenderStarted(targetIndex);
-  await PlaybackRenderer.showDateIndex({
+  const renderResult = await PlaybackRenderer.showDateIndex({
     dates,
     targetIndex,
     dateInput: $("date"),
     updateControls: updatePlaybackControls,
     reloadActiveLayer,
   });
+  if (renderResult?.visible === false) return false;
   PlaybackRuntime.markFrameVisible(targetIndex, { renderMs: ClockDomain.render.now() - startedAt });
+  return true;
 }
 
 async function advancePlaybackToTimelineTarget(targetIndex, { stepMode = "sequential" } = {}) {
@@ -606,7 +606,8 @@ async function advancePlaybackToTimelineTarget(targetIndex, { stepMode = "sequen
   PlaybackCacheService.clearBufferState();
   updatePlaybackControls();
   syncPlaybackSettingsInputs();
-  await renderPlaybackDateIndex(dates, renderIndex);
+  const rendered = await renderPlaybackDateIndex(dates, renderIndex);
+  if (!rendered) return { advanced: false, buffering: true, done: false };
   return { advanced: true, rendered: true, done: renderIndex >= dates.length - 1 };
 }
 
@@ -707,10 +708,9 @@ async function normalizeDateInputs({ reload = true } = {}) {
 }
 
 function updatePlaybackSpeed(sourceId = "play-speed") {
-  const source = sourceId?.target || $(sourceId) || $("play-speed") || $("playback-rate");
+  const source = sourceId?.target || $(sourceId) || $("play-speed");
   state.playbackRate = normalizedPlaybackRateValue(source?.value || state.playbackRate);
   if ($("play-speed")) $("play-speed").value = String(state.playbackRate);
-  if ($("playback-rate")) $("playback-rate").value = String(state.playbackRate);
   if (typeof syncFullscreenPlaybackControls === "function") {
     syncFullscreenPlaybackControls();
   }

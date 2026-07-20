@@ -12,7 +12,7 @@
 
 依賴只能由 `application -> core -> capabilities -> registry -> runtime` 單向前進。UI 不得反向取得 `DataFrameStore`、`FrameDemandService` 或 `LayerQueryCoordinator`；`widget-launchpad.js` 位於 runtime 完成之後，透過公開 registry 與 panel API 操作，不反向讀取能力內部狀態。
 
-Widgets 的基礎合約是物件導向：每一個工具都是 `DashboardWidget` 的子類別，尺寸只能使用標準 preset：`1x1`、`1x2`、`1x3`、`2x2`、`2x3`。尺寸採「列 x 欄」語意，例如 `1x3` 是一列三欄。折線圖、圓餅圖、橫條圖、表格、窗格跳轉、測速與海域管轄判定工具都沿用這個合約，不在頁面中零散拼 DOM。
+Widgets 的基礎合約是物件導向：每一個工具都是 `DashboardWidget` 的子類別，尺寸只能使用標準 preset：`1x1`、`1x2`、`1x3`、`2x2`、`2x3`。尺寸採「列 x 欄」語意，例如 `1x3` 是一列三欄。折線圖、圓餅圖、橫條圖、表格、窗格跳轉、測速、海域管轄判定、使用說明與 BGM 工具都沿用這個合約，不在頁面中零散拼 DOM。使用說明固定註冊為 `1x1` 靜態能力，只整理目前 README 的有效操作語意，不建立 Query、Cache 或 Runtime 資料依賴。BGM 彩蛋同樣固定為 `1x1`；收合狀態只載入目前曲目的 Spotify oEmbed 專輯縮圖並保留底部聲紋，不建立播放器 iframe。第一階載入目前曲目的 Spotify 官方 Embed，第二階 16:9 視圖才附加播放清單，階段轉換保留同一個 iframe。曲目可用拖曳或鍵盤方向鍵排序，順序透過 Application Runtime 寫入 Browser profile；Widget 本身不直接存取瀏覽器儲存。它不接觸地圖 Query、Cache 或 Playback。折線圖的 MA5／MA10 是快取快照上的純 ViewModel 計算，只改變 Plotly trace；缺值不補零、不跨缺口，也不建立新的 Query 或快取身份。
 
 Widget 的滑鼠行為由 `bindWidgetPointerBehavior` 共用函式接管：左鍵是主要動作，右鍵是設定。卡片上的左鍵會展開詳細窗格，再次點擊窗格會切換成 16:9 視圖，再點擊一次才關閉；`Esc` 也會關閉。`WidgetRuntimeController` 由 `AppRuntime` 建立，並把同一個 `WidgetPopoverController` 注入所有 Widgets 面板；不使用 static singleton。
 

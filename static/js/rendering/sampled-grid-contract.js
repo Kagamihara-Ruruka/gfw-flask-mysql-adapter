@@ -62,9 +62,12 @@ class SampledGridContractModel {
 
   renderable(row) {
     if (!this.bounds(row) || this.value(row) == null) return false;
-    if (this.dataStatus(row) === "no_data") return false;
-    const coverageRatio = this.coverageRatio(row);
-    return coverageRatio == null || coverageRatio > 0;
+    return this.dataStatus(row) !== "no_data";
+  }
+
+  renderableValues({ bounds, value, dataStatus = "" } = {}) {
+    if (!bounds || sampledGridNumberOrNull(value) == null) return false;
+    return String(dataStatus || "").trim().toLowerCase() !== "no_data";
   }
 
   resolutionKm(row = null) {
@@ -241,52 +244,19 @@ const SampledGridContract = (() => {
       && Math.abs(leftNumber - rightNumber) <= 1e-9;
   }
 
-  function resolutionScope(datasetId, { bbox = null, coverageId = "", useLatest = false } = {}) {
-    const id = String(datasetId || "").trim();
-    const latestCoverageId = useLatest
-      ? String(state.sampledGridMetaByDataset?.[id]?.coverage_id || "").trim()
-      : "";
-    const resolvedCoverageId = String(coverageId || "").trim()
-      || latestCoverageId
-      || model(id).coverageIdForBbox(bbox);
-    if (resolvedCoverageId) return `coverage:${resolvedCoverageId}`;
-    const normalizedBbox = sampledGridBboxOrNull(bbox);
-    if (normalizedBbox && (model(id).contract.coverage_areas || []).length) {
-      return `bbox:${[normalizedBbox.west, normalizedBbox.south, normalizedBbox.east, normalizedBbox.north].join(",")}`;
-    }
-    return "default";
-  }
-
-  function queryRoute(datasetId, configuredResolutionKm, scope = {}) {
-    const routeKey = resolutionScope(datasetId, scope);
-    const route = state.sampledGridQueryResolutionByDataset?.[datasetId]?.[routeKey] || null;
-    const effective = sampledGridNumberOrNull(route?.effective_resolution_km);
-    if (!route
-      || !sameResolution(route.configured_resolution_km, configuredResolutionKm)
-      || !Number.isFinite(effective)
-      || effective <= 0) return null;
-    return route;
-  }
-
   function queryResolution({ datasetId = state.datasetId, bbox = null, coverageId = "" } = {}) {
-    const configuredResolutionKm = requestResolution({ datasetId });
-    const route = queryRoute(datasetId, configuredResolutionKm, { bbox, coverageId });
-    return sampledGridNumberOrNull(route?.effective_resolution_km) ?? configuredResolutionKm;
+    void bbox;
+    void coverageId;
+    return requestResolution({ datasetId });
   }
 
   function resolutionState(datasetId = state.datasetId, scope = {}) {
     const requestedResolutionKm = requestResolution({ datasetId });
-    const route = queryRoute(datasetId, requestedResolutionKm, {
-      ...scope,
-      useLatest: !scope.bbox && !scope.coverageId,
-    });
     const meta = state.sampledGridMetaByDataset?.[datasetId] || null;
     const metaRequested = sampledGridNumberOrNull(meta?.requested_resolution_km);
     const metaActual = sampledGridNumberOrNull(meta?.actual_resolution_km);
-    const actualResolutionKm = sampledGridNumberOrNull(route?.effective_resolution_km)
-      ?? (sameResolution(metaRequested, requestedResolutionKm) ? metaActual : null);
-    const queryResolutionKm = sampledGridNumberOrNull(route?.effective_resolution_km)
-      ?? requestedResolutionKm;
+    const actualResolutionKm = sameResolution(metaRequested, requestedResolutionKm) ? metaActual : null;
+    const queryResolutionKm = requestedResolutionKm;
     return {
       datasetId,
       requestedResolutionKm,
@@ -314,10 +284,8 @@ const SampledGridContract = (() => {
     if (!Number.isFinite(selected)) return null;
     state.sampledGridResolutionByDataset = state.sampledGridResolutionByDataset || {};
     state.sampledGridMetaByDataset = state.sampledGridMetaByDataset || {};
-    state.sampledGridQueryResolutionByDataset = state.sampledGridQueryResolutionByDataset || {};
     state.sampledGridResolutionByDataset[id] = selected;
     delete state.sampledGridMetaByDataset[id];
-    delete state.sampledGridQueryResolutionByDataset[id];
     if (id === state.datasetId) state.sampledGridMeta = null;
     emitResolutionChange(id, "requested_resolution_changed");
     return selected;
@@ -327,27 +295,7 @@ const SampledGridContract = (() => {
     const id = String(datasetId || "").trim();
     if (!id || !grid || typeof grid !== "object") return resolutionState(id);
     state.sampledGridMetaByDataset = state.sampledGridMetaByDataset || {};
-    state.sampledGridQueryResolutionByDataset = state.sampledGridQueryResolutionByDataset || {};
-    const configuredResolutionKm = requestResolution({ datasetId: id });
     const coverageId = String(grid.coverage_id || "").trim();
-    const routeKey = resolutionScope(id, { bbox, coverageId });
-    const sourceRequestedResolutionKm = sampledGridNumberOrNull(
-      grid.source_requested_resolution_km ?? grid.requested_resolution_km,
-    );
-    const actualResolutionKm = sampledGridNumberOrNull(grid.actual_resolution_km);
-    const previousRoute = queryRoute(id, configuredResolutionKm, { bbox, coverageId });
-    const continuesResolvedRoute = previousRoute
-      && sameResolution(sourceRequestedResolutionKm, previousRoute.effective_resolution_km);
-    if (Number.isFinite(actualResolutionKm)
-      && actualResolutionKm > 0
-      && (sameResolution(sourceRequestedResolutionKm, configuredResolutionKm) || continuesResolvedRoute)) {
-      state.sampledGridQueryResolutionByDataset[id] = state.sampledGridQueryResolutionByDataset[id] || {};
-      state.sampledGridQueryResolutionByDataset[id][routeKey] = {
-        configured_resolution_km: configuredResolutionKm,
-        effective_resolution_km: actualResolutionKm,
-        source_requested_resolution_km: sourceRequestedResolutionKm,
-      };
-    }
     state.sampledGridMetaByDataset[id] = { ...grid };
     if (id === state.datasetId) state.sampledGridMeta = state.sampledGridMetaByDataset[id];
     emitResolutionChange(id, "actual_resolution_resolved", { bbox, coverageId });

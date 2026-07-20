@@ -33,7 +33,7 @@ const PlaybackScheduler = (() => {
     return Math.max(1, Number(timeline?.nextFrameNumber || 1), elapsedFrames);
   }
 
-  function markFrameShown(timeline, { frameNumber = null } = {}) {
+  function markFrameShown(timeline, { frameNumber = null, shownAtMs = null } = {}) {
     if (!timeline) return null;
     if (timeline.stepMode === "fluid") {
       const shownFrameNumber = Math.max(1, Number(frameNumber || timeline.nextFrameNumber || 1));
@@ -41,6 +41,10 @@ const PlaybackScheduler = (() => {
       return timeline;
     }
     timeline.nextFrameNumber = Number(timeline.nextFrameNumber || 1) + 1;
+    if (shownAtMs !== null && Number.isFinite(Number(shownAtMs))) {
+      const intervalMs = Math.max(1, Number(timeline.intervalMs || 1));
+      timeline.startedAt = Number(shownAtMs) - ((timeline.nextFrameNumber - 1) * intervalMs);
+    }
     return timeline;
   }
 

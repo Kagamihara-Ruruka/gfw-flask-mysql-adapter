@@ -36,6 +36,13 @@
       "tile_cache_max": 2048,
       "tile_cache_path": "data/eez/mvt-cache",
       "tile_query_concurrency": 6,
+      "domain_mask": {
+        "enabled": true,
+        "topology_precision_degrees": 0.025,
+        "topology_partition_degrees": 30,
+        "prepare_on_startup": true,
+        "cache_path": "data/eez/derived-domain-cache"
+      },
       "postgis": {
         "host": "127.0.0.1",
         "port": 5433,

@@ -10,6 +10,26 @@ function browserProfileNumber(value, fallback, minimum = -Infinity, maximum = In
   return Number.isFinite(number) ? Math.max(minimum, Math.min(maximum, number)) : fallback;
 }
 
+function browserProfileNullableNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function normalizeWidgetPreferences(value = {}) {
+  const spotifyPlayer = value?.["spotify-player"] && typeof value["spotify-player"] === "object"
+    ? value["spotify-player"]
+    : {};
+  const trackOrder = Array.isArray(spotifyPlayer.trackOrder)
+    ? [...new Set(spotifyPlayer.trackOrder
+      .map((item) => String(item || "").trim())
+      .filter((item) => /^[A-Za-z0-9]{22}$/.test(item)))]
+    : [];
+  return {
+    "spotify-player": { trackOrder },
+  };
+}
+
 function normalizeBrowserProfile(value = {}) {
   const mapSettings = value.mapSettings && typeof value.mapSettings === "object"
     ? value.mapSettings
@@ -24,13 +44,14 @@ function normalizeBrowserProfile(value = {}) {
       layerId: String(profile?.layerId || key),
       datasetId: String(profile?.datasetId || ""),
       mode: profile?.mode === "nonzero_extent" ? "nonzero_extent" : "contract",
-      colorStops: Array.isArray(profile?.colorStops)
+      spatialInterpolation: profile?.spatialInterpolation === "nearest" ? "nearest" : "linear",
+      colorStops: Array.isArray(profile?.colorStops) && profile.colorStops.length >= 2
         ? profile.colorStops.map((stop) => ({
           position: browserProfileNumber(stop?.position, 0, 0, 1),
           color: String(stop?.color || "#2d8296"),
         }))
-        : [],
-      maxValue: Number.isFinite(Number(profile?.maxValue)) ? Number(profile.maxValue) : null,
+        : undefined,
+      maxValue: browserProfileNullableNumber(profile?.maxValue),
     }]),
   );
   return {
@@ -58,6 +79,7 @@ function normalizeBrowserProfile(value = {}) {
     layerAlpha,
     eezPaint: browserProfileClone(value.eezPaint || {}),
     sampledGridPaintProfiles: paintProfiles,
+    widgetPreferences: normalizeWidgetPreferences(value.widgetPreferences),
     hardwareMode: ["auto", "webgl", "off"].includes(value.hardwareMode) ? value.hardwareMode : "auto",
     aisRenderStrategy: value.aisRenderStrategy === "point_dots" ? "point_dots" : "density_grid",
   };
@@ -99,6 +121,10 @@ function hydrateBrowserProfileState(targetState, profile) {
     ...(targetState.sampledGridPaintProfiles || {}),
     ...(profile.sampledGridPaintProfiles || {}),
   };
+  targetState.widgetPreferences = {
+    ...(targetState.widgetPreferences || {}),
+    ...(profile.widgetPreferences || {}),
+  };
   targetState.browserProfile = {
     ...(targetState.browserProfile || {}),
     hardwareMode: profile.hardwareMode,
@@ -138,6 +164,7 @@ class BrowserProfileStoreCore {
       layerAlpha: this.targetState.layerAlpha,
       eezPaint: this.targetState.eezPaint,
       sampledGridPaintProfiles: this.targetState.sampledGridPaintProfiles,
+      widgetPreferences: this.targetState.widgetPreferences,
       hardwareMode: this.targetState.browserProfile?.hardwareMode,
       aisRenderStrategy: this.targetState.browserProfile?.aisRenderStrategy,
     });

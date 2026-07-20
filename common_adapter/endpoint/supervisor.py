@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import logging
 import socket
 import subprocess
 import sys
@@ -12,6 +13,9 @@ from typing import Any, Callable
 
 from common_adapter.config.paths import ROOT
 from common_adapter.layers.runtime import active_config_files_by_group
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -106,6 +110,19 @@ class ManagedEndpointSupervisor:
         self._processes: dict[str, subprocess.Popen[Any]] = {}
         self._streams: dict[str, tuple[Any, Any]] = {}
         self._statuses: dict[str, dict[str, Any]] = {}
+        self._status_change_listeners: list[Callable[[], None]] = []
+
+    def subscribe_status_changes(self, listener: Callable[[], None]) -> Callable[[], None]:
+        """Subscribe to endpoint lifecycle changes and return an unsubscribe callback."""
+        with self._lock:
+            self._status_change_listeners.append(listener)
+
+        def unsubscribe() -> None:
+            with self._lock:
+                if listener in self._status_change_listeners:
+                    self._status_change_listeners.remove(listener)
+
+        return unsubscribe
 
     def start(self) -> list[dict[str, Any]]:
         statuses = self.ensure_all()
@@ -145,11 +162,14 @@ class ManagedEndpointSupervisor:
     def ensure_all(self) -> list[dict[str, Any]]:
         specs = self._specs()
         active_refs = {spec["config_ref"] for spec in specs}
+        status_removed = False
         with self._lock:
             stale_refs = set(self._processes) - active_refs
             for config_ref in stale_refs:
                 self._stop_owned_process(config_ref)
-                self._statuses.pop(config_ref, None)
+                status_removed = self._statuses.pop(config_ref, None) is not None or status_removed
+        if status_removed:
+            self._notify_status_change()
         return [self.ensure(spec) for spec in specs]
 
     def statuses(self) -> list[dict[str, Any]]:
@@ -158,30 +178,29 @@ class ManagedEndpointSupervisor:
 
     def ensure(self, spec: dict[str, Any]) -> dict[str, Any]:
         config_ref = spec["config_ref"]
-        with self._lock:
-            if self.port_probe(spec["host"], spec["port"]):
+        if self.port_probe(spec["host"], spec["port"]):
+            with self._lock:
                 process = self._processes.get(config_ref)
-                status = self._status(spec, "ready", process=process)
-                self._statuses[config_ref] = status
-                return deepcopy(status)
+            return self._record_status(self._status(spec, "ready", process=process))
+
+        launch_error: Exception | None = None
+        with self._lock:
             process = self._processes.get(config_ref)
             if process is None or process.poll() is not None:
                 self._close_streams(config_ref)
                 try:
                     process = self._launch(spec)
                 except (OSError, ValueError) as exc:
-                    status = self._status(spec, "failed", error=str(exc))
-                    self._statuses[config_ref] = status
-                    return deepcopy(status)
-                self._processes[config_ref] = process
+                    launch_error = exc
+                else:
+                    self._processes[config_ref] = process
+        if launch_error is not None:
+            return self._record_status(self._status(spec, "failed", error=str(launch_error)))
 
         deadline = time.monotonic() + spec["startup_timeout_seconds"]
         while time.monotonic() < deadline and not self._stop_event.is_set():
             if self.port_probe(spec["host"], spec["port"]):
-                status = self._status(spec, "ready", process=process)
-                with self._lock:
-                    self._statuses[config_ref] = status
-                return deepcopy(status)
+                return self._record_status(self._status(spec, "ready", process=process))
             if process.poll() is not None:
                 break
             self._stop_event.wait(0.1)
@@ -190,10 +209,26 @@ class ManagedEndpointSupervisor:
             if process.poll() is not None
             else f"startup timeout after {spec['startup_timeout_seconds']:.1f}s"
         )
-        status = self._status(spec, "failed", process=process, error=error)
+        return self._record_status(self._status(spec, "failed", process=process, error=error))
+
+    def _record_status(self, status: dict[str, Any]) -> dict[str, Any]:
+        config_ref = str(status["config_ref"])
         with self._lock:
+            previous = self._statuses.get(config_ref)
             self._statuses[config_ref] = status
+            changed = previous != status
+        if changed:
+            self._notify_status_change()
         return deepcopy(status)
+
+    def _notify_status_change(self) -> None:
+        with self._lock:
+            listeners = tuple(self._status_change_listeners)
+        for listener in listeners:
+            try:
+                listener()
+            except Exception:
+                LOGGER.exception("Managed endpoint status listener failed")
 
     def _specs(self) -> list[dict[str, Any]]:
         routes = [

@@ -51,7 +51,6 @@ function loadContract(dataset) {
       sampledGridMeta: null,
       sampledGridMetaByDataset: {},
       sampledGridResolutionByDataset: {},
-      sampledGridQueryResolutionByDataset: {},
     },
     map: {
       getZoom: () => 6,
@@ -151,7 +150,6 @@ function loadVirtualGridContract({ zoom = 6, enabledLayerIds = ["gfw", "pipeline
       sampledGridMeta: null,
       sampledGridMetaByDataset: {},
       sampledGridResolutionByDataset: {},
-      sampledGridQueryResolutionByDataset: {},
       importedLayers: { gfw: true, "pipeline.fishing": true, eez: true },
       layerContracts: [
         { layer_id: "gfw", label: "GFW", imported: true, capabilities: { sampled_grid: true } },
@@ -370,7 +368,7 @@ test("sampled-grid defaults to the finest mapped resolution and accepts a per-da
   });
 });
 
-test("sampled-grid reuses a resolved source fallback without changing the configured resolution", () => {
+test("sampled-grid records actual resolution without feeding it back into query policy", () => {
   const { contract } = loadContract({
     sampled_grid: {
       contract_version: "rrkal.sampled_grid.v1",
@@ -402,7 +400,7 @@ test("sampled-grid reuses a resolved source fallback without changing the config
   assert.equal(contract.queryResolution({
     datasetId: "mapped-source",
     bbox: northwestPacificBbox,
-  }), 16);
+  }), 4);
   assert.equal(contract.queryResolution({ datasetId: "mapped-source", bbox: taiwanBbox }), 4);
   assert.deepEqual(
     JSON.parse(JSON.stringify(contract.resolutionState("mapped-source"))),
@@ -411,7 +409,7 @@ test("sampled-grid reuses a resolved source fallback without changing the config
       requestedResolutionKm: 4,
       actualResolutionKm: 16,
       selectionResolutionKm: 4,
-      queryResolutionKm: 16,
+      queryResolutionKm: 4,
       degraded: true,
       resolved: true,
     },
@@ -426,7 +424,7 @@ test("sampled-grid reuses a resolved source fallback without changing the config
   assert.equal(contract.queryResolution({
     datasetId: "mapped-source",
     bbox: northwestPacificBbox,
-  }), 16);
+  }), 4);
   assert.equal(contract.queryResolution({ datasetId: "mapped-source", bbox: taiwanBbox }), 4);
 
   contract.setRequestedResolution("mapped-source", 32);
@@ -492,7 +490,7 @@ test("virtual grid keeps the finest configured resolution independent of map zoo
   assert.equal(snapshot.participants.find((item) => item.layer_id === "pipeline.fishing").requested_resolution_km, 4);
 });
 
-test("virtual grid keeps configured selection resolution when the query route falls back", () => {
+test("virtual grid keeps requested query resolution while exposing observed source resolution", () => {
   const context = loadVirtualGridContract({
     zoom: 6,
     enabledLayerIds: ["pipeline.fishing"],
@@ -509,7 +507,7 @@ test("virtual grid keeps configured selection resolution when the query route fa
   assert.equal(snapshot.participants[0].requested_resolution_km, 4);
   assert.equal(snapshot.participants[0].actual_resolution_km, 16);
   assert.equal(snapshot.participants[0].selection_resolution_km, 4);
-  assert.equal(snapshot.participants[0].query_resolution_km, 16);
+  assert.equal(snapshot.participants[0].query_resolution_km, 4);
   assert.equal(snapshot.participants[0].lod_degraded, true);
 });
 
@@ -653,7 +651,57 @@ test("mapping can hide zero-value paint without removing zero from the grid cont
   assert.equal(paintPlan.validIndices.length, 1);
 });
 
-test("sampled-grid paint excludes no-coverage fill values before computing the color domain", () => {
+test("invalid persisted display limit cannot collapse a contract color domain", () => {
+  const dataset = {
+    layer_id: "pipeline_iceberg.chlor_a",
+    sampled_grid: {
+      contract_version: "rrkal.sampled_grid.v1",
+      value_domain: { min: 0, max: 100 },
+      geometry: {
+        encoding: "center",
+        cell_width_degrees: 1,
+        cell_height_degrees: 1,
+      },
+      visualization: {
+        color_scale: {
+          mode: "contract",
+          stops: [
+            { position: 0, color: "#163b4a" },
+            { position: 0.25, color: "#2d8296" },
+            { position: 0.5, color: "#4dbb9b" },
+            { position: 0.75, color: "#e2bd52" },
+            { position: 1, color: "#d85a30" },
+          ],
+        },
+      },
+    },
+  };
+  const { context, colorScale, frameFromRows: makeFrame } = loadColorScale(dataset);
+  context.state.sampledGridPaintProfiles[dataset.layer_id] = {
+    layerId: dataset.layer_id,
+    datasetId: "mapped-source",
+    mode: "contract",
+    spatialInterpolation: "linear",
+    colorStops: dataset.sampled_grid.visualization.color_scale.stops,
+    maxValue: 0,
+  };
+
+  const profile = colorScale.profile(dataset.layer_id, "mapped-source");
+  const paintFrame = colorScale.frame(makeFrame([
+    { value: 6.071487475368852, data_status: "filled", bounds: { west: 120, south: 20, east: 121, north: 21 } },
+    { value: 100, data_status: "observed", bounds: { west: 121, south: 20, east: 122, north: 21 } },
+  ]), profile);
+
+  assert.equal(profile.maxValue, null);
+  assert.equal(paintFrame.domain.min, 0);
+  assert.equal(paintFrame.domain.max, 100);
+  const lowColor = paintFrame.colorPartsForValue(6.071487475368852);
+  const highColor = paintFrame.colorPartsForValue(100);
+  assert.ok(lowColor[0] < 60, `expected a low-domain color, got ${lowColor.join(",")}`);
+  assert.deepEqual(Array.from(highColor), [216, 90, 48]);
+});
+
+test("canonical filled status remains renderable regardless of source coverage metadata", () => {
   const { contract, colorScale, frameFromRows: makeFrame } = loadColorScale({
     layer_id: "coverage-grid",
     sampled_grid: {
@@ -666,19 +714,61 @@ test("sampled-grid paint excludes no-coverage fill values before computing the c
   });
   const bounds = { west: 120, south: 20, east: 121, north: 21 };
   const rows = [
-    { value: 8.6485, coverage_ratio: 0, data_status: "contains_filled", bounds },
-    { value: 11, coverage_ratio: 0.5, data_status: "contains_filled", bounds },
+    { value: 8.6485, coverage_ratio: 0, data_status: "filled", bounds },
+    { value: 11, coverage_ratio: 0.5, data_status: "filled", bounds },
     { value: 12, data_status: "no_data", bounds },
     { value: 13, data_status: "observed", bounds },
   ];
 
-  assert.equal(contract.model().renderable(rows[0]), false);
+  assert.equal(contract.model().renderable(rows[0]), true);
   assert.equal(contract.model().renderable(rows[1]), true);
   const frame = makeFrame(rows);
   const plan = colorScale.frame(frame);
-  assert.deepEqual(Array.from(plan.indices, (index) => frame.valueAt("value", index)), [11, 13]);
-  assert.equal(colorScale.domain().min, 11);
+  assert.deepEqual(Array.from(plan.indices, (index) => frame.valueAt("value", index)), [8.6485, 11, 13]);
+  assert.equal(colorScale.domain().min, 8.6485);
   assert.equal(colorScale.domain().max, 13);
+});
+
+test("linear sampled-grid paint consumes canonical validity without reinterpreting coverage metadata", () => {
+  const loaded = loadColorScale({
+    layer_id: "coverage-grid",
+    sampled_grid: {
+      contract_version: "rrkal.sampled_grid.v1",
+      geometry: { encoding: "center", cell_width_degrees: 1, cell_height_degrees: 1 },
+      visualization: {
+        color_scale: { mode: "nonzero_extent", zero_opacity: 1 },
+      },
+    },
+  });
+  loaded.context.LayerRuntimeContractRegistry = {
+    spatialInterpolation() {
+      return { status: "supported", methods: ["nearest", "linear"], default_method: "linear" };
+    },
+  };
+  const profile = loaded.colorScale.profile("coverage-grid");
+  profile.spatialInterpolation = "linear";
+  const bounds = { west: 120, south: 20, east: 121, north: 21 };
+  const rows = [
+    { value: 8.6485, coverage_ratio: 0, data_status: "filled", bounds },
+    { value: 13, coverage_ratio: 1, data_status: "observed", bounds },
+    { value: 99, coverage_ratio: 0, data_status: "observed", bounds },
+    { value: 12, coverage_ratio: 1, data_status: "no_data", bounds },
+  ];
+
+  assert.equal(loaded.contract.model().renderable(rows[0]), true);
+  const frame = loaded.frameFromRows(rows);
+  const plan = loaded.colorScale.frame(frame, profile);
+  assert.deepEqual(Array.from(plan.validIndices, (index) => frame.valueAt("value", index)), [8.6485, 13, 99]);
+  assert.deepEqual(Array.from(plan.indices, (index) => frame.valueAt("value", index)), [8.6485, 13, 99]);
+});
+
+test("renderer does not interpret provider-specific sampled-grid status vocabulary", () => {
+  const source = fs.readFileSync(
+    path.join(root, "static/js/rendering/sampled-grid-paint.js"),
+    "utf8",
+  );
+  assert.doesNotMatch(source, /contains_filled|derived_with_fill|zero_filled/);
+  assert.doesNotMatch(source, /coverage_ratio/);
 });
 
 test("sampled-grid paint skips zero by default while preserving an explicit override", () => {
@@ -734,6 +824,111 @@ test("sampled-grid frame plan reuses one compiled paint context per frame", () =
   assert.deepEqual(scratch, [216, 90, 48]);
 });
 
+test("sampled-grid RenderContext freezes frame-owned paint and grid identities", () => {
+  const loaded = loadColorScale({
+    layer_id: "context-grid",
+    sampled_grid: {
+      contract_version: "rrkal.sampled_grid.v1",
+      geometry: { encoding: "center", cell_width_degrees: 1, cell_height_degrees: 1 },
+      visualization: { color_scale: { zero_opacity: 1 } },
+    },
+  });
+  loaded.context.state.layerAlpha = { "context-grid": 0.6 };
+  loaded.context.state.renderGridProfile = {
+    signature: "grid-a",
+    aggregationFactor: 1,
+    participants: [{ layerId: "context-grid", resolutionKm: 4 }],
+    geometry: { cellWidthDegrees: 1, cellHeightDegrees: 1 },
+  };
+  const frame = loaded.frameFromRows([{
+    value: 10,
+    coverage_ratio: 1,
+    bounds: { west: 120, south: 20, east: 121, north: 21 },
+  }]);
+  const createContext = vm.runInContext("createSampledGridRenderContext", loaded.context);
+  const frameIdentity = {
+    normalizeRequest: (request) => Object.freeze({ ...request, bbox: String(request.bbox || "") }),
+    scopeKey: (request) => `scope|${request.datasetId}|${request.bbox}|${request.queryResolution}`,
+    frameKey: (request) => `frame|${request.datasetId}|${request.date}|${request.bbox}`,
+  };
+  const renderContext = createContext(frame, {
+    layerId: "context-grid",
+    datasetId: "mapped-source",
+    requestContext: {
+      datasetId: "mapped-source",
+      date: "2020-01-01",
+      bbox: "120,20,121,21",
+      queryResolution: 4,
+    },
+    frameIdentity,
+    renderEpoch: 7,
+    validityMask: Object.freeze({
+      enabled: true,
+      ready: true,
+      maskId: "eez",
+      maskVersion: "v12:v2",
+      revision: 4,
+      scopeSignature: "mask-scope-a",
+      canvas: Object.freeze({ id: "mask-canvas-a" }),
+    }),
+  });
+  const initialColor = renderContext.paintFrame.colorCssForValue(10);
+
+  loaded.context.state.layerAlpha["context-grid"] = 0.1;
+  loaded.context.state.renderGridProfile.signature = "grid-b";
+  loaded.colorScale.profile("context-grid").colorStops[0].color = "#ffffff";
+
+  assert.equal(renderContext.alpha, 0.6);
+  assert.equal(renderContext.date, "2020-01-01");
+  assert.equal(renderContext.bbox, "120,20,121,21");
+  assert.equal(renderContext.scopeKey, "scope|mapped-source|120,20,121,21|4");
+  assert.equal(renderContext.frameKey, "frame|mapped-source|2020-01-01|120,20,121,21");
+  assert.equal(renderContext.renderEpoch, 7);
+  assert.equal(renderContext.maskId, "eez");
+  assert.equal(renderContext.maskVersion, "v12:v2");
+  assert.equal(renderContext.maskRevision, 4);
+  assert.equal(renderContext.maskScopeSignature, "mask-scope-a");
+  assert.equal(renderContext.validityMask.canvas.id, "mask-canvas-a");
+  assert.equal(Object.isFrozen(renderContext.requestContext), true);
+  assert.equal(renderContext.renderGridProfile.signature, "grid-a");
+  assert.equal(renderContext.paintFrame.colorCssForValue(10), initialColor);
+  assert.equal(Object.isFrozen(renderContext), true);
+  assert.equal(Object.isFrozen(renderContext.renderGridProfile), true);
+  const matchesMask = vm.runInContext("sampledGridRenderContextMatchesMask", loaded.context);
+  assert.equal(matchesMask(renderContext, {
+    ready: true,
+    maskId: "eez",
+    maskVersion: "v12:v2",
+    revision: 4,
+    scopeSignature: "mask-scope-a",
+  }), true);
+  assert.equal(matchesMask(renderContext, {
+    ready: true,
+    maskId: "eez",
+    maskVersion: "v12:v2",
+    revision: 5,
+    scopeSignature: "mask-scope-a",
+  }), false);
+  assert.throws(
+    () => createContext(frame, { layerId: "context-grid", datasetId: "mapped-source" }),
+    /request identity/,
+  );
+  assert.throws(
+    () => createContext(frame, {
+      layerId: "context-grid",
+      datasetId: "mapped-source",
+      requestContext: {
+        layerId: "context-grid",
+        datasetId: "another-source",
+        date: "2020-01-01",
+        bbox: "120,20,121,21",
+      },
+      frameIdentity,
+    }),
+    /dataset identity mismatch/,
+  );
+});
+
 test("sampled-grid WebGL preserves the configured alpha instead of squaring it", () => {
   const source = fs.readFileSync(
     path.join(root, "static/js/rendering/sampled-grid-webgl-renderer.js"),
@@ -753,10 +948,106 @@ test("sampled-grid settings expose contract-driven multi-stop controls", () => {
   assert.match(template, /id="sampled-grid-resolution"/);
   assert.match(template, /id="sampled-grid-scale-mode"/);
   assert.match(template, /id="sampled-grid-color-stops"/);
+  assert.match(template, /id="sampled-grid-spatial-interpolation"/);
   assert.match(settings, /availableResolutionsKm/);
+  assert.match(settings, /spatialInterpolation/);
   assert.match(settings, /setRequestedResolution/);
   assert.doesNotMatch(settings, /\[\s*4\s*,\s*16\s*,\s*32\s*\]/);
   assert.doesNotMatch(template, /id="gfw-(?:low|high)-color"/);
+});
+
+test("spatial interpolation uses valid values independently of display opacity", () => {
+  const { colorScale, frameFromRows: makeFrame } = loadColorScale({
+    layer_id: "continuous-grid",
+    sampled_grid: {
+      contract_version: "rrkal.sampled_grid.v1",
+      geometry: { encoding: "center", cell_width_degrees: 1, cell_height_degrees: 1 },
+      visualization: { color_scale: { zero_opacity: 0 } },
+    },
+  });
+  const frame = makeFrame([
+    { value: 10, bounds: { west: 0, south: 0, east: 1, north: 1 } },
+    { value: 30, bounds: { west: 1, south: 0, east: 2, north: 1 } },
+    { value: 0, bounds: { west: 2, south: 0, east: 3, north: 1 } },
+  ]);
+  const paintFrame = colorScale.frame(frame);
+  const surface = colorScale.spatialSurface(frame, paintFrame);
+
+  assert.equal(surface.count, 3);
+  assert.deepEqual(Array.from(surface.indices), [0, 1, 2]);
+  assert.deepEqual(
+    Array.from(surface.values),
+    [10, 20, 10, 20, 20, 15, 20, 15, 15, 0, 15, 0],
+  );
+});
+
+test("spatial interpolation excludes null and no-data cells from the validity surface", () => {
+  const { colorScale, frameFromRows: makeFrame } = loadColorScale({
+    layer_id: "continuous-grid",
+    sampled_grid: {
+      contract_version: "rrkal.sampled_grid.v1",
+      geometry: { encoding: "center", cell_width_degrees: 1, cell_height_degrees: 1 },
+      visualization: { color_scale: { zero_opacity: 1 } },
+    },
+  });
+  const frame = makeFrame([
+    { value: 0, data_status: "observed", bounds: { west: 0, south: 0, east: 1, north: 1 } },
+    { value: null, data_status: "no_data", bounds: { west: 1, south: 0, east: 2, north: 1 } },
+  ]);
+  const paintFrame = colorScale.frame(frame);
+  const surface = colorScale.spatialSurface(frame, paintFrame);
+
+  assert.deepEqual(Array.from(paintFrame.validIndices), [0]);
+  assert.deepEqual(Array.from(surface.indices), [0]);
+  assert.deepEqual(Array.from(surface.values), [0, 0, 0, 0]);
+});
+
+test("spatial interpolation does not share corner values through land", () => {
+  const { colorScale, frameFromRows: makeFrame } = loadColorScale({
+    layer_id: "continuous-grid",
+    sampled_grid: {
+      contract_version: "rrkal.sampled_grid.v1",
+      geometry: { encoding: "center", cell_width_degrees: 1, cell_height_degrees: 1 },
+      visualization: { color_scale: { zero_opacity: 1 } },
+    },
+  });
+  const frame = makeFrame([
+    { value: 10, bounds: { west: 0, south: 0, east: 1, north: 1 } },
+    { value: 30, bounds: { west: 1, south: 0, east: 2, north: 1 } },
+  ]);
+  const validityMask = {
+    ready: true,
+    sampleLand(longitude) { return longitude > 1; },
+  };
+  const surface = colorScale.spatialSurface(frame, colorScale.frame(frame), validityMask);
+
+  assert.deepEqual(Array.from(surface.values), [10, 10, 10, 10, 30, 30, 30, 30]);
+});
+
+test("spatial interpolation capability is compiled without source-specific layer names", () => {
+  const capability = fs.readFileSync(
+    path.join(root, "common_adapter/layers/capabilities.py"),
+    "utf8",
+  );
+  const mappingController = fs.readFileSync(
+    path.join(root, "static/js/ui/developer/developer-mapping-controller.js"),
+    "utf8",
+  );
+  const renderer = fs.readFileSync(
+    path.join(root, "static/js/rendering/sampled-grid-webgl-renderer.js"),
+    "utf8",
+  );
+  const scoutCompilerStart = mappingController.indexOf("scoutValueSemantics(select)");
+  const scoutCompiler = mappingController.slice(
+    scoutCompilerStart,
+    mappingController.indexOf("mappingForTable(profile, table)", scoutCompilerStart),
+  );
+  assert.doesNotMatch(capability, /pipeline_iceberg|gfw|chlor_a/i);
+  assert.match(scoutCompiler, /columnValueSemantics/);
+  assert.doesNotMatch(scoutCompiler, /numeric_candidate|continuous_candidate/);
+  assert.match(renderer, /spatialSurface/);
+  assert.match(renderer, /a_value/);
+  assert.match(renderer, /sampledColor/);
 });
 
 test("non-zero extent includes negative values instead of silently meaning positive-only", () => {
@@ -974,7 +1265,7 @@ test("sampled-grid widgets consume canonical roles instead of GFW identifiers", 
   assert.match(functions, /dataset\?\.sampled_grid\) return "value"/);
 });
 
-test("widget queries use the virtual cell effective resolution after fallback", () => {
+test("widget queries keep requested resolution when the observed source resolution differs", () => {
   const queryContext = loadWidgetQueryContext([]);
   const layer = { datasetId: "pipeline.fishing", layerId: "pipeline.fishing" };
   const selection = {
@@ -991,9 +1282,9 @@ test("widget queries use the virtual cell effective resolution after fallback", 
     };
   const resolution = queryContext.resolutionFor(layer, selection);
   const request = queryContext.request(layer, selection);
-  assert.equal(resolution, 16);
+  assert.equal(resolution, 4);
   assert.equal(request.resolution, 4);
-  assert.equal(request.queryResolution, 16);
+  assert.equal(request.queryResolution, 4);
 });
 
 test("line chart derives its moving window from the canonical snapshot cache", () => {
@@ -1200,6 +1491,10 @@ test("sampled-grid WebGL contexts are explicitly released and support probing is
   assert.match(webgl, /let sampledGridWebglSupported = null/);
   assert.match(webgl, /if \(sampledGridWebglSupported !== null\) return sampledGridWebglSupported/);
   assert.match(webgl, /releaseWebglContext\(gl\);\s*return sampledGridWebglSupported/);
+  assert.match(webgl, /webglcontextlost/);
+  assert.match(webgl, /webglcontextrestored/);
+  assert.match(webgl, /this\._continuousFieldProvider\?\.reconstruct/);
+  assert.doesNotMatch(webgl, /SampledGridColorScale\.spatialSurface/);
 });
 
 test("sampled-grid playback reuses a DI-owned two-layer renderer pool", () => {
@@ -1215,27 +1510,120 @@ test("sampled-grid playback reuses a DI-owned two-layer renderer pool", () => {
     path.join(root, "static/js/runtime/runtime-composition-root.js"),
     "utf8",
   );
+  const template = fs.readFileSync(path.join(root, "templates/index.html"), "utf8");
+  const settings = fs.readFileSync(
+    path.join(root, "static/js/ui/layers/sampled-grid-settings.js"),
+    "utf8",
+  );
+  const layerMenu = fs.readFileSync(
+    path.join(root, "static/js/ui/layers/layer-menu.js"),
+    "utf8",
+  );
 
   assert.match(composition, /this\.own\("SampledGridLayerPool",\s*new SampledGridLayerPoolCore/);
+  assert.match(composition, /this\.own\(\s*"ContinuousFieldService"/);
+  assert.match(composition, /continuousFieldProvider:\s*continuousFieldService/);
+  assert.ok(
+    template.indexOf("continuous-field-service.js") < template.indexOf("sampled-grid-webgl-renderer.js"),
+  );
   assert.match(composition, /maxLayers:\s*2/);
+  assert.match(composition, /new SampledGridLayerTransitionControllerCore\(\{/);
+  assert.match(composition, /renderContextValidator:\s*renderContextIsCurrent/);
   assert.match(layer, /SampledGridLayerPool\.acquire\(choice\.LayerClass/);
   assert.match(layer, /SampledGridLayerPool\.discard\(nextLayer\)/);
   assert.match(layer, /retainPrevious:\s*typeof SampledGridLayerPool !== "undefined"/);
   assert.match(effects, /retainPrevious = false/);
   assert.match(effects, /if \(retainPrevious\)[\s\S]*?setLayerOpacity\(previousLayer, 0\)/);
+  assert.match(layer, /function repaintActiveSampledGridLayer/);
+  assert.match(layer, /SampledGridLayerPool\.activate\(layer\)/);
+  assert.match(layer, /requestContext:\s*current\?\.requestContext/);
+  assert.match(layer, /nextLayer\.setFrame\([\s\S]*?activateLayer\(nextLayer\)/);
+  assert.match(effects, /class SampledGridLayerTransitionControllerCore/);
+  assert.match(effects, /cancelScheduledWork\(\)/);
+  assert.doesNotMatch(settings, /state\.gridLayer\.setFrame/);
+  assert.doesNotMatch(layerMenu, /state\.gridLayer\.setFrame/);
 });
 
-test("sampled-grid viewport changes redraw locally while viewport-dependent layers keep a settle window", () => {
+test("sampled-grid viewport changes replace the query scope after the settle window", () => {
   const stateSource = fs.readFileSync(path.join(root, "static/js/core/state.js"), "utf8");
   const refresh = fs.readFileSync(path.join(root, "static/js/core/render-refresh.js"), "utf8");
   assert.match(stateSource, /viewportReloadSettleMs:\s*700/);
   assert.match(refresh, /function viewportReloadSettleMs\(\)/);
   assert.match(refresh, /function primaryLayerDependsOnViewport\(\)/);
-  assert.match(refresh, /isSampledGridLayer\(state\.dataLayer\)[\s\S]*?state\.layerViewport\?\.mode !== "coverage"/);
+  assert.match(refresh, /isSampledGridLayer\(state\.dataLayer\)[\s\S]*?return true/);
+  assert.doesNotMatch(refresh, /state\.layerViewport\?\.mode !== "coverage"/);
   assert.match(refresh, /state\.isBootstrapping \|\| !primaryLayerDependsOnViewport\(\)/);
   assert.match(refresh, /state\.rendering\?\.viewportReloadSettleMs/);
   assert.match(refresh, /schedulePrimaryReload\(viewportReloadSettleMs\(\)\)/);
+  assert.match(refresh, /SampledGridLayerPool\.invalidateActiveContext\("viewport_scope_changed"\)/);
+  assert.match(refresh, /function refreshAfterViewportResize\(\)/);
+  assert.match(refresh, /map\.on\("resize", refreshAfterViewportResize\)/);
   assert.doesNotMatch(refresh, /schedulePrimaryReload\(250\)/);
+});
+
+test("sampled-grid viewport resize invalidates the active context and schedules one replacement", async () => {
+  const source = fs.readFileSync(path.join(root, "static/js/core/render-refresh.js"), "utf8");
+  const handlers = {};
+  const scheduled = [];
+  const invalidations = [];
+  let reloadCalls = 0;
+  const state = {
+    dataLayer: "sea_temperature",
+    fetchSeq: 0,
+    isBootstrapping: false,
+    primaryReloadTimer: null,
+    rendering: { viewportReloadSettleMs: 700 },
+  };
+  const context = vm.createContext({
+    state,
+    ClockDomain: {
+      monotonic: {
+        cancel() {},
+        schedule(callback, delay) {
+          const task = { callback, delay };
+          scheduled.push(task);
+          return task;
+        },
+      },
+    },
+    reloadActiveLayer() {
+      reloadCalls += 1;
+      return Promise.resolve();
+    },
+    isSampledGridLayer() { return true; },
+    SampledGridLayerPool: {
+      invalidateActiveContext(reason) { invalidations.push(reason); },
+    },
+    clearSampledGridLayerForLodReload() {},
+    RenderState: { loading() {} },
+    isLodZoomEvent() { return false; },
+    markEezTilesUpdating() { return false; },
+    refreshEezTileReadiness() { return Promise.resolve(); },
+    TimingMetrics: { setText() {} },
+    setStatus() {},
+    $() { return null; },
+    map: {
+      on(events, callback) {
+        for (const event of events.split(/\s+/)) handlers[event] = callback;
+      },
+    },
+    console,
+  });
+
+  vm.runInContext(source, context);
+  context.bindMapRefresh();
+  handlers.resize();
+
+  assert.deepEqual(invalidations, ["viewport_scope_changed"]);
+  assert.equal(state.fetchSeq, 1);
+  assert.equal(scheduled.length, 1);
+  assert.equal(scheduled[0].delay, 700);
+  assert.equal(state.primaryReloadTimer, scheduled[0]);
+
+  scheduled[0].callback();
+  await Promise.resolve();
+  assert.equal(reloadCalls, 1);
+  assert.equal(state.primaryReloadTimer, null);
 });
 
 test("developer control plane and dashboard share one layer-contract registry", () => {
@@ -1295,4 +1683,7 @@ test("EEZ resize keeps persistent vector grids and initial tiles paint progressi
   const tileWait = vectorReload.indexOf("await TimingMetrics.waitForLayers");
   assert.ok(paneVisible >= 0, "EEZ vector pane must become visible");
   assert.ok(tileWait > paneVisible, "EEZ first paint must not wait for every tile to settle");
+  assert.match(eez, /\/api\/overlays\/eez\/render\/tiles\/\{z\}\/\{x\}\/\{y\}\.pbf/);
+  assert.match(eez, /eez:\s*eezVectorTileStyle,[\s\S]*?eez_boundary:\s*eezBoundaryTileStyle/);
+  assert.doesNotMatch(eez, /createEezVectorGrid\("\/api\/overlays\/eez\/boundary\/tiles/);
 });

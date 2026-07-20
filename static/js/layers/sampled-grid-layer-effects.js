@@ -1,163 +1,199 @@
-const SampledGridLayerEffects = (() => {
-  function transitionMs(targetState) {
-    const baseMs = Math.max(0, Number(targetState.sampledGridTransitionMs ?? 0));
+class SampledGridLayerTransitionControllerCore {
+  constructor({ targetMap, targetState, renderClock } = {}) {
+    if (
+      !targetMap
+      || !targetState
+      || !renderClock
+      || typeof renderClock.request !== "function"
+      || typeof renderClock.cancel !== "function"
+      || typeof renderClock.schedule !== "function"
+      || typeof renderClock.cancelSchedule !== "function"
+    ) {
+      throw new TypeError("SampledGridLayerTransitionController requires map, state and render clock");
+    }
+    this.targetMap = targetMap;
+    this.targetState = targetState;
+    this.renderClock = renderClock;
+    this.revision = 0;
+    this.frameHandles = new Set();
+    this.timerHandles = new Set();
+    this.disposed = false;
+  }
+
+  transitionMs() {
+    const baseMs = Math.max(0, Number(this.targetState.sampledGridTransitionMs ?? 0));
     if (typeof PlaybackInterpolationController !== "undefined") {
       const playbackActive = typeof PlaybackRuntime !== "undefined" && PlaybackRuntime.isActive();
-      return PlaybackInterpolationController.playbackTransitionMs(targetState, baseMs, { playbackActive });
+      return PlaybackInterpolationController.playbackTransitionMs(
+        this.targetState,
+        baseMs,
+        { playbackActive },
+      );
     }
     return baseMs;
   }
 
-  function blurPx(targetState) {
-    return Math.max(0, Number(targetState.sampledGridZoomBlurPx ?? 0));
+  blurPx() {
+    return Math.max(0, Number(this.targetState.sampledGridZoomBlurPx ?? 0));
   }
 
-  function layerElement(layer) {
+  layerElement(layer) {
     return layer?._canvas || null;
   }
 
-  function setPaneOpacity(targetMap, opacity) {
-    const pane = targetMap.getPane("sampledGridPane");
+  setPaneOpacity(opacity) {
+    const pane = this.targetMap.getPane("sampledGridPane");
+    if (pane) pane.style.opacity = String(opacity);
+  }
+
+  setPaneBlur(active) {
+    const pane = this.targetMap.getPane("sampledGridPane");
     if (!pane) return;
-    pane.style.opacity = String(opacity);
-  }
-
-  function syncTransitionStyle(targetMap, targetState) {
-    const pane = targetMap.getPane("sampledGridPane");
-    if (!pane) return;
-    pane.style.opacity = "1";
-    pane.style.transition = `filter ${transitionMs(targetState)}ms ease`;
-  }
-
-  function setLayerTransition(layer, targetState) {
-    const element = layerElement(layer);
-    if (!element) return;
-    const ms = transitionMs(targetState);
-    element.style.transition = `opacity ${ms}ms ease, filter ${ms}ms ease`;
-  }
-
-  function setLayerOpacity(layer, opacity) {
-    const element = layerElement(layer);
-    if (!element) return;
-    element.style.opacity = String(opacity);
-  }
-
-  function setLayerBlur(layer, targetState, active) {
-    const element = layerElement(layer);
-    if (!element) return;
-    const px = blurPx(targetState);
-    element.style.filter = active && px > 0 ? `blur(${px}px)` : "";
-  }
-
-  function setPaneBlur(targetMap, targetState, active) {
-    const pane = targetMap.getPane("sampledGridPane");
-    if (!pane) return;
-    const px = blurPx(targetState);
+    const px = this.blurPx();
     pane.style.filter = active && px > 0 ? `blur(${px}px)` : "";
   }
 
-  function fadeOut({ targetMap, targetState }) {
-    if (!targetState.gridLayer || !targetMap.hasLayer(targetState.gridLayer)) return;
-    syncTransitionStyle(targetMap, targetState);
-    setLayerTransition(targetState.gridLayer, targetState);
-    setLayerBlur(targetState.gridLayer, targetState, true);
+  syncTransitionStyle() {
+    const pane = this.targetMap.getPane("sampledGridPane");
+    if (!pane) return;
+    pane.style.opacity = "1";
+    pane.style.transition = `filter ${this.transitionMs()}ms ease`;
   }
 
-  function waitTransition(targetState, renderClock) {
-    if (!renderClock || typeof renderClock.schedule !== "function") {
-      throw new TypeError("SampledGrid transition requires a render clock");
-    }
-    return new Promise((resolve) => {
-      renderClock.schedule(resolve, transitionMs(targetState));
+  setLayerTransition(layer) {
+    const element = this.layerElement(layer);
+    if (!element) return;
+    const ms = this.transitionMs();
+    element.style.transition = `opacity ${ms}ms ease, filter ${ms}ms ease`;
+  }
+
+  setLayerOpacity(layer, opacity) {
+    const element = this.layerElement(layer);
+    if (element) element.style.opacity = String(opacity);
+  }
+
+  setLayerBlur(layer, active) {
+    const element = this.layerElement(layer);
+    if (!element) return;
+    const px = this.blurPx();
+    element.style.filter = active && px > 0 ? `blur(${px}px)` : "";
+  }
+
+  request(token, callback) {
+    const handle = this.renderClock.request(() => {
+      this.frameHandles.delete(handle);
+      if (this.isCurrent(token)) callback();
     });
+    this.frameHandles.add(handle);
+    return handle;
   }
 
-  function reveal({ targetMap, targetState }) {
-    setPaneBlur(targetMap, targetState, false);
-    setPaneOpacity(targetMap, 1);
-    setLayerBlur(targetState.gridLayer, targetState, false);
-    setLayerOpacity(targetState.gridLayer, 1);
+  schedule(token, callback, delayMs) {
+    const handle = this.renderClock.schedule(() => {
+      this.timerHandles.delete(handle);
+      if (this.isCurrent(token)) callback();
+    }, delayMs);
+    this.timerHandles.add(handle);
+    return handle;
   }
 
-  function removeRetiredLayer({ targetMap, targetState, layer }) {
+  isCurrent(token) {
+    return !this.disposed && token === this.revision;
+  }
+
+  cancelScheduledWork() {
+    for (const handle of this.frameHandles) this.renderClock.cancel(handle);
+    for (const handle of this.timerHandles) this.renderClock.cancelSchedule(handle);
+    this.frameHandles.clear();
+    this.timerHandles.clear();
+  }
+
+  invalidate(_reason = "invalidated") {
+    this.revision += 1;
+    this.cancelScheduledWork();
+    this.setPaneBlur(false);
+    this.setPaneOpacity(1);
+    const active = this.targetState.gridLayer;
+    this.setLayerBlur(active, false);
+    this.setLayerOpacity(active, 1);
+    return this.revision;
+  }
+
+  fadeOut() {
+    const active = this.targetState.gridLayer;
+    if (!active || !this.targetMap.hasLayer(active)) return;
+    this.invalidate("fade_out");
+    this.syncTransitionStyle();
+    this.setLayerTransition(active);
+    this.setLayerBlur(active, true);
+  }
+
+  reveal() {
+    this.invalidate("reveal");
+  }
+
+  removeRetiredLayer(layer) {
     if (!layer) return;
-    if (targetMap.hasLayer(layer)) {
-      targetMap.removeLayer(layer);
-    }
-    if (Array.isArray(targetState.sampledGridRetiringLayers)) {
-      targetState.sampledGridRetiringLayers = targetState.sampledGridRetiringLayers.filter((item) => item !== layer);
-    }
-  }
-
-  function removeRetiredLayers({ targetMap, targetState }) {
-    const retiring = Array.isArray(targetState.sampledGridRetiringLayers) ? [...targetState.sampledGridRetiringLayers] : [];
-    for (const layer of retiring) {
-      removeRetiredLayer({ targetMap, targetState, layer });
+    if (this.targetMap.hasLayer(layer)) this.targetMap.removeLayer(layer);
+    if (Array.isArray(this.targetState.sampledGridRetiringLayers)) {
+      this.targetState.sampledGridRetiringLayers = this.targetState.sampledGridRetiringLayers
+        .filter((item) => item !== layer);
     }
   }
 
-  function crossfade({
-    targetMap,
-    targetState,
-    previousLayer,
-    nextLayer,
-    renderClock,
-    retainPrevious = false,
-  }) {
-    if (!renderClock || typeof renderClock.request !== "function" || typeof renderClock.schedule !== "function") {
-      throw new TypeError("SampledGrid crossfade requires a render clock");
-    }
-    syncTransitionStyle(targetMap, targetState);
-    setPaneBlur(targetMap, targetState, false);
-    setPaneOpacity(targetMap, 1);
-    setLayerTransition(nextLayer, targetState);
-    setLayerBlur(nextLayer, targetState, false);
+  removeRetiredLayers() {
+    const retiring = Array.isArray(this.targetState.sampledGridRetiringLayers)
+      ? [...this.targetState.sampledGridRetiringLayers]
+      : [];
+    for (const layer of retiring) this.removeRetiredLayer(layer);
+  }
 
-    if (!previousLayer || previousLayer === nextLayer || !targetMap.hasLayer(previousLayer)) {
-      setLayerOpacity(nextLayer, 1);
-      return;
+  crossfade({ previousLayer, nextLayer, retainPrevious = false } = {}) {
+    const token = this.invalidate("crossfade");
+    this.syncTransitionStyle();
+    this.setLayerTransition(nextLayer);
+    this.setLayerBlur(nextLayer, false);
+
+    if (!previousLayer || previousLayer === nextLayer || !this.targetMap.hasLayer(previousLayer)) {
+      this.setLayerOpacity(nextLayer, 1);
+      return token;
     }
 
-    setLayerTransition(previousLayer, targetState);
-    setLayerBlur(previousLayer, targetState, false);
-    setLayerOpacity(nextLayer, 0);
+    this.setLayerTransition(previousLayer);
+    this.setLayerBlur(previousLayer, false);
+    this.setLayerOpacity(nextLayer, 0);
     if (!retainPrevious) {
-      targetState.sampledGridRetiringLayers = targetState.sampledGridRetiringLayers || [];
-      targetState.sampledGridRetiringLayers.push(previousLayer);
+      this.targetState.sampledGridRetiringLayers ||= [];
+      if (!this.targetState.sampledGridRetiringLayers.includes(previousLayer)) {
+        this.targetState.sampledGridRetiringLayers.push(previousLayer);
+      }
     }
 
-    renderClock.request(() => {
-      renderClock.request(() => {
-        setLayerOpacity(nextLayer, 1);
-        setLayerOpacity(previousLayer, 0);
+    this.request(token, () => {
+      this.request(token, () => {
+        this.setLayerOpacity(nextLayer, 1);
+        this.setLayerOpacity(previousLayer, 0);
       });
     });
 
-    renderClock.schedule(() => {
+    this.schedule(token, () => {
       if (retainPrevious) {
-        if (targetState.gridLayer !== previousLayer) setLayerOpacity(previousLayer, 0);
-      } else if (targetState.gridLayer !== previousLayer) {
-        removeRetiredLayer({ targetMap, targetState, layer: previousLayer });
+        if (this.targetState.gridLayer !== previousLayer) this.setLayerOpacity(previousLayer, 0);
+      } else if (this.targetState.gridLayer !== previousLayer) {
+        this.removeRetiredLayer(previousLayer);
       }
-    }, transitionMs(targetState) + 80);
+    }, this.transitionMs() + 80);
+    return token;
   }
 
-  return {
-    crossfade,
-    fadeOut,
-    layerElement,
-    removeRetiredLayer,
-    removeRetiredLayers,
-    reveal,
-    setLayerBlur,
-    setLayerOpacity,
-    setLayerTransition,
-    setPaneBlur,
-    setPaneOpacity,
-    syncTransitionStyle,
-    transitionMs,
-    waitTransition,
-  };
-})();
+  dispose() {
+    if (this.disposed) return;
+    this.invalidate("disposed");
+    this.removeRetiredLayers();
+    this.disposed = true;
+  }
+}
 
-window.SampledGridLayerEffects = SampledGridLayerEffects;
+if (typeof globalThis !== "undefined") {
+  globalThis.SampledGridLayerTransitionControllerCore = SampledGridLayerTransitionControllerCore;
+}

@@ -56,6 +56,7 @@ def command_serve(args: argparse.Namespace) -> int:
                 port=port,
                 debug=debug,
                 kill_port_if_busy=server["kill_port_if_busy"],
+                endpoint_supervisor=endpoint_supervisor,
             )
         else:
             developer_port = args.developer_port if args.developer_port is not None else port + 1

@@ -7,10 +7,14 @@ const RendererRegistry = (() => {
     return state.renderCapability?.browser?.webgl || { available: false };
   }
 
+  function runtimeWebglAvailable() {
+    return state.renderCapability?.runtime?.webgl?.available !== false;
+  }
+
   function webglAllowed(rowCount) {
     const currentPolicy = policy();
     if (currentPolicy.force_cpu || currentPolicy.hardware_acceleration === "off") return false;
-    if (currentPolicy.allow_webgl === false || !browserWebgl().available) return false;
+    if (currentPolicy.allow_webgl === false || !browserWebgl().available || !runtimeWebglAvailable()) return false;
     const minRows = Number(currentPolicy.min_webgl_rows || 1);
     return Number(rowCount || 0) >= minRows;
   }
@@ -19,7 +23,11 @@ const RendererRegistry = (() => {
     const currentPolicy = policy();
     if (currentPolicy.force_cpu || currentPolicy.hardware_acceleration === "off") return false;
     if (currentPolicy.allow_webgl === false) return false;
-    return Boolean(browserWebgl().available && window.SampledGridWebglLayer?.isSupported?.());
+    return Boolean(
+      browserWebgl().available
+      && runtimeWebglAvailable()
+      && window.SampledGridWebglLayer?.isSupported?.()
+    );
   }
 
   function gpuAggregationAvailable() {

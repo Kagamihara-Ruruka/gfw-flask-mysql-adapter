@@ -98,6 +98,23 @@ class EezAttributionWidget extends DashboardWidget {
     return `${Math.round(ratio * 100)}%`;
   }
 
+  domainRatioLabel(model) {
+    const regions = Array.isArray(model?.domain?.regions) ? model.domain.regions : [];
+    const ratio = Number(regions[0]?.overlap_ratio);
+    return Number.isFinite(ratio) ? `${Math.round(ratio * 100)}%` : "--";
+  }
+
+  jurisdictionKindLabel(model) {
+    return {
+      disputed: "爭議海域",
+      joint: "共管海域",
+      eez: "EEZ",
+      high_seas: "公海",
+      land: "陸地",
+      mixed: "混合區域",
+    }[model?.jurisdictionKind] || "空間域";
+  }
+
   resultTimeLabel(result) {
     const binding = result?.selection?.time_binding;
     if (binding?.kind !== "locked_axis") return "跟隨播放器";
@@ -112,7 +129,9 @@ class EezAttributionWidget extends DashboardWidget {
       const hit = result.hit || result.attribution?.[0] || null;
       return hit?.sovereign || hit?.territory || hit?.name || "EEZ";
     }
-    if (result?.state === "high-seas") return "未命中 EEZ";
+    if (result?.state === "high-seas") return "公海";
+    if (result?.state === "land") return "陸地";
+    if (result?.state === "mixed") return "混合區域";
     return result?.title || "判定中";
   }
 
@@ -123,7 +142,9 @@ class EezAttributionWidget extends DashboardWidget {
       const hit = result.hit || result.attribution?.[0] || null;
       const ratio = result.state === "ready"
         ? this.ratioLabel(hit)
-        : result.state === "high-seas" ? "0%" : "--";
+        : ["high-seas", "land", "mixed"].includes(result.state)
+          ? this.domainRatioLabel(result)
+          : "--";
       const tileLabel = result.selection?.tile_key || result.selection?.bbox_string || `Tile ${index + 2}`;
       return `
         <tr data-eez-result-index="${index + 1}">
@@ -332,7 +353,11 @@ class EezAttributionWidget extends DashboardWidget {
     const isBoundary = this.isBoundaryModel(model);
     const title = isReady ? (hit.sovereign || hit.territory || "EEZ") : model.title;
     const detail = isReady ? (hit.territory || hit.name || model.detail) : model.detail;
-    const ratio = isReady ? this.ratioLabel(hit) : model.state === "high-seas" ? "0%" : "--";
+    const ratio = isReady
+      ? this.ratioLabel(hit)
+      : ["high-seas", "land", "mixed"].includes(model.state)
+        ? this.domainRatioLabel(model)
+        : "--";
     const flag = isReady ? eezFlagEmojiForHit(hit) : "";
     container.dataset.attributionState = model.state;
     container.dataset.boundary = isBoundary ? "1" : "0";
@@ -348,7 +373,7 @@ class EezAttributionWidget extends DashboardWidget {
     }
     container.innerHTML = `
       <div class="widget-eez-card">
-        <span>EEZ</span>
+        <span>${lineChartEscape(this.jurisdictionKindLabel(model))}</span>
         <strong>${lineChartEscape(title)}${flag ? ` <span class="widget-eez-flag" aria-hidden="true">${flag}</span>` : ""}</strong>
         <em>${lineChartEscape(detail || "")}</em>
         <b>${lineChartEscape(ratio)}</b>
@@ -367,6 +392,14 @@ class EezAttributionWidget extends DashboardWidget {
         <td>${lineChartEscape(this.ratioLabel(hit))}</td>
       </tr>
     `).join("");
+    const domainRows = (model.domain?.regions || []).map((region) => `
+      <tr>
+        <td>${lineChartEscape(region.kind === "high_seas" ? "公海" : region.kind === "land" ? "陸地" : region.kind)}</td>
+        <td>EEZ 補集合</td>
+        <td>${lineChartEscape(this.domainRatioLabel({ domain: { regions: [region] } }))}</td>
+      </tr>
+    `).join("");
+    const resultRows = `${rows}${domainRows}`;
     const otherLocations = this.renderOtherLocationResults(model);
     container.dataset.attributionState = model.state;
     container.dataset.boundary = this.isBoundaryModel(model) ? "1" : "0";
@@ -383,7 +416,7 @@ class EezAttributionWidget extends DashboardWidget {
             <tr><th>管轄參照</th><th>海域</th><th>比例</th></tr>
           </thead>
           <tbody>
-            ${rows || '<tr><td colspan="3">未命中 EEZ</td></tr>'}
+            ${resultRows || '<tr><td colspan="3">空間域未解析</td></tr>'}
           </tbody>
         </table>
         ${otherLocations}

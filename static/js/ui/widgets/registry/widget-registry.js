@@ -9,6 +9,8 @@ const {
   MapJumpWidget,
   MetricsWidget,
   LifecycleEventViewerWidget,
+  UsageGuideWidget,
+  SpotifyPlayerWidget,
 } = window.WidgetCapabilities;
 class BlankWidget extends DashboardWidget {}
 
@@ -78,6 +80,22 @@ const WidgetAbilityRegistry = Object.freeze({
     description: "依選取網格判定 EEZ 交疊。",
     icon: "compass",
     tone: "blue",
+  }),
+  "usage-guide": Object.freeze({
+    WidgetClass: UsageGuideWidget,
+    title: "使用說明",
+    size: "1x1",
+    description: "系統操作指南。",
+    icon: "book-open-text",
+    tone: "slate",
+  }),
+  "spotify-player": Object.freeze({
+    WidgetClass: SpotifyPlayerWidget,
+    title: "彩蛋",
+    size: "1x1",
+    description: "Spotify 彩蛋播放器。",
+    icon: "disc-3",
+    tone: "green",
   }),
 });
 

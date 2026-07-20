@@ -1,10 +1,15 @@
 const SampledGridCanvasLayer = L.Layer.extend({
-  initialize({ renderClock } = {}) {
+  initialize({ renderClock, renderContextValidator = null } = {}) {
     if (!renderClock || typeof renderClock.now !== "function") {
       throw new TypeError("SampledGridCanvasLayer requires a render clock");
     }
     this._renderClock = renderClock;
+    this._renderContextValidator = typeof renderContextValidator === "function"
+      ? renderContextValidator
+      : null;
     this._frame = CanonicalGridFrame.empty();
+    this._renderContext = null;
+    this._active = false;
   },
   onAdd(targetMap) {
     this._map = targetMap;
@@ -18,12 +23,37 @@ const SampledGridCanvasLayer = L.Layer.extend({
     unbindSampledGridViewportRedraw(this, targetMap);
     L.DomUtil.remove(this._canvas);
   },
-  setFrame(frame) {
+  setActive(active) {
+    this._active = Boolean(active);
+    if (!this._active) cancelSampledGridViewportRedraw(this);
+    return this;
+  },
+  setFrame(frame, renderContext) {
     if (!CanonicalGridFrame.isFrame(frame)) throw new TypeError("Sampled-grid layer requires CanonicalGridFrame");
     this._frame = frame;
-    return this._draw();
+    this._renderContext = renderContext;
+    if (!isSampledGridRenderContext(this._renderContext)) {
+      throw new TypeError("Sampled-grid layer requires a RenderContext");
+    }
+    return this.redraw();
   },
-  _reset() {
+  isRenderContextCurrent() {
+    if (!this._renderContext) return false;
+    return this._renderContextValidator
+      ? Boolean(this._renderContextValidator(this._renderContext))
+      : true;
+  },
+  clearSurface() {
+    if (!this._ctx || !this._canvas) return;
+    this._ctx.clearRect(0, 0, this._canvas.width, this._canvas.height);
+  },
+  invalidateRenderContext() {
+    this._renderContext = null;
+    this._frame = CanonicalGridFrame.empty();
+    this.clearSurface();
+  },
+  syncViewport() {
+    if (!this._map || !this._canvas) return;
     const size = this._map.getSize();
     const topLeft = this._map.containerPointToLayerPoint([0, 0]);
     L.DomUtil.setPosition(this._canvas, topLeft);
@@ -31,17 +61,34 @@ const SampledGridCanvasLayer = L.Layer.extend({
     this._canvas.height = size.y;
     this._canvas.style.width = `${size.x}px`;
     this._canvas.style.height = `${size.y}px`;
-    this._draw();
+  },
+  redraw() {
+    if (!this._active) return 0;
+    if (!this.isRenderContextCurrent()) {
+      this.clearSurface();
+      return 0;
+    }
+    return this._draw();
+  },
+  _reset() {
+    this.syncViewport();
+    return this.redraw();
   },
   _draw() {
     const started = this._renderClock.now();
-    if (!this._ctx || !this._map) return 0;
+    if (
+      !this._active
+      || !this._ctx
+      || !this._map
+      || !this._renderContext
+      || !this.isRenderContextCurrent()
+    ) return 0;
     const ctx = this._ctx;
     const size = this._map.getSize();
-    const paintFrame = sampledGridPaintFrame(this._frame);
+    const paintFrame = this._renderContext.paintFrame;
     const boundsScratch = {};
     ctx.clearRect(0, 0, size.x, size.y);
-    const layerAlpha = state.layerAlpha[state.dataLayer] ?? state.sampledGridPaint?.alpha ?? 1;
+    const layerAlpha = this._renderContext.alpha;
     for (const index of paintFrame.indices) {
       const bounds = this._frame.boundsAt(index, boundsScratch);
       if (!bounds) continue;
@@ -61,48 +108,53 @@ const SampledGridCanvasLayer = L.Layer.extend({
       }
     }
     ctx.globalAlpha = 1;
+    const landMask = this._renderContext.validityMask;
+    if (landMask?.ready && landMask.canvas) {
+      ctx.save();
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.drawImage(landMask.canvas, 0, 0, size.x, size.y);
+      ctx.restore();
+    }
     return this._renderClock.now() - started;
   },
   hitTest(containerPoint) {
+    if (!this.isRenderContextCurrent()) return null;
     return sampledGridHitCellAt(this._map, this._frame, containerPoint);
   },
 });
 
 function syncSampledGridTransitionStyle() {
-  SampledGridLayerEffects.syncTransitionStyle(map, state);
+  SampledGridLayerTransitions.syncTransitionStyle();
 }
 
 function setSampledGridLayerTransition(layer) {
-  SampledGridLayerEffects.setLayerTransition(layer, state);
+  SampledGridLayerTransitions.setLayerTransition(layer);
 }
 
 function setSampledGridLayerOpacity(layer, opacity) {
-  SampledGridLayerEffects.setLayerOpacity(layer, opacity);
+  SampledGridLayerTransitions.setLayerOpacity(layer, opacity);
 }
 
 function setSampledGridLayerBlur(layer, active) {
-  SampledGridLayerEffects.setLayerBlur(layer, state, active);
+  SampledGridLayerTransitions.setLayerBlur(layer, active);
 }
 
 function fadeOutSampledGridLayer() {
-  SampledGridLayerEffects.fadeOut({ targetMap: map, targetState: state });
+  SampledGridLayerTransitions.fadeOut();
 }
 
 function revealSampledGridLayer() {
-  SampledGridLayerEffects.reveal({ targetMap: map, targetState: state });
+  SampledGridLayerTransitions.reveal();
 }
 
 function removeRetiredSampledGridLayers() {
-  SampledGridLayerEffects.removeRetiredLayers({ targetMap: map, targetState: state });
+  SampledGridLayerTransitions.removeRetiredLayers();
 }
 
 function crossfadeSampledGridLayer(previousLayer, nextLayer, { retainPrevious = false } = {}) {
-  SampledGridLayerEffects.crossfade({
-    targetMap: map,
-    targetState: state,
+  SampledGridLayerTransitions.crossfade({
     previousLayer,
     nextLayer,
-    renderClock: ClockDomain.render,
     retainPrevious,
   });
 }
@@ -128,30 +180,129 @@ function sampledGridFrameWithinCoverage(frame, datasetId = state.datasetId) {
   return window.LayerViewportController?.filterFrame(frame, datasetId) || frame;
 }
 
+function repaintActiveSampledGridLayer({
+  layerId = state.dataLayer,
+  datasetId = state.datasetId,
+} = {}) {
+  const active = state.gridLayer;
+  if (!active?.setFrame || !CanonicalGridFrame.isFrame(active._frame)) return 0;
+  const normalizedLayerId = String(layerId || "").trim().toLowerCase();
+  const normalizedDatasetId = String(datasetId || "").trim();
+  const current = active._renderContext;
+  if (
+    current
+    && (current.layerId !== normalizedLayerId || current.datasetId !== normalizedDatasetId)
+  ) return 0;
+  const renderEpoch = typeof SampledGridLayerPool !== "undefined"
+    ? SampledGridLayerPool.beginRenderTransaction("paint_profile_changed")
+    : Math.max(1, Math.floor(Number(current?.renderEpoch || 0)) + 1);
+  const validityMask = typeof SpatialLandMaskService !== "undefined"
+    ? SpatialLandMaskService.snapshot(normalizedLayerId)
+    : current?.validityMask || null;
+  const renderContext = createSampledGridRenderContext(active._frame, {
+    layerId: normalizedLayerId,
+    datasetId: normalizedDatasetId,
+    alpha: state.layerAlpha?.[normalizedLayerId],
+    renderGridProfile: current?.renderGridProfile || state.renderGridProfile,
+    requestContext: current?.requestContext || null,
+    frameIdentity: FrameIdentity,
+    validityMask,
+    renderEpoch,
+  });
+  return active.setFrame(active._frame, renderContext);
+}
+
 function clearSampledGridLayerForLodReload() {
   fadeOutSampledGridLayer();
   clearRenderedLodZoom(state.dataLayer || "sampled-grid");
   RenderState.loading(state.dataLayer || "sampled-grid", "LOD 更新");
 }
 
-function createSampledGridLayer(layerClass) {
-  const layer = new layerClass({ renderClock: ClockDomain.render }).addTo(map);
+function createSampledGridLayer(layerClass, {
+  continuousFieldProvider = null,
+  renderContextValidator = null,
+} = {}) {
+  const layer = new layerClass({
+    renderClock: ClockDomain.render,
+    continuousFieldProvider,
+    renderContextValidator,
+  }).addTo(map);
   setSampledGridLayerTransition(layer);
   setSampledGridLayerOpacity(layer, 0);
   setSampledGridLayerBlur(layer, false);
   return layer;
 }
 
-function renderSampledGridMap(frame) {
+function renderSampledGridMap(frame, { requestContext = null } = {}) {
   const visibleFrame = sampledGridFrameWithinCoverage(frame);
   syncSampledGridTransitionStyle();
   removeAisLayer();
+  const validityMask = typeof SpatialLandMaskService !== "undefined"
+    ? SpatialLandMaskService.snapshot(state.dataLayer)
+    : null;
+  if (visibleFrame.rowCount > 0 && validityMask?.enabled && !validityMask.ready) {
+    if (validityMask.status === "FAILED") {
+      throw new Error("Sampled-grid land mask is unavailable");
+    }
+    if (typeof SampledGridLayerPool === "undefined") {
+      throw new Error("Sampled-grid land mask is not ready and no render transaction owner is available");
+    }
+    const normalizedRequest = FrameIdentity.normalizeRequest({
+      ...requestContext,
+      layerId: state.dataLayer,
+      datasetId: state.datasetId,
+    });
+    const identity = Object.freeze({
+      layerId: String(state.dataLayer || "").trim().toLowerCase(),
+      datasetId: String(state.datasetId || "").trim(),
+      date: normalizedRequest.date,
+      scopeKey: FrameIdentity.scopeKey(normalizedRequest),
+    });
+    SampledGridLayerPool.invalidateActiveContext("land_mask_pending");
+    const pending = SampledGridLayerPool.stagePendingRender({
+      frame: visibleFrame,
+      requestContext: normalizedRequest,
+      identity,
+    });
+    return {
+      backend: "deferred",
+      deferred: true,
+      completion: pending.completion,
+      drawMs: 0,
+      rowCount: visibleFrame.rowCount,
+      frame: visibleFrame,
+      detail: "等待陸地遮罩",
+    };
+  }
   const previousLayer = state.gridLayer && map.hasLayer(state.gridLayer) ? state.gridLayer : null;
+  const renderEpoch = typeof SampledGridLayerPool !== "undefined"
+    ? SampledGridLayerPool.beginRenderTransaction("frame_commit")
+    : Math.max(1, Math.floor(Number(state.sampledGridRenderEpoch || 0)) + 1);
+  state.sampledGridRenderEpoch = renderEpoch;
   let choice = RendererRegistry.chooseSampledGridLayer(visibleFrame, SampledGridCanvasLayer);
   let nextLayer = typeof SampledGridLayerPool !== "undefined"
     ? SampledGridLayerPool.acquire(choice.LayerClass, { currentLayer: previousLayer })
     : createSampledGridLayer(choice.LayerClass);
-  let drawMs = nextLayer.setFrame(visibleFrame);
+  const activateLayer = (layer) => {
+    if (typeof SampledGridLayerPool !== "undefined") SampledGridLayerPool.activate(layer);
+    else {
+      previousLayer?.setActive?.(false);
+      layer?.syncViewport?.();
+      layer?.setActive?.(true);
+      state.gridLayer = layer;
+    }
+  };
+  let renderContext = createSampledGridRenderContext(visibleFrame, {
+    layerId: state.dataLayer,
+    datasetId: state.datasetId,
+    requestContext,
+    frameIdentity: FrameIdentity,
+    validityMask,
+    renderEpoch,
+  });
+  nextLayer.setFrame(visibleFrame, renderContext);
+  activateLayer(nextLayer);
+  let drawMs = nextLayer.redraw?.() || 0;
   if (choice.backend === "webgl" && nextLayer._failed) {
     if (typeof SampledGridLayerPool !== "undefined") {
       SampledGridLayerPool.discard(nextLayer);
@@ -162,10 +313,22 @@ function renderSampledGridMap(frame) {
     nextLayer = typeof SampledGridLayerPool !== "undefined"
       ? SampledGridLayerPool.acquire(choice.LayerClass, { currentLayer: previousLayer })
       : createSampledGridLayer(choice.LayerClass);
-    drawMs = nextLayer.setFrame(visibleFrame);
+    renderContext = createSampledGridRenderContext(visibleFrame, {
+      layerId: state.dataLayer,
+      datasetId: state.datasetId,
+      requestContext,
+      frameIdentity: FrameIdentity,
+      validityMask,
+      renderEpoch,
+    });
+    nextLayer.setFrame(visibleFrame, renderContext);
+    activateLayer(nextLayer);
+    drawMs = nextLayer.redraw?.() || 0;
   }
   state.gridLayer = nextLayer;
-  state.renderedSampledGridDate = $("date")?.value || state.renderedSampledGridDate;
+  state.renderedSampledGridDate = nextLayer.isRenderContextCurrent?.()
+    ? (renderContext.date || null)
+    : null;
   setRenderedLodZoom(state.dataLayer || "sampled-grid");
   applyLayerOrder();
   crossfadeSampledGridLayer(previousLayer, nextLayer, {

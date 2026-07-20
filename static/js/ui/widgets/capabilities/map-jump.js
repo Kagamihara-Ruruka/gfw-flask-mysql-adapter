@@ -4,11 +4,7 @@ class MapJumpWidget extends DashboardWidget {
   handlePrimaryAction() {}
 
   viewActions() {
-    return [
-      { id: "reset", label: "重設" },
-      { id: "world", label: "世界" },
-      { id: "taiwan", label: "台灣" },
-    ];
+    return Array.isArray(this.services.viewActions) ? this.services.viewActions : [];
   }
 
   runViewAction(action) {

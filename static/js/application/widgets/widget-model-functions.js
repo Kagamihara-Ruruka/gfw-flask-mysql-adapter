@@ -38,10 +38,44 @@ function widgetColorFor(key, alpha = 0.9) {
   return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
 }
 
+function widgetSimpleMovingAverage(values, windowSize) {
+  const source = Array.isArray(values) ? values : [];
+  const size = Number.parseInt(windowSize, 10);
+  const result = source.map(() => null);
+  if (!Number.isInteger(size) || size < 1) return result;
+
+  const numericValues = source.map((value) => {
+    if (value === null || value === undefined || value === "") return null;
+    const numericValue = Number(value);
+    return Number.isFinite(numericValue) ? numericValue : null;
+  });
+  let sum = 0;
+  let validCount = 0;
+  for (let index = 0; index < numericValues.length; index += 1) {
+    const entered = numericValues[index];
+    if (entered !== null) {
+      sum += entered;
+      validCount += 1;
+    }
+    if (index >= size) {
+      const exited = numericValues[index - size];
+      if (exited !== null) {
+        sum -= exited;
+        validCount -= 1;
+      }
+    }
+    if (index >= size - 1 && validCount === size) {
+      result[index] = sum / size;
+    }
+  }
+  return result;
+}
+
 globalThis.WidgetApplicationFunctions = Object.freeze({
   widgetDateKey,
   widgetFormatDateLabel,
   widgetMetricForDataset,
   widgetColorFor,
+  widgetSimpleMovingAverage,
 });
 })();

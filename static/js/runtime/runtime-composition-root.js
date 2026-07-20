@@ -89,6 +89,18 @@ class RuntimeCompositionRoot {
       eventTarget: this.eventTarget,
       documentTarget: this.globalTarget.document,
     }));
+    const RendererCapabilityStateClass = this.globalTarget.RendererCapabilityStateCore;
+    if (typeof RendererCapabilityStateClass !== "function") {
+      throw new Error("RendererCapabilityStateCore must be loaded before RuntimeCompositionRoot");
+    }
+    const rendererCapabilityState = this.own(
+      "RendererCapabilityState",
+      new RendererCapabilityStateClass({
+        targetState: this.state,
+        eventTarget: this.eventTarget,
+        clock: clockDomain.monotonic,
+      }).mount(),
+    );
     if (typeof RenderStateController !== "undefined") {
       this.own("RenderState", new RenderStateController({
         elementById: (id) => document.getElementById(id),
@@ -105,17 +117,142 @@ class RuntimeCompositionRoot {
         clock: clockDomain.monotonic,
       }));
     }
+    let spatialLandMaskService = null;
+    if (this.targetMap && typeof SpatialLandMaskServiceCore !== "undefined") {
+      spatialLandMaskService = this.own("SpatialLandMaskService", new SpatialLandMaskServiceCore({
+        targetMap: this.targetMap,
+        targetState: this.state,
+        capabilityProvider: (layerId, capabilityName) => (
+          this.globalTarget.LayerRuntimeContractRegistry?.capability?.(layerId, capabilityName) || null
+        ),
+        eventTarget: this.eventTarget,
+        renderClock: clockDomain.render,
+        timeoutClock: clockDomain.monotonic,
+        canvasFactory: () => this.globalTarget.document.createElement("canvas"),
+        imageLoader: (url, { signal } = {}) => new Promise((resolve, reject) => {
+          const image = new this.globalTarget.Image();
+          let settled = false;
+          const cleanup = () => {
+            image.onload = null;
+            image.onerror = null;
+            signal?.removeEventListener?.("abort", onAbort);
+          };
+          const settle = (callback, value) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            callback(value);
+          };
+          const onAbort = () => {
+            image.src = "";
+            const error = signal?.reason instanceof Error ? signal.reason : new Error("land-mask image aborted");
+            if (error.name !== "TimeoutError") error.name = "AbortError";
+            settle(reject, error);
+          };
+          image.onload = () => settle(resolve, image);
+          image.onerror = () => settle(reject, new Error(`land-mask tile failed: ${url}`));
+          if (signal?.aborted) {
+            onAbort();
+            return;
+          }
+          signal?.addEventListener?.("abort", onAbort, { once: true });
+          image.src = url;
+        }),
+      }).bind());
+    }
+    let continuousFieldService = null;
+    if (
+      typeof ContinuousFieldServiceCore !== "undefined"
+      && typeof reconstructContinuousField === "function"
+    ) {
+      continuousFieldService = this.own(
+        "ContinuousFieldService",
+        new ContinuousFieldServiceCore({
+          reconstruct: reconstructContinuousField,
+          maxEntries: 4,
+        }),
+      );
+    }
+    let renderIntentService = null;
+    let sampledGridLayerPool = null;
+    const renderContextIdentityIsCurrent = (context) => {
+      if (!context?.scopeKey || !renderIntentService) return false;
+      const currentRequest = renderIntentService.toSampledGridPacketRequest(
+        renderIntentService.snapshot({
+          layerId: this.state.dataLayer,
+          renderProfile: "dashboard.snapshot",
+        }),
+      );
+      return !currentRequest.outsideCoverage
+        && context.layerId === String(this.state.dataLayer || "").trim().toLowerCase()
+        && context.datasetId === String(this.state.datasetId || "").trim()
+        && context.date === currentRequest.date
+        && context.scopeKey === this.frameIdentity.scopeKey(currentRequest);
+    };
+    const renderContextIsCurrent = (context) => {
+      if (!renderContextIdentityIsCurrent(context)) return false;
+      if (sampledGridLayerPool && !sampledGridLayerPool.isRenderEpochCurrent(context.renderEpoch)) return false;
+      const currentMask = spatialLandMaskService?.snapshot?.(context.layerId);
+      return sampledGridRenderContextMatchesMask(context, currentMask);
+    };
+    let sampledGridLayerTransitions = null;
+    if (this.targetMap && typeof SampledGridLayerTransitionControllerCore !== "undefined") {
+      sampledGridLayerTransitions = this.own(
+        "SampledGridLayerTransitions",
+        new SampledGridLayerTransitionControllerCore({
+          targetMap: this.targetMap,
+          targetState: this.state,
+          renderClock: clockDomain.render,
+        }),
+      );
+    }
     if (
       this.targetMap
       && typeof SampledGridLayerPoolCore !== "undefined"
       && typeof createSampledGridLayer === "function"
-      && typeof SampledGridLayerEffects !== "undefined"
+      && sampledGridLayerTransitions
     ) {
-      this.own("SampledGridLayerPool", new SampledGridLayerPoolCore({
+      sampledGridLayerPool = this.own("SampledGridLayerPool", new SampledGridLayerPoolCore({
         targetMap: this.targetMap,
         targetState: this.state,
-        layerFactory: (LayerClass) => createSampledGridLayer(LayerClass),
-        layerEffects: SampledGridLayerEffects,
+        layerFactory: (LayerClass) => createSampledGridLayer(LayerClass, {
+          continuousFieldProvider: continuousFieldService,
+          renderContextValidator: renderContextIsCurrent,
+        }),
+        layerEffects: sampledGridLayerTransitions,
+        landMaskProvider: spatialLandMaskService,
+        rendererCapabilityState,
+        renderClock: clockDomain.render,
+        recoverActiveLayer: (layer) => {
+          const context = layer?._renderContext;
+          if (
+            !context
+            || context.layerId !== this.state.dataLayer
+            || context.datasetId !== this.state.datasetId
+            || !renderContextIdentityIsCurrent(context)
+            || typeof renderSampledGridMap !== "function"
+          ) return false;
+          renderSampledGridMap(layer._frame, { requestContext: context.requestContext });
+          return true;
+        },
+        commitPendingRender: (pending) => {
+          if (
+            !pending?.identity
+            || !renderContextIdentityIsCurrent(pending.identity)
+            || typeof renderSampledGridMap !== "function"
+          ) return null;
+          const currentMask = spatialLandMaskService?.snapshot?.(pending.identity.layerId);
+          if (!currentMask?.ready) return null;
+          const result = renderSampledGridMap(pending.frame, {
+            requestContext: pending.requestContext,
+          });
+          if (result?.deferred) return null;
+          this.globalTarget.RenderState?.ready?.(
+            pending.identity.layerId,
+            `${Number(result.rowCount || 0).toLocaleString()} rows · ${result.detail}`,
+          );
+          return result;
+        },
         maxLayers: 2,
       }));
     }
@@ -211,6 +348,7 @@ class RuntimeCompositionRoot {
       preheater: playbackPreheater,
       clock: clockDomain.playback,
       scheduler: PlaybackScheduler,
+      frameIdentity: this.frameIdentity,
     }));
     const unsubscribePlaybackQueryIsolation = eventLog.subscribe((event) => {
       if (event?.type !== "RUN_STARTED" || event.kind !== "playback") return;
@@ -300,7 +438,6 @@ class RuntimeCompositionRoot {
         eventTarget: this.eventTarget,
       }));
     }
-    let renderIntentService = null;
     if (
       typeof createRenderIntentService !== "undefined"
       && typeof currentBbox === "function"
@@ -320,6 +457,9 @@ class RuntimeCompositionRoot {
       const eventSink = (type, detail = {}) => {
         this.eventTarget.dispatchEvent(new CustomEvent(type, { detail }));
       };
+      const spotifyPlayerSession = typeof SpotifyPlayerSessionCore !== "undefined"
+        ? this.own("SpotifyPlayerSession", new SpotifyPlayerSessionCore(), { expose: false })
+        : null;
       this.own("WidgetApplicationRuntime", createWidgetApplicationRuntime({
         stateProvider: () => this.state,
         layerRegistryProvider: () => this.globalTarget.LayerRuntimeContractRegistry || null,
@@ -351,6 +491,10 @@ class RuntimeCompositionRoot {
         dataFrameStore,
         frameDemandService,
         queryCoordinator,
+        clock: clockDomain.monotonic,
+        eezAttributionVersionProvider: () => JSON.stringify(
+          this.globalTarget.LayerRuntimeContractRegistry?.contractForLayer?.("eez") || null,
+        ),
         playbackSnapshotProvider: () => playbackEngine.snapshot(),
         eventLog,
         eventSink,
@@ -358,6 +502,24 @@ class RuntimeCompositionRoot {
         runtimeMetricsProvider: (runId = "") => runtimePerformanceMetrics.snapshot(runId),
         schedule: clockDomain.monotonic.schedule,
         cancelSchedule: clockDomain.monotonic.cancel,
+        widgetPreferenceReader: (widgetType, key) => {
+          const value = this.state.widgetPreferences?.[widgetType]?.[key];
+          return Array.isArray(value) ? [...value] : value;
+        },
+        widgetPreferenceWriter: (widgetType, key, value) => {
+          const current = this.state.widgetPreferences?.[widgetType] || {};
+          this.state.widgetPreferences = {
+            ...(this.state.widgetPreferences || {}),
+            [widgetType]: {
+              ...current,
+              [key]: Array.isArray(value) ? [...value] : value,
+            },
+          };
+          this.globalTarget.notifyBrowserProfileChanged?.("widget_preference_changed");
+          return true;
+        },
+        spotifyPlayerSession,
+        mapViewActions: this.globalTarget.MapViewActionCatalog || [],
       }));
     }
     this.composed = true;

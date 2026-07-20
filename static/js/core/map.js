@@ -204,14 +204,31 @@ function fitWorldView() {
   });
 }
 
-const MapViewActions = Object.freeze({
-  reset: resetMapView,
-  world: fitWorldView,
-  taiwan: fitTaiwanView,
+function fitNorthwestPacificView() {
+  map.fitBounds([[15, 105], [35, 135]], {
+    animate: false,
+    padding: [20, 20],
+  });
+}
+
+const MapViewActionRegistry = Object.freeze({
+  reset: Object.freeze({ id: "reset", label: "重設", exposed: false, run: resetMapView }),
+  world: Object.freeze({ id: "world", label: "世界", exposed: true, run: fitWorldView }),
+  "northwest-pacific": Object.freeze({
+    id: "northwest-pacific",
+    label: "西北太平洋",
+    exposed: true,
+    run: fitNorthwestPacificView,
+  }),
+  taiwan: Object.freeze({ id: "taiwan", label: "台灣", exposed: true, run: fitTaiwanView }),
 });
 
-window.MapViewActions = MapViewActions;
+const MapViewActionCatalog = Object.freeze(Object.values(MapViewActionRegistry)
+  .filter((action) => action.exposed)
+  .map((action) => Object.freeze({ id: action.id, label: action.label })));
+
+window.MapViewActionRegistry = MapViewActionRegistry;
+window.MapViewActionCatalog = MapViewActionCatalog;
 window.addEventListener("rrkal:map-view-action", (event) => {
-  const run = MapViewActions[event.detail?.id];
-  if (typeof run === "function") run();
+  MapViewActionRegistry[event.detail?.id]?.run?.();
 });

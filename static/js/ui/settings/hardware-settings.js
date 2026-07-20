@@ -13,6 +13,7 @@ const HARDWARE_MODE_BASE_LABELS = {
 function webglIsUsable() {
   return Boolean(
     state.renderCapability?.browser?.webgl?.available &&
+    state.renderCapability?.runtime?.webgl?.available !== false &&
     window.SampledGridWebglLayer?.isSupported?.()
   );
 }
@@ -42,23 +43,9 @@ function setHardwareChip(kind, ready, detail) {
 }
 
 function setHardwarePolicy(mode, { persistPreference = true } = {}) {
-  const capability = state.renderCapability || {};
-  const policy = capability.policy || {};
-  if (mode === "off") {
-    policy.hardware_acceleration = "off";
-    policy.force_cpu = true;
-    policy.allow_webgl = false;
-  } else if (mode === "webgl") {
-    policy.hardware_acceleration = "webgl";
-    policy.force_cpu = false;
-    policy.allow_webgl = true;
-  } else {
-    policy.hardware_acceleration = "auto";
-    policy.force_cpu = false;
-    policy.allow_webgl = true;
-  }
-  capability.policy = policy;
-  state.renderCapability = capability;
+  const capabilityOwner = globalThis.RendererCapabilityState;
+  if (!capabilityOwner?.setHardwareMode) throw new Error("RendererCapabilityState is unavailable");
+  capabilityOwner.setHardwareMode(mode);
   if (persistPreference) {
     state.browserProfile.hardwareMode = mode;
     notifyBrowserProfileChanged("hardware_mode_changed");

@@ -231,6 +231,19 @@ test("playback publishes a semantic active-date event before loading the frame",
   assert.equal(events.length, 1);
 });
 
+test("playback renderer propagates an explicitly non-visible frame result", async () => {
+  const { PlaybackRenderer } = loadPlaybackRenderer();
+  const dateInput = { value: "2024-01-01" };
+
+  const result = await PlaybackRenderer.showDate({
+    date: "2024-01-02",
+    dateInput,
+    reloadActiveLayer: async () => ({ visible: false, reason: "request_superseded" }),
+  });
+
+  assert.deepEqual(plain(result), { visible: false, reason: "request_superseded" });
+});
+
 test("analysis/sequential cadence never skips selected snapshots", () => {
   const { PlaybackScheduler } = loadPlaybackCore();
   const timeline = PlaybackScheduler.start({
@@ -257,8 +270,18 @@ test("analysis/sequential cadence never skips selected snapshots", () => {
     1,
   );
 
-  PlaybackScheduler.markFrameShown(timeline, { frameNumber: lateFrame });
+  PlaybackScheduler.markFrameShown(timeline, {
+    frameNumber: lateFrame,
+    shownAtMs: 1_000 + 350 * 8,
+  });
   assert.equal(timeline.nextFrameNumber, 2);
+  assert.equal(
+    PlaybackScheduler.delayUntilNextFrame(timeline, {
+      nowMs: 1_000 + 350 * 8,
+      fallbackIntervalMs: 350,
+    }),
+    350,
+  );
   assert.equal(
     PlaybackScheduler.targetDateIndex(timeline, {
       datesLength: dates.length,
@@ -610,6 +633,16 @@ test("legacy batch cache and prefetch entrypoints are removed", () => {
   assert.equal(template.includes("playback-prefetch-controller.js"), false);
   assert.doesNotMatch(template, /before_play|playback-cache-mode|playback-cache-max-dates/);
   assert.doesNotMatch(cacheServiceSource, /function preheat\(|waitForDates|selectFullPlaybackDates|startupBufferPlan/);
+});
+
+test("settings expose playback policy without duplicating dashboard controls", () => {
+  const template = readFileSync(path.join(repoRoot, "templates/index.html"), "utf8");
+  const controls = readFileSync(path.join(repoRoot, "static/js/playback/playback-controls.js"), "utf8");
+
+  assert.match(template, /id="play-speed"/);
+  assert.match(template, /id="playback-cache-strategy"/);
+  assert.doesNotMatch(template, /id="playback-rate"|測速觀測/);
+  assert.doesNotMatch(controls, /playback-rate/);
 });
 
 test("map scope updates flow through PlaybackRuntime instead of core lifecycle owners", () => {

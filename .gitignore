@@ -3,6 +3,8 @@
 __pycache__/
 *.pyc
 *.log
+.tmp-*.err
+.tmp-*.out
 logs/
 benchmark_result.csv
 benchmarks/*.json

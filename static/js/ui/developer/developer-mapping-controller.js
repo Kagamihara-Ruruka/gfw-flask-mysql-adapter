@@ -299,12 +299,31 @@
         metric_columns: metricColumns,
         category_columns: categoryColumns,
       };
-      for (const key of ["target_contract", "sampled_grid", "source_ref"]) {
+      for (const key of ["target_contract", "source_ref"]) {
         if (existingMapping?.[key] !== undefined) {
           payload[key] = existingMapping[key];
         }
       }
+      if (existingMapping?.sampled_grid) {
+        payload.sampled_grid = JSON.parse(JSON.stringify(existingMapping.sampled_grid));
+        const valueSelect = roleSelects.find((select) => select.value === "value");
+        if (valueSelect) {
+          payload.sampled_grid.value_semantics = this.scoutValueSemantics(valueSelect);
+        }
+      }
       return payload;
+    }
+
+    scoutValueSemantics(select) {
+      try {
+        const candidate = JSON.parse(String(select?.dataset.columnValueSemantics || "{}"));
+        if (candidate && typeof candidate === "object" && candidate.provenance === "source_scout") {
+          return candidate;
+        }
+      } catch (_err) {
+        // Invalid Scout evidence stays unresolved; the UI never infers source semantics.
+      }
+      return { kind: "unknown", provenance: "source_scout", evidence: {} };
     }
 
     mappingForTable(profile, table) {
@@ -411,7 +430,7 @@
       const options = Object.entries(ROLE_LABELS).map(([value, label]) => (
         `<option value="${value}" ${value === role ? "selected" : ""}>${escapeHtml(label)}</option>`
       )).join("");
-      return `<select class="developer-column-role-select" data-column-role="${escapeHtml(column.name)}">${options}</select>`;
+      return `<select class="developer-column-role-select" data-column-role="${escapeHtml(column.name)}" data-column-value-semantics="${escapeHtml(JSON.stringify(column.value_semantics_candidate || {}))}">${options}</select>`;
     }
 
     safeLayerId(value) {

@@ -408,11 +408,10 @@ body {
 }
 
 #latest-date {
-  flex: 0 0 clamp(4.15rem, 5vw, 5rem);
-  inline-size: clamp(4.15rem, 5vw, 5rem);
-  min-inline-size: max-content;
-  padding-inline: clamp(0.45rem, 1vw, 0.75rem);
-  white-space: nowrap;
+  flex: 0 0 clamp(2rem, 2.2vw, 2.35rem);
+  inline-size: clamp(2rem, 2.2vw, 2.35rem);
+  aspect-ratio: 1;
+  font-size: 0;
 }
 
 #replay,
@@ -425,6 +424,7 @@ body {
   font-size: 0;
 }
 
+#latest-date .control-icon-fallback,
 #replay .control-icon-fallback,
 #prev-day .control-icon-fallback,
 #play-toggle .control-icon-fallback,

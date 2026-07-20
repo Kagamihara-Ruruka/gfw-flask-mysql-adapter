@@ -4,6 +4,7 @@ import re
 from collections.abc import Iterable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 from typing import Any
 
 from common_adapter.query.grid_frame import (
@@ -30,6 +31,7 @@ CANONICAL_ROLE_COLUMNS = (
 )
 CANONICAL_COLUMN_BY_ROLE = dict(CANONICAL_ROLE_COLUMNS)
 CANONICAL_EXTENSION_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,127}$")
+CANONICAL_DATA_STATUSES = frozenset({"observed", "filled", "no_data", "unknown"})
 
 
 @dataclass(frozen=True)
@@ -53,6 +55,10 @@ class CompiledSampledGridMapping:
     request_fields: Mapping[str, str]
     extension_fields: Mapping[str, str]
     mapping_version: str
+    status_semantics: Mapping[str, Any]
+    status_exact_values: Mapping[str, str]
+    status_patterns: tuple[tuple[str, str], ...]
+    status_fallback: str
     geometry: Mapping[str, Any]
     alignment: Mapping[str, Any]
     available_resolutions_km: tuple[float, ...]
@@ -77,6 +83,56 @@ def _number(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return number
+
+
+def _compile_status_semantics(
+    contract: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], Mapping[str, str], tuple[tuple[str, str], ...], str]:
+    declared = _mapping(contract.get("status_semantics"))
+    fallback = str(declared.get("fallback") or "unknown").strip().lower()
+    if fallback not in CANONICAL_DATA_STATUSES:
+        raise ValueError(f"unsupported canonical data status fallback: {fallback}")
+
+    exact: dict[str, str] = {
+        canonical: canonical for canonical in CANONICAL_DATA_STATUSES
+    }
+    patterns: list[tuple[str, str]] = []
+    for canonical_value, aliases in declared.items():
+        canonical = str(canonical_value).strip().lower()
+        if canonical == "fallback":
+            continue
+        if canonical not in CANONICAL_DATA_STATUSES:
+            raise ValueError(f"unsupported canonical data status: {canonical}")
+        source_values = [aliases] if isinstance(aliases, str) else aliases
+        if not isinstance(source_values, Sequence):
+            raise ValueError(f"status aliases for {canonical} must be a sequence")
+        for source_value in source_values:
+            normalized = str(source_value).strip().lower()
+            if not normalized:
+                continue
+            if any(token in normalized for token in ("*", "?", "[")):
+                patterns.append((normalized, canonical))
+                continue
+            previous = exact.get(normalized)
+            if previous is not None and previous != canonical:
+                raise ValueError(f"source data status maps to multiple canonical values: {normalized}")
+            exact[normalized] = canonical
+    return freeze_json(declared), freeze_json(exact), tuple(patterns), fallback
+
+
+def _canonical_data_status(value: Any, mapping: CompiledSampledGridMapping) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if not normalized:
+        return None
+    exact = mapping.status_exact_values.get(normalized)
+    if exact is not None:
+        return exact
+    for pattern, canonical in mapping.status_patterns:
+        if fnmatchcase(normalized, pattern):
+            return canonical
+    return mapping.status_fallback
 
 
 def _positive_numbers(values: Iterable[Any]) -> list[float]:
@@ -222,11 +278,18 @@ def compile_sampled_grid_mapping(dataset: dict[str, Any]) -> CompiledSampledGrid
     frozen_request_fields = freeze_json(request_fields)
     coverage_areas = freeze_json(contract.get("coverage_areas") or [])
     frozen_geometry = freeze_json(_mapping(contract.get("geometry")))
+    status_semantics, status_exact_values, status_patterns, status_fallback = (
+        _compile_status_semantics(contract)
+    )
     return CompiledSampledGridMapping(
         source_fields=frozen_source_fields,
         request_fields=frozen_request_fields,
         extension_fields=freeze_json(extension_fields),
         mapping_version=str(contract.get("mapping_version") or SAMPLED_GRID_MAPPING_VERSION),
+        status_semantics=status_semantics,
+        status_exact_values=status_exact_values,
+        status_patterns=status_patterns,
+        status_fallback=status_fallback,
         geometry=frozen_geometry,
         alignment=freeze_json(_mapping(contract.get("alignment"))),
         available_resolutions_km=available,
@@ -308,6 +371,7 @@ def sampled_grid_public_contract(dataset: dict[str, Any]) -> dict[str, Any] | No
         "snapshot_cache": thaw_json(compiled.snapshot_cache),
         "value_domain": thaw_json(compiled.value_domain),
         "visualization": thaw_json(compiled.visualization),
+        "status_semantics": thaw_json(compiled.status_semantics),
         "zero_is_data": compiled.zero_is_data,
         "extension_columns": list(compiled.extension_fields),
     }
@@ -458,7 +522,10 @@ def canonicalize_sampled_grid_row(
             "coverage_ratio": _number(
                 _canonical_role_value(row, fields, request_fields, request_context, "coverage")
             ),
-            "data_status": _canonical_role_value(row, fields, request_fields, request_context, "status"),
+            "data_status": _canonical_data_status(
+                _canonical_role_value(row, fields, request_fields, request_context, "status"),
+                mapping,
+            ),
         }
     )
     for canonical_column, source_path in mapping.extension_fields.items():
@@ -682,7 +749,7 @@ def canonicalize_sampled_grid_rows(
         append_lon(lon)
         append_value(value)
         append_coverage(as_number(coverage))
-        append_status(status)
+        append_status(_canonical_data_status(status, mapping))
         append_west(west)
         append_south(south)
         append_east(east)
@@ -832,7 +899,10 @@ def canonicalize_sampled_grid_columns(
         "lon": longitudes,
         "value": direct_or_constant("value"),
         "coverage_ratio": direct_or_constant("coverage", numeric=True),
-        "data_status": direct_or_constant("status"),
+        "data_status": tuple(
+            _canonical_data_status(value, mapping)
+            for value in direct_or_constant("status")
+        ),
         "bounds.west": west,
         "bounds.south": south,
         "bounds.east": east,
