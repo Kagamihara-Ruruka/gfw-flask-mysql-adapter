@@ -38,14 +38,14 @@
 
 html {
   min-height: 100%;
-  overflow-x: hidden;
+  overflow-x: clip;
   scroll-behavior: smooth;
 }
 
 body.intro-page {
   min-height: 430svh;
   margin: 0;
-  overflow-x: hidden;
+  overflow-x: clip;
   color: var(--intro-ink);
   background: #050b16;
   font-family: "Yu Gothic", "Hiragino Sans", Arial, "Noto Sans TC", "Microsoft JhengHei", sans-serif;

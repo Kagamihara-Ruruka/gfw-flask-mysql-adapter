@@ -152,6 +152,15 @@ class OfficialSiteRoutesTests(unittest.TestCase):
                 page = (ROOT / "official_site" / page_name).read_text(encoding="utf-8")
                 self.assertIn('href="./styles.css?v=86"', page)
 
+    def test_official_pages_clip_horizontal_overflow_without_nested_body_scroll(self) -> None:
+        styles = (ROOT / "official_site" / "styles.css").read_text(encoding="utf-8")
+        intro_styles = (ROOT / "official_site" / "intro.css").read_text(encoding="utf-8")
+
+        self.assertRegex(styles, r"(?ms)^html\s*\{[^}]*overflow-x:\s*clip;")
+        self.assertRegex(styles, r"(?ms)^body\s*\{[^}]*overflow-x:\s*clip;")
+        self.assertRegex(intro_styles, r"(?ms)^html\s*\{[^}]*overflow-x:\s*clip;")
+        self.assertRegex(intro_styles, r"(?ms)^body\.intro-page\s*\{[^}]*overflow-x:\s*clip;")
+
     def test_satellite_vertical_drag_tracks_pointer_direction(self) -> None:
         response = self.client.get("/index.html")
         page = response.get_data(as_text=True)
