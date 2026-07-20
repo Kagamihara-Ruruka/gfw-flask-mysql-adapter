@@ -15,6 +15,9 @@ OFFICIAL_PAGE_FILES = (
     "tech-stack.html",
 )
 
+OFFICIAL_ENTRY_FILE = "intro.html"
+OFFICIAL_HOME_FILE = "index.html"
+
 OFFICIAL_ROOT_ASSETS = (
     "about-panorama.js",
     "hero-seam-sampler.js",
@@ -40,8 +43,9 @@ class OfficialSiteRoutes:
 
     def register(self, app: Flask) -> None:
         site_root = self.site_root
-        if not (site_root / "index.html").is_file():
-            raise RuntimeError(f"Official site is missing index.html: {site_root}")
+        for required_file in (OFFICIAL_ENTRY_FILE, OFFICIAL_HOME_FILE):
+            if not (site_root / required_file).is_file():
+                raise RuntimeError(f"Official site is missing {required_file}: {site_root}")
 
         def send_site_file(filename: str):
             target = (site_root / filename).resolve()
@@ -51,11 +55,9 @@ class OfficialSiteRoutes:
 
         @app.get("/")
         def official_site_index():
-            return send_site_file("index.html")
+            return send_site_file(OFFICIAL_ENTRY_FILE)
 
         for page_name in OFFICIAL_PAGE_FILES:
-            if page_name == "index.html":
-                continue
             app.add_url_rule(
                 f"/{page_name}",
                 endpoint=f"official_site_page_{page_name.removesuffix('.html').replace('-', '_')}",

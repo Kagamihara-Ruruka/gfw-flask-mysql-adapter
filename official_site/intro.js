@@ -1,5 +1,5 @@
 (function () {
-  const targetUrl = "/";
+  const targetUrl = "/index.html";
   const previewMode = new URLSearchParams(window.location.search).get("preview") === "1";
   const root = document.documentElement;
   const canvas = document.getElementById("shader");

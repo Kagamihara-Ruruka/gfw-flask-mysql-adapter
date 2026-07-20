@@ -41,8 +41,14 @@ class OfficialSiteRoutesTests(unittest.TestCase):
         self.client = app.test_client()
 
     def test_root_serves_official_site_and_dashboard_has_its_own_route(self) -> None:
-        official_response = self.client.get("/")
+        intro_response = self.client.get("/")
+        official_response = self.client.get("/index.html")
         dashboard_response = self.client.get("/dashboard/")
+        intro_script_response = self.client.get("/intro.js")
+
+        self.assertEqual(intro_response.status_code, 200)
+        self.assertIn(b"BDDE38 Intro", intro_response.data)
+        self.assertIn(b'const targetUrl = "/index.html"', intro_script_response.data)
 
         self.assertEqual(official_response.status_code, 200)
         self.assertIn(b"BDDE38 Group 01 - Ocean Data Lakehouse", official_response.data)
@@ -52,12 +58,14 @@ class OfficialSiteRoutesTests(unittest.TestCase):
         self.assertIn("海事資料儀表板", dashboard_response.get_data(as_text=True))
         self.assertNotIn("大可愛", dashboard_response.get_data(as_text=True))
         self.assertIn("http://127.0.0.1:5086", dashboard_response.get_data(as_text=True))
+        intro_response.close()
+        intro_script_response.close()
         official_response.close()
         dashboard_response.close()
 
     def test_every_public_page_uses_the_same_dashboard_link(self) -> None:
         for page_name in OFFICIAL_PAGE_FILES:
-            path = "/" if page_name == "index.html" else f"/{page_name}"
+            path = "/" if page_name == "intro.html" else f"/{page_name}"
             with self.subTest(path=path):
                 response = self.client.get(path)
                 self.assertEqual(response.status_code, 200)
@@ -145,7 +153,7 @@ class OfficialSiteRoutesTests(unittest.TestCase):
                 self.assertIn('href="./styles.css?v=86"', page)
 
     def test_satellite_vertical_drag_tracks_pointer_direction(self) -> None:
-        response = self.client.get("/")
+        response = self.client.get("/index.html")
         page = response.get_data(as_text=True)
         source = (ROOT / "official_site" / "satellite.js").read_text(encoding="utf-8")
 
