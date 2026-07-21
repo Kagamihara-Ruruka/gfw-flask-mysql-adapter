@@ -1,0 +1,19 @@
+# RRK 0.5.0 runtime allowlist. Everything else stays on the build host.
+**
+!Dockerfile
+!requirements.txt
+!adapter.py
+!core.py
+!common_adapter/
+!common_adapter/**
+!templates/
+!templates/**
+!static/
+!static/**
+!scripts/
+!scripts/__init__.py
+!scripts/import_eez_to_postgis.py
+
+# Never ship generated files hidden inside allowed directories.
+**/__pycache__/
+**/*.py[cod]

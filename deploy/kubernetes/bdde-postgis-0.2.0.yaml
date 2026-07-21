@@ -1,0 +1,94 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bdde-postgis-data
+  namespace: dt
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bdde-eez-cache
+  namespace: dt
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bdde-postgis
+  namespace: dt
+  labels:
+    app: bdde-postgis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bdde-postgis
+  template:
+    metadata:
+      labels:
+        app: bdde-postgis
+    spec:
+      nodeSelector:
+        dt: worker
+      containers:
+        - name: postgis
+          image: postgis/postgis:16-3.4
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POSTGRES_DB
+              value: common_spatial
+            - name: POSTGRES_USER
+              value: postgres
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: bdde-postgis-secret
+                  key: password
+          ports:
+            - name: postgres
+              containerPort: 5432
+              protocol: TCP
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "common_spatial"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          volumeMounts:
+            - name: postgis-data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              memory: 512Mi
+              cpu: 250m
+            limits:
+              memory: 2Gi
+              cpu: "2"
+      volumes:
+        - name: postgis-data
+          persistentVolumeClaim:
+            claimName: bdde-postgis-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bdde-postgis-service
+  namespace: dt
+  labels:
+    app: bdde-postgis
+spec:
+  selector:
+    app: bdde-postgis
+  ports:
+    - name: postgres
+      port: 5432
+d      targetPort: 5432
+      protocol: TCP

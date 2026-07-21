@@ -13,7 +13,7 @@ class SparkReadBackend:
         self.dataset = dataset
         self.kind, self.connection_ref, self.connection = dataset_backend_info(config, dataset)
 
-    def schema_packet(self) -> dict[str, Any]:
+    def schema_packet(self, *, query_context: dict[str, Any] | None = None) -> dict[str, Any]:
         raise UnsupportedQueryOperation(
             "spark",
             "schema_packet",

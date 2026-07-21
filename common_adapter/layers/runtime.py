@@ -209,6 +209,7 @@ def _dataset_from_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
             "database": mapping.get("database"),
             "table": table,
             "mysql_table": table,
+            "dataset_id": mapping.get("dataset_id") or mapping.get("layer_id"),
             "time_column": time_column,
             "lat_column": lat_column,
             "lon_column": lon_column,

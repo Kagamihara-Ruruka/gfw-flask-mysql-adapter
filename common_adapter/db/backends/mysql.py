@@ -21,7 +21,7 @@ class MySqlReadBackend:
         if self.kind != "mysql":
             raise ValueError(f"MySqlReadBackend cannot serve backend {self.kind!r}")
 
-    def schema_packet(self) -> dict[str, Any]:
+    def schema_packet(self, *, query_context: dict[str, Any] | None = None) -> dict[str, Any]:
         packet = _mysql_schema_packet(
             self.config,
             self.dataset,

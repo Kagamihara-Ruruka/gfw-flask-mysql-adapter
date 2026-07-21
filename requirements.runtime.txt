@@ -1,14 +1,7 @@
 Flask==3.1.2
-Flask-Cors==6.0.5
 flask-sock==0.7.0
 websocket-client==1.8.0
-PyMySQL==1.1.2
-cryptography==49.0.0
-pandas==2.3.3
-duckdb==1.5.3
 psycopg[binary]==3.2.9
-orjson==3.11.9
-Shapely==2.1.1
 PyHive==0.7.0
 thrift==0.20.0
 thrift-sasl==0.4.3
