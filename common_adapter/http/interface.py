@@ -13,6 +13,7 @@ from common_adapter.http.routes.backdrop import register_backdrop_routes
 from common_adapter.http.routes.datasets import register_dataset_routes
 from common_adapter.http.routes.developer import register_developer_routes
 from common_adapter.http.routes.live import register_live_routes
+from common_adapter.http.routes.official_site import register_official_site_routes
 from common_adapter.http.routes.overlays import register_overlay_routes
 from common_adapter.http.routes.system import register_system_routes
 from common_adapter.layers.registry import RuntimeLayerRegistry
@@ -65,6 +66,8 @@ def create_app(
 
     resolved_layer_registry = layer_registry or RuntimeLayerRegistry(config)
     resolved_route_status_registry = route_status_registry or RouteStatusRegistry(config, resolved_layer_registry)
+
+    register_official_site_routes(app, site_root=ROOT / "official_site")
 
     register_system_routes(
         app,

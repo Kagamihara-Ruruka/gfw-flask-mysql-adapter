@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DATA SOURCES - BDDE38 Ocean Data Lakehouse</title>
+    <link rel="stylesheet" href="./styles.css?v=86" />
+  </head>
+  <body class="project-page detail-page data-sources-page">
+    <header class="site-header">
+      <a class="site-brand" href="/" aria-label="Back to index">
+        <img src="./assets/ispan-logo.svg" alt="iSpan" />
+        <span><strong>BDDE38</strong><small>GROUP 01</small></span>
+      </a>
+      <nav class="site-nav" aria-label="Project navigation">
+        <a href="./about.html">ABOUT</a>
+        <a class="is-active" href="./data-sources.html">DATA SOURCES</a>
+        <a href="./tech-stack.html">TECH STACK</a>
+        <a href="./product.html">PRODUCT</a>
+        <a href="./member.html">MEMBER</a>
+        <a class="dashboard-link" href="/dashboard/">DASHBOARD</a>
+      </nav>
+      <button class="menu-toggle" type="button" aria-label="Open menu" aria-expanded="false"><span></span><span></span><span></span></button>
+    </header>
+
+    <main>
+      <section class="page-hero data-sources-hero">
+        <canvas class="vortex-flow-canvas" data-vortex-flow aria-hidden="true"></canvas>
+        <p class="eyebrow">DATA SOURCES</p>
+        <h1>如何對齊時空座標永遠是大哉問</h1>
+        <p>
+          NASA 描述海洋環境狀態，Global Fishing Watch 描述船舶活動與捕魚行為。<br />
+          專題的第一個關鍵，是讓兩者能在 AOI 與 4km 網格上被共同分析。
+        </p>
+        <div class="hero-caption-deck dark-caption" aria-hidden="true">
+          <span>2020-2024</span>
+          <span>4KM GRID</span>
+          <span>AOI READY</span>
+        </div>
+      </section>
+
+      <section class="content-section">
+        <div class="source-comparison">
+          <article>
+            <span>NASA</span>
+            <h2>Ocean Color Dataset</h2>
+            <p>每日全球網格資料，每格約 4km x 4km，用來描述漁場環境訊號。</p>
+            <dl>
+              <div><dt>期間</dt><dd>2020-2024</dd></div>
+              <div><dt>資料量</dt><dd>單項產品每年約 14 億 7,200 萬筆，約 5GB</dd></div>
+              <div><dt>產品</dt><dd>CHLOR_A、NFLH、POC、SST、NSST、SST4</dd></div>
+            </dl>
+          </article>
+          <article>
+            <span>GFW</span>
+            <h2>Global Fishing Watch</h2>
+            <p>每日全球 1km x 1km 網格，描述船舶活動與捕魚行為。</p>
+            <dl>
+              <div><dt>期間</dt><dd>2020-2024</dd></div>
+              <div><dt>資料量</dt><dd>每年約 3 億 8,300 萬筆，約 2.9GB</dd></div>
+              <div><dt>欄位</dt><dd>date、cell_ll_lat、cell_ll_lon、mmsi、hours、fishing_hours</dd></div>
+            </dl>
+          </article>
+        </div>
+
+        <div class="aoi-layout">
+          <div class="aoi-copy">
+            <p class="eyebrow">AOI</p>
+            <h2>研究範圍先切出兩個海域尺度</h2>
+            <div class="aoi-list">
+              <button class="aoi-item" type="button" data-aoi-target="taiwan"><span>TAIWAN</span><strong>20°N-27°N / 118°E-124°E</strong></button>
+              <button class="aoi-item" type="button" data-aoi-target="northwest-pacific"><span>NORTHWEST PACIFIC</span><strong>15°N-35°N / 105°E-135°E</strong></button>
+            </div>
+          </div>
+          <div class="aoi-map-native" role="img" aria-label="西北太平洋與台灣兩個研究範圍的座標示意圖">
+            <div class="aoi-map-status" aria-hidden="true">
+              <span>AREA OF INTEREST</span>
+              <strong>NASA + GFW</strong>
+            </div>
+            <div class="aoi-region northwest-pacific" aria-hidden="true"></div>
+            <div class="aoi-region taiwan" aria-hidden="true"></div>
+            <div class="aoi-location-pulse" aria-hidden="true"></div>
+            <div class="aoi-map-legend" aria-hidden="true">
+              <span class="legend-entry legend-entry-nwp"><i class="legend-nwp"></i>西北太平洋</span>
+              <span class="legend-entry legend-entry-taiwan"><i class="legend-taiwan"></i>台灣</span>
+              <strong>4 KM CANONICAL GRID</strong>
+            </div>
+          </div>
+        </div>
+
+        <div class="quality-row">
+          <article><strong>SHA-256 / MD5</strong><span>來源完整性驗證</span></article>
+          <article><strong>Metadata</strong><span>產品、單位、日期與原始欄位保留</span></article>
+          <article><strong>4km Grid</strong><span>統一 NASA 與 GFW 的空間粒度</span></article>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer"><small class="site-release">© 2026 BDDE38 GROUP 01 · WEB BUILD 2026.07</small></footer>
+    <script src="./script.js?v=36"></script>
+    <script type="module" src="./vortex-flow.js?v=4"></script>
+  </body>
+</html>

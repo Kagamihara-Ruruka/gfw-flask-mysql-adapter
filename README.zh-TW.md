@@ -496,9 +496,20 @@ http://127.0.0.1:5057
 
 服務是 single-instance：啟動時會讀 `flask_pid.txt`，若舊 Flask 進程還在，會強制退出舊進程並清理 port，避免重複查詢 AIS 或資料庫。
 
+同一個 `core.py` 命令會同時啟動消費端與開發者 listener。使用範例 port 時，路由如下：
+
+| 位址 | Owner |
+|---|---|
+| `http://127.0.0.1:5057/` | 由 `official_site/` 提供的小組官網 |
+| `http://127.0.0.1:5057/dashboard/` | 消費端儀表板 |
+| `http://127.0.0.1:5057/api/...` | 消費端 API 與 runtime transport |
+| `http://127.0.0.1:5058/` | 開發者控制面 |
+
+官網與儀表板刻意共用消費端 origin。官網的 `DASHBOARD` 導覽使用 root-relative `/dashboard/`，不可改成綁定特定機器的 host 或 port。`core.py` 預設在下一個 port 啟動開發者 listener，也可用 `--developer-port` 指定；只有確定不啟動控制面時才使用 `--no-developer-server`。
+
 ## 部署指南
 
-本專案將儀表板程序、具狀態依賴與上游 collector 分開治理。`docker-compose.yml` 只啟動本機 MySQL 與 PostGIS 支援服務，不會建置或部署 Flask 應用程式。
+本專案由同一個消費端 listener 提供小組官網、消費端儀表板與消費端 API；同一個 `core.py` process 另以獨立 listener 啟動開發者控制面。具狀態依賴與上游 collector 仍分開治理。`docker-compose.yml` 只啟動本機 MySQL 與 PostGIS 支援服務，不會建置或部署 Flask 應用程式。
 
 ### 人類操作流程
 
@@ -532,7 +543,7 @@ http://127.0.0.1:5057
    .\.venv\Scripts\python.exe core.py --config config\runtime\adapter.local.json serve
    ```
 
-   消費端 UI 使用設定的 server port；開發者控制面預設使用下一個 port，也可用 `--developer-port` 指定。只需公開消費端時使用 `--no-developer-server`，不可把開發者 port 暴露到不受信任的網路。
+   設定的消費端 port 會提供 `/`（官網）、`/dashboard/`（儀表板）與 `/api/...`（消費端 API）。同一個命令預設在下一個 port 啟動開發者控制面，也可用 `--developer-port` 指定。確定不啟動控制面時才使用 `--no-developer-server`；不可把開發者 port 暴露到不受信任的網路。
 
 6. 導入使用者流量前先驗證：
 
@@ -541,7 +552,7 @@ http://127.0.0.1:5057
    Invoke-RestMethod http://127.0.0.1:5057/api/datasets
    ```
 
-   另外以全新瀏覽器 profile 開啟儀表板，檢查圖層啟用、至少一張 sampled-grid frame、EEZ、播放、縮放、拖曳、選格與 Widget。HTTP health 成功不代表 Renderer 生命週期已驗收。
+   另外以全新瀏覽器 profile 開啟 `/`，透過相對 `DASHBOARD` 連結進入 `/dashboard/`，再檢查圖層啟用、至少一張 sampled-grid frame、EEZ、播放、縮放、拖曳、選格與 Widget。開啟「開發者」頁籤，確認它嵌入設定的開發者 listener，而不是消費端路由。HTTP health 成功不代表路由與 Renderer 生命週期已驗收。
 
 7. AIS 與其他 upstream collectors 必須作為獨立受監督工作執行。儀表板只讀取其 SQL/service 輸出，不擁有 collector 的持續運作。上游 key 應放在環境變數、K8 Secret、Airflow Variable 或同等 secret manager。
 
@@ -563,7 +574,7 @@ http://127.0.0.1:5057
 3. 秘密不得出現在 command、log、commit 或產出報告；優先使用注入的環境變數或平台 secret store。
 4. `serve` 前必須執行 `check-dependencies`。宣告中的依賴若不可用，應停止並回報失敗 route，不得偷偷移除或建立 fallback config。
 5. 同一 selected config 最多啟動一個應用程序；沿用設定 port、關閉過期瀏覽器分頁，驗收時不可同時施加 benchmark 流量。
-6. 驗證 `/api/health`、`/api/datasets`、消費端頁面及需求中的使用者流程。發布候選版還必須執行[驗證](#驗證)命令，保存 commit、config identity、cache state、瀏覽器 profile 與結果。
+6. 驗證 `/`、`/dashboard/`、`/api/health`、`/api/datasets`、獨立開發者 listener 及需求中的使用者流程，並確認官網導覽維持同源 root-relative。發布候選版還必須執行[驗證](#驗證)命令，保存 commit、config identity、cache state、瀏覽器 profile 與結果。
 7. 缺少資料集、Mapping 不一致、stale frame、永久 `FETCHING`、重複 HTTP、alpha 錯誤、Mask 接縫或破圖，都代表部署失敗。不得以提高 RAM、並行、水位或 timeout 掩蓋。
 8. 失敗時停止新程序，保留 log 與事件證據，重新部署上一個 known-good commit/image。不可用未提交的 production edits 直接修執行中實例。
 
@@ -571,7 +582,7 @@ http://127.0.0.1:5057
 
 ## 開發者控制面使用指南
 
-開發者頁面是 Config 控制面，不是第二個儀表板，也不是資料查詢 client。`core.py serve` 預設把它開在 `server.port + 1`；儀表板的「開發者」頁籤會嵌入這個服務。若消費端是 `5057`，也可直接開啟 `http://127.0.0.1:5058`。
+開發者頁面是 Config 控制面，不是第二個儀表板，也不是資料查詢 client。同一個 `core.py serve` 命令會啟動兩個 listener：官網、儀表板與 API 維持在 `server.port`，開發者控制面預設使用 `server.port + 1`。儀表板的「開發者」頁籤會嵌入這個獨立服務。若消費端是 `5057`，也可直接開啟 `http://127.0.0.1:5058`。
 
 操作時必須由上往下，因為每一區都消費上一區的持久化產物：
 

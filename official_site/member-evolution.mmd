@@ -1,0 +1,145 @@
+%% Historical checkpoints were verified against primary project histories and
+%% the Computer History Museum timeline. Relation labels distinguish influence
+%% from implementation, storage, scheduling, and project convergence.
+%% Sources:
+%% https://www.computerhistory.org/timeline/software-languages/
+%% https://www.computerhistory.org/timeline/networking-the-web/
+%% https://www.internetsociety.org/internet/history-internet/brief-history-internet/
+%% https://research.google/pubs/the-google-file-system/
+%% https://research.google/pubs/mapreduce-simplified-data-processing-on-large-clusters/
+%% https://spark.apache.org/history.html
+%% https://kubernetes.io/blog/2024/06/06/10-years-of-kubernetes/
+%% https://iceberg.apache.org/spec/
+%%{init: {
+  "theme": "base",
+  "themeVariables": {
+    "background": "transparent",
+    "fontFamily": "Arial, sans-serif",
+    "fontSize": "15px",
+    "lineColor": "#4d8390",
+    "primaryTextColor": "#e9f4f5",
+    "clusterBkg": "transparent",
+    "clusterBorder": "transparent",
+    "edgeLabelBackground": "#06141b"
+  },
+  "flowchart": {
+    "curve": "basis",
+    "htmlLabels": false,
+    "nodeSpacing": 34,
+    "rankSpacing": 72,
+    "padding": 12,
+    "useMaxWidth": false
+  }
+}}%%
+flowchart BT
+  MC["1940s<br/>機器碼"]:::early
+  ASM["1949<br/>組合語言"]:::early
+  HLL["1950s<br/>高階語言抽象"]:::early
+  FORTRAN["1957<br/>FORTRAN"]:::early
+  LISP["1958<br/>LISP"]:::early
+  ALGOL["1958–1960<br/>ALGOL"]:::early
+  COBOL["1959<br/>COBOL"]:::early
+  SIMULA["1967<br/>SIMULA"]:::early
+  SCIENCE["科學計算"]:::early
+  BUSINESS["商業資料處理"]:::early
+
+  UNIX0["1969<br/>UNIX"]:::systems
+  ARPANET["1969<br/>ARPANET"]:::systems
+  RELMODEL["1970<br/>關聯式模型"]:::systems
+  C["1972<br/>C"]:::systems
+  UNIXC["1973<br/>可移植 UNIX"]:::systems
+  SQL["1974<br/>SQL"]:::systems
+  TCPIP["1983<br/>TCP/IP"]:::systems
+  CPP["1985<br/>C++"]:::systems
+  ABC["1980s<br/>ABC"]:::systems
+  INTERNET["1983–1990s<br/>Internet"]:::systems
+  WWW["1989–1990<br/>World Wide Web"]:::systems
+  PYTHON["1991<br/>Python"]:::systems
+  LINUX["1991<br/>Linux"]:::systems
+  JAVA["1995<br/>Java"]:::systems
+  JS["1995<br/>JavaScript"]:::systems
+  BROWSER["1990s–<br/>Browser Runtime"]:::systems
+
+  CLUSTER["2000s<br/>商品化分散式叢集"]:::distributed
+  GFS["2003<br/>Google File System"]:::distributed
+  MAPREDUCE["2004<br/>MapReduce"]:::distributed
+  HDFS["2006<br/>HDFS"]:::distributed
+  HADOOP["2006<br/>Hadoop"]:::distributed
+  SPARK["2009–2010<br/>Spark"]:::distributed
+  FLASK["2010<br/>Flask API"]:::distributed
+  WEBGL["2011<br/>WebGL"]:::distributed
+  PARQUET["2013<br/>Parquet"]:::distributed
+
+  DOCKER["2013<br/>Docker"]:::cloud
+  K8S["2014<br/>Kubernetes"]:::cloud
+  ICEBERG["2017<br/>Iceberg"]:::cloud
+  LAKEHOUSE["2020s<br/>Lakehouse"]:::cloud
+  CANONICAL["Canonical Frame<br/>Query + Cache Runtime"]:::cloud
+  OCEAN["海洋時空資料<br/>NASA + GFW + EEZ"]:::cloud
+  PLATFORM["2026<br/>海洋時空資料平台"]:::current
+
+  MC -->|語言抽象| ASM
+  ASM -->|語言抽象| HLL
+  HLL --> FORTRAN
+  HLL --> LISP
+  HLL --> ALGOL
+  HLL --> COBOL
+  ALGOL -. 語言影響 .-> SIMULA
+  ALGOL -. 語言影響 .-> C
+  FORTRAN -->|運算依賴| SCIENCE
+  COBOL -->|資料處理| BUSINESS
+
+  UNIX0 -->|系統需求| C
+  C ==>|系統承繼| UNIXC
+  RELMODEL -->|資料模型| SQL
+  BUSINESS -->|資料查詢需求| SQL
+  C -. 語言影響 .-> CPP
+  SIMULA -. 語言影響 .-> CPP
+  HLL --> ABC
+  ABC -. 語言影響 .-> PYTHON
+  UNIXC ==>|系統承繼| LINUX
+  CPP -. 語言影響 .-> JAVA
+  ARPANET ==>|系統承繼| TCPIP
+  TCPIP -->|運算依賴| INTERNET
+  INTERNET -->|運算依賴| WWW
+  WWW -->|瀏覽器需求| JS
+  WWW -->|運算依賴| BROWSER
+  CPP -->|運算依賴| BROWSER
+  JS -->|運算依賴| BROWSER
+
+  LINUX -->|運算依賴| CLUSTER
+  INTERNET -->|運算依賴| CLUSTER
+  CLUSTER -->|資料儲存| GFS
+  CLUSTER -->|運算依賴| MAPREDUCE
+  GFS ==>|資料儲存| HDFS
+  MAPREDUCE -->|運算依賴| HADOOP
+  HDFS -->|資料儲存| HADOOP
+  JAVA -->|運算依賴| HADOOP
+  HADOOP -->|運算演進| SPARK
+  JAVA -->|運算依賴| SPARK
+  HADOOP -->|資料儲存| PARQUET
+  PYTHON -->|運算依賴| FLASK
+  PYTHON -->|運算依賴| SPARK
+  BROWSER -->|運算依賴| WEBGL
+
+  LINUX -->|運算依賴| DOCKER
+  DOCKER ==>|叢集調度| K8S
+  HDFS -->|資料儲存| ICEBERG
+  PARQUET -->|資料儲存| ICEBERG
+  SPARK -->|運算依賴| ICEBERG
+  SQL -->|資料查詢| LAKEHOUSE
+  ICEBERG ==>|資料儲存| LAKEHOUSE
+  SPARK -->|運算依賴| LAKEHOUSE
+  LAKEHOUSE -->|專案匯聚| CANONICAL
+  FLASK -->|專案匯聚| CANONICAL
+  SCIENCE -->|專案匯聚| OCEAN
+  OCEAN -->|專案匯聚| CANONICAL
+  CANONICAL ==>|專案匯聚| PLATFORM
+  K8S ==>|叢集調度| PLATFORM
+  WEBGL ==>|專案匯聚| PLATFORM
+
+  classDef early fill:#0b1721,stroke:#7e96a8,color:#d8e2e9,stroke-width:1px;
+  classDef systems fill:#06222a,stroke:#3c8994,color:#d9f0f2,stroke-width:1px;
+  classDef distributed fill:#062833,stroke:#2ccdeb,color:#e1f9fc,stroke-width:1.2px;
+  classDef cloud fill:#132b20,stroke:#a5d94d,color:#efffcf,stroke-width:1.2px;
+  classDef current fill:#263b19,stroke:#e5ff7f,color:#ffffff,stroke-width:2px;
