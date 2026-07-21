@@ -87,6 +87,7 @@ class DatasetRoutes:
     @staticmethod
     def query_context() -> dict[str, Any]:
         return {
+            "aoi": request.args.get("aoi"),
             "requested_resolution_km": request.args.get("resolution"),
             "zoom": request.args.get("zoom"),
             "latitude": request.args.get("latitude"),
@@ -175,7 +176,7 @@ class DatasetRoutes:
         def schema(dataset_id: str):
             try:
                 dataset = self.get_dataset(dataset_id)
-                packet = schema_packet(config, dataset)
+                packet = schema_packet(config, dataset, query_context=self.query_context())
                 packet["dataset_id"] = dataset_id
                 packet["runtime"] = self.runtime_packet(dataset_id, dataset)
                 return jsonify(packet)

@@ -213,6 +213,7 @@ function loadLayerViewportController(dataset) {
     maxBounds: null,
     center: { lat: 0, lng: 0 },
     zoom: 2,
+    boundsZoomInside: null,
   };
   const latLngBounds = (southWest, northEast) => {
     const south = Number(southWest[0]);
@@ -237,7 +238,10 @@ function loadLayerViewportController(dataset) {
     map: {
       getMinZoom: () => 2,
       getMaxZoom: () => 18,
-      getBoundsZoom: () => 5,
+      getBoundsZoom: (_bounds, inside) => {
+        mapState.boundsZoomInside = inside;
+        return 5;
+      },
       setMinZoom: (value) => { mapState.minZoom = value; },
       setMaxBounds: (value) => { mapState.maxBounds = value; },
       getCenter: () => mapState.center,
@@ -308,6 +312,20 @@ test("sampled-grid defaults to the finest mapped resolution and accepts a per-da
     east: 120.04166666666667,
     north: 22,
   });
+});
+
+test("sampled-grid honors a mapping-owned default resolution", () => {
+  const { contract } = loadContract({
+    sampled_grid: {
+      contract_version: "rrkal.sampled_grid.v1",
+      available_resolutions_km: [4, 16, 32],
+      default_resolution_km: 32,
+    },
+  });
+
+  assert.equal(contract.requestResolution({ datasetId: "mapped-source" }), 32);
+  assert.equal(contract.setRequestedResolution("mapped-source", 4), 4);
+  assert.equal(contract.requestResolution({ datasetId: "mapped-source" }), 4);
 });
 
 test("sampled-grid reuses a resolved source fallback without changing the configured resolution", () => {
@@ -644,13 +662,174 @@ test("sampled-grid WebGL preserves the configured alpha instead of squaring it",
 test("sampled-grid settings expose contract-driven multi-stop controls", () => {
   const template = fs.readFileSync(path.join(root, "templates/index.html"), "utf8");
   const settings = fs.readFileSync(path.join(root, "static/js/ui/layers/gfw-settings.js"), "utf8");
+  const apiClient = fs.readFileSync(path.join(root, "static/js/services/api-client.js"), "utf8");
+  const layerMenu = fs.readFileSync(path.join(root, "static/js/ui/layers/layer-menu.js"), "utf8");
+  const styles = fs.readFileSync(path.join(root, "static/styles.css"), "utf8");
   assert.match(template, /id="sampled-grid-resolution"/);
+  const toolbar = template.slice(
+    template.indexOf('class="single-day-controls"'),
+    template.indexOf('class="time-sequence"'),
+  );
+  assert.match(toolbar, /id="sampled-grid-resolution-control"/);
   assert.match(template, /id="sampled-grid-scale-mode"/);
   assert.match(template, /id="sampled-grid-color-stops"/);
-  assert.match(settings, /availableResolutionsKm/);
+  assert.match(settings, /sampledGridAvailableResolutions/);
   assert.match(settings, /setRequestedResolution/);
+  assert.match(styles, /\.controls\s*\{[\s\S]*?flex-wrap:\s*nowrap/);
+  assert.match(styles, /\.controls \[hidden\]\s*\{[\s\S]*?display:\s*none !important/);
+  assert.match(styles, /#sampled-grid-resolution-control select\s*\{[\s\S]*?width:\s*76px/);
+  assert.match(styles, /@media \(max-width: 1350px\)[\s\S]*?#sampled-grid-aoi-control select[\s\S]*?width:\s*120px/);
+  assert.match(styles, /@media \(max-width: 1350px\)[\s\S]*?#sampled-grid-resolution-control select[\s\S]*?width:\s*72px/);
+  assert.match(apiClient, /renderSampledGridResolutionSelect\(\)/);
+  const datasetRenderer = apiClient.slice(
+    apiClient.indexOf("function renderDatasetSelect"),
+    apiClient.indexOf("function renderSampledGridAoiSelect"),
+  );
+  assert.doesNotMatch(datasetRenderer, /if\s*\(!select\)\s*return/);
+  assert.match(styles, /\.controls\.has-open-layer-menu\s*\{[\s\S]*?overflow:\s*visible/);
+  assert.match(layerMenu, /classList\.toggle\("has-open-layer-menu", menu\.open\)/);
+  assert.match(layerMenu, /!input\.checked[\s\S]*?state\.dataLayer/);
   assert.doesNotMatch(settings, /\[\s*4\s*,\s*16\s*,\s*32\s*\]/);
   assert.doesNotMatch(template, /id="gfw-(?:low|high)-color"/);
+});
+
+test("resolution change uses the active dataset before settings controller sync", async () => {
+  const calls = [];
+  const listeners = {};
+  const select = {
+    value: "4",
+    disabled: false,
+    addEventListener(type, listener) { listeners[type] = listener; },
+    replaceChildren() {},
+  };
+  const elements = {
+    "sampled-grid-resolution": select,
+    "sampled-grid-resolution-control": { hidden: false },
+  };
+  const context = {
+    console,
+    document: { createElement: () => ({ value: "", textContent: "" }) },
+    state: {
+      dataLayer: "ocean_sst",
+      datasetId: "sea_temperature",
+      datasets: {
+        sea_temperature: {
+          sampled_grid: { available_resolutions_km: [4, 16, 32] },
+        },
+      },
+      sampledGridResolutionByDataset: {},
+    },
+    $: (id) => elements[id] || null,
+    stopStyleControlPropagation() {},
+    stopPlayback: () => calls.push("stop-playback"),
+    removeSampledGridLayer: () => calls.push("remove-layer"),
+    RenderState: { loading: () => calls.push("loading") },
+    PlaybackPreheater: { stop: () => calls.push("stop-preheater") },
+    reloadActiveLayer: async (options) => calls.push(["reload", options?.reason]),
+    sampledGridAvailableResolutions: () => [4, 16, 32],
+    SampledGridContract: {
+      setRequestedResolution(datasetId, resolutionKm) {
+        calls.push(["set", datasetId, resolutionKm]);
+        context.state.sampledGridResolutionByDataset[datasetId] = resolutionKm;
+        return resolutionKm;
+      },
+      requestResolution: ({ datasetId }) => context.state.sampledGridResolutionByDataset[datasetId] ?? 32,
+      resolutionState: () => ({ resolved: false, requestedResolutionKm: 4 }),
+    },
+    SampledGridColorScale: {},
+    setStatus() {},
+    addEventListener() {},
+    LayerRuntimeContractRegistry: {
+      sampledGridLayers: () => [{ layerId: "ocean_sst", datasetId: "sea_temperature" }],
+    },
+  };
+  context.window = context;
+  vm.createContext(context);
+  vm.runInContext(
+    fs.readFileSync(path.join(root, "static/js/ui/layers/gfw-settings.js"), "utf8"),
+    context,
+  );
+
+  context.bindSampledGridPaintControls();
+  listeners.change();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(calls.find((item) => Array.isArray(item) && item[0] === "set"), [
+    "set",
+    "sea_temperature",
+    4,
+  ]);
+  assert.deepEqual(calls.find((item) => Array.isArray(item) && item[0] === "reload"), [
+    "reload",
+    "resolution_changed",
+  ]);
+});
+
+test("contract toolbar renders AOI and resolution without the removed legacy dataset select", () => {
+  const elements = {
+    "sampled-grid-aoi-control": { hidden: true },
+    "sampled-grid-aoi": {
+      children: [],
+      disabled: true,
+      value: "",
+      appendChild(option) { this.children.push(option); },
+    },
+    "sampled-grid-resolution-control": { hidden: true },
+    "sampled-grid-resolution": {
+      children: [],
+      disabled: true,
+      value: "",
+      replaceChildren(...options) { this.children = options; },
+    },
+  };
+  const context = {
+    console,
+    document: {
+      createElement: () => ({ value: "", textContent: "", title: "" }),
+    },
+    state: {
+      dataLayer: "ocean_sst",
+      datasetId: "sea_temperature",
+      datasets: {
+        sea_temperature: {
+          label: "Sea Surface Temperature",
+          sampled_grid: {
+            available_resolutions_km: [4, 16, 32],
+            default_resolution_km: 32,
+          },
+        },
+      },
+      sampledGridResolutionByDataset: {},
+    },
+    $: (id) => elements[id] || null,
+    sampledGridCoverageAreas: () => [
+      { id: "taiwan", label: "Taiwan" },
+      { id: "northwest_pacific", label: "Northwest Pacific" },
+    ],
+    selectedSampledGridAoi: () => "taiwan",
+    sampledGridAvailableResolutions: () => [4, 16, 32],
+  };
+  context.window = context;
+  vm.createContext(context);
+  vm.runInContext(
+    fs.readFileSync(path.join(root, "static/js/services/api-client.js"), "utf8"),
+    context,
+  );
+
+  context.renderDatasetSelect();
+
+  assert.equal(elements["sampled-grid-aoi-control"].hidden, false);
+  assert.deepEqual(
+    elements["sampled-grid-aoi"].children.map((option) => option.value),
+    ["taiwan", "northwest_pacific"],
+  );
+  assert.equal(elements["sampled-grid-resolution-control"].hidden, false);
+  assert.equal(elements["sampled-grid-resolution"].disabled, false);
+  assert.equal(elements["sampled-grid-resolution"].value, "32");
+  assert.deepEqual(
+    elements["sampled-grid-resolution"].children.map((option) => option.value),
+    ["4", "16", "32"],
+  );
 });
 
 test("non-zero extent includes negative values instead of silently meaning positive-only", () => {
@@ -690,7 +869,7 @@ test("primary sampled-grid pipeline does not read source dataset columns", () =>
   }
 });
 
-test("bounded sampled-grid layers constrain viewport, queries, and rendered rows from Mapping coverage", () => {
+test("bounded sampled-grid layers constrain queries and rows without locking map navigation", () => {
   const dataset = {
     sampled_grid: {
       coverage_areas: [
@@ -703,13 +882,16 @@ test("bounded sampled-grid layers constrain viewport, queries, and rendered rows
   const model = context.createDatasetCoverageModel(dataset);
   assert.equal(model.clipBboxString("100,10,140,40"), "105.000000,15.000000,135.000000,35.000000");
   assert.equal(model.clipBboxString("0,0,1,1"), null);
+  const taiwan = context.createDatasetCoverageModel(dataset, "small");
+  assert.equal(taiwan.clipBboxString("100,10,140,40"), "118.000000,20.000000,124.000000,27.000000");
 
   const viewport = context.LayerViewportController.syncForDataset("bounded", { focus: true });
   assert.equal(viewport.mode, "coverage");
-  assert.equal(viewport.minZoom, 5);
+  assert.equal(viewport.minZoom, 2);
   assert.deepEqual(JSON.parse(JSON.stringify(mapState.center)), { lat: 25, lng: 120 });
   assert.equal(mapState.zoom, 5);
-  assert.ok(mapState.maxBounds);
+  assert.equal(mapState.boundsZoomInside, false);
+  assert.equal(mapState.maxBounds, null);
 
   const visible = context.LayerViewportController.filterRows([
     { id: "inside", bounds: { west: 119, south: 23, east: 120, north: 24 } },

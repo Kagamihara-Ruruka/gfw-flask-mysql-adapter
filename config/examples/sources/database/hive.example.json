@@ -1,22 +1,36 @@
 {
   "schema": "rrkal.adapter.database.v1",
   "role": "database",
-  "name": "class_hive",
-  "description": "Disabled Hive source-route example. Copy it into config/sources/database/ before configuring it.",
+  "name": "spark_thrift",
+  "description": "PyHive source route for a Spark Thrift sampled-grid read model.",
   "sql_backend": {
     "kind": "hive",
-    "driver": "placeholder"
+    "driver": "pyhive"
   },
-  "default_connection_ref": "class_hive",
+  "default_connection_ref": "spark_thrift",
   "connections": {
-    "class_hive": {
+    "spark_thrift": {
       "kind": "hive",
-      "driver": "placeholder",
-      "host": "hive-server.local",
+      "driver": "pyhive",
+      "host": "dtadm",
       "port": 10000,
-      "user": "hive",
-      "password": "env:HIVE_PASSWORD",
-      "database": "ocean_warehouse"
+      "user": "bigred",
+      "username": "bigred",
+      "auth": "NONE",
+      "catalog": "lake",
+      "schema": "ocean"
     }
+  },
+  "tables": {
+    "gold_map_metric": "lake.ocean.gold_map_metric"
+  },
+  "defaults": {
+    "start_date": "2022-01-01",
+    "end_date": "2024-12-31",
+    "aoi": "taiwan",
+    "product": "SST",
+    "metric": "sea_temperature",
+    "resolution": 4,
+    "heatmap_limit": 20000
   }
 }

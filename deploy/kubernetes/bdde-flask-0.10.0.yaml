@@ -1,0 +1,321 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bdde-flask-config
+  namespace: dt
+data:
+  adapter.local.json: |
+    {
+      "schema": "rrkal.adapter.runtime_json.v1",
+      "role": "runtime_json",
+      "description": "GFW + RRK 0.10.0 Gold viewport runtime.",
+      "query_policy": {
+        "default_limit": null,
+        "max_limit": null,
+        "table_preview_limit": 300,
+        "require_time_or_bbox_filter": true,
+        "network_concurrency": 6,
+        "background_network_concurrency": 3,
+        "snapshot_cache_max_rows": 800000
+      },
+      "server": {
+        "default_command": "serve",
+        "host": "0.0.0.0",
+        "port": 5000,
+        "debug": false,
+        "kill_port_if_busy": false
+      },
+      "rendering": {
+        "hardware_acceleration": "auto",
+        "allow_webgl": true,
+        "allow_webgpu": false,
+        "min_webgl_rows": 1
+      },
+      "live": {"ais": {"enabled": false}}
+    }
+  spark_thrift.local.json: |
+    {
+      "schema": "rrkal.adapter.database.v1",
+      "role": "database",
+      "name": "spark_thrift",
+      "description": "lake.ocean.gold_map_metric through PyHive and Spark Thrift.",
+      "sql_backend": {"kind": "hive", "driver": "pyhive"},
+      "default_connection_ref": "spark_thrift",
+      "connections": {
+        "spark_thrift": {
+          "kind": "hive",
+          "driver": "pyhive",
+          "host": "dtadm",
+          "port": 10000,
+          "user": "bigred",
+          "username": "bigred",
+          "auth": "NONE",
+          "catalog": "lake",
+          "schema": "ocean"
+        }
+      },
+      "tables": {"gold_map_metric": "lake.ocean.gold_map_metric"},
+      "defaults": {
+        "date": "2022-01-01",
+        "start_date": "2022-01-01",
+        "end_date": "2024-12-31",
+        "aoi": "taiwan",
+        "product": "SST",
+        "metric": "sea_temperature",
+        "resolution": 32
+      }
+    }
+  router_manifest.local.json: |
+    {
+      "active_configs": ["config/sources/database/spark_thrift.local.json"],
+      "locked_configs": ["config/sources/database/spark_thrift.local.json"],
+      "config_notes": {
+        "config/sources/database/spark_thrift.local.json": "RRK 0.10.0 Spark Thrift Gold viewport source."
+      },
+      "imported_layers": ["ocean_sst"]
+    }
+  layer_mappings.local.json: |
+    {
+      "mappings": [
+        {
+          "mapping_id": "database.spark_thrift__gold_map_metric__ocean_sst",
+          "enabled": true,
+          "config_path": "config/sources/database/spark_thrift.local.json",
+          "connection_ref": "spark_thrift",
+          "backend": "hive",
+          "database": "ocean",
+          "table": "gold_map_metric",
+          "dataset_id": "sea_temperature",
+          "layer_id": "ocean_sst",
+          "label": "Sea Surface Temperature",
+          "roles": {
+            "time": "event_date",
+            "id": "grid_id",
+            "lat": "grid_row",
+            "lon": "grid_col",
+            "row": "grid_row",
+            "column": "grid_col",
+            "value": "metric_value",
+            "resolution": "resolution_km",
+            "coverage": "data_coverage",
+            "status": "display_level"
+          },
+          "selected_columns": [
+            "event_date", "grid_id", "grid_row", "grid_col",
+            "resolution_km", "metric_value", "display_level", "data_coverage"
+          ],
+          "display_columns": [
+            "event_date", "grid_id", "grid_row", "grid_col",
+            "resolution_km", "metric_value", "display_level", "data_coverage"
+          ],
+          "metric_columns": ["metric_value"],
+          "category_columns": ["display_level"],
+          "sampled_grid": {
+            "contract_version": "rrkal.sampled_grid.v1",
+            "mapping_version": "bdde.gold_map_metric.v4",
+            "query_scope": "viewport",
+            "available_resolutions_km": [4, 16, 32],
+            "default_resolution_km": 32,
+            "max_viewport_rows": 400000,
+            "source_parameters": {
+              "aoi": "taiwan",
+              "product": "SST",
+              "metric": "sea_temperature"
+            },
+            "request_fields": {"time": "date"},
+            "date_range": {"start": "2022-01-01", "end": "2024-12-31"},
+            "coverage_areas": [
+              {
+                "id": "taiwan",
+                "label": "\u53f0\u7063",
+                "bounds": {"west": 118, "south": 20, "east": 124, "north": 27}
+              },
+              {
+                "id": "northwest_pacific",
+                "label": "\u897f\u5317\u592a\u5e73\u6d0b",
+                "bounds": {"west": 105, "south": 15, "east": 135, "north": 35}
+              }
+            ],
+            "geometry": {
+              "encoding": "global_index",
+              "origin_lat": 90,
+              "origin_lon": -180,
+              "index_units_per_degree": 24,
+              "base_resolution_km": 4
+            },
+            "alignment": {
+              "id": "global_geographic_index",
+              "origin_lat": 90,
+              "origin_lon": -180,
+              "index_units_per_degree": 24
+            },
+            "snapshot_cache": {
+              "enabled": true,
+              "identity_roles": ["dataset_id", "date", "coverage_id", "resolution_km", "bbox"],
+              "max_entries": 12,
+              "ttl_seconds": 600
+            },
+            "value_domain": {
+              "min": 0,
+              "max": 37,
+              "unit": "\u00b0C",
+              "higher_is_better": false,
+              "interpretation": "sea_surface_temperature"
+            },
+            "visualization": {
+              "color_scale": {
+                "mode": "contract",
+                "domain": {"min": 0, "max": 37},
+                "zero_opacity": 1,
+                "stops": [
+                  {"position": 0, "color": "#163b4a"},
+                  {"position": 0.25, "color": "#2d8296"},
+                  {"position": 0.5, "color": "#4dbb9b"},
+                  {"position": 0.75, "color": "#e2bd52"},
+                  {"position": 1, "color": "#d85a30"}
+                ]
+              }
+            },
+            "zero_is_data": true
+          }
+        }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bdde-flask
+  namespace: dt
+  labels:
+    app: bdde-flask
+    app.kubernetes.io/version: "0.10.0"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bdde-flask
+  template:
+    metadata:
+      labels:
+        app: bdde-flask
+        app.kubernetes.io/version: "0.10.0"
+      annotations:
+        bdde/config-revision: "0.10.0-resolution-event-v1"
+    spec:
+      imagePullSecrets:
+        - name: dkreg
+      runtimeClassName: gvisor
+      nodeSelector:
+        dt: worker
+      initContainers:
+        - name: prepare-config
+          image: dkreg.taroko:5000/bdde-flask:dev
+          imagePullPolicy: Always
+          command: ["sh", "-c"]
+          args:
+            - >-
+              set -eu;
+              mkdir -p /config-runtime/runtime /config-runtime/sources/database
+              /config-runtime/sources/managed /config-runtime/state /config-runtime/artifacts;
+              cp -L /config-source/adapter.local.json /config-runtime/runtime/adapter.local.json;
+              cp -L /config-source/spark_thrift.local.json /config-runtime/sources/database/spark_thrift.local.json;
+              cp -L /config-source/router_manifest.local.json /config-runtime/state/router_manifest.local.json;
+              cp -L /config-source/layer_mappings.local.json /config-runtime/artifacts/layer_mappings.local.json;
+              test -s /config-runtime/runtime/adapter.local.json;
+              test -s /config-runtime/sources/database/spark_thrift.local.json;
+              test -s /config-runtime/state/router_manifest.local.json;
+              test -s /config-runtime/artifacts/layer_mappings.local.json;
+          volumeMounts:
+            - name: bdde-flask-config-source
+              mountPath: /config-source
+              readOnly: true
+            - name: bdde-flask-config-runtime
+              mountPath: /config-runtime
+      containers:
+        - name: bdde-flask
+          image: dkreg.taroko:5000/bdde-flask:dev
+          imagePullPolicy: Always
+          command: ["python"]
+          args:
+            - adapter.py
+            - --config
+            - /app/config/runtime/adapter.local.json
+            - serve
+            - --host
+            - 0.0.0.0
+            - --port
+            - "5000"
+            - --no-developer-server
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+          ports:
+            - name: http
+              containerPort: 5000
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - >-
+                  import json, urllib.request;
+                  packet = json.load(urllib.request.urlopen("http://127.0.0.1:5000/api/datasets", timeout=3));
+                  assert packet.get("datasets") and packet.get("layers")
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          volumeMounts:
+            - name: bdde-flask-config-runtime
+              mountPath: /app/config
+          resources:
+            requests:
+              memory: 512Mi
+              cpu: 250m
+            limits:
+              memory: 2Gi
+              cpu: "2"
+      volumes:
+        - name: bdde-flask-config-source
+          configMap:
+            name: bdde-flask-config
+            items:
+              - key: adapter.local.json
+                path: adapter.local.json
+              - key: spark_thrift.local.json
+                path: spark_thrift.local.json
+              - key: router_manifest.local.json
+                path: router_manifest.local.json
+              - key: layer_mappings.local.json
+                path: layer_mappings.local.json
+        - name: bdde-flask-config-runtime
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bdde-flask-service
+  namespace: dt
+  labels:
+    app: bdde-flask
+spec:
+  type: NodePort
+  selector:
+    app: bdde-flask
+  ports:
+    - name: http
+      port: 5000
+      targetPort: 5000
+      nodePort: 32080
+      protocol: TCP
+
+
+
+

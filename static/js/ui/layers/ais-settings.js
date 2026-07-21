@@ -10,7 +10,10 @@ function updateAisSettingsPanel() {
     status.textContent = "AIS 來源：AISHub 輪詢，間隔 180 秒";
     status.classList.remove("is-warning");
   } else if (settings.has_api_key && settings.provider === "aisstream") {
-    if (keyGate.authorized_sql_read) {
+    if (ingest.mode === "direct_stream") {
+      status.textContent = "AISStream 已直連；不經過 MySQL";
+      status.classList.remove("is-warning");
+    } else if (keyGate.authorized_sql_read) {
       status.textContent = "AIS 爬蟲心跳已匹配，SQL 讀取已解鎖。";
       status.classList.remove("is-warning");
     } else {

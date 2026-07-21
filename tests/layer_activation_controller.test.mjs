@@ -33,6 +33,7 @@ function loadLayerActivationController({ schemaError = null } = {}) {
     dataLayer: null,
     enabledLayerIds: [],
     importedLayers: { grid: true, eez: true },
+    layerOrder: ["grid"],
     overlayLayers: { eez: false },
     schema: null,
     availableDates: [],
@@ -117,24 +118,39 @@ function loadLayerActivationController({ schemaError = null } = {}) {
   return { calls, controller: context.LayerActivationController, menu, state };
 }
 
-test("registered datasets remain dormant while the dashboard has no enabled layer", async () => {
+test("dashboard bootstrap activates the first imported primary layer", async () => {
   const { calls, controller, state } = loadLayerActivationController();
 
   await controller.reconcile({ reload: true, reason: "bootstrap" });
 
-  assert.equal(state.dataLayer, null);
-  assert.equal(state.datasetId, null);
-  assert.equal(state.schema, null);
-  assert.deepEqual(plain(state.enabledLayerIds), []);
+  assert.equal(state.dataLayer, "grid");
+  assert.equal(state.datasetId, "grid_dataset");
+  assert.deepEqual(plain(state.schema), { dates: ["2020-01-01"] });
+  assert.deepEqual(plain(state.enabledLayerIds), ["grid"]);
   assert.equal(state.importedLayers.grid, true);
   assert.equal(state.overlayLayers.eez, false);
+  assert.equal(calls.schema, 1);
+  assert.equal(calls.reload, 1);
+  assert.equal(calls.select, 2);
+  assert.equal(calls.menu, 2);
+  assert.deepEqual(plain(calls.virtualGrid), ["activation_loading", "bootstrap_default"]);
+  assert.deepEqual(plain(calls.viewport.at(-1)), {
+    method: "settle",
+    datasetId: "grid_dataset",
+    options: { focus: true },
+  });
+});
+
+test("non-bootstrap reconciliation preserves an intentionally dormant dashboard", async () => {
+  const { calls, controller, state } = loadLayerActivationController();
+
+  await controller.reconcile({ reload: true, reason: "registry_changed" });
+
+  assert.equal(state.dataLayer, null);
+  assert.equal(state.datasetId, null);
+  assert.deepEqual(plain(state.enabledLayerIds), []);
   assert.equal(calls.schema, 0);
   assert.equal(calls.reload, 0);
-  assert.deepEqual(plain(calls.viewport.at(-1)), {
-    method: "sync",
-    datasetId: null,
-    options: { focus: false },
-  });
 });
 
 test("the data-layer drawer owns the complete activation and deactivation sequence", async () => {

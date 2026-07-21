@@ -7,10 +7,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable
 
-import duckdb
-import pymysql
-from pymysql.cursors import DictCursor
-
 from common_adapter.config.contracts import load_assembled_config
 from common_adapter.config.paths import runtime_config_path
 from common_adapter.query.builtins import register_builtin_query_adapters
@@ -454,6 +450,12 @@ def mysql_connection(
     connection: dict[str, Any] | None = None,
     use_connection_database: bool = True,
 ):
+    try:
+        import pymysql
+        from pymysql.cursors import DictCursor
+    except ImportError as exc:
+        raise RuntimeError("MySQL support is not installed in this runtime image") from exc
+
     if connection is not None:
         mysql = dict(connection)
     else:
@@ -513,7 +515,7 @@ def mysql_type(duckdb_type: str) -> str:
     return "TEXT"
 
 
-def duckdb_schema(con: duckdb.DuckDBPyConnection, source_table: str) -> list[tuple[str, str]]:
+def duckdb_schema(con: Any, source_table: str) -> list[tuple[str, str]]:
     return [(row[0], row[1]) for row in con.execute(f"DESCRIBE {duckdb_table_sql(source_table)}").fetchall()]
 
 
@@ -529,6 +531,11 @@ def create_mysql_table(conn, table: str, schema: list[tuple[str, str]], *, repla
 
 
 def create_indexes(conn, table: str, columns: set[str], dataset: dict[str, Any]) -> None:
+    try:
+        import pymysql
+    except ImportError as exc:
+        raise RuntimeError("MySQL support is not installed in this runtime image") from exc
+
     fields = sampled_grid_source_fields(dataset)
     specs = []
     time_column = fields.get("time")
@@ -561,6 +568,11 @@ def import_duckdb_to_mysql(
     row_limit: int | None,
     chunk_size: int,
 ) -> dict[str, Any]:
+    try:
+        import duckdb
+    except ImportError as exc:
+        raise RuntimeError("DuckDB import support is not installed in this runtime image") from exc
+
     dataset = config["datasets"][dataset_id]
     kind, connection_ref, connection = dataset_backend_info(config, dataset)
     if kind != "mysql":
@@ -993,8 +1005,13 @@ def read_backend(config: dict[str, Any], dataset: dict[str, Any]):
     return instantiate_query_adapter(kind, config, dataset)
 
 
-def schema_packet(config: dict[str, Any], dataset: dict[str, Any]) -> dict[str, Any]:
-    packet = read_backend(config, dataset).schema_packet()
+def schema_packet(
+    config: dict[str, Any],
+    dataset: dict[str, Any],
+    *,
+    query_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    packet = read_backend(config, dataset).schema_packet(query_context=query_context)
     return canonicalize_sampled_grid_schema_packet(packet, dataset)
 
 

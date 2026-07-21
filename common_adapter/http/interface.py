@@ -12,6 +12,7 @@ from common_adapter.http.routes.datasets import register_dataset_routes
 from common_adapter.http.routes.developer import register_developer_routes
 from common_adapter.http.routes.live import register_live_routes
 from common_adapter.http.routes.overlays import register_overlay_routes
+from common_adapter.http.routes.spark import register_spark_routes
 from common_adapter.http.routes.system import register_system_routes
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -55,6 +56,8 @@ def create_app(config: dict[str, Any], *, developer_url: str | None = None) -> F
     register_backdrop_routes(app, config)
 
     register_dataset_routes(app, config)
+
+    register_spark_routes(app, config)
 
     register_overlay_routes(app, config)
 

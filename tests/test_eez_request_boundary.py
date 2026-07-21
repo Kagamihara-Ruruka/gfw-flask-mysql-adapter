@@ -9,6 +9,7 @@ from common_adapter.spatial.lod import (
     geographic_pixel_degrees_for_zoom,
     mvt_detail_for_zoom,
 )
+from common_adapter.spatial.overlay import postgis_dsn
 
 
 class EezRequestBoundaryTests(unittest.TestCase):
@@ -47,6 +48,19 @@ class EezRequestBoundaryTests(unittest.TestCase):
         config = {"overlays": {"eez": {"tile_query_concurrency": 6}}}
         self.assertEqual(eez_tile_query_concurrency(config), 6)
         self.assertEqual(eez_tile_query_concurrency({}), 6)
+
+    def test_postgis_password_can_come_from_kubernetes_secret_environment(self) -> None:
+        settings = {
+            "host": "bdde-postgis-service",
+            "port": 5432,
+            "database": "common_spatial",
+            "user": "postgres",
+            "password": "env:POSTGIS_PASSWORD",
+        }
+        with patch.dict("os.environ", {"POSTGIS_PASSWORD": "spatial-secret"}):
+            dsn = postgis_dsn(settings)
+        self.assertIn("password=spatial-secret", dsn)
+        self.assertNotIn("env:POSTGIS_PASSWORD", dsn)
 
 
 if __name__ == "__main__":

@@ -89,6 +89,23 @@ test("effective query resolution does not rewrite the requested scope identity",
   assert.match(identity.frameKey(routed), /\|16\|fixed$/);
 });
 
+test("frame identity keeps AOI caches separate", () => {
+  const context = load("static/js/services/frame-identity.js", {
+    state: { datasets: { ocean: { sampled_grid: { mapping_version: "v7" } } } },
+  });
+  const identity = vm.runInContext("FrameIdentity", context);
+  const request = {
+    datasetId: "ocean",
+    date: "2024-01-01",
+    bbox: "118,20,119,21",
+    resolution: 4,
+  };
+  assert.notEqual(
+    identity.intentKey({ ...request, aoi: "taiwan" }),
+    identity.intentKey({ ...request, aoi: "northwest_pacific" }),
+  );
+});
+
 test("lifecycle log computes user-perceived stall and cadence metrics", () => {
   const context = load("static/js/services/lifecycle-event-log.js", {
     state: { lifecycleEvents: { maxEntries: 1000 } },

@@ -48,6 +48,9 @@ function createRenderIntentService({
       datasetId: targetState.datasetId,
       viewport,
       query: {
+        aoi: typeof selectedSampledGridAoi === "function"
+          ? selectedSampledGridAoi(targetState.datasetId)
+          : "",
         limit: unlimitedLimit(),
         columns: DEFAULT_COLUMNS,
         requestedResolutionKm: sampledGridContract.requestResolution({
@@ -112,6 +115,7 @@ function createRenderIntentService({
       layerId: intent?.layerId,
       renderProfile: intent?.renderProfile,
       outsideCoverage: Boolean(intent?.viewport?.outsideCoverage),
+      aoi: intent?.query?.aoi || "",
       resolution: intent?.query?.requestedResolutionKm,
       queryResolution: intent?.query?.effectiveQueryResolutionKm,
       latitude: intent?.viewport?.center?.lat,
@@ -137,6 +141,7 @@ function createRenderIntentService({
       layerId: intent?.layerId,
       renderProfile: intent?.renderProfile,
       outsideCoverage: Boolean(intent?.viewport?.outsideCoverage),
+      aoi: intent?.query?.aoi || "",
       resolution: intent?.query?.requestedResolutionKm,
       queryResolution: intent?.query?.effectiveQueryResolutionKm,
       zoom: intent?.viewport?.zoom,

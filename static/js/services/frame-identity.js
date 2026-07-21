@@ -86,6 +86,7 @@ const FrameIdentity = (() => {
       : "fixed";
     return [
       datasetNamespace(request),
+      String(request.aoi || ""),
       String(request.date || ""),
       bboxSignature(request.bbox),
       request.limit == null ? "max" : String(request.limit),
@@ -131,6 +132,13 @@ const FrameIdentity = (() => {
     return Object.freeze({
       ...request,
       datasetId: String(request.datasetId || request.dataset_id || ""),
+      aoi: String(
+        request.aoi
+        || (typeof selectedSampledGridAoi === "function"
+          ? selectedSampledGridAoi(request.datasetId || request.dataset_id)
+          : "")
+        || "",
+      ),
       date: String(request.date || ""),
       bbox: box ? bboxSignature(box) : "",
       columns: String(request.columns || "render"),

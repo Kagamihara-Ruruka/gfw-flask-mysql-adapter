@@ -42,6 +42,7 @@ function createFrameDemandService({
     params.set("date", request.date);
     params.set("limit", request.limit == null ? "max" : String(request.limit));
     params.set("bbox", request.bbox);
+    if (request.aoi) params.set("aoi", request.aoi);
     if (request.columns) params.set("columns", request.columns);
     const effectiveQueryResolution = FrameIdentity.queryResolution(request);
     if (effectiveQueryResolution != null) params.set("resolution", String(effectiveQueryResolution));
@@ -58,6 +59,7 @@ function createFrameDemandService({
       layer_id: request.layerId || "",
       date: request.date,
       bbox: request.bbox,
+      aoi: request.aoi || "",
       requested_resolution_km: request.resolution,
       effective_query_resolution_km: FrameIdentity.queryResolution(request),
       ...extra,

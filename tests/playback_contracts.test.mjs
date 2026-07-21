@@ -506,7 +506,7 @@ test("PlaybackEngine is the only mutable playback lifecycle truth", () => {
   const app = readFileSync(
     path.join(repoRoot, "static/app.js"),
     "utf8",
-  );
+  ).replace(/\r\n/g, "\n");
   assert.match(controls, /function playbackIsActive\(\)/);
   assert.doesNotMatch(controls, /state\.isPlaying/);
   assert.doesNotMatch(fullscreen, /state\.isPlaying/);
@@ -518,7 +518,7 @@ test("document visibility shutdown keeps its lifecycle reason and records prehea
   const app = readFileSync(
     path.join(repoRoot, "static/app.js"),
     "utf8",
-  );
+  ).replace(/\r\n/g, "\n");
   const start = app.indexOf('document.addEventListener("visibilitychange"');
   const end = app.indexOf("\n  });\n}", start);
   const body = app.slice(start, end);

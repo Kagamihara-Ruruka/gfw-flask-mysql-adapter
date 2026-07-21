@@ -51,6 +51,17 @@ class DashboardLayerActivationController {
     return this.enqueue(async () => {
       const activeLayerId = this.normalizeLayerId(this.state.dataLayer);
       if (!activeLayerId) {
+        if (reason === "bootstrap") {
+          const firstPrimaryLayer = (this.state.layerOrder || [])
+            .map((layerId) => this.normalizeLayerId(layerId))
+            .find((layerId) => this.effects.isImported(layerId) && this.effects.isPrimary(layerId));
+          if (firstPrimaryLayer) {
+            return this.activateNow(firstPrimaryLayer, {
+              focus: true,
+              reason: "bootstrap_default",
+            });
+          }
+        }
         return this.deactivateNow({ stopPlayback: false, reason });
       }
       if (!this.effects.isImported(activeLayerId) || !this.effects.isPrimary(activeLayerId)) {
@@ -98,6 +109,7 @@ class DashboardLayerActivationController {
     this.state.datasetId = datasetId;
     this.state.schema = null;
     this.effects.setAvailableDates([]);
+    this.syncUi("activation_loading", { closeMenu });
 
     // Keep the target dormant until its schema has populated the date controls.
     this.viewportController?.syncForDataset(datasetId, { focus });

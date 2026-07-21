@@ -196,15 +196,25 @@ function enforceImportedOverlayState() {
 
 function updateDataLayerMenu() {
   enforceImportedOverlayState();
+  const pendingPrimaryLayer = !state.dataLayer && state.datasetId
+    ? layerIdOf(state.datasets?.[state.datasetId])
+    : null;
+  const displayedPrimaryLayer = state.dataLayer || (
+    pendingPrimaryLayer
+    && isImportedLayer(pendingPrimaryLayer)
+    && isPrimaryDataLayer(pendingPrimaryLayer)
+      ? pendingPrimaryLayer
+      : null
+  );
   for (const input of document.querySelectorAll("[data-layer-toggle]")) {
     const layerId = input.dataset.layerToggle;
     input.checked = hasOverlayHandler(layerId)
       ? state.overlayLayers?.[layerId] === true
-      : state.dataLayer === layerId;
+      : displayedPrimaryLayer === layerId;
     input.disabled = !hasLayerHandler(layerId);
   }
   const labels = [];
-  if (state.dataLayer) labels.push(layerLabel(state.dataLayer));
+  if (displayedPrimaryLayer) labels.push(layerLabel(displayedPrimaryLayer));
   for (const contract of importedLayerContracts()) {
     const layerId = layerIdOf(contract);
     if (hasOverlayHandler(layerId) && $(layerInputId(layerId))?.checked) {
@@ -219,6 +229,13 @@ function updateDataLayerMenu() {
 function bindDataLayerMenuDismiss() {
   const menu = $("data-layer-menu");
   if (!menu) return;
+
+  const controls = menu.closest(".controls");
+  const syncOpenState = () => {
+    controls?.classList.toggle("has-open-layer-menu", menu.open);
+  };
+  menu.addEventListener("toggle", syncOpenState);
+  syncOpenState();
 
   document.addEventListener("click", (event) => {
     if (!menu.open || menu.contains(event.target)) return;
@@ -252,6 +269,12 @@ function bindDataLayerControls() {
           syncEezLayer();
         }
       }
+      return;
+    }
+    if (!input.checked && String(state.dataLayer || "").toLowerCase() === layerId) {
+      input.checked = true;
+      const menu = $("data-layer-menu");
+      if (menu) menu.open = false;
       return;
     }
     selectDataLayer(layerId).catch((err) => setStatus(err.message, true));

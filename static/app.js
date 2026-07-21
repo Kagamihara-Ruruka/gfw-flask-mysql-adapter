@@ -145,6 +145,9 @@ function bindControls() {
   $("dataset-select")?.addEventListener("change", (event) => {
     selectDataset(event.target.value).catch((err) => setStatus(err.message, true));
   });
+  $("sampled-grid-aoi")?.addEventListener("change", (event) => {
+    selectSampledGridAoi(event.target.value).catch((err) => setStatus(err.message, true));
+  });
   bindDataLayerMenuDismiss();
   bindDataLayerControls();
   bindLayerAlphaControls();

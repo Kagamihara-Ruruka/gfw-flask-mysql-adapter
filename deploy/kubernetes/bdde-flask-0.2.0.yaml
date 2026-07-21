@@ -1,0 +1,360 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bdde-flask-config
+  namespace: dt
+data:
+  adapter.local.json: |
+    {
+      "schema": "rrkal.adapter.runtime_json.v1",
+      "role": "runtime_json",
+      "description": "GFW + RRK 0.2.0 single Flask runtime.",
+      "query_policy": {
+        "default_limit": null,
+        "max_limit": null,
+        "table_preview_limit": 300,
+        "require_time_or_bbox_filter": true,
+        "network_concurrency": 6,
+        "background_network_concurrency": 3,
+        "snapshot_cache_max_rows": 800000
+      },
+      "server": {
+        "default_command": "serve",
+        "host": "0.0.0.0",
+        "port": 5000,
+        "debug": false,
+        "kill_port_if_busy": false
+      },
+      "rendering": {
+        "hardware_acceleration": "auto",
+        "allow_webgl": true,
+        "allow_webgpu": false,
+        "min_webgl_rows": 1
+      },
+      "live": {
+        "ais": {
+          "enabled": false
+        }
+      }
+    }
+  spark_thrift.local.json: |
+    {
+      "schema": "rrkal.adapter.database.v1",
+      "role": "database",
+      "name": "spark_thrift",
+      "description": "lake.ocean.gold_map_metric through PyHive and Spark Thrift.",
+      "sql_backend": {
+        "kind": "hive",
+        "driver": "pyhive"
+      },
+      "default_connection_ref": "spark_thrift",
+      "connections": {
+        "spark_thrift": {
+          "kind": "hive",
+          "driver": "pyhive",
+          "host": "dtadm",
+          "port": 10000,
+          "user": "bigred",
+          "username": "bigred",
+          "auth": "NONE",
+          "catalog": "lake",
+          "schema": "ocean"
+        }
+      },
+      "tables": {
+        "gold_map_metric": "lake.ocean.gold_map_metric"
+      },
+      "defaults": {
+        "date": "2022-01-01",
+        "start_date": "2022-01-01",
+        "end_date": "2024-12-31",
+        "aoi": "taiwan",
+        "product": "SST",
+        "metric": "sea_temperature",
+        "resolution": 4,
+        "heatmap_limit": 20000
+      }
+    }
+  eez.local.json: |
+    {
+      "schema": "rrkal.adapter.spatial.v1",
+      "role": "spatial_route",
+      "description": "EEZ overlay stored in the separate PostGIS pod.",
+      "kind": "postgis_overlay",
+      "overlays": {
+        "eez": {
+          "enabled": true,
+          "provider": "postgis",
+          "full_gpkg_path": "data/eez/eez_v12.gpkg",
+          "source": {
+            "kind": "remote_gpkg_zip",
+            "url": "https://www.marineregions.org/download_file.php?name=World_EEZ_v12_20231025_gpkg.zip",
+            "source_page": "https://www.marineregions.org/downloads.php",
+            "version": "v12_20231025",
+            "archive_path": "data/eez/World_EEZ_v12_20231025_gpkg.zip",
+            "cache_path": "data/eez/eez_v12.gpkg",
+            "remove_archive": false,
+            "retry_seconds": 15,
+            "max_attempts": 0,
+            "form": {
+              "name": "BDDE GFW RRK",
+              "organisation": "BDDE",
+              "email": "replace-with-contact@example.com",
+              "country": "Taiwan (Province of China)",
+              "user_category": "academia",
+              "purpose_category": "Data exploration & testing"
+            }
+          },
+          "auto_download": true,
+          "auto_import": true,
+          "auto_replace": true,
+          "gpkg_table": "eez_v12",
+          "gpkg_geometry_column": "geom",
+          "tile_cache_max": 2048,
+          "tile_cache_path": "data/eez/mvt-cache",
+          "tile_query_concurrency": 6,
+          "postgis": {
+            "host": "bdde-postgis-service",
+            "port": 5432,
+            "user": "postgres",
+            "password": "env:POSTGIS_PASSWORD",
+            "database": "common_spatial",
+            "table": "eez_v12",
+            "tile_table": "eez_v12_tile",
+            "fill_table": "eez_v12_fill",
+            "boundary_table": "eez_v12_boundary",
+            "geometry_column": "geom",
+            "mvt_layer": "eez"
+          }
+        }
+      }
+    }
+  router_manifest.local.json: |
+    {
+      "active_configs": [
+        "config/sources/database/spark_thrift.local.json",
+        "config/sources/spatial/eez.local.json"
+      ],
+      "locked_configs": [
+        "config/sources/database/spark_thrift.local.json",
+        "config/sources/spatial/eez.local.json"
+      ],
+      "config_notes": {
+        "config/sources/database/spark_thrift.local.json": "RRK Spark Thrift Gold source.",
+        "config/sources/spatial/eez.local.json": "GFW EEZ PostGIS source."
+      },
+      "imported_layers": ["ocean_sst"]
+    }
+  layer_mappings.local.json: |
+    {
+      "mappings": [
+        {
+          "mapping_id": "database.spark_thrift__gold_map_metric__ocean_sst",
+          "enabled": true,
+          "config_path": "config/sources/database/spark_thrift.local.json",
+          "connection_ref": "spark_thrift",
+          "backend": "hive",
+          "database": "ocean",
+          "table": "gold_map_metric",
+          "dataset_id": "sea_temperature",
+          "layer_id": "ocean_sst",
+          "label": "Sea Surface Temperature",
+          "roles": {
+            "time": "event_date",
+            "id": "grid_id",
+            "lat": "grid_row",
+            "lon": "grid_col",
+            "row": "grid_row",
+            "column": "grid_col",
+            "value": "metric_value",
+            "resolution": "resolution_km",
+            "coverage": "data_coverage",
+            "status": "display_level"
+          },
+          "selected_columns": [
+            "event_date",
+            "grid_id",
+            "grid_row",
+            "grid_col",
+            "resolution_km",
+            "metric_value",
+            "display_level",
+            "data_coverage"
+          ],
+          "display_columns": [
+            "event_date",
+            "grid_id",
+            "grid_row",
+            "grid_col",
+            "resolution_km",
+            "metric_value",
+            "display_level",
+            "data_coverage"
+          ],
+          "metric_columns": ["metric_value"],
+          "category_columns": ["display_level"],
+          "sampled_grid": {
+            "contract_version": "rrkal.sampled_grid.v1",
+            "mapping_version": "bdde.gold_map_metric.v1",
+            "available_resolutions_km": [4],
+            "source_parameters": {
+              "aoi": "taiwan",
+              "product": "SST",
+              "metric": "sea_temperature"
+            },
+            "request_fields": {
+              "time": "date"
+            },
+            "date_range": {
+              "start": "2022-01-01",
+              "end": "2024-12-31"
+            },
+            "snapshot_limit": 20000,
+            "coverage_areas": [
+              {
+                "id": "taiwan",
+                "label": "Taiwan",
+                "bounds": {
+                  "west": 118,
+                  "south": 20,
+                  "east": 124,
+                  "north": 27
+                }
+              }
+            ],
+            "geometry": {
+              "encoding": "global_index",
+              "origin_lat": 90,
+              "origin_lon": -180,
+              "index_units_per_degree": 24,
+              "base_resolution_km": 4
+            },
+            "alignment": {
+              "id": "global_geographic_index",
+              "origin_lat": 90,
+              "origin_lon": -180,
+              "index_units_per_degree": 24
+            },
+            "snapshot_cache": {
+              "enabled": true,
+              "identity_roles": [
+                "dataset_id",
+                "date",
+                "coverage_id",
+                "resolution_km"
+              ],
+              "max_entries": 48,
+              "ttl_seconds": 3600
+            },
+            "value_domain": {
+              "min": -2,
+              "max": 35,
+              "unit": "°C",
+              "higher_is_better": false,
+              "interpretation": "sea_surface_temperature"
+            },
+            "zero_is_data": true
+          }
+        }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bdde-flask
+  namespace: dt
+  labels:
+    app: bdde-flask
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bdde-flask
+  template:
+    metadata:
+      labels:
+        app: bdde-flask
+    spec:
+      imagePullSecrets:
+        - name: dkreg
+      runtimeClassName: gvisor
+      nodeSelector:
+        dt: worker
+      containers:
+        - name: bdde-flask
+          image: dkreg.taroko:5000/bdde-flask:dev
+          imagePullPolicy: Always
+          command: ["python"]
+          args:
+            - adapter.py
+            - --config
+            - /app/config/runtime/adapter.local.json
+            - serve
+            - --host
+            - 0.0.0.0
+            - --port
+            - "5000"
+            - --no-developer-server
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: POSTGIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: bdde-postgis-secret
+                  key: password
+          ports:
+            - name: http
+              containerPort: 5000
+          volumeMounts:
+            - name: bdde-flask-config
+              mountPath: /app/config
+              readOnly: true
+            - name: eez-cache
+              mountPath: /app/data/eez
+          resources:
+            requests:
+              memory: 512Mi
+              cpu: 250m
+            limits:
+              memory: 2Gi
+              cpu: "2"
+      volumes:
+        - name: bdde-flask-config
+          configMap:
+            name: bdde-flask-config
+            items:
+              - key: adapter.local.json
+                path: runtime/adapter.local.json
+              - key: spark_thrift.local.json
+                path: sources/database/spark_thrift.local.json
+              - key: eez.local.json
+                path: sources/spatial/eez.local.json
+              - key: router_manifest.local.json
+                path: state/router_manifest.local.json
+              - key: layer_mappings.local.json
+                path: artifacts/layer_mappings.local.json
+        - name: eez-cache
+          persistentVolumeClaim:
+            claimName: bdde-eez-cache
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bdde-flask-service
+  namespace: dt
+  labels:
+    app: bdde-flask
+spec:
+  type: NodePort
+  selector:
+    app: bdde-flask
+  ports:
+    - name: http
+      port: 5000
+      targetPort: 5000
+      nodePort: 32080
+      protocol: TCP

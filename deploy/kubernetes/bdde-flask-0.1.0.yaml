@@ -1,0 +1,138 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bdde-flask-config
+  namespace: dt
+data:
+  adapter.local.json: |
+    {
+      "sql_backend": {
+        "kind": "hive",
+        "driver": "pyhive"
+      },
+      "default_connection_ref": "spark_thrift",
+      "connections": {
+        "spark_thrift": {
+          "kind": "hive",
+          "driver": "pyhive",
+          "host": "dtadm",
+          "port": 10000,
+          "user": "bigred",
+          "username": "bigred",
+          "auth": "NONE",
+          "catalog": "lake",
+          "schema": "ocean"
+        }
+      },
+      "tables": {
+        "gold_map_metric": "lake.ocean.gold_map_metric"
+      },
+      "defaults": {
+        "date": "2022-01-01",
+        "start_date": "2022-01-01",
+        "end_date": "2024-12-31",
+        "aoi": "taiwan",
+        "product": "SST",
+        "metric": "sea_temperature",
+        "resolution": 4,
+        "heatmap_limit": 20000
+      },
+      "server": {
+        "default_command": "serve",
+        "host": "0.0.0.0",
+        "port": 5000,
+        "debug": false,
+        "kill_port_if_busy": false
+      },
+      "overlays": {
+        "eez": {
+          "enabled": false
+        }
+      },
+      "live": {
+        "ais": {
+          "enabled": false
+        }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bdde-flask
+  namespace: dt
+  labels:
+    app: bdde-flask
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bdde-flask
+  template:
+    metadata:
+      labels:
+        app: bdde-flask
+    spec:
+      imagePullSecrets:
+        - name: dkreg
+      runtimeClassName: gvisor
+      nodeSelector:
+        dt: worker
+      volumes:
+        - name: bdde-flask-config
+          configMap:
+            name: bdde-flask-config
+      containers:
+        - name: bdde-flask
+          image: dkreg.taroko:5000/bdde-flask:0.1.0
+          imagePullPolicy: Always
+          command: ["python"]
+          args:
+            - adapter.py
+            - --config
+            - /app/config/adapter.local.json
+            - serve
+            - --host
+            - 0.0.0.0
+            - --port
+            - "5000"
+            - --no-developer-server
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+          ports:
+            - name: http
+              containerPort: 5000
+              protocol: TCP
+          volumeMounts:
+            - name: bdde-flask-config
+              mountPath: /app/config/adapter.local.json
+              subPath: adapter.local.json
+              readOnly: true
+          resources:
+            requests:
+              memory: 256Mi
+              cpu: 100m
+            limits:
+              memory: 1Gi
+              cpu: "1"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bdde-flask-service
+  namespace: dt
+  labels:
+    app: bdde-flask
+spec:
+  type: NodePort
+  selector:
+    app: bdde-flask
+  ports:
+    - name: http
+      port: 5000
+      targetPort: 5000
+      nodePort: 32080
+      protocol: TCP

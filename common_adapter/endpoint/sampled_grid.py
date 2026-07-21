@@ -452,7 +452,7 @@ class SampledGridHttpQueryAdapter:
             load,
         )
 
-    def schema_packet(self) -> dict[str, Any]:
+    def schema_packet(self, *, query_context: dict[str, Any] | None = None) -> dict[str, Any]:
         started = time.perf_counter()
         coverage, _status = _coverage_choice(self.coverages, None)
         resolution = self.available_resolutions[-1] if self.available_resolutions else None

@@ -19,7 +19,7 @@
   <link rel="stylesheet" href="/static/css/widgets/capabilities/event-viewer.css?v=lifecycle-widget-v3">
   <link rel="stylesheet" href="/static/css/widgets/core/size-adaptations.css?v=widgets-modules-v1">
   <link rel="stylesheet" href="/static/css/widgets/runtime/popover.css?v=widget-contract-stitch-v2">
-  <link rel="stylesheet" href="/static/styles.css?v=map-settings-gear-hover-v1">
+  <link rel="stylesheet" href="/static/styles.css?v=layer-selector-v4">
 </head>
 <body>
   <div id="aerial-backdrop" class="aerial-backdrop" data-state="idle" aria-hidden="true">
@@ -53,6 +53,14 @@
           </summary>
           <div class="data-layer-options" role="group" aria-label="資料圖層選擇" data-layer-options></div>
         </details>
+        <label id="sampled-grid-aoi-control" hidden>
+          <span>海域</span>
+          <select id="sampled-grid-aoi" aria-label="海域範圍"></select>
+        </label>
+        <label id="sampled-grid-resolution-control" hidden>
+          <span>解析度</span>
+          <select id="sampled-grid-resolution" aria-label="網格解析度"></select>
+        </label>
         <label id="single-date-control" class="date-control">
           <span id="single-date-label">資料日期</span>
           <input id="date" type="date">
@@ -436,10 +444,6 @@
       <div class="modal-body">
         <section class="layer-settings-panel" data-layer-settings-panel="sampled-grid" hidden>
           <span class="setting-note">以 Mapping 合約、日期與視窗範圍驅動的取樣網格。</span>
-          <label>
-            網格解析度
-            <select id="sampled-grid-resolution"></select>
-          </label>
           <p id="sampled-grid-resolution-status" class="setting-note"></p>
           <label>
             色域策略
@@ -694,10 +698,10 @@
   <script src="/static/js/ui/telemetry/snapshot-performance-chart.js?v=plotly-detail-source-v8"></script>
   <script src="/static/js/core/clock-domain.js?v=clock-domain-v1"></script>
   <script src="/static/TimingMetrics.js?v=clock-domain-v1"></script>
-  <script src="/static/js/core/state.js?v=startup-resume-watermark-v1"></script>
+  <script src="/static/js/core/state.js?v=aoi-selector-v1"></script>
   <script src="/static/js/services/lifecycle-event-log.js?v=startup-resume-watermark-v1"></script>
   <script src="/static/js/services/runtime-performance-metrics.js?v=startup-resume-watermark-v1"></script>
-  <script src="/static/js/services/frame-identity.js?v=lifecycle-core-v1"></script>
+  <script src="/static/js/services/frame-identity.js?v=aoi-selector-v1"></script>
   <script src="/static/js/core/dom.js?v=zh-tw-v99"></script>
   <script src="/static/js/core/render-state.js?v=zh-tw-v99"></script>
   <script src="/static/js/core/map.js?v=layer-viewport-v1"></script>
@@ -705,7 +709,7 @@
   <script src="/static/js/rendering/render-capability.js?v=zh-tw-v99"></script>
   <script src="/static/js/rendering/sampled-grid-contract.js?v=resolution-route-v2"></script>
   <script src="/static/js/rendering/virtual-grid-contract.js?v=resolution-contract-v1"></script>
-  <script src="/static/js/ui/map/layer-viewport-controller.js?v=layer-viewport-v1"></script>
+  <script src="/static/js/ui/map/layer-viewport-controller.js?v=aoi-fit-bounds-v2"></script>
   <script src="/static/js/rendering/gfw-paint.js?v=zero-paint-opacity-v2"></script>
   <script src="/static/js/rendering/gfw-webgl-renderer.js?v=alpha-composite-v2"></script>
   <script src="/static/js/rendering/renderer-registry.js?v=zh-tw-v99"></script>
@@ -721,23 +725,23 @@
   <script src="/static/js/ui/map/map-export.js?v=zh-tw-v99"></script>
   <script src="/static/js/ui/layers/layer-style-controls.js?v=zh-tw-v99"></script>
   <script src="/static/js/ui/layers/eez-settings.js?v=eez-color-controls-v1"></script>
-  <script src="/static/js/ui/layers/gfw-settings.js?v=resolution-contract-v1"></script>
+  <script src="/static/js/ui/layers/gfw-settings.js?v=resolution-selector-v5"></script>
   <script src="/static/js/ui/layers/ais-settings.js?v=lazy-ais-settings-v1"></script>
-  <script src="/static/js/ui/layers/layer-menu.js?v=layer-activation-controller-v2"></script>
+  <script src="/static/js/ui/layers/layer-menu.js?v=layer-selector-v4"></script>
   <script src="/static/js/ui/background/aerial-backdrop.js?v=aerial-backdrop-v6"></script>
   <script src="/static/js/playback/playback-worker-policy.js?v=playback-worker-policy-v1"></script>
   <script src="/static/js/playback/playback-snapshot-splitter.js?v=playback-snapshot-splitter-v1"></script>
   <script src="/static/js/services/gfw-render-artifact-cache.js?v=gfw-render-artifact-cache-v1"></script>
-  <script src="/static/js/services/render-intent-service.js?v=resolution-route-v2"></script>
+  <script src="/static/js/services/render-intent-service.js?v=aoi-selector-v1"></script>
   <script src="/static/js/services/layer-query-coordinator.js?v=clock-domain-v1"></script>
   <script src="/static/js/services/data-frame-store.js?v=startup-resume-watermark-v1"></script>
-  <script src="/static/js/services/frame-demand-service.js?v=clock-domain-v1"></script>
+  <script src="/static/js/services/frame-demand-service.js?v=aoi-selector-v1"></script>
   <script src="/static/js/playback/playback-cache-service.js?v=startup-resume-watermark-v1"></script>
   <script src="/static/js/playback/playback-preheater.js?v=startup-resume-watermark-v1"></script>
   <script src="/static/js/playback/playback-engine.js?v=startup-resume-watermark-v1"></script>
   <script src="/static/js/playback/adaptive-watermark-controller.js?v=startup-resume-watermark-v1"></script>
   <script src="/static/js/playback/playback-renderer.js?v=runtime-oop-v1"></script>
-  <script src="/static/js/services/api-client.js?v=runtime-oop-v1"></script>
+  <script src="/static/js/services/api-client.js?v=aoi-resolution-behavior-v5"></script>
   <script src="/static/js/application/widgets/widget-model-functions.js?v=widget-application-v1"></script>
   <script src="/static/js/application/widgets/widget-query-context.js?v=widget-application-v1"></script>
   <script src="/static/js/application/widgets/line-chart-data-source.js?v=widget-application-v1"></script>
@@ -756,7 +760,7 @@
   <script src="/static/js/playback/playback-interpolation-controller.js?v=playback-interpolation-v2"></script>
   <script src="/static/js/playback/playback-controls.js?v=startup-resume-watermark-v1"></script>
   <script src="/static/js/playback/fullscreen-playback-controls.js?v=fullscreen-svg-v1"></script>
-  <script src="/static/js/ui/layers/layer-activation-controller.js?v=layer-activation-controller-v1"></script>
+  <script src="/static/js/ui/layers/layer-activation-controller.js?v=bootstrap-default-layer-v2"></script>
   <script src="/static/js/ui/widgets/core/widget-core.js?v=widget-plotly-lifecycle-v1"></script>
   <script src="/static/js/ui/widgets/capabilities/shared.js?v=resolution-route-v2"></script>
   <script src="/static/js/ui/widgets/capabilities/line-chart.js?v=line-chart-active-slice-v3"></script>
@@ -770,6 +774,6 @@
   <script src="/static/js/ui/widgets/registry/widget-registry.js?v=widgets-launchpad-registered-v3"></script>
   <script src="/static/js/ui/widgets/runtime/widgets-runtime.js?v=line-chart-active-slice-v2"></script>
   <script src="/static/js/ui/widgets/widget-launchpad.js?v=widgets-launchpad-registered-v3"></script>
-  <script src="/static/app.js?v=startup-resume-watermark-v1"></script>
+  <script src="/static/app.js?v=aoi-selector-v1"></script>
 </body>
 </html>

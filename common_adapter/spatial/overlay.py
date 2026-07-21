@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import struct
@@ -45,12 +46,15 @@ def overlay_settings(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def postgis_dsn(settings: dict[str, Any]) -> str:
+    password = str(settings["password"])
+    if password.startswith("env:"):
+        password = os.environ.get(password[4:], "")
     return (
         f"host={settings['host']} "
         f"port={int(settings['port'])} "
         f"dbname={settings['database']} "
         f"user={settings['user']} "
-        f"password={settings['password']}"
+        f"password={password}"
     )
 
 

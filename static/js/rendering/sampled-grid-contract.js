@@ -164,8 +164,10 @@ class SampledGridResolutionPlanner {
     const available = model.availableResolutionsKm;
     if (!available.length) return null;
     const preferred = sampledGridNumberOrNull(preferredResolutionKm);
+    const configuredDefault = sampledGridNumberOrNull(model.contract.default_resolution_km);
     const declared = available.find((value) => Math.abs(value - preferred) <= 1e-9);
-    return declared ?? available[0];
+    const fallback = available.find((value) => Math.abs(value - configuredDefault) <= 1e-9);
+    return declared ?? fallback ?? available[0];
   }
 }
 

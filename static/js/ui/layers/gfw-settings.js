@@ -33,29 +33,37 @@ class SampledGridResolutionController {
   }
 
   async apply(resolutionKm) {
-    if (!this.datasetId) return;
-    const isActive = this.layerId === state.dataLayer && this.datasetId === state.datasetId;
+    const activeDatasetId = String(state.datasetId || "").trim();
+    const datasetId = state.datasets?.[activeDatasetId]?.sampled_grid
+      ? activeDatasetId
+      : this.datasetId;
+    if (!datasetId) return;
+    const layerId = String(state.dataLayer || this.layerId || "").trim().toLowerCase();
+    this.datasetId = datasetId;
+    this.layerId = layerId;
+    const isActive = layerId === state.dataLayer && datasetId === state.datasetId;
     if (isActive) {
       stopPlayback();
       removeSampledGridLayer();
-      RenderState.loading(this.layerId, "切換解析度");
+      RenderState.loading(layerId, "切換解析度");
     }
-    const selected = SampledGridContract.setRequestedResolution(this.datasetId, resolutionKm);
+    const selected = SampledGridContract.setRequestedResolution(datasetId, resolutionKm);
     if (!Number.isFinite(selected)) throw new Error("所選解析度不在 Mapping 合約中");
     PlaybackPreheater?.stop?.("resolution_changed");
-    this.sync(this.layerId);
-    if (isActive) await reloadActiveLayer();
+    this.sync(layerId);
+    if (isActive) await reloadActiveLayer({ reason: "resolution_changed" });
   }
 
   sync(layerId = state.dataLayer) {
     this.layerId = String(layerId || "").trim().toLowerCase();
     const layer = this.layer(this.layerId);
-    this.datasetId = layer?.datasetId || null;
+    this.datasetId = state.datasets?.[state.datasetId]?.sampled_grid
+      ? state.datasetId
+      : (layer?.datasetId || null);
     const select = $("sampled-grid-resolution");
+    const control = $("sampled-grid-resolution-control");
     if (!select) return;
-    const available = this.datasetId
-      ? SampledGridContract.model(this.datasetId).availableResolutionsKm
-      : [];
+    const available = this.datasetId ? sampledGridAvailableResolutions(this.datasetId) : [];
     select.replaceChildren(...available.map((resolutionKm, index) => {
       const option = document.createElement("option");
       option.value = String(resolutionKm);
@@ -67,6 +75,7 @@ class SampledGridResolutionController {
       : null;
     if (Number.isFinite(requested)) select.value = String(requested);
     select.disabled = available.length <= 1;
+    if (control) control.hidden = !this.datasetId || available.length === 0;
     this.renderStatus();
   }
 
@@ -197,6 +206,10 @@ function bindSampledGridPaintControls() {
 
 function syncSampledGridPaintControls(layerId) {
   sampledGridPaintController.sync(layerId);
+  sampledGridResolutionController.sync(layerId);
+}
+
+function syncSampledGridResolutionControl(layerId = state.dataLayer) {
   sampledGridResolutionController.sync(layerId);
 }
 

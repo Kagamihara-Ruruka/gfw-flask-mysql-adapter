@@ -108,6 +108,7 @@ const state = {
   gridLayer: null,
   sampledGridMeta: null,
   sampledGridMetaByDataset: {},
+  sampledGridAoiByDataset: {},
   sampledGridResolutionByDataset: {},
   sampledGridQueryResolutionByDataset: {},
   renderCapability: null,
@@ -197,3 +198,31 @@ const state = {
     background_network_concurrency: 3,
   },
 };
+
+function sampledGridCoverageAreas(datasetId = state.datasetId) {
+  const areas = state.datasets?.[datasetId]?.sampled_grid?.coverage_areas;
+  return (Array.isArray(areas) ? areas : [])
+    .map((area) => ({
+      ...area,
+      id: String(area?.id || "").trim(),
+      label: String(area?.label || area?.id || "").trim(),
+    }))
+    .filter((area) => area.id);
+}
+
+function sampledGridAvailableResolutions(datasetId = state.datasetId) {
+  const resolutions = state.datasets?.[datasetId]?.sampled_grid?.available_resolutions_km;
+  return [...new Set((Array.isArray(resolutions) ? resolutions : [])
+    .map(Number)
+    .filter((value) => Number.isFinite(value) && value > 0))]
+    .sort((left, right) => left - right);
+}
+
+function selectedSampledGridAoi(datasetId = state.datasetId) {
+  const areas = sampledGridCoverageAreas(datasetId);
+  const available = new Set(areas.map((area) => area.id));
+  const remembered = String(state.sampledGridAoiByDataset?.[datasetId] || "").trim();
+  if (available.has(remembered)) return remembered;
+  const configured = String(state.datasets?.[datasetId]?.sampled_grid?.default_aoi || "").trim();
+  return available.has(configured) ? configured : (areas[0]?.id || "");
+}

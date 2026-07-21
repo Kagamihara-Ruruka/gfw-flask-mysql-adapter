@@ -7,12 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from flask import Flask, jsonify, request
+from websocket import WebSocketTimeoutException
 
 from common_adapter.ais.aishub import aishub_packet, aishub_settings, probe_aishub
 from common_adapter.ais.ingest import (
     ais_api_key_fingerprint,
     ais_collector_handoff_status,
-    ais_ingest_should_start,
     ais_sql_locked_packet,
     ais_sql_read_allowed,
     apply_ais_collector_handoff,
@@ -23,8 +23,11 @@ from common_adapter.ais.ingest import (
 from common_adapter.ais.live import ais_live_packet, merged_ais_live_packet
 from common_adapter.ais.stream import (
     ais_stream_settings,
+    normalize_aisstream_message,
+    open_aisstream_socket,
     probe_aisstream,
     setting_secret,
+    streaming_snapshot_packet,
 )
 from common_adapter.db.connect import parse_bbox
 from common_adapter.developer.config_service import (
@@ -85,15 +88,37 @@ class LiveRoutes:
 
         @app.get("/api/live/ais/ingest/status")
         def ais_ingest_status():
+            stream = ais_stream_settings(config)
+            if stream["provider"] == "aisstream":
+                has_api_key = bool(stream["api_key"])
+                return jsonify(
+                    {
+                        "status": "ready" if stream["enabled"] and has_api_key else "not_configured",
+                        "mode": "direct_stream",
+                        "enabled": stream["enabled"],
+                        "has_api_key": has_api_key,
+                        "sql_store_required": False,
+                    }
+                )
             return jsonify(get_ais_ingest_status(config))
 
         @app.get("/api/live/ais/settings")
         def ais_settings_get():
             try:
                 settings = config.get("live", {}).get("ais", {})
-                ingest = get_ais_ingest_status(config)
-                handoff = ais_collector_handoff_status(config)
-                has_collector_key = bool(settings.get("api_key_fingerprint")) or bool(handoff.get("has_api_key"))
+                stream = ais_stream_settings(config)
+                direct_stream = stream["provider"] == "aisstream"
+                handoff = {} if direct_stream else ais_collector_handoff_status(config)
+                has_collector_key = bool(stream["api_key"]) or bool(settings.get("api_key_fingerprint")) or bool(handoff.get("has_api_key"))
+                ingest = (
+                    {
+                        "status": "ready" if stream["enabled"] and has_collector_key else "not_configured",
+                        "mode": "direct_stream",
+                        "sql_store_required": False,
+                    }
+                    if direct_stream
+                    else get_ais_ingest_status(config)
+                )
                 return jsonify(
                     {
                         "status": "ok",
@@ -103,7 +128,10 @@ class LiveRoutes:
                         "has_aishub_username": bool(setting_secret(settings.get("aishub_username", ""))),
                         "stream_url": settings.get("stream_url", "wss://stream.aisstream.io/v0/stream"),
                         "aishub_url": settings.get("aishub_url", "https://data.aishub.net/ws.php"),
-                        "collector_key_gate": ingest.get("key_gate"),
+                        "collector_key_gate": ingest.get("key_gate") or {
+                            "authorized_sql_read": has_collector_key,
+                            "message": "AISStream is connected directly; no SQL store is required.",
+                        },
                         "collector_handoff": handoff,
                         "ingest": ingest,
                         "rendering": {
@@ -285,14 +313,77 @@ class LiveRoutes:
             if not bboxes:
                 bboxes = [None]
             stream_settings = ais_stream_settings(config)
-            if stream_settings["provider"] == "aisstream" and ais_ingest_should_start(config):
-                sql_ais_live_ws(ws, bboxes=bboxes, interval_ms=interval_ms, config=config)
+            if stream_settings["provider"] == "aisstream":
+                aisstream_live_ws(ws, bboxes=bboxes, interval_ms=interval_ms, config=config)
                 return
             if stream_settings["provider"] == "aishub_polling":
                 aishub = aishub_settings(config)
                 aishub_live_ws(ws, bboxes=bboxes, interval_ms=aishub["poll_interval_seconds"] * 1000, config=config)
                 return
             sql_ais_live_ws(ws, bboxes=bboxes, interval_ms=interval_ms, config=config)
+
+
+def aisstream_live_ws(
+    ws,
+    *,
+    bboxes: list[tuple[float, float, float, float] | None],
+    interval_ms: int,
+    config: dict[str, Any],
+) -> None:
+    """Proxy AISStream snapshots directly to the browser without a SQL staging store."""
+    settings = ais_stream_settings(config)
+    if not settings["enabled"]:
+        ws.send(json.dumps({"status": "not_configured", "error": "AISStream is disabled", "rows": [], "row_count": 0}))
+        return
+
+    rows_by_key: dict[str, dict[str, Any]] = {}
+    accepted_messages = 0
+    dropped_messages = 0
+    started_at = time.perf_counter()
+    last_sent_at = started_at
+    upstream = None
+    try:
+        upstream = open_aisstream_socket(settings, bboxes)
+        while True:
+            try:
+                raw_message = upstream.recv()
+            except WebSocketTimeoutException:
+                raw_message = None
+
+            if raw_message:
+                row = normalize_aisstream_message(raw_message)
+                if row is None:
+                    dropped_messages += 1
+                else:
+                    accepted_messages += 1
+                    rows_by_key[str(row["mmsi"])] = row
+                    while len(rows_by_key) > settings["stream_cache_limit"]:
+                        rows_by_key.pop(next(iter(rows_by_key)))
+
+            now = time.perf_counter()
+            if now - last_sent_at < interval_ms / 1000:
+                continue
+            packet = streaming_snapshot_packet(
+                rows_by_key,
+                dropped_messages=dropped_messages,
+                accepted_messages=accepted_messages,
+                started_at=started_at,
+                transport="aisstream_direct_websocket",
+            )
+            packet["sent_at_ms"] = int(time.time() * 1000)
+            ws.send(json.dumps(packet, ensure_ascii=False))
+            last_sent_at = now
+    except Exception as exc:
+        try:
+            ws.send(json.dumps({"status": "error", "error": str(exc), "rows": [], "row_count": 0}))
+        except Exception:
+            pass
+    finally:
+        if upstream is not None:
+            try:
+                upstream.close()
+            except Exception:
+                pass
 
 def sql_ais_live_ws(
     ws,

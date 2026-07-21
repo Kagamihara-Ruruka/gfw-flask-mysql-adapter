@@ -21,14 +21,18 @@ function parseCoverageBbox(value) {
   });
 }
 
-function createDatasetCoverageModel(dataset = {}) {
-  const areas = (dataset?.sampled_grid?.coverage_areas || [])
+function createDatasetCoverageModel(dataset = {}, coverageId = "") {
+  const normalizedCoverageId = String(coverageId || "").trim();
+  const declaredAreas = (dataset?.sampled_grid?.coverage_areas || [])
     .map((coverage) => ({
       id: String(coverage?.id || "").trim(),
       label: String(coverage?.label || "").trim(),
       bounds: normalizeCoverageBounds(coverage?.bounds),
     }))
     .filter((coverage) => coverage.bounds);
+  const areas = normalizedCoverageId
+    ? declaredAreas.filter((coverage) => coverage.id === normalizedCoverageId)
+    : declaredAreas;
   const bounded = areas.length > 0;
   const unionBounds = bounded
     ? areas.reduce((union, area) => ({
@@ -101,14 +105,17 @@ class DatasetViewportController {
   }
 
   model(datasetId = this.state.datasetId) {
-    return createDatasetCoverageModel(this.state.datasets?.[datasetId] || {});
+    const coverageId = typeof selectedSampledGridAoi === "function"
+      ? selectedSampledGridAoi(datasetId)
+      : "";
+    return createDatasetCoverageModel(this.state.datasets?.[datasetId] || {}, coverageId);
   }
 
-  minimumInsideZoom(bounds) {
-    const candidate = Number(this.map.getBoundsZoom(bounds, true));
+  focusZoom(bounds) {
+    const candidate = Number(this.map.getBoundsZoom(bounds, false));
     const maximum = Number(this.map.getMaxZoom?.());
     const resolved = Number.isFinite(candidate)
-      ? Math.max(this.baseMinZoom, Math.ceil(candidate))
+      ? Math.max(this.baseMinZoom, Math.floor(candidate))
       : this.baseMinZoom;
     return Number.isFinite(maximum) ? Math.min(resolved, maximum) : resolved;
   }
@@ -125,27 +132,27 @@ class DatasetViewportController {
       [union.south, union.west],
       [union.north, union.east],
     );
-    const minZoom = this.minimumInsideZoom(leafletBounds);
+    const focusZoom = this.focusZoom(leafletBounds);
     const changed = this.activeDatasetId !== normalizedDatasetId
       || this.state.layerViewport?.signature !== JSON.stringify(union);
 
     this.activeDatasetId = normalizedDatasetId;
-    this.map.setMinZoom(minZoom);
-    this.map.setMaxBounds(leafletBounds);
-    if (focus || changed || !leafletBounds.contains(this.map.getCenter())) {
-      this.map.setView(leafletBounds.getCenter(), minZoom, { animate: false });
-    } else if (this.map.getZoom() < minZoom) {
-      this.map.setZoom(minZoom, { animate: false });
+    // Coverage limits data queries, not map navigation. Keep the world map free
+    // while queryBbox() continues clipping requests to the dataset coverage.
+    this.map.setMinZoom(this.baseMinZoom);
+    this.map.setMaxBounds(null);
+    if (focus || changed) {
+      this.map.setView(leafletBounds.getCenter(), focusZoom, { animate: false });
     }
-    this.map.panInsideBounds(leafletBounds, { animate: false });
 
     this.state.layerViewport = {
       mode: "coverage",
       datasetId: normalizedDatasetId,
       signature: JSON.stringify(union),
       bounds: union,
-      minZoom,
+      minZoom: this.baseMinZoom,
       coverageIds: model.areas.map((area) => area.id).filter(Boolean),
+      coverageId: model.areas[0]?.id || null,
     };
     this.dispatch();
     return this.state.layerViewport;
@@ -171,6 +178,7 @@ class DatasetViewportController {
       bounds: null,
       minZoom: this.baseMinZoom,
       coverageIds: [],
+      coverageId: null,
     };
     this.dispatch();
     return this.state.layerViewport;

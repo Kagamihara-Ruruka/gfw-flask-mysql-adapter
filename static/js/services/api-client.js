@@ -54,6 +54,7 @@ async function loadDatasets() {
   // Keep frontend limits aligned with the Flask adapter config.
   state.queryPolicy = packet.query_policy || state.queryPolicy;
   renderDatasetSelect();
+  renderSampledGridAoiSelect();
   if (typeof renderDataLayerMenu === "function") {
     renderDataLayerMenu();
   }
@@ -69,28 +70,100 @@ async function loadDatasets() {
 
 function renderDatasetSelect() {
   const select = $("dataset-select");
-  if (!select) return;
-  select.innerHTML = "";
   const entries = Object.entries(state.datasets || {});
-  if (!entries.length) {
-    const option = document.createElement("option");
-    option.value = "";
-    option.textContent = "尚未導入資料圖層";
-    select.appendChild(option);
-    select.value = "";
-    select.disabled = true;
-    return;
+  if (select) {
+    select.innerHTML = "";
+    if (!entries.length) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "尚未導入資料圖層";
+      select.appendChild(option);
+      select.value = "";
+      select.disabled = true;
+    } else {
+      select.disabled = !state.dataLayer;
+      for (const [datasetId, dataset] of entries) {
+        const option = document.createElement("option");
+        option.value = datasetId;
+        option.textContent = dataset.label || datasetId;
+        const route = [dataset.source_config, dataset.connection_ref].filter(Boolean).join(" / ");
+        option.title = route || datasetId;
+        select.appendChild(option);
+      }
+      select.value = state.datasetId || "";
+    }
   }
-  select.disabled = !state.dataLayer;
-  for (const [datasetId, dataset] of entries) {
+
+  // The dashboard uses the contract-driven layer menu instead of the legacy
+  // dataset select. AOI and resolution must still follow activation state.
+  renderSampledGridAoiSelect();
+  renderSampledGridResolutionSelect();
+}
+
+function renderSampledGridAoiSelect() {
+  const control = $("sampled-grid-aoi-control");
+  const select = $("sampled-grid-aoi");
+  if (!control || !select) return;
+  const areas = sampledGridCoverageAreas(state.datasetId);
+  control.hidden = areas.length < 2;
+  select.innerHTML = "";
+  for (const area of areas) {
     const option = document.createElement("option");
-    option.value = datasetId;
-    option.textContent = dataset.label || datasetId;
-    const route = [dataset.source_config, dataset.connection_ref].filter(Boolean).join(" / ");
-    option.title = route || datasetId;
+    option.value = area.id;
+    option.textContent = area.label || area.id;
     select.appendChild(option);
   }
-  select.value = state.datasetId || "";
+  select.disabled = areas.length < 2;
+  select.value = selectedSampledGridAoi(state.datasetId);
+}
+
+function renderSampledGridResolutionSelect() {
+  const control = $("sampled-grid-resolution-control");
+  const select = $("sampled-grid-resolution");
+  if (!control || !select) return;
+  const datasetId = state.datasetId;
+  const available = sampledGridAvailableResolutions(datasetId);
+  select.replaceChildren(...available.map((resolutionKm) => {
+    const option = document.createElement("option");
+    option.value = String(resolutionKm);
+    option.textContent = `${resolutionKm} km`;
+    return option;
+  }));
+  const remembered = Number(state.sampledGridResolutionByDataset?.[datasetId]);
+  const configured = Number(state.datasets?.[datasetId]?.sampled_grid?.default_resolution_km);
+  const selected = available.find((value) => value === remembered)
+    ?? available.find((value) => value === configured)
+    ?? available[0];
+  if (Number.isFinite(selected)) select.value = String(selected);
+  select.disabled = available.length <= 1;
+  control.hidden = available.length === 0;
+}
+
+async function selectSampledGridAoi(aoi, { reload = true } = {}) {
+  const datasetId = state.datasetId;
+  const available = new Set(sampledGridCoverageAreas(datasetId).map((area) => area.id));
+  const selected = String(aoi || "").trim();
+  if (!datasetId || !available.has(selected)) {
+    throw new Error(`不支援的海域：${selected || "(空白)"}`);
+  }
+  if (selected === selectedSampledGridAoi(datasetId)) return;
+  stopPlayback();
+  state.primaryFetchController?.abort();
+  state.sampledGridAoiByDataset[datasetId] = selected;
+  state.rows = [];
+  state.columns = [];
+  state.schema = null;
+  state.renderedSampledGridDate = null;
+  state.sampledGridMetaByDataset[datasetId] = null;
+  renderSampledGridAoiSelect();
+  await window.LayerViewportController?.settleForQuery?.(datasetId, { focus: true });
+  await loadSchema();
+  window.dispatchEvent(new CustomEvent("rrkal:sampled-grid-aoi-changed", {
+    detail: { datasetId, aoi: selected },
+  }));
+  if (reload && typeof isSampledGridLayer === "function" && isSampledGridLayer(state.dataLayer)) {
+    await reloadSampledGridRecords();
+  }
 }
 
 async function selectDataset(datasetId, { reload = true } = {}) {
@@ -101,6 +174,8 @@ async function selectDataset(datasetId, { reload = true } = {}) {
   state.columns = [];
   state.renderedSampledGridDate = null;
   state.renderedGfwDate = null;
+  renderSampledGridAoiSelect();
+  renderSampledGridResolutionSelect();
   if (typeof PlaybackPreheater !== "undefined") PlaybackPreheater.stop?.("dataset_changed");
   if (typeof PlaybackEngine !== "undefined") PlaybackEngine.stop?.("dataset_changed");
   await loadSchema();
@@ -121,7 +196,11 @@ async function loadSchema() {
     }));
     return null;
   }
-  const packet = await fetchJson(`/api/datasets/${state.datasetId}/schema`);
+  const params = new URLSearchParams();
+  const aoi = selectedSampledGridAoi(state.datasetId);
+  if (aoi) params.set("aoi", aoi);
+  const suffix = params.size ? `?${params}` : "";
+  const packet = await fetchJson(`/api/datasets/${state.datasetId}/schema${suffix}`);
   state.schema = packet;
   setAvailableDates(packet.dates || []);
   window.dispatchEvent(new CustomEvent("rrkal:schema-loaded", {
