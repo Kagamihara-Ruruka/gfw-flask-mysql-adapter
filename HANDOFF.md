@@ -14,13 +14,13 @@ PR #4's Spark/PyHive, Kubernetes, and handoff work is retained. The integration 
 Browser -> host :5185/:5186
   -> Docker app :5085/:5086
   -> host.docker.internal:11000
-  -> interactive Windows SSH to bigred@192.168.32.201 over Tailscale
+  -> launcher-owned interactive Windows SSH to bigred@192.168.32.201 over the Tailscale direct subnet route
   -> remote kubectl port-forward
   -> deployment/dtadm:10000
   -> lake.ocean.gold_map_metric
 ```
 
-The recommended operator entrypoint is the Tk launcher. The CLI wrappers and
+The Tk launcher is the only recommended GUI entrypoint. The CLI wrappers and
 JSON-lines controller invoke the same state machine:
 
 ```powershell
@@ -31,13 +31,19 @@ JSON-lines controller invoke the same state machine:
 ```
 
 The launcher can supply SSH through Windows AskPass and optionally store the
-credential in Windows Credential Manager. The password never enters the repo,
-command line, runtime JSON, or event log. Direct CLI fallback uses a visible
-terminal. Startup validates HDFS/YARN/Iceberg, reuses or owns Spark Thrift
+credential in Windows Credential Manager for presentation-period reconnects.
+Without that option, a temporary credential is retained only for launcher-owned
+reconnects and is deleted on stop, failed start, or launcher close. The password
+never enters the repo, command line, runtime JSON, or event log. Direct CLI
+fallback uses a visible terminal. The formal path requires Tailscale access to
+the `192.168.32.201/32` subnet route; `192.168.32.200` is the old test-side
+target and must not appear in presentation startup, runtime identity, or smoke
+evidence. Startup validates HDFS/YARN/Iceberg, reuses or owns Spark Thrift
 explicitly, starts PostGIS, runs the one-shot EEZ bootstrap and persistent
 domain-tile prewarm, starts the app, and runs the five-dataset smoke test.
 Stop removes only resources owned by this checkout. Shared-cluster mutation is
-not part of normal startup.
+not part of normal startup. Closing the launcher-owned bridge process breaks
+cluster-backed Dashboard queries even if the website remains reachable.
 
 The Config Browser is a desired-state editor. A save creates a validated
 `pending_restart` generation; Query, Registry, Status, Health, and Supervisor

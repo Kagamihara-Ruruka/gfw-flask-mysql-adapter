@@ -161,6 +161,12 @@ class PresentationControllerTests(unittest.TestCase):
             "bigred@192.168.32.201",
             contract["network_topology"]["ssh_target"],
         )
+        self.assertIn("tailscale_route", contract["stages"])
+        self.assertEqual(
+            "tailscale_subnet_direct",
+            contract["deployment_profile"]["connectivity"]["mode"],
+        )
+        self.assertEqual("Tailscale direct subnet", contract["network_topology"]["route"])
         self.assertEqual("kubernetes-admin@sea1", contract["network_topology"]["kubernetes_context"])
         self.assertEqual("dt", contract["network_topology"]["kubernetes_namespace"])
         self.assertEqual("deployment/dtadm", contract["network_topology"]["spark_target"])

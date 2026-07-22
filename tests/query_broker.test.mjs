@@ -151,6 +151,22 @@ test("sampled-grid month range compiles as one batch operation", () => {
   assert.equal(compiled.params.resolution, 4);
 });
 
+test("broker rejects oversized NDJSON events before parsing", async () => {
+  const oversized = "x".repeat(16 * 1024 * 1024 + 1);
+  const { broker } = loadBroker(async () => new Response(`${oversized}\n`, {
+    status: 200,
+    headers: { "Content-Type": "application/x-ndjson" },
+  }));
+
+  await assert.rejects(
+    broker.requestSampledGrid(operation("2020-01-01"), {
+      operationId: "oversized-frame",
+      lane: "playback-window",
+    }),
+    /NDJSON line exceeds/,
+  );
+});
+
 test("canonical frame transport decodes without inflating a row graph", () => {
   const { context } = loadBroker(async () => new Response());
   const packet = context.decodeCanonicalGridFramePacket({

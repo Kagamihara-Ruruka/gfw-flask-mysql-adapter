@@ -24,6 +24,11 @@ class SampledGridContractModel {
       .sort((left, right) => left - right);
   }
 
+  get defaultResolutionKm() {
+    const declared = sampledGridNumberOrNull(this.contract.default_resolution_km);
+    return this.availableResolutionsKm.find((value) => Math.abs(value - declared) <= 1e-9) ?? null;
+  }
+
   get valueDomain() {
     const domain = this.contract.value_domain || {};
     return {
@@ -204,7 +209,7 @@ class SampledGridResolutionPlanner {
     if (!available.length) return null;
     const preferred = sampledGridNumberOrNull(preferredResolutionKm);
     const declared = available.find((value) => Math.abs(value - preferred) <= 1e-9);
-    return declared ?? available[0];
+    return declared ?? model.defaultResolutionKm ?? available[0];
   }
 }
 

@@ -30,6 +30,7 @@ CREDENTIAL_TARGET = DEFAULT_DEPLOYMENT_PROFILE.credential_target
 SSH_USERNAME = DEFAULT_DEPLOYMENT_PROFILE.ssh_username
 STAGES = (
     "preflight",
+    "tailscale_route",
     "cluster_access",
     "hdfs_yarn",
     "spark_thrift",
@@ -43,6 +44,7 @@ STAGES = (
 )
 STAGE_LABELS = {
     "preflight": "本機檢查",
+    "tailscale_route": "Tailscale 路由",
     "cluster_access": "叢集連線",
     "hdfs_yarn": "HDFS / YARN",
     "spark_thrift": "Spark Thrift / Iceberg",
@@ -321,6 +323,7 @@ class PresentationLauncher:
         self.overall_status = StringVar(value="正在讀取展示環境狀態")
         self.live_status = StringVar(value="尚未檢查")
         self.acceptance_status = StringVar(value="尚未檢查")
+        self.identity_summary = StringVar(value=self._identity_summary())
 
         self._configure_window()
         self._configure_styles()
@@ -401,13 +404,17 @@ class PresentationLauncher:
         )
         ttk.Label(
             header,
-            text=(
-                f"{self.deployment_profile.profile} / "
-                f"{self.deployment_profile.ssh_target} / "
-                f"{self.deployment_profile.table}"
-            ),
+            textvariable=self.identity_summary,
             style="Muted.TLabel",
         ).grid(row=2, column=0, sticky="w", pady=(3, 0))
+        ttk.Label(
+            header,
+            text=(
+                "叢集通道由本啟動器管理；啟動後請保持控制台開啟，"
+                "安全停止只清理本專案的 Docker、tunnel 與暫存狀態。"
+            ),
+            style="Muted.TLabel",
+        ).grid(row=3, column=0, sticky="w", pady=(3, 0))
 
         health = ttk.Frame(header, style="Panel.TFrame", padding=(14, 9))
         health.grid(row=0, column=1, rowspan=2, sticky="e")
@@ -499,7 +506,7 @@ class PresentationLauncher:
         self.password_entry.grid(row=1, column=1, columnspan=3, sticky="w", pady=(9, 0), padx=(0, 14))
         ttk.Checkbutton(
             settings,
-            text="記憶密碼",
+            text="記住 SSH 密碼以支援展示期間自動重連",
             variable=self.remember_password,
         ).grid(row=1, column=4, columnspan=2, sticky="w", pady=(9, 0))
         ttk.Label(settings, text="儲存於 Windows 認證管理員", style="Muted.TLabel").grid(
@@ -589,6 +596,17 @@ class PresentationLauncher:
             return ports
         except ValueError as exc:
             raise ValueError("請輸入有效且不重複的連接埠。") from exc
+
+    def _identity_summary(self) -> str:
+        profile = self.deployment_profile
+        return (
+            f"Profile: {profile.profile} / Cluster: {profile.environment} / "
+            f"Target: {profile.ssh_target} / Route: {profile.route_label} / "
+            f"Spark tunnel: 127.0.0.1:{profile.local_tunnel_port} -> {profile.remote_bridge_port} / "
+            f"Web: {profile.host_http_port} / Dev: {profile.host_developer_port} / "
+            f"Backend: Hive + Spark Thrift + Iceberg / "
+            f"Data: {profile.serving_start} ~ {profile.serving_end}"
+        )
 
     def _load_saved_credential(self) -> None:
         try:
@@ -734,7 +752,7 @@ class PresentationLauncher:
     def _finish_command(self, payload: dict[str, object]) -> None:
         command = str(payload.get("command", self.current_command or "controller"))
         exit_code = int(payload.get("exit_code", 1))
-        if command == "start":
+        if command == "stop" or (command == "start" and exit_code != 0):
             self._delete_ephemeral_credential()
         if self.cancel_requested:
             self.cancel_requested = False
@@ -855,6 +873,7 @@ class PresentationLauncher:
                 parent=self.root,
             )
             return
+        self._delete_ephemeral_credential()
         self.root.destroy()
 
     @staticmethod

@@ -452,7 +452,7 @@ function updatePlaybackControls() {
   }
 }
 
-function stopPlayback({ clearBuffer = true, clearPreheater = false, reason = "stopped" } = {}) {
+function stopPlayback({ clearBuffer = true, clearPreheater = true, reason = "stopped" } = {}) {
   if (clearBuffer) {
     PlaybackCacheService.clearBufferState();
   }

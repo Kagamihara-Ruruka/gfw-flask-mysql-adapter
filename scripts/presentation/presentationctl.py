@@ -40,6 +40,7 @@ CONTRACT_SCHEMA = "bdde38.presentation.contract.v2"
 
 STAGES = (
     "preflight",
+    "tailscale_route",
     "cluster_access",
     "hdfs_yarn",
     "spark_thrift",
@@ -67,6 +68,7 @@ EXIT_CODES = {
 }
 STAGE_EXIT_CODES = {
     "preflight": 2,
+    "tailscale_route": 2,
     "cluster_access": 10,
     "hdfs_yarn": 11,
     "spark_thrift": 12,
@@ -285,6 +287,87 @@ class OperationLock:
 
 def locate_powershell() -> str | None:
     return shutil.which("powershell.exe") or shutil.which("pwsh")
+
+
+def check_tailscale_route(profile: DeploymentProfile, powershell: str | None) -> tuple[bool, str, dict[str, object]]:
+    details: dict[str, object] = {
+        "mode": profile.connectivity_mode,
+        "required_routes": list(profile.required_routes),
+        "target": profile.ssh_target,
+        "host": profile.ssh_host,
+    }
+    tailscale = shutil.which("tailscale") or shutil.which("tailscale.exe")
+    if profile.tailscale_required and not tailscale:
+        return False, "Tailscale CLI was not found on PATH.", details
+    if tailscale:
+        try:
+            status = subprocess.run(
+                [tailscale, "status"],
+                cwd=REPOSITORY_ROOT,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=12,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            details["tailscale_status_error"] = str(exc)
+            return False, "Tailscale status check failed.", details
+        details["tailscale_status_exit"] = status.returncode
+        details["tailscale_status_excerpt"] = status.stdout.strip()[:500]
+        if status.returncode != 0:
+            return False, "Tailscale is unavailable or not authenticated.", details
+    if not powershell:
+        return False, "PowerShell was not found for Tailscale route validation.", details
+
+    probe_script = (
+        "$r = Test-NetConnection -ComputerName "
+        + json.dumps(profile.ssh_host)
+        + " -Port 22 -InformationLevel Detailed; "
+        + "$src = if ($r.SourceAddress) { [string]$r.SourceAddress } else { '' }; "
+        + "[pscustomobject]@{"
+        + "TcpTestSucceeded=$r.TcpTestSucceeded;"
+        + "InterfaceAlias=[string]$r.InterfaceAlias;"
+        + "SourceAddress=$src"
+        + "} | ConvertTo-Json -Compress"
+    )
+    try:
+        probe = subprocess.run(
+            [
+                powershell,
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                probe_script,
+            ],
+            cwd=REPOSITORY_ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        details["test_net_connection_error"] = str(exc)
+        return False, f"{profile.ssh_host}:22 route probe failed.", details
+    details["test_net_connection_exit"] = probe.returncode
+    details["test_net_connection_output"] = probe.stdout.strip()[:500]
+    if probe.returncode != 0:
+        return False, f"{profile.ssh_host}:22 route probe failed.", details
+    try:
+        packet = json.loads(probe.stdout)
+    except json.JSONDecodeError:
+        return False, f"{profile.ssh_host}:22 route probe returned invalid output.", details
+    details["tcp_test_succeeded"] = bool(packet.get("TcpTestSucceeded"))
+    details["interface_alias"] = str(packet.get("InterfaceAlias") or "")
+    details["source_address"] = str(packet.get("SourceAddress") or "")
+    if not packet.get("TcpTestSucceeded"):
+        return False, f"{profile.ssh_host}:22 unreachable.", details
+    return True, "Tailscale direct subnet route is reachable.", details
 
 
 class PowerShellAdapter:
@@ -848,12 +931,19 @@ def contract_payload(
             "sha256": profile.sha256,
             "environment": profile.environment,
             "managed_by": profile.managed_by,
+            "connectivity": {
+                "mode": profile.connectivity_mode,
+                "tailscale_required": profile.tailscale_required,
+                "required_routes": list(profile.required_routes),
+                "public_ssh_forbidden": profile.public_ssh_forbidden,
+            },
         },
         "urls": profile.urls,
         "spark_tunnel": f"127.0.0.1:{profile.local_tunnel_port}",
         "network_topology": {
             "environment": profile.environment,
             "ssh_target": profile.ssh_target,
+            "route": profile.route_label,
             "kubernetes_context": profile.kubernetes_context,
             "kubernetes_namespace": profile.namespace,
             "spark_target": profile.spark_target,
@@ -886,7 +976,8 @@ def contract_payload(
             ),
             "password_storage": (
                 "Windows Credential Manager only when the user selects remember; otherwise "
-                "a temporary credential is deleted immediately after startup"
+                "a temporary credential is kept for launcher-owned reconnects and deleted "
+                "on stop, failed start, or launcher close"
             ),
             "direct_cli_fallback_uses_visible_terminal": True,
         },
@@ -973,6 +1064,41 @@ def action_command(
         return 2
 
     reporter.emit(action, "preflight", "ok", "Required local files are present.")
+    if action in {"start", "test"} and not dry_run:
+        reporter.emit(
+            action,
+            "tailscale_route",
+            "running",
+            "Validating Tailscale direct subnet route.",
+            target=profile.ssh_target,
+            required_routes=list(profile.required_routes),
+        )
+        route_ready, route_message, route_details = check_tailscale_route(
+            profile,
+            adapter.executable,
+        )
+        if not route_ready:
+            reporter.emit(
+                action,
+                "tailscale_route",
+                "failed",
+                route_message,
+                **route_details,
+            )
+            state_store.write(
+                command=action,
+                stage="tailscale_route",
+                status="failed",
+                message=route_message,
+            )
+            return STAGE_EXIT_CODES["tailscale_route"]
+        reporter.emit(
+            action,
+            "tailscale_route",
+            "ok",
+            route_message,
+            **route_details,
+        )
     lock = OperationLock(layout.runtime_dir / "presentation-controller.lock")
     try:
         with lock:

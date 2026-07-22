@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import ipaddress
 import json
 import re
 from dataclasses import dataclass
@@ -58,6 +59,10 @@ class DeploymentProfile:
     sha256: str
     profile: str
     managed_by: str
+    connectivity_mode: str
+    tailscale_required: bool
+    required_routes: tuple[str, ...]
+    public_ssh_forbidden: bool
     environment: str
     ssh_target: str
     kubernetes_context: str
@@ -90,6 +95,16 @@ class DeploymentProfile:
     @property
     def ssh_username(self) -> str:
         return self.ssh_target.split("@", 1)[0]
+
+    @property
+    def ssh_host(self) -> str:
+        return self.ssh_target.split("@", 1)[1]
+
+    @property
+    def route_label(self) -> str:
+        if self.connectivity_mode == "tailscale_subnet_direct":
+            return "Tailscale direct subnet"
+        return self.connectivity_mode.replace("_", " ")
 
     @property
     def urls(self) -> dict[str, str]:
@@ -130,6 +145,24 @@ def load_deployment_profile(
     if _text(document, "managed_by") != "presentationctl":
         raise DeploymentProfileError("formal deployment profile must be managed by presentationctl")
 
+    connectivity = _object(document, "connectivity")
+    connectivity_mode = _text(connectivity, "mode")
+    if connectivity_mode != "tailscale_subnet_direct":
+        raise DeploymentProfileError("formal presentation profile must use Tailscale direct subnet mode")
+    tailscale_required = bool(connectivity.get("tailscale_required"))
+    public_ssh_forbidden = bool(connectivity.get("public_ssh_forbidden"))
+    if not tailscale_required or not public_ssh_forbidden:
+        raise DeploymentProfileError(
+            "formal presentation profile must require Tailscale and forbid public SSH"
+        )
+    required_routes = tuple(str(value).strip() for value in connectivity.get("required_routes") or ())
+    if not required_routes:
+        raise DeploymentProfileError("connectivity.required_routes must not be empty")
+    try:
+        parsed_required_routes = tuple(ipaddress.ip_network(value, strict=False) for value in required_routes)
+    except ValueError as exc:
+        raise DeploymentProfileError("connectivity.required_routes contains an invalid CIDR") from exc
+
     cluster = _object(document, "cluster")
     ports = _object(document, "ports")
     data = _object(document, "data")
@@ -137,6 +170,12 @@ def load_deployment_profile(
     spark_target = _text(cluster, "spark_target")
     if not _SSH_TARGET_PATTERN.fullmatch(ssh_target):
         raise DeploymentProfileError("deployment profile SSH target is invalid")
+    try:
+        ssh_host = ipaddress.ip_address(ssh_target.split("@", 1)[1])
+    except ValueError as exc:
+        raise DeploymentProfileError("deployment profile SSH host must be an IP address") from exc
+    if not any(ssh_host in route for route in parsed_required_routes):
+        raise DeploymentProfileError("deployment profile SSH target is outside required Tailscale routes")
     if not _KUBERNETES_TARGET_PATTERN.fullmatch(spark_target):
         raise DeploymentProfileError("deployment profile Spark target is invalid")
     kubernetes_context = _text(cluster, "kubernetes_context")
@@ -193,6 +232,10 @@ def load_deployment_profile(
         sha256=hashlib.sha256(raw).hexdigest(),
         profile=_text(document, "profile").upper(),
         managed_by=_text(document, "managed_by"),
+        connectivity_mode=connectivity_mode,
+        tailscale_required=tailscale_required,
+        required_routes=required_routes,
+        public_ssh_forbidden=public_ssh_forbidden,
         environment=_text(cluster, "environment"),
         ssh_target=ssh_target,
         kubernetes_context=kubernetes_context,

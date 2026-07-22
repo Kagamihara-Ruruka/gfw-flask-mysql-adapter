@@ -741,6 +741,49 @@ test("one calendar month uses one range operation instead of daily operations", 
   service.dispose();
 });
 
+test("calendar-month range demand can fail closed without daily fallback", async () => {
+  const context = createContext();
+  const january = Array.from({ length: 31 }, (_, index) => (
+    `2024-01-${String(index + 1).padStart(2, "0")}`
+  ));
+  let rangeRequests = 0;
+  let singleRequests = 0;
+  const queryBroker = {
+    operationStatus: () => "active",
+    promoteSampledGrid: () => false,
+    requestSampledGrid() {
+      singleRequests += 1;
+      return Promise.resolve(framePacket(context));
+    },
+    requestSampledGridRange() {
+      rangeRequests += 1;
+      return Promise.reject(new Error("records_range unsupported by backend"));
+    },
+  };
+  const FrameDemandService = api(context, "FrameDemandServiceCore");
+  const service = new FrameDemandService({
+    frameIdentity: api(context, "FrameIdentity"),
+    queryBroker,
+    dataFrameStore: api(context, "DataFrameStore"),
+    eventLog: api(context, "LifecycleEventLog"),
+    sampledGridContract: context.SampledGridContract,
+    clock: api(context, "ClockDomain").monotonic,
+  });
+
+  const progress = await service.demandMany(january.map((date) => request(date)), {
+    lane: "playback-window",
+    scopeId: "preheater:january",
+    rangeMode: "calendar_month",
+    allowRangeFallback: false,
+  });
+
+  assert.equal(progress.completed, 31);
+  assert.equal(progress.failed, 31);
+  assert.equal(rangeRequests, 1);
+  assert.equal(singleRequests, 0);
+  service.dispose();
+});
+
 test("explicit monthly demand shares one range query with a concurrent playback target", async () => {
   const context = createContext();
   const source = deferred();

@@ -435,6 +435,30 @@ test("sampled-grid records actual resolution without feeding it back into query 
   }), 32);
 });
 
+test("sampled-grid uses mapping default resolution before falling back to finest grid", () => {
+  const { contract } = loadContract({
+    sampled_grid: {
+      contract_version: "rrkal.sampled_grid.v1",
+      available_resolutions_km: [4, 16, 32],
+      default_resolution_km: 16,
+      geometry: {
+        encoding: "global_index",
+        origin_lat: 90,
+        origin_lon: -180,
+        index_units_per_degree: 24,
+        base_resolution_km: 4,
+      },
+    },
+  });
+
+  assert.equal(contract.requestResolution({ datasetId: "mapped-source" }), 16);
+  assert.equal(contract.queryResolution({ datasetId: "mapped-source" }), 16);
+
+  contract.setRequestedResolution("mapped-source", 4);
+  assert.equal(contract.requestResolution({ datasetId: "mapped-source" }), 4);
+  assert.equal(contract.queryResolution({ datasetId: "mapped-source" }), 4);
+});
+
 test("zero remains data and center-grid alignment is mapping-owned", () => {
   const { contract } = loadContract({
     sampled_grid: {

@@ -495,6 +495,7 @@ class FrameDemandServiceCore {
     onProgress = null,
     runId = undefined,
     rangeMode = "individual",
+    allowRangeFallback = true,
   } = {}) {
     this.assertActive();
     const unique = new Map();
@@ -586,6 +587,13 @@ class FrameDemandServiceCore {
         } catch (error) {
           if (error?.name === "AbortError") throw error;
           if (this.rangeUnsupported(error)) {
+            if (!allowRangeFallback) {
+              for (const request of group.requests) {
+                this.dataFrameStore.markFailed(request, error);
+                reportFailure(request, error);
+              }
+              return;
+            }
             await demandIndividually(group.requests, individualOffset);
             individualOffset += group.requests.length;
             return;

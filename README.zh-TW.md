@@ -473,7 +473,8 @@ GFW ingestion 被視為 upstream collector job，不是前端功能：
 ```text
 Docker app
   -> host.docker.internal:11000
-  -> Windows OpenSSH tunnel
+  -> 由 launcher 擁有的 Windows OpenSSH tunnel
+  -> Tailscale subnet route
   -> bigred@192.168.32.201
   -> dt namespace 內的 kubectl port-forward
   -> deployment/dtadm:10000 的 Spark Thrift Server
@@ -490,11 +491,11 @@ Docker app
 | 指標 | 葉綠素、捕魚時數、海洋生產力、海表溫度、永續壓力 |
 | 叢集 | Sea1 `192.168.32.201`；HDFS 正常；YARN ResourceManager 與 3 個 NodeManager 正常；共用 Spark Thrift 監聽 `10000` |
 
-先備條件為 Docker Desktop、Windows OpenSSH、可用的 Tailscale 連線，以及可登入 `bigred@192.168.32.201` 的 SSH。跳板機必須能以 `kubectl` 存取 `dt` namespace。Tk 啟動器使用 Windows AskPass；只有使用者勾選「記憶密碼」時才會存入 Windows Credential Manager，否則一次性 credential 會在啟動後刪除。密碼不會進入 repo、命令列、JSON 事件或 runtime state。
+先備條件為 Docker Desktop、Windows OpenSSH、可用的 Tailscale 連線、可達的 `192.168.32.201/32` subnet route，以及可直接登入 `bigred@192.168.32.201` 的 SSH。這是 Tailscale direct cluster route，不是公開 SSH，也不是另一台 SSH jump host。SSH 目標必須能以 `kubectl` 存取 `dt` namespace。`192.168.32.200` 是舊測試側，不得出現在發表啟動、runtime identity 或 smoke evidence。Tk 啟動器使用 Windows AskPass；只有使用者勾選「記住 SSH 密碼以支援展示期間自動重連」時才會存入 Windows Credential Manager。未勾選時，一次性 credential 只會保留給 launcher 擁有的重連流程，並在安全停止、啟動失敗或關閉 launcher 時刪除。密碼不會進入 repo、命令列、JSON 事件或 runtime state。
 
 首次啟動 Docker 前，先將 `.env.example` 複製為 `.env`，並替換所有 `change-me` 值；`.env` 已被 git 忽略。目前 WIP 分支尚未自動產生此資料庫密碼。
 
-建議使用 Tk 啟動器；CLI wrappers 與 JSON Lines controller 會呼叫同一套實作：
+Tk 啟動器是唯一建議的圖形化入口；CLI wrappers 與 JSON Lines controller 會呼叫同一套實作：
 
 ```powershell
 # 圖形化啟動器。
@@ -510,6 +511,8 @@ Docker app
 ```
 
 Host 對外網址為 `http://127.0.0.1:5185/`、`http://127.0.0.1:5185/dashboard/` 與 `http://127.0.0.1:5186/`；Compose 會映射到 container 內的 `5085/5086`。EEZ 首次啟動可能需要數分鐘；GPKG 驗證／匯入、topology 產生與持久化 domain-tile 預熱 manifest 完成後，App 才會啟動。正常啟動不得執行 `restore-cluster-services.ps1`；該腳本只供 HDFS／YARN daemon 缺失時，在明確授權下修復共用叢集。
+
+SSH／kubectl tunnel 的生命週期由 launcher 擁有。發表期間若關閉 launcher 擁有的 bridge process，或停止 launcher，即使網站本身仍可回應，Dashboard 的叢集查詢也會中斷。請使用 launcher 或 `presentationctl.py --json stop` 安全清理；stop 只移除此 checkout 的 Docker project、tunnel evidence 與暫存狀態，不會停止共用 HDFS、YARN、Kubernetes workload 或共用 Spark Thrift。
 
 發表用 Config Browser 只編輯 Desired State。儲存會建立已驗證的 `pending_restart` generation，不會重建執行中的 connection pool；`presentationctl start` 才是受控重啟的 Apply Owner。Query、Registry、Status、Health 與 Supervisor 都消費同一份 immutable runtime snapshot。Dashboard 與 Developer 的 identity endpoints 必須在 runtime instance、generation、config bundle hash、backend/source 與 fingerprint 上完全一致。Config bundle hash 只涵蓋 effective runtime config、Manifest、Mapping 與 active source documents；runtime fingerprint 再綁定 generation、公開 ports、image digest、Compose hash 與 bridge owner token，因此舊部署證據不能沿用。
 

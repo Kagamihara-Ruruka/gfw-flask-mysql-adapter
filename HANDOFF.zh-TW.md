@@ -14,13 +14,13 @@ PR #4 的 Spark／PyHive、Kubernetes 與交接成果完整保留。整合分支
 Browser -> host :5185/:5186
   -> Docker app :5085/:5086
   -> host.docker.internal:11000
-  -> 經 Tailscale 互動式 Windows SSH 登入 bigred@192.168.32.201
+  -> launcher 擁有的互動式 Windows SSH，經 Tailscale direct subnet route 登入 bigred@192.168.32.201
   -> 遠端 kubectl port-forward
   -> deployment/dtadm:10000
   -> lake.ocean.gold_map_metric
 ```
 
-建議使用 Tk 啟動器；CLI wrappers 與 JSON Lines controller 使用同一套狀態機：
+Tk 啟動器是唯一建議的圖形化入口；CLI wrappers 與 JSON Lines controller 使用同一套狀態機：
 
 ```powershell
 .\scripts\presentation\presentation-launcher.cmd
@@ -29,7 +29,7 @@ Browser -> host :5185/:5186
 .\scripts\presentation\stop-presentation.cmd
 ```
 
-Tk 可透過 Windows AskPass 提供 SSH 密碼；只有勾選「記憶密碼」時才存入 Windows Credential Manager。密碼不會進入 repo、命令列、runtime JSON 或事件 log。直接使用 CLI 時則由可見終端負責互動。啟動流程會驗證 HDFS／YARN／Iceberg、明確重用或擁有 Spark Thrift、啟動 PostGIS、執行一次性 EEZ bootstrap 與持久化 domain-tile 預熱、啟動 App，最後執行五資料集 smoke test。停止流程只清理由此 checkout 擁有的資源；正常啟動不會修改共用叢集。
+Tk 可透過 Windows AskPass 提供 SSH 密碼；只有勾選「記住 SSH 密碼以支援展示期間自動重連」時才存入 Windows Credential Manager。未勾選時，一次性 credential 只保留給 launcher 擁有的重連流程，並在停止、啟動失敗或關閉 launcher 時刪除。密碼不會進入 repo、命令列、runtime JSON 或事件 log。直接使用 CLI 時則由可見終端負責互動。正式路徑必須能透過 Tailscale 存取 `192.168.32.201/32` subnet route；`192.168.32.200` 是舊測試側，不得出現在發表啟動、runtime identity 或 smoke evidence。啟動流程會驗證 HDFS／YARN／Iceberg、明確重用或擁有 Spark Thrift、啟動 PostGIS、執行一次性 EEZ bootstrap 與持久化 domain-tile 預熱、啟動 App，最後執行五資料集 smoke test。停止流程只清理由此 checkout 擁有的資源；正常啟動不會修改共用叢集。關閉 launcher 擁有的 bridge process 會中斷 Dashboard 的叢集查詢，即使網站本身仍可回應。
 
 Config Browser 是 Desired State 編輯器。儲存只會建立已驗證的 `pending_restart` generation；在 `presentationctl start` 受控重啟前，Query、Registry、Status、Health 與 Supervisor 都繼續使用同一份 immutable `RuntimeConfigSnapshot`。Dashboard 與 Developer 必須回報相同的 `runtime_instance_id`、generation、config bundle hash、effective backend/source 與 runtime fingerprint。Config bundle hash 只涵蓋 effective runtime config、Manifest、Mapping 與 active source documents；runtime fingerprint 再綁定 generation、公開 ports、image、Compose 與 bridge evidence。所有值都和 live deployment 一致時，smoke marker 才有效。
 

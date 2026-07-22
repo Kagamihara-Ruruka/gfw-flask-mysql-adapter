@@ -429,8 +429,61 @@ test("calendar-month preheater delegates one month to the range-query owner", ()
   assert.equal(calls[0].requests.length, 31);
   assert.equal(calls[0].options.lane, "playback-window");
   assert.equal(calls[0].options.rangeMode, "calendar_month");
+  assert.equal(calls[0].options.allowRangeFallback, false);
   preheater.stop("test_complete");
   range.resolve({ total: 31, completed: 0, cacheHits: 0, fetched: 0, failed: 0 });
+});
+
+test("calendar-month startup gate uses the range-query owner without individual fallback", async () => {
+  const context = contextFor(async () => ({ rows: [], row_count: 0 }));
+  const Preheater = api(context, "PlaybackPreheaterController");
+  const calls = [];
+  const preheater = new Preheater({
+    fixedPolicyNormalizer: api(context, "normalizedFixedWatermarkPolicy"),
+    store: {
+      subscribe: () => () => {},
+      inspect: () => ({ status: "missing" }),
+    },
+    demandService: {
+      cancelScope() { return 0; },
+      demandMany(requests, options) {
+        calls.push({ requests, options });
+        return Promise.resolve({
+          total: requests.length,
+          completed: requests.length,
+          cacheHits: 0,
+          fetched: requests.length,
+          failed: 0,
+        });
+      },
+    },
+    eventLog: api(context, "LifecycleEventLog"),
+    frameIdentity: api(context, "FrameIdentity"),
+    clock: api(context, "ClockDomain").monotonic,
+    optionsProvider: () => ({
+      bufferUnit: "calendar_month",
+      lowWatermarkMonths: 1,
+      highWatermarkMonths: 2,
+      maxPendingFrames: 32,
+    }),
+  });
+  const january = inclusiveDates("2024-01-01", "2024-01-31");
+
+  preheater.setScope({ dates: january, requestContext: requestContext(), anchorDate: january[0] });
+  calls.length = 0;
+  const progress = await preheater.waitForDates(january, {
+    lane: "playback-target",
+    scopeId: "startup-gate",
+  });
+
+  assert.equal(progress.failed, 0);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].requests.length, 31);
+  assert.equal(calls[0].options.lane, "playback-target");
+  assert.equal(calls[0].options.scopeId, "startup-gate");
+  assert.equal(calls[0].options.rangeMode, "calendar_month");
+  assert.equal(calls[0].options.allowRangeFallback, false);
+  preheater.stop("test_complete");
 });
 
 test("preheater refills from low 10 to high 15 without becoming a playback gate", async () => {

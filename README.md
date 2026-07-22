@@ -611,7 +611,8 @@ The release-candidate presentation path preserves the Spark/Iceberg work from RR
 ```text
 Docker app
   -> host.docker.internal:11000
-  -> Windows OpenSSH tunnel
+  -> Windows OpenSSH tunnel owned by the launcher
+  -> Tailscale subnet route
   -> bigred@192.168.32.201
   -> kubectl port-forward in namespace dt
   -> Spark Thrift Server on deployment/dtadm:10000
@@ -628,12 +629,11 @@ The formal Sea1 serving table has been queried and validated from `2022-01-01` t
 | Metrics | chlorophyll, fishing hours, ocean productivity, sea temperature, sustainability pressure |
 | Cluster | Sea1 at `192.168.32.201`; HDFS healthy; YARN ResourceManager plus 3 running NodeManagers; shared Spark Thrift listening on `10000` |
 
-Prerequisites are Docker Desktop, Windows OpenSSH, Tailscale access, and working SSH access to `bigred@192.168.32.201`. The jump host must have `kubectl` access to namespace `dt`. The Tk launcher uses Windows AskPass; it stores the password in Windows Credential Manager only when the operator selects **Remember password**. A temporary credential is removed after startup. Passwords never enter the repo, command line, JSON events, or runtime state.
+Prerequisites are Docker Desktop, Windows OpenSSH, Tailscale access with the `192.168.32.201/32` subnet route reachable, and working direct SSH access to `bigred@192.168.32.201`. This is a Tailscale direct cluster route, not a public SSH exposure and not another SSH jump host. The SSH target must have `kubectl` access to namespace `dt`. `192.168.32.200` is the old test-side target and must not appear in presentation startup, runtime identity, or smoke evidence. The Tk launcher uses Windows AskPass; it stores the password in Windows Credential Manager only when the operator selects **Remember password** to support automatic reconnect during the presentation. Without that option, a temporary credential is kept only for launcher-owned reconnects and is deleted on safe stop, failed start, or launcher close. Passwords never enter the repo, command line, JSON events, or runtime state.
 
 Before the first Docker start, copy `.env.example` to `.env` and replace every `change-me` value. `.env` is ignored by git. The current WIP branch does not generate this database secret automatically.
 
-The Tk launcher is the recommended entrypoint. The CLI wrappers and JSON-lines
-controller call the same implementation:
+The Tk launcher is the only recommended GUI entrypoint. The CLI wrappers and JSON-lines controller call the same implementation:
 
 ```powershell
 # Graphical launcher.
@@ -649,6 +649,8 @@ controller call the same implementation:
 ```
 
 The host URLs are `http://127.0.0.1:5185/`, `http://127.0.0.1:5185/dashboard/`, and `http://127.0.0.1:5186/`; Compose maps them to container ports `5085/5086`. The first EEZ bootstrap can take several minutes. It must complete GPKG validation/import, topology generation, and the persistent domain-tile prewarm manifest before the App starts. Do not run `restore-cluster-services.ps1` during normal startup; it is an explicit, authorized shared-cluster recovery tool for missing HDFS/YARN daemons only.
+
+The launcher owns the SSH/kubectl tunnel lifecycle. While a presentation is running, closing the launcher-owned bridge process or stopping the launcher will break cluster-backed Dashboard queries even if the website itself still responds. Use the launcher or `presentationctl.py --json stop` for safe cleanup; stop only removes this checkout's Docker project, tunnel evidence, and temporary state, and never stops shared HDFS, YARN, Kubernetes workloads, or the shared Spark Thrift service.
 
 The Presentation Config Browser edits desired state. Saving creates a validated
 `pending_restart` generation; it does not rebuild a live connection pool.

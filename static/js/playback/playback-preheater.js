@@ -690,6 +690,7 @@ class PlaybackPreheaterController {
       lane: "playback-window",
       scopeId,
       rangeMode: options.bufferUnit === "calendar_month" ? "calendar_month" : "individual",
+      allowRangeFallback: options.bufferUnit !== "calendar_month",
       onProgress: ({ ok, request, error }) => {
         const intentKey = this.frameIdentity.intentKey(request);
         if (ok) {
@@ -755,15 +756,26 @@ class PlaybackPreheaterController {
     lane = "playback-target",
     scopeId = "playback-startup",
     signal = null,
+    rangeMode = null,
+    allowRangeFallback = null,
   } = {}) {
     const requests = (dates || []).map((date) => this.requestForDate(date)).filter(Boolean);
     const progress = { total: requests.length, completed: 0, cacheHits: 0, fetched: 0, failed: 0 };
     const chunkSize = this.options().maxPendingFrames;
+    const options = this.options();
+    const effectiveRangeMode = rangeMode || (options.bufferUnit === "calendar_month" ? "calendar_month" : "individual");
+    const effectiveAllowRangeFallback = allowRangeFallback ?? effectiveRangeMode !== "calendar_month";
     for (let index = 0; index < requests.length; index += chunkSize) {
       if (signal?.aborted) throw this.demandService.abortError?.() || Object.assign(new Error("Playback gate changed"), { name: "AbortError" });
       const chunk = await this.demandService.demandMany(
         requests.slice(index, index + chunkSize),
-        { lane, scopeId, signal },
+        {
+          lane,
+          scopeId,
+          signal,
+          rangeMode: effectiveRangeMode,
+          allowRangeFallback: effectiveAllowRangeFallback,
+        },
       );
       progress.completed += Number(chunk.completed || 0);
       progress.cacheHits += Number(chunk.cacheHits || 0);

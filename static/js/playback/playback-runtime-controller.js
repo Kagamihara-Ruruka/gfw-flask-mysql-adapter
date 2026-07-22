@@ -176,19 +176,19 @@ class PlaybackRuntimeController {
         }
         if (result.failed) {
           const onTerminal = this.session.onTerminal;
-          this.stop({ clearPreheater: false, reason: "failed" });
+          this.stop({ clearPreheater: true, reason: "failed" });
           onTerminal?.({ reason: "failed", result });
           return;
         }
         if (!result.advanced && result.done) {
           const onTerminal = this.session.onTerminal;
-          this.stop({ clearPreheater: false, reason: "ended" });
+          this.stop({ clearPreheater: true, reason: "ended" });
           onTerminal?.({ reason: "ended", result });
           return;
         }
         if (!result.advanced) {
           const onTerminal = this.session.onTerminal;
-          this.stop({ clearPreheater: false, reason: "stopped" });
+          this.stop({ clearPreheater: true, reason: "stopped" });
           onTerminal?.({ reason: "stopped", result });
           return;
         }
@@ -199,7 +199,7 @@ class PlaybackRuntimeController {
         if (this.isActive() && this.isGenerationActive(generation)) this.schedule(generation);
       } catch (error) {
         const onError = this.session?.onError;
-        this.stop({ clearPreheater: false, reason: "failed" });
+        this.stop({ clearPreheater: true, reason: "failed" });
         onError?.(error);
       }
     }, Math.max(0, Number(delayMs || 0)));

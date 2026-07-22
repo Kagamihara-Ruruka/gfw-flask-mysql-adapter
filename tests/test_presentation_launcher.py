@@ -75,6 +75,9 @@ class PresentationLauncherTests(unittest.TestCase):
 
         self.assertEqual("sea1", profile.environment)
         self.assertEqual("bigred@192.168.32.201", profile.ssh_target)
+        self.assertEqual("tailscale_subnet_direct", profile.connectivity_mode)
+        self.assertEqual(("192.168.32.201/32",), profile.required_routes)
+        self.assertEqual("Tailscale direct subnet", profile.route_label)
         self.assertEqual(profile.credential_target, launcher.CREDENTIAL_TARGET)
         self.assertEqual(profile.ssh_username, launcher.SSH_USERNAME)
 
@@ -111,6 +114,8 @@ class PresentationLauncherTests(unittest.TestCase):
 
     def test_launcher_readiness_includes_spatial_assets_and_cancel_delegates_cleanup(self) -> None:
         source = LAUNCHER_PATH.read_text(encoding="utf-8")
+        self.assertIn('"tailscale_route"', source)
+        self.assertIn("Route: {profile.route_label}", source)
         self.assertIn('"spatial_dependencies"', source)
         self.assertIn('self.live_checks["spatial_dependencies"]', source)
         self.assertIn('self._run_command("stop", automatic=True)', source)

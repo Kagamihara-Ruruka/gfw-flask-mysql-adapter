@@ -84,6 +84,9 @@ function decodeSampledGridBatchPacket(packet) {
   return Object.freeze({ ...packet, snapshots: Object.freeze(snapshots) });
 }
 
+const QUERY_BATCH_MAX_LINE_BYTES = 16 * 1024 * 1024;
+const QUERY_BATCH_MAX_BUFFER_BYTES = 32 * 1024 * 1024;
+
 class QueryBroker {
   constructor({
     fetchFn,
@@ -353,7 +356,13 @@ class QueryBroker {
   async readEvents(response, onEvent) {
     if (!response.body?.getReader) {
       const text = await response.text();
+      if (text.length > QUERY_BATCH_MAX_BUFFER_BYTES) {
+        throw new Error("Query batch response exceeds the browser buffer limit");
+      }
       for (const line of text.split(/\r?\n/)) {
+        if (line.length > QUERY_BATCH_MAX_LINE_BYTES) {
+          throw new Error("Query batch NDJSON line exceeds the browser line limit");
+        }
         if (line.trim() && onEvent(JSON.parse(line)) === false) break;
       }
       return;
@@ -365,10 +374,18 @@ class QueryBroker {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
+      if (buffer.length > QUERY_BATCH_MAX_BUFFER_BYTES) {
+        await reader.cancel();
+        throw new Error("Query batch response exceeds the browser buffer limit");
+      }
       let newline = buffer.indexOf("\n");
       while (newline >= 0) {
         const line = buffer.slice(0, newline).trim();
         buffer = buffer.slice(newline + 1);
+        if (line.length > QUERY_BATCH_MAX_LINE_BYTES) {
+          await reader.cancel();
+          throw new Error("Query batch NDJSON line exceeds the browser line limit");
+        }
         if (line && onEvent(JSON.parse(line)) === false) {
           await reader.cancel();
           return;
@@ -377,6 +394,9 @@ class QueryBroker {
       }
     }
     buffer += decoder.decode();
+    if (buffer.length > QUERY_BATCH_MAX_LINE_BYTES) {
+      throw new Error("Query batch NDJSON line exceeds the browser line limit");
+    }
     if (buffer.trim()) onEvent(JSON.parse(buffer));
   }
 
