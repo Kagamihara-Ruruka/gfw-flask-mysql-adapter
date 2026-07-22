@@ -47,8 +47,15 @@ def deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _router_manifest_active_refs() -> list[str]:
-    path = router_manifest_path()
+def _runtime_profile(config: dict[str, Any]) -> dict[str, Any]:
+    profile = config.get("runtime_profile")
+    return profile if isinstance(profile, dict) else {}
+
+
+def _router_manifest_active_refs(config: dict[str, Any]) -> list[str]:
+    profile = _runtime_profile(config)
+    configured_path = str(profile.get("manifest_path") or "").strip()
+    path = resolve_config_path(configured_path) if configured_path else router_manifest_path()
     if not path.exists():
         return []
     data = read_config_json(path)
@@ -60,7 +67,7 @@ def _router_manifest_active_refs() -> list[str]:
 
 def _iter_config_refs(config: dict[str, Any], *, root_profile: bool = False) -> list[str]:
     if root_profile:
-        manifest_refs = _router_manifest_active_refs()
+        manifest_refs = _router_manifest_active_refs(config)
         if manifest_refs:
             return manifest_refs
     refs = config.get("config_refs") or config.get("include_configs") or []
@@ -116,6 +123,19 @@ def load_assembled_config(path: str | Path, *, seen: set[Path] | None = None, ro
 
     assembled = deep_merge(assembled, _runtime_payload(root_config))
     assembled["__config_path"] = str(config_path)
+    if root_profile:
+        profile = _runtime_profile(root_config)
+        assembled["__runtime_profile"] = str(profile.get("name") or "LOCAL").strip().upper()
+        assembled["__managed_by"] = str(profile.get("managed_by") or "core.py").strip()
+        assembled["__router_manifest_path"] = str(
+            resolve_config_path(profile.get("manifest_path") or router_manifest_path())
+        )
+        assembled["__layer_mappings_path"] = str(
+            resolve_config_path(
+                profile.get("mapping_path")
+                or "config/artifacts/layer_mappings.local.json"
+            )
+        )
     if fragment_paths:
         assembled["__config_fragments"] = fragment_paths
     return assembled

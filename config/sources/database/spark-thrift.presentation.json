@@ -1,0 +1,67 @@
+{
+  "schema": "rrkal.adapter.database.v1",
+  "role": "database",
+  "name": "spark_thrift",
+  "description": "Presentation Spark Thrift route to the currently materialized Gold serving snapshot through the host SSH tunnel.",
+  "sql_backend": {
+    "kind": "hive",
+    "driver": "pyhive"
+  },
+  "connections": {
+    "spark_thrift": {
+      "kind": "hive",
+      "driver": "pyhive",
+      "host": "host.docker.internal",
+      "port": 11000,
+      "user": "bigred",
+      "username": "bigred",
+      "auth": "NONE",
+      "query_timeout_seconds": 150,
+      "query_slot_timeout_seconds": 180,
+      "query_poll_interval_seconds": 0.25,
+      "catalog": "lake",
+      "schema": "ocean"
+    }
+  },
+  "tables": {
+    "gold_map_metric": "lake.ocean.gold_map_metric"
+  },
+  "data_contract": {
+    "research_period": {
+      "start": "2020-01-01",
+      "end": "2024-12-31"
+    },
+    "bronze_storage": {
+      "format": "parquet",
+      "partition_keys": [
+        "year",
+        "month"
+      ]
+    },
+    "gold_processing": {
+      "batch_unit": "month"
+    },
+    "validated_serving_snapshot": {
+      "table": "lake.ocean.gold_map_metric",
+      "warehouse": "hdfs:///dataset/ocean/warehouse",
+      "snapshot_id": "6665865250480704800",
+      "start": "2022-01-01",
+      "end": "2024-12-31",
+      "distinct_days": 1096,
+      "validated_at": "2026-07-22",
+      "environment": "sea1",
+      "ssh_target": "bigred@192.168.32.201"
+    }
+  },
+  "defaults": {
+    "start_date": "2022-01-01",
+    "end_date": "2024-12-31",
+    "date": "2022-01-01",
+    "aoi": "northwest_pacific",
+    "product": "SST",
+    "metric": "sea_temperature",
+    "resolution": 4,
+    "heatmap_limit": 20000,
+    "grid_features_limit": 1000
+  }
+}

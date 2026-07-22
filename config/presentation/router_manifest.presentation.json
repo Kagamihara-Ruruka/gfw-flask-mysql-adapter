@@ -1,0 +1,22 @@
+{
+  "active_configs": [
+    "config/sources/database/spark-thrift.presentation.json",
+    "config/sources/spatial/eez.presentation.json"
+  ],
+  "locked_configs": [
+    "config/sources/database/spark-thrift.presentation.json",
+    "config/sources/spatial/eez.presentation.json"
+  ],
+  "config_notes": {
+    "config/sources/database/spark-thrift.presentation.json": "Spark Thrift through the host SSH tunnel.",
+    "config/sources/spatial/eez.presentation.json": "Docker Compose PostGIS-backed EEZ overlay."
+  },
+  "imported_layers": [
+    "eez",
+    "pipeline_iceberg.chlor_a",
+    "pipeline_iceberg.fishing_hours",
+    "pipeline_iceberg.ocean_productivity_score",
+    "pipeline_iceberg.sea_temperature",
+    "pipeline_iceberg.sustainability_pressure"
+  ]
+}

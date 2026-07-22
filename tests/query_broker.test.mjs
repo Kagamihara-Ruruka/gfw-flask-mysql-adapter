@@ -113,6 +113,7 @@ test("broker limits each physical request to source capacity and demultiplexes r
 
   assert.equal(envelopes.length, 2);
   assert.equal(envelopes[0].schema, "query_batch.v1");
+  assert.equal(envelopes[0].operations[0].lane, "playback-window");
   assert.deepEqual(envelopes.map((envelope) => envelope.operations.length), [2, 1]);
   assert.deepEqual([...results.map((packet) => packet.rows[0].date)], [
     "2020-01-01",
@@ -133,6 +134,21 @@ test("sampled-grid source transport is independent of camera zoom and latitude",
   assert.equal(compiled.params.resolution, 4);
   assert.equal("zoom" in compiled.params, false);
   assert.equal("latitude" in compiled.params, false);
+});
+
+test("sampled-grid month range compiles as one batch operation", () => {
+  const { context } = loadBroker(async () => new Response());
+  const compiled = context.sampledGridRangeBatchOperation({
+    ...operation("2024-01-01"),
+    start: "2024-01-01",
+    end: "2024-01-31",
+  }, "month-2024-01");
+
+  assert.equal(compiled.kind, "sampled_grid.records_range");
+  assert.equal(compiled.operation_id, "month-2024-01");
+  assert.equal(compiled.params.start, "2024-01-01");
+  assert.equal(compiled.params.end, "2024-01-31");
+  assert.equal(compiled.params.resolution, 4);
 });
 
 test("canonical frame transport decodes without inflating a row graph", () => {
@@ -157,6 +173,31 @@ test("canonical frame transport decodes without inflating a row graph", () => {
   });
   assert.equal("rows" in packet, false);
   assert.equal("canonical_frame" in packet, false);
+});
+
+test("canonical month range decodes every daily frame", () => {
+  const { context } = loadBroker(async () => new Response());
+  const transport = (date, value) => ({
+    row_contract_version: "rrkal.sampled_grid.v1",
+    canonical_frame: {
+      schema: "rrkal.canonical_grid_frame.v1",
+      row_fields: ["cell_id", "value"],
+      frame_fields: { date, resolution_km: 4 },
+      columns: [[`cell-${date}`], [value]],
+      row_count: 1,
+    },
+  });
+  const packet = context.decodeSampledGridBatchPacket({
+    snapshot_profile: "canonical_frame",
+    snapshots: {
+      "2024-01-01": transport("2024-01-01", 1),
+      "2024-01-02": transport("2024-01-02", 2),
+    },
+  });
+
+  assert.equal(context.CanonicalGridFrame.isFrame(packet.snapshots["2024-01-01"].frame), true);
+  assert.equal(packet.snapshots["2024-01-02"].frame.valueAt("value", 0), 2);
+  assert.equal("canonical_frame" in packet.snapshots["2024-01-01"], false);
 });
 
 test("datasets sharing one physical provider combine within its capacity", async () => {
@@ -438,7 +479,7 @@ test("broker releases source capacity as soon as an operation result arrives", a
   firstController.close();
 });
 
-test("foreground demand uses the next released slot without requerying active work", async () => {
+test("hive foreground demand bypasses an active background lane", async () => {
   let firstStreamController;
   let firstStreamCancelled = false;
   const envelopes = [];
@@ -458,14 +499,18 @@ test("foreground demand uses the next released slot without requerying active wo
       packet: { rows: [item.operation_id] },
     }));
   });
-  const firstBackground = broker.requestSampledGrid(operation("2020-01-01"), {
+  const firstBackground = broker.requestSampledGrid(operation("2020-01-01", {
+    queryBackend: "hive",
+  }), {
     operationId: "background-frame-1",
     lane: "background",
   }).then((packet) => {
     completionOrder.push("background-1");
     return packet;
   });
-  const secondBackground = broker.requestSampledGrid(operation("2020-01-02"), {
+  const secondBackground = broker.requestSampledGrid(operation("2020-01-02", {
+    queryBackend: "hive",
+  }), {
     operationId: "background-frame-2",
     lane: "background",
   }).then((packet) => {
@@ -473,13 +518,20 @@ test("foreground demand uses the next released slot without requerying active wo
     return packet;
   });
   await flush();
-  const foreground = broker.requestSampledGrid(operation("2020-01-03"), {
+  const foreground = broker.requestSampledGrid(operation("2020-01-03", {
+    queryBackend: "hive",
+  }), {
     operationId: "foreground-frame",
     lane: "map-current",
   }).then((packet) => {
     completionOrder.push("foreground");
     return packet;
   });
+
+  assert.equal((await foreground).rows[0], "foreground-frame");
+  assert.equal(envelopes.length, 2);
+  assert.equal(envelopes[0].operations[0].lane, "background");
+  assert.equal(envelopes[1].operations[0].lane, "map-current");
 
   firstStreamController.enqueue(encoder.encode(`${JSON.stringify({
     type: "batch.result",
@@ -490,7 +542,6 @@ test("foreground demand uses the next released slot without requerying active wo
   })}\n`));
 
   assert.equal((await firstBackground).rows[0], "background-frame-1");
-  assert.equal((await foreground).rows[0], "foreground-frame");
   firstStreamController.enqueue(encoder.encode(`${JSON.stringify({
     type: "batch.result",
     batch_id: envelopes[0].batch_id,
@@ -504,7 +555,7 @@ test("foreground demand uses the next released slot without requerying active wo
   firstStreamController.close();
   assert.equal((await secondBackground).rows[0], "background-frame-2");
   assert.equal(firstStreamCancelled, false);
-  assert.deepEqual(completionOrder, ["background-1", "foreground", "background-2"]);
+  assert.deepEqual(completionOrder, ["foreground", "background-1", "background-2"]);
   assert.deepEqual(envelopes.map((envelope) => envelope.operations.map((item) => item.operation_id)), [
     ["background-frame-1", "background-frame-2"],
     ["foreground-frame"],

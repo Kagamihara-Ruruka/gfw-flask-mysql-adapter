@@ -15,6 +15,7 @@ from typing import Any
 from urllib.parse import urlencode, urlparse
 
 from common_adapter.spatial.dependency import DependencyCheckError, check_eez_postgis_dependency
+from common_adapter.spatial.land_mask import EezDomainMaskService
 from common_adapter.spatial.overlay import overlay_settings, validate_identifier
 from scripts.import_eez_to_postgis import import_eez
 
@@ -35,6 +36,13 @@ DEFAULT_MARINE_REGIONS_FORM = {
     "purpose_category": "Data exploration & testing",
     "agree": "1",
 }
+
+
+def _emit_progress(status: str, **details: Any) -> None:
+    print(
+        json.dumps({"status": status, **details}, ensure_ascii=False),
+        flush=True,
+    )
 
 
 class DownloadFormParser(HTMLParser):
@@ -366,8 +374,15 @@ def ensure_eez_source(config: dict[str, Any], *, reason: str = "manual") -> dict
 
     gpkg_path = _target_gpkg_path(eez)
     gpkg_table = str(eez.get("gpkg_table", "eez_v12"))
+    _emit_progress(
+        "eez_source_check",
+        target=str(gpkg_path),
+        reason=reason,
+    )
     if gpkg_path.exists():
-        return {"enabled": True, "downloaded": False, **_validate_gpkg(gpkg_path, gpkg_table)}
+        result = {"enabled": True, "downloaded": False, **_validate_gpkg(gpkg_path, gpkg_table)}
+        _emit_progress("eez_source_ready", **result)
+        return result
 
     auto_download = bool(eez.get("auto_download", True))
     if not auto_download:
@@ -379,17 +394,11 @@ def ensure_eez_source(config: dict[str, Any], *, reason: str = "manual") -> dict
     source_url = str(source.get("url") or DEFAULT_EEZ_SOURCE_URL)
     archive_path = _archive_path(eez)
     if not archive_path.exists():
-        print(
-            json.dumps(
-                {
-                    "status": "eez_download_start",
-                    "url": source_url,
-                    "target": str(archive_path),
-                    "reason": reason,
-                },
-                ensure_ascii=False,
-            ),
-            flush=True,
+        _emit_progress(
+            "eez_download_start",
+            url=source_url,
+            target=str(archive_path),
+            reason=reason,
         )
         _download_file(source_url, archive_path, source=source)
     elif not zipfile.is_zipfile(archive_path):
@@ -399,22 +408,18 @@ def ensure_eez_source(config: dict[str, Any], *, reason: str = "manual") -> dict
             f"with an automated form source or a direct zip URL: {archive_path}"
         )
 
-    print(
-        json.dumps(
-            {
-                "status": "eez_extract_start",
-                "archive": str(archive_path),
-                "target": str(gpkg_path),
-                "reason": reason,
-            },
-            ensure_ascii=False,
-        ),
-        flush=True,
+    _emit_progress(
+        "eez_extract_start",
+        archive=str(archive_path),
+        target=str(gpkg_path),
+        reason=reason,
     )
     _extract_gpkg(archive_path, gpkg_path)
     if bool(source.get("remove_archive", False)):
         archive_path.unlink(missing_ok=True)
-    return {"enabled": True, "downloaded": True, **_validate_gpkg(gpkg_path, gpkg_table)}
+    result = {"enabled": True, "downloaded": True, **_validate_gpkg(gpkg_path, gpkg_table)}
+    _emit_progress("eez_source_ready", **result)
+    return result
 
 
 def ensure_eez_postgis(config: dict[str, Any], *, config_path: str | None = None) -> dict[str, Any]:
@@ -429,23 +434,31 @@ def ensure_eez_postgis(config: dict[str, Any], *, config_path: str | None = None
 
     eez = _eez_config(config)
     auto_import = bool(eez.get("auto_import", True))
+    _emit_progress("eez_postgis_check")
     try:
         ready = check_eez_postgis_dependency(config)
-        return {**ready, "imported": False}
+        result = {**ready, "imported": False}
+        _emit_progress("eez_postgis_ready", **result)
+        return result
     except DependencyCheckError as dependency_error:
         try:
             from common_adapter.spatial.lod import ensure_eez_fill_table
 
             ensure_eez_fill_table(config)
             ready = check_eez_postgis_dependency(config)
-            return {**ready, "imported": False, "derived": True}
+            result = {**ready, "imported": False, "derived": True}
+            _emit_progress("eez_postgis_ready", **result)
+            return result
         except Exception:
             if not auto_import:
                 raise dependency_error
 
+    _emit_progress("eez_postgis_import_start")
     import_eez(config_path, replace=bool(eez.get("auto_replace", True)))
     ready = check_eez_postgis_dependency(config)
-    return {**ready, "imported": True}
+    result = {**ready, "imported": True}
+    _emit_progress("eez_postgis_ready", **result)
+    return result
 
 
 def ensure_eez_runtime_assets(
@@ -453,14 +466,25 @@ def ensure_eez_runtime_assets(
     *,
     config_path: str | None = None,
     reason: str = "manual",
+    prepare_domain_tiles: bool = False,
 ) -> dict[str, Any]:
     eez = _eez_config(config)
     source = _source_config(eez)
     source_status = ensure_eez_source(config, reason=reason)
     postgis_status = ensure_eez_postgis(config, config_path=config_path)
-    return {
+    domain_status: dict[str, Any] | None = None
+    if prepare_domain_tiles:
+        _emit_progress("eez_domain_topology_check")
+        domain_service = EezDomainMaskService(config)
+        domain_service.prepare()
+        domain_status = domain_service.prewarm_domain_tiles(progress=lambda event: _emit_progress(**event))
+    result = {
         "status": "eez_runtime_assets_ready",
         "source": source_status,
         "postgis": postgis_status,
         "source_page": source.get("source_page") or DEFAULT_EEZ_SOURCE_PAGE,
     }
+    if domain_status is not None:
+        result["domain_tiles"] = domain_status
+    _emit_progress("eez_runtime_assets_ready", **{key: value for key, value in result.items() if key != "status"})
+    return result

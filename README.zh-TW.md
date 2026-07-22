@@ -466,6 +466,55 @@ GFW ingestion 被視為 upstream collector job，不是前端功能：
 
 地圖 UI 不應知道原始 source path 或暫存 manifest。這些屬於 collector 設定；小可愛只消費 SQL/read model 或之後約定好的資料服務。
 
+## 發表用 Docker 路徑
+
+目前的發表候選路徑保留 RRK 0.10.0 的 Spark／Iceberg 成果，並以同一個 Docker image 提供整合後的小組官網、儀表板、API 與開發者控制面。
+
+```text
+Docker app
+  -> host.docker.internal:11000
+  -> Windows OpenSSH tunnel
+  -> bigred@192.168.32.201
+  -> dt namespace 內的 kubectl port-forward
+  -> deployment/dtadm:10000 的 Spark Thrift Server
+  -> Iceberg／HDFS 上的 lake.ocean.gold_map_metric
+```
+
+正式 Sea1 serving table 已實際查詢並驗證 `2022-01-01` 至 `2024-12-31`，資料位於 `lake.ocean.gold_map_metric`，warehouse 為 `hdfs:///dataset/ocean/warehouse`。上游工作採年月分區的 Parquet 與逐月 Gold batch，以限制 Join／Group By 的 Shuffle 與 Spill。目前沒有已驗證的 2020-2021 Gold，標準 Bronze／Silver 位置也尚未確立，因此 Runtime 與文件不得宣稱 serving 範圍為 2020-2024。
+
+| 目前線上契約 | 已驗證值 |
+|---|---|
+| AOI | `taiwan`、`northwest_pacific` |
+| 日期 | `2022-01-01` 至 `2024-12-31`（1,096 個不同日期） |
+| 解析度 | `4`、`16`、`32` km |
+| 指標 | 葉綠素、捕魚時數、海洋生產力、海表溫度、永續壓力 |
+| 叢集 | Sea1 `192.168.32.201`；HDFS 正常；YARN ResourceManager 與 3 個 NodeManager 正常；共用 Spark Thrift 監聽 `10000` |
+
+先備條件為 Docker Desktop、Windows OpenSSH、可用的 Tailscale 連線，以及可登入 `bigred@192.168.32.201` 的 SSH。跳板機必須能以 `kubectl` 存取 `dt` namespace。Tk 啟動器使用 Windows AskPass；只有使用者勾選「記憶密碼」時才會存入 Windows Credential Manager，否則一次性 credential 會在啟動後刪除。密碼不會進入 repo、命令列、JSON 事件或 runtime state。
+
+首次啟動 Docker 前，先將 `.env.example` 複製為 `.env`，並替換所有 `change-me` 值；`.env` 已被 git 忽略。目前 WIP 分支尚未自動產生此資料庫密碼。
+
+建議使用 Tk 啟動器；CLI wrappers 與 JSON Lines controller 會呼叫同一套實作：
+
+```powershell
+# 圖形化啟動器。
+.\scripts\presentation\presentation-launcher.cmd
+
+# CLI 啟動／狀態／停止。
+.\scripts\presentation\start-presentation.cmd
+.\.venv\Scripts\python.exe .\scripts\presentation\presentationctl.py --json status
+.\scripts\presentation\stop-presentation.cmd
+
+# 唯讀計畫，不變更服務。
+.\.venv\Scripts\python.exe .\scripts\presentation\presentationctl.py --json start --dry-run
+```
+
+Host 對外網址為 `http://127.0.0.1:5185/`、`http://127.0.0.1:5185/dashboard/` 與 `http://127.0.0.1:5186/`；Compose 會映射到 container 內的 `5085/5086`。EEZ 首次啟動可能需要數分鐘；GPKG 驗證／匯入、topology 產生與持久化 domain-tile 預熱 manifest 完成後，App 才會啟動。正常啟動不得執行 `restore-cluster-services.ps1`；該腳本只供 HDFS／YARN daemon 缺失時，在明確授權下修復共用叢集。
+
+發表用 Config Browser 只編輯 Desired State。儲存會建立已驗證的 `pending_restart` generation，不會重建執行中的 connection pool；`presentationctl start` 才是受控重啟的 Apply Owner。Query、Registry、Status、Health 與 Supervisor 都消費同一份 immutable runtime snapshot。Dashboard 與 Developer 的 identity endpoints 必須在 runtime instance、generation、config bundle hash、backend/source 與 fingerprint 上完全一致。Config bundle hash 只涵蓋 effective runtime config、Manifest、Mapping 與 active source documents；runtime fingerprint 再綁定 generation、公開 ports、image digest、Compose hash 與 bridge owner token，因此舊部署證據不能沿用。
+
+RRK 0.10.0 原有的 Kubernetes ConfigMap、Deployment、Service、registry 與 NodePort 內容仍保留在 repo，供之後進行叢集內部署。發表用 Compose 是新增部署面，不是取代隊友成果。
+
 ## 快速啟動
 
 ```powershell
@@ -509,7 +558,7 @@ http://127.0.0.1:5057
 
 ## 部署指南
 
-本專案由同一個消費端 listener 提供小組官網、消費端儀表板與消費端 API；同一個 `core.py` process 另以獨立 listener 啟動開發者控制面。具狀態依賴與上游 collector 仍分開治理。`docker-compose.yml` 只啟動本機 MySQL 與 PostGIS 支援服務，不會建置或部署 Flask 應用程式。
+本專案由同一個消費端 listener 提供小組官網、消費端儀表板與消費端 API；同一個 `core.py` process 另以獨立 listener 啟動開發者控制面。具狀態依賴與上游 collector 仍分開治理。`docker-compose.yml` 保留為一般本機依賴 profile；`compose.presentation.yaml` 會建置並啟動整合後的發表應用與 PostGIS。
 
 ### 人類操作流程
 
@@ -563,7 +612,7 @@ http://127.0.0.1:5057
 - 將 EEZ cache 路徑（預設 `data/eez/`）掛載為持久儲存；MySQL 與 PostGIS 應位於應用容器外，或由獨立服務管理。
 - `check-dependencies` 成功後，才可使用 `GET /api/health` 作為 liveness/readiness。開發者 port 必須保持私有或停用。
 - Image 必須綁定 Git commit，並保留上一版 image digest。回滾是重新部署上一個 digest，不是修改執行中的容器或清空資料快取。
-- Repo 目前沒有應用 Dockerfile、Helm chart、TLS termination 或公開網路驗證；這些屬於部署平台責任，不能把本機 Compose 說成已涵蓋正式部署。
+- Repo 已包含發表用 Dockerfile／Compose，以及保留的 Kubernetes manifests；但仍未提供 TLS termination 或公開網路驗證，這些屬於部署平台責任。
 
 ### Agent 操作流程
 
@@ -584,6 +633,8 @@ http://127.0.0.1:5057
 
 開發者頁面是 Config 控制面，不是第二個儀表板，也不是資料查詢 client。同一個 `core.py serve` 命令會啟動兩個 listener：官網、儀表板與 API 維持在 `server.port`，開發者控制面預設使用 `server.port + 1`。儀表板的「開發者」頁籤會嵌入這個獨立服務。若消費端是 `5057`，也可直接開啟 `http://127.0.0.1:5058`。
 
+頁面會明確區分 **saved**、**validated**、**pending restart**、**effective** 與 **failed**。Browser 編輯只進入 pending copy，不會替換執行中的 Runtime snapshot。部署 Owner 套用 pending generation 並通過 smoke 前，Query 與 Health 都必須持續回報 effective backend/source。信任狀態面板前，應先確認 Dashboard 與 Developer 顯示的 runtime identity 相同。
+
 操作時必須由上往下，因為每一區都消費上一區的持久化產物：
 
 ```text
@@ -597,14 +648,12 @@ Config 路由器
 ### 1. Config 路由器
 
 - **引導精靈**建立 DATABASE route fragment，並匯入受管 Config 清單；建立完成不會自動啟用。
-- **導入**會先把 JSON 放進 `config/staging/`。先檢視或編輯暫存 JSON、選擇 source group，再將它導入 `config/sources/<role>/`；不在這個目錄樹下的檔案不是 runtime source。
-- 選定的 source group 必須與 JSON `role` 相同。跨群組移動 Config 時，控制面會在同一操作中更新檔案位置、role 與已知的下游路徑引用。
-- **啟用**會把 route reference 寫入 `config/state/router_manifest.local.json.active_configs`；這份 manifest 是唯一的 source 啟用真相。
-- **鎖定**只表示禁止控制面修改，不代表連線成功，也不會啟用資料源。
-- 註記只是 operator metadata，不參與路由。
-- JSON 編輯器會直接寫入選取的 local source file。儲存前必須檢查差異，不可把可能被提交的 raw secret 寫入其中。
+- **導入**只把 JSON 放進 `config/staging/` 供檢視。Promotion、跨 source group 移動與刪除屬部署操作，Browser 會明確拒絕；必須在受審查的 checkout 完成後，再套用新 generation。
+- 選定的 source group 必須與 JSON `role` 相同。Browser 不會在執行中的部署裡改寫路徑或下游引用。
+- **啟用**、**鎖定**與註記都只更新 pending Manifest；受控重啟成功前，不會改變 effective routes。
+- JSON 編輯器會驗證並暫存 pending source document。儲存前必須檢查差異，不可把可能被提交的 raw secret 寫入其中。
 
-Config 已導入或 JSON 語法正確，不代表 route 可用。啟用後應立即往下檢查路由狀態機。
+Config 已導入或 JSON 語法正確，不代表 route 可用。啟動器完成套用後，必須以路由狀態機與 runtime identity 確認新的 effective generation。
 
 ### 2. 路由狀態機
 

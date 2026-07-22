@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Callable
 
+from common_adapter.config.atomic_json import atomic_write_json, read_json_object
 from common_adapter.config.paths import (
     SOURCE_CONFIG_DIR,
     SOURCE_GROUP_REGISTRY_REF,
@@ -36,13 +36,7 @@ class SourceDrawerRegistry:
 
     def read_registry(self) -> dict[str, Any]:
         path = self.registry_path()
-        if not path.exists():
-            return {"groups": []}
-        try:
-            data = json.loads(path.read_text(encoding="utf-8-sig"))
-        except Exception:
-            return {"groups": []}
-        return data if isinstance(data, dict) else {"groups": []}
+        return read_json_object(path, missing={"groups": []})
 
     def write_registry(self, drawers: list[dict[str, Any]]) -> None:
         path = self.registry_path()
@@ -63,7 +57,7 @@ class SourceDrawerRegistry:
                 }
             )
         payload = {"groups": sorted(persisted, key=lambda item: (int(item.get("id") or 0), str(item.get("name") or "")))}
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        atomic_write_json(path, payload)
 
     def config_count(self, group: str) -> int:
         directory = SOURCE_CONFIG_DIR / group

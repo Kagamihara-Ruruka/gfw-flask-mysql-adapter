@@ -29,7 +29,7 @@
     onSaved: async () => {
       schemaProfilesLoadedAt = 0;
       await Promise.all([loadDeveloperSchemaProfiles({ force: true }), loadDeveloperLayerImports()]);
-      window.parent?.postMessage({ type: "rrkal:source-registry-changed", reason: "mapping-saved" }, "*");
+      setDeveloperMessage("Mapping 已儲存為待套用版本；請由啟動器受控重啟。");
     },
   });
 
@@ -271,7 +271,7 @@
         input.disabled = true;
         await window.DeveloperConfigApi.setLayerImport(layerId, input.checked);
         await loadDeveloperLayerImports();
-        window.parent?.postMessage({ type: "rrkal:layer-imports-changed", layerId, imported: input.checked }, "*");
+        setDeveloperMessage("圖層匯入狀態已儲存，待啟動器重啟套用。");
       } catch (err) {
         input.checked = !input.checked;
         setDeveloperMessage(err.message, true);

@@ -148,7 +148,7 @@ class RuntimeLayerRegistryTests(unittest.TestCase):
             "common_adapter.layers.registry.imported_layer_ids",
             return_value={"pipeline.chlor_a"},
         ), patch(
-            "common_adapter.layers.registry.load_layer_mappings",
+            "common_adapter.layers.registry.layer_mappings_with_runtime",
             return_value={"mappings": [_catalog_mapping()]},
         ):
             snapshot = RuntimeLayerRegistry({}, refresh_ttl_seconds=0).snapshot(force=True)
@@ -261,8 +261,8 @@ class ManagedEndpointSupervisorTests(unittest.TestCase):
             self.assertEqual("failed", supervisor.ensure(spec)["state"])
             self.assertEqual("failed", supervisor.ensure(spec)["state"])
             reachable[0] = True
-            self.assertEqual("ready", supervisor.ensure(spec)["state"])
-            self.assertEqual("ready", supervisor.ensure(spec)["state"])
+            self.assertEqual("conflict", supervisor.ensure(spec)["state"])
+            self.assertEqual("conflict", supervisor.ensure(spec)["state"])
             unsubscribe()
             reachable[0] = False
             self.assertEqual("failed", supervisor.ensure(spec)["state"])
@@ -316,6 +316,85 @@ class ManagedEndpointSupervisorTests(unittest.TestCase):
         self.assertIn("provider.api:app", command)
         self.assertEqual(str(source.resolve()), launched[0][1]["env"]["PYTHONPATH"])
         self.assertEqual(str((root / "data").resolve()), launched[0][1]["env"]["DATA_ROOT"])
+
+    def test_open_port_without_owned_process_is_not_reported_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "provider"
+            (project / "src").mkdir(parents=True)
+            route = {
+                "name": "provider",
+                "endpoint": {"host": "127.0.0.1", "port": 8791},
+                "runtime": {
+                    "ownership": "managed_local",
+                    "launcher": {
+                        "kind": "python_flask",
+                        "app": "provider.api:app",
+                        "working_directory": "${APP_ROOT}/provider",
+                        "python_path": "${APP_ROOT}/provider/src",
+                    },
+                },
+            }
+            spec = managed_runtime_spec(PIPELINE_CONFIG, route, root=root)
+            launched: list[object] = []
+            supervisor = ManagedEndpointSupervisor(
+                {},
+                root=root,
+                popen_factory=lambda *_args, **_kwargs: launched.append(object()),
+                port_probe=lambda _host, _port: True,
+            )
+
+            status = supervisor.ensure(spec)
+            supervisor.stop()
+
+        self.assertEqual("conflict", status["state"])
+        self.assertFalse(status["ready"])
+        self.assertFalse(status["owned"])
+        self.assertEqual([], launched)
+
+    def test_changed_execution_spec_restarts_only_the_owned_process(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "provider"
+            (project / "src").mkdir(parents=True)
+            base_route = {
+                "name": "provider",
+                "endpoint": {"host": "127.0.0.1", "port": 8791},
+                "runtime": {
+                    "ownership": "managed_local",
+                    "launcher": {
+                        "kind": "python_flask",
+                        "app": "provider.api:app",
+                        "working_directory": "${APP_ROOT}/provider",
+                        "python_path": "${APP_ROOT}/provider/src",
+                        "environment": {"GENERATION": "1"},
+                    },
+                },
+            }
+            changed_route = deepcopy(base_route)
+            changed_route["runtime"]["launcher"]["environment"]["GENERATION"] = "2"
+            first_spec = managed_runtime_spec(PIPELINE_CONFIG, base_route, root=root)
+            second_spec = managed_runtime_spec(PIPELINE_CONFIG, changed_route, root=root)
+            probes = iter([False, True, False, True])
+            first_process = _FakeProcess()
+            second_process = _FakeProcess()
+            processes = iter([first_process, second_process])
+            supervisor = ManagedEndpointSupervisor(
+                {},
+                root=root,
+                popen_factory=lambda *_args, **_kwargs: next(processes),
+                port_probe=lambda _host, _port: next(probes),
+            )
+
+            first_status = supervisor.ensure(first_spec)
+            second_status = supervisor.ensure(second_spec)
+            supervisor.stop()
+
+        self.assertNotEqual(first_spec["spec_fingerprint"], second_spec["spec_fingerprint"])
+        self.assertEqual("ready", first_status["state"])
+        self.assertTrue(first_process.terminated)
+        self.assertEqual("ready", second_status["state"])
+        self.assertEqual(second_spec["spec_fingerprint"], second_status["spec_fingerprint"])
 
 
 if __name__ == "__main__":

@@ -1,0 +1,63 @@
+{
+  "schema": "rrkal.adapter.runtime_json.v1",
+  "role": "runtime_json",
+  "description": "Docker presentation runtime. Source routes are selected by the presentation router manifest.",
+  "runtime_profile": {
+    "name": "PRESENTATION",
+    "managed_by": "presentationctl",
+    "manifest_path": "config/presentation/router_manifest.presentation.json",
+    "mapping_path": "config/presentation/layer_mappings.presentation.json"
+  },
+  "query_policy": {
+    "default_limit": null,
+    "max_limit": null,
+    "table_preview_limit": 300,
+    "require_time_or_bbox_filter": true,
+    "network_concurrency": 6,
+    "background_network_concurrency": 3,
+    "batch_gzip_level": 3,
+    "snapshot_cache_max_rows": 800000
+  },
+  "playback": {
+    "buffer_unit": "calendar_month",
+    "low_watermark_months": 1,
+    "high_watermark_months": 2,
+    "rated_frame_bytes": 16777216,
+    "cache_headroom_frames": 8,
+    "cache_max_bytes": 1342177280
+  },
+  "server": {
+    "default_command": "serve",
+    "host": "0.0.0.0",
+    "port": 5085,
+    "debug": false,
+    "kill_port_if_busy": false
+  },
+  "rendering": {
+    "hardware_acceleration": "auto",
+    "allow_webgl": true,
+    "allow_webgpu": false,
+    "min_webgl_rows": 1,
+    "aerial_backdrop": {
+      "enabled": true,
+      "provider": "nasa_gibs_wms",
+      "endpoint": "https://gibs.earthdata.nasa.gov/wms/epsg4326/best/wms.cgi",
+      "layer": "VIIRS_SNPP_CorrectedReflectance_TrueColor",
+      "fallback_layer": "BlueMarble_ShadedRelief_Bathymetry",
+      "date_policy": "latest_available",
+      "lookback_days": 7,
+      "minimum_image_bytes": 20000,
+      "image_format": "image/jpeg",
+      "output_width": 1280,
+      "output_height": 720,
+      "context_scale": 80,
+      "timeout_seconds": 20,
+      "max_response_bytes": 8388608,
+      "cache_max_entries": 48,
+      "browser_cache_seconds": 86400,
+      "background_opacity": 0.82,
+      "scrim_opacity": 0.56,
+      "attribution": "NASA GIBS / EOSDIS"
+    }
+  }
+}

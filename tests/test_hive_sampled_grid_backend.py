@@ -4,6 +4,8 @@ import unittest
 from unittest.mock import patch
 
 from common_adapter.db.backends.hive import HiveReadBackend
+from common_adapter.query.immutable import freeze_json
+from common_adapter.query.sampled_grid import canonicalize_sampled_grid_range_packet
 from common_adapter.query.snapshot_cache import CANONICAL_SNAPSHOT_CACHE
 
 
@@ -156,17 +158,50 @@ class HiveSampledGridBackendTests(unittest.TestCase):
     def setUp(self) -> None:
         CANONICAL_SNAPSHOT_CACHE.clear()
 
-    @patch("common_adapter.db.backends.hive.availability_packet")
-    def test_schema_exposes_configured_three_year_availability(self, availability) -> None:
-        availability.return_value = {
-            "dates": ["2022-01-01", "2023-01-01", "2024-12-31"],
-            "timing": {"query_ms": 12.0},
-            "connection": {"reused": True, "reconnect_count": 0},
+    def test_range_transport_thaws_cached_canonical_snapshots(self) -> None:
+        packet = {
+            "row_contract_version": "rrkal.sampled_grid.v1",
+            "start": "2024-01-01",
+            "end": "2024-01-01",
+            "snapshots": {
+                "2024-01-01": freeze_json([
+                    {
+                        "cell_id": "r32km_206_909",
+                        "date": "2024-01-01",
+                        "lat": 21.25,
+                        "lon": 123.25,
+                        "value": 25.8,
+                        "resolution_km": 32,
+                        "coverage_ratio": 0.75,
+                        "data_status": "observed",
+                    }
+                ]),
+            },
+            "grid": {
+                "requested_resolution_km": 4,
+                "actual_resolution_km": 32,
+                "available_resolutions_km": [4, 16, 32],
+                "lod_degraded": True,
+                "degrade_reason": "viewport_row_budget",
+            },
         }
+
+        normalized = canonicalize_sampled_grid_range_packet(packet, _viewport_dataset())
+
+        normalized["transport_marker"] = True
+        normalized["snapshots"]["2024-01-01"].append({"cell_id": "transport-probe"})
+        self.assertTrue(normalized["transport_marker"])
+        self.assertEqual(32, normalized["grid"]["actual_resolution_km"])
+        self.assertEqual(2, len(normalized["snapshots"]["2024-01-01"]))
+
+    def test_schema_exposes_effective_mapping_date_range_without_source_query(self) -> None:
         packet = HiveReadBackend(_config(), _dataset()).schema_packet()
-        self.assertEqual(["2022-01-01", "2023-01-01", "2024-12-31"], packet["dates"])
+        self.assertEqual("2022-01-01", packet["dates"][0])
+        self.assertEqual("2024-12-31", packet["dates"][-1])
+        self.assertEqual(1096, len(packet["dates"]))
         self.assertEqual({"start": "2022-01-01", "end": "2024-12-31"}, packet["date_range"])
-        availability.assert_called_once()
+        self.assertEqual("effective_mapping_date_range", packet["timing"]["availability_source"])
+        self.assertEqual(0, packet["timing"]["source_request_count"])
 
     @patch("common_adapter.db.backends.hive.heatmap_packet")
     def test_records_convert_gold_row_and_reuse_snapshot_cache(self, heatmap) -> None:
@@ -209,6 +244,58 @@ class HiveSampledGridBackendTests(unittest.TestCase):
         self.assertFalse(first["timing"]["cache_hit"])
         self.assertTrue(second["timing"]["cache_hit"])
         heatmap.assert_called_once()
+
+    @patch("common_adapter.db.backends.hive.heatmap_range_packet")
+    def test_range_query_splits_one_source_job_into_daily_cache_entries(self, heatmap_range) -> None:
+        heatmap_range.return_value = {
+            "rows": [
+                {
+                    "event_date": "2024-01-01",
+                    "grid_id": "r04km_1650_7278",
+                    "grid_row": 1650,
+                    "grid_col": 7278,
+                    "resolution_km": 4,
+                    "metric_value": 25.8,
+                    "relative_score": 92.8,
+                    "display_level": "very_high",
+                    "data_coverage": 0.75,
+                },
+                {
+                    "event_date": "2024-01-02",
+                    "grid_id": "r04km_1650_7278",
+                    "grid_row": 1650,
+                    "grid_col": 7278,
+                    "resolution_km": 4,
+                    "metric_value": 26.1,
+                    "relative_score": 93.1,
+                    "display_level": "very_high",
+                    "data_coverage": 0.8,
+                },
+            ],
+            "timing": {"query_ms": 2500.0},
+            "connection": {"reused": True, "reconnect_count": 0},
+        }
+        backend = HiveReadBackend(_config(), _dataset())
+        request = {
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-03",
+            "bbox": (118.0, 20.0, 124.0, 27.0),
+            "limit": "max",
+            "query_context": {"requested_resolution_km": 4},
+        }
+
+        first = backend.records_range_packet(**request)
+        second = backend.records_range_packet(**request)
+
+        self.assertEqual(3, first["snapshot_count"])
+        self.assertEqual(1, len(first["snapshots"]["2024-01-01"]))
+        self.assertEqual(1, len(first["snapshots"]["2024-01-02"]))
+        self.assertEqual([], first["snapshots"]["2024-01-03"])
+        self.assertEqual("2024-01-02", first["snapshots"]["2024-01-02"][0]["date"])
+        self.assertFalse(first["timing"]["cache_hit"])
+        self.assertTrue(second["timing"]["cache_hit"])
+        self.assertEqual(3, second["timing"]["cache_hits"])
+        heatmap_range.assert_called_once()
 
     @patch("common_adapter.db.backends.hive.heatmap_packet")
     def test_viewport_queries_push_bbox_and_cache_each_view_separately(self, heatmap) -> None:

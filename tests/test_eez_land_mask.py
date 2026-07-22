@@ -129,7 +129,12 @@ class EezLandMaskTests(unittest.TestCase):
         self.assertIn("source.geometry_srid", source)
         self.assertIn("ST_ClipByBox2D", source)
         self.assertIn("ST_ReducePrecision", source)
-        self.assertIn("ST_ReducePrecision(\n                            ST_UnaryUnion", source)
+        self.assertIn("ST_SnapToGrid", source)
+        self.assertIn('"lwgeom_reduceprecision" not in str(error).casefold()', source)
+        self.assertIn(
+            "ST_MakeValid(ST_UnaryUnion(ST_Collect(geom)))",
+            source,
+        )
         self.assertNotIn("ST_Simplify(", source)
         self.assertIn("self._tile_query_slot(request_kind)", source)
 
@@ -219,6 +224,99 @@ class EezLandMaskTests(unittest.TestCase):
 
             self.assertIs(high_seas_result, land_result)
             self.assertEqual(1, loader_calls)
+
+    def test_domain_tile_cache_survives_service_restart_without_postgis(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cache_path = Path(directory)
+            config = service_config(cache_path)
+            probe = EezDomainMaskService(config, component_loader=lambda: ())
+            seeds = probe._seed_rows()
+            components = (
+                box(-10, -10, -5, -5),
+                *(box(lon - 0.1, lat - 0.1, lon + 0.1, lat + 0.1) for _, lon, lat in seeds),
+            )
+            loader_calls = 0
+
+            def load_lod(z: int, x: int, y: int) -> EezLodOceanTile:
+                nonlocal loader_calls
+                loader_calls += 1
+                return EezLodOceanTile(
+                    geometry=box(*xyz_geographic_bleed_bounds(z, x, y)),
+                    source_table="fixture",
+                    lod=f"fixture_z{z}",
+                    simplify_meters=0.0,
+                    query_ms=2.0,
+                )
+
+            first = EezDomainMaskService(
+                config,
+                component_loader=lambda: components,
+                lod_ocean_loader=load_lod,
+            )
+            generated = first._domain_tile(6, 53, 27, "land")
+            self.assertEqual("postgis", generated.cache_tier)
+            self.assertEqual(1, loader_calls)
+
+            second = EezDomainMaskService(
+                config,
+                component_loader=lambda: components,
+                lod_ocean_loader=lambda *_: self.fail("persistent cache missed"),
+            )
+            restored = second._domain_tile(6, 53, 27, "high_seas")
+
+            self.assertEqual("disk", restored.cache_tier)
+            self.assertEqual(generated.land, restored.land)
+            self.assertEqual(generated.high_seas, restored.high_seas)
+
+    def test_domain_tile_prewarm_reuses_persistent_cache_on_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cache_path = Path(directory)
+            config = service_config(cache_path)
+            domain = config["overlays"]["eez"]["domain_mask"]
+            domain["prewarm"] = {
+                "enabled": True,
+                "max_tiles": 8,
+                "views": [{"bbox": [120, 20, 121, 21], "zooms": [4]}],
+            }
+            probe = EezDomainMaskService(config, component_loader=lambda: ())
+            seeds = probe._seed_rows()
+            components = (
+                box(-10, -10, -5, -5),
+                *(box(lon - 0.1, lat - 0.1, lon + 0.1, lat + 0.1) for _, lon, lat in seeds),
+            )
+            loader_calls = 0
+
+            def load_lod(z: int, x: int, y: int) -> EezLodOceanTile:
+                nonlocal loader_calls
+                loader_calls += 1
+                return EezLodOceanTile(
+                    geometry=box(*xyz_geographic_bleed_bounds(z, x, y)),
+                    source_table="fixture",
+                    lod=f"fixture_z{z}",
+                    simplify_meters=0.0,
+                    query_ms=1.0,
+                )
+
+            cold = EezDomainMaskService(
+                config,
+                component_loader=lambda: components,
+                lod_ocean_loader=load_lod,
+            ).prewarm_domain_tiles()
+            cold_calls = loader_calls
+            warm = EezDomainMaskService(
+                config,
+                component_loader=lambda: components,
+                lod_ocean_loader=lambda *_: self.fail("restart should use disk tiles"),
+            ).prewarm_domain_tiles()
+
+            self.assertGreater(cold["tiles"], 0)
+            self.assertEqual(cold["tiles"], cold["generated"])
+            self.assertEqual(cold["tiles"], cold_calls)
+            self.assertEqual(warm["tiles"], warm["cached"])
+            self.assertEqual(0, warm["generated"])
+            self.assertTrue(
+                (cache_path / "domain-tiles" / "prewarm-manifest.json").is_file()
+            )
 
     def test_invalid_lod_ocean_geometry_is_repaired_before_complement_overlay(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

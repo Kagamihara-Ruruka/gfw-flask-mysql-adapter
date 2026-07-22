@@ -1,0 +1,92 @@
+name: bdde38-presentation
+
+services:
+  postgis:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: ocean_spatial
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "${PRESENTATION_POSTGRES_PASSWORD:?Set PRESENTATION_POSTGRES_PASSWORD in .env}"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ocean_spatial"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - presentation-postgis:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  eez-bootstrap:
+    image: ${PRESENTATION_IMAGE:-bdde38-presentation:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgis:
+        condition: service_healthy
+    volumes:
+      - ./data/eez:/app/data/eez
+      - ./config:/app/config:ro
+      - ./.runtime:/app/.runtime
+    environment:
+      EEZ_POSTGRES_PASSWORD: "${PRESENTATION_POSTGRES_PASSWORD:?Set PRESENTATION_POSTGRES_PASSWORD in .env}"
+      BDDE38_CONTROL_DIR: /app/.runtime/presentation
+      BDDE38_DEPLOYMENT_PROFILE: /app/config/presentation/deployment.profile.json
+      BDDE38_DEPLOYMENT_PROFILE_HASH: "${BDDE38_DEPLOYMENT_PROFILE_HASH:-unmanaged}"
+      BDDE38_DEPLOYMENT_ENVIRONMENT: "${BDDE38_DEPLOYMENT_ENVIRONMENT:-unmanaged}"
+      BDDE38_DEPLOYMENT_TARGET: "${BDDE38_DEPLOYMENT_TARGET:-unmanaged}"
+    command:
+      - python
+      - core.py
+      - --config
+      - /app/config/presentation/adapter.runtime.json
+      - bootstrap-eez
+    profiles:
+      - bootstrap
+    restart: "no"
+
+  app:
+    image: ${PRESENTATION_IMAGE:-bdde38-presentation:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgis:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${PRESENTATION_HTTP_PORT:-5185}:5085"
+      - "${PRESENTATION_DEVELOPER_PORT:-5186}:5086"
+    volumes:
+      - ./data/eez:/app/data/eez
+      - ./config:/app/config:ro
+      - ./.runtime:/app/.runtime
+    environment:
+      EEZ_POSTGRES_PASSWORD: "${PRESENTATION_POSTGRES_PASSWORD:?Set PRESENTATION_POSTGRES_PASSWORD in .env}"
+      BDDE38_CONTROL_DIR: /app/.runtime/presentation
+      BDDE38_RUNTIME_GENERATION: "${BDDE38_RUNTIME_GENERATION:-0}"
+      BDDE38_RUNTIME_INSTANCE_ID: "${BDDE38_RUNTIME_INSTANCE_ID:-unmanaged}"
+      BDDE38_PUBLIC_HTTP_PORT: "${PRESENTATION_HTTP_PORT:-5185}"
+      BDDE38_PUBLIC_DEVELOPER_PORT: "${PRESENTATION_DEVELOPER_PORT:-5186}"
+      BDDE38_IMAGE_DIGEST: "${BDDE38_IMAGE_DIGEST:-unmanaged}"
+      BDDE38_COMPOSE_HASH: "${BDDE38_COMPOSE_HASH:-unmanaged}"
+      BDDE38_BRIDGE_OWNER_TOKEN: "${BDDE38_BRIDGE_OWNER_TOKEN:-unmanaged}"
+      BDDE38_DEPLOYMENT_PROFILE: /app/config/presentation/deployment.profile.json
+      BDDE38_DEPLOYMENT_PROFILE_HASH: "${BDDE38_DEPLOYMENT_PROFILE_HASH:-unmanaged}"
+      BDDE38_DEPLOYMENT_ENVIRONMENT: "${BDDE38_DEPLOYMENT_ENVIRONMENT:-unmanaged}"
+      BDDE38_DEPLOYMENT_TARGET: "${BDDE38_DEPLOYMENT_TARGET:-unmanaged}"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5085/api/runtime/identity', timeout=5).read()"
+      interval: 10s
+      timeout: 8s
+      retries: 60
+      start_period: 10m
+    restart: unless-stopped
+
+volumes:
+  presentation-postgis:

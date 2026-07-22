@@ -1,0 +1,321 @@
+{
+  "mappings": [
+    {
+      "mapping_id": "database.spark_thrift__gold_map_metric__chlor_a",
+      "enabled": true,
+      "config_path": "config/sources/database/spark-thrift.presentation.json",
+      "connection_ref": "spark_thrift",
+      "backend": "hive",
+      "database": "ocean",
+      "table": "gold_map_metric",
+      "dataset_id": "pipeline_iceberg.chlor_a",
+      "layer_id": "pipeline_iceberg.chlor_a",
+      "label": "Chlorophyll",
+      "roles": {
+        "time": "event_date",
+        "id": "grid_id",
+        "lat": "grid_row",
+        "lon": "grid_col",
+        "row": "grid_row",
+        "column": "grid_col",
+        "value": "metric_value",
+        "resolution": "resolution_km",
+        "coverage": "data_coverage"
+      },
+      "selected_columns": [
+        "event_date",
+        "grid_id",
+        "grid_row",
+        "grid_col",
+        "resolution_km",
+        "metric_value",
+        "relative_score",
+        "display_level",
+        "data_coverage"
+      ],
+      "display_columns": [],
+      "metric_columns": ["metric_value"],
+      "category_columns": ["display_level"],
+      "target_contract": "rrkal.sampled_grid.v1",
+      "sampled_grid": {
+        "contract_version": "rrkal.sampled_grid.v1",
+        "mapping_version": "bdde.gold_map_metric.presentation.v1",
+        "query_scope": "viewport",
+        "available_resolutions_km": [4, 16, 32],
+        "default_resolution_km": 4,
+        "max_viewport_rows": 400000,
+        "source_parameters": {
+          "product": "CHL",
+          "metric": "chlor_a"
+        },
+        "default_aoi": "northwest_pacific",
+        "request_fields": {"time": "date"},
+        "date_range": {"start": "2022-01-01", "end": "2024-12-31"},
+        "coverage_areas": [
+          {"id": "taiwan", "label": "Taiwan", "bounds": {"west": 118, "south": 20, "east": 124, "north": 27}},
+          {"id": "northwest_pacific", "label": "Northwest Pacific", "bounds": {"west": 105, "south": 15, "east": 135, "north": 35}}
+        ],
+        "geometry": {
+          "encoding": "global_index",
+          "origin_lat": 90,
+          "origin_lon": -180,
+          "index_units_per_degree": 24,
+          "base_resolution_km": 4
+        },
+        "alignment": {
+          "id": "global_geographic_index",
+          "origin_lat": 90,
+          "origin_lon": -180,
+          "index_units_per_degree": 24
+        },
+        "value_semantics": {"kind": "continuous", "provenance": "gold_map_metric"},
+        "spatial_domain": {"kind": "marine", "provenance": "gold_map_metric"},
+        "snapshot_cache": {
+          "enabled": true,
+          "identity_roles": ["dataset_id", "date", "coverage_id", "resolution_km", "bbox"],
+          "max_entries": 96,
+          "ttl_seconds": 600
+        },
+        "visualization": {
+          "color_scale": {
+            "mode": "contract",
+            "zero_opacity": 1,
+            "stops": [
+              {"position": 0, "color": "#163b4a"},
+              {"position": 0.25, "color": "#2d8296"},
+              {"position": 0.5, "color": "#4dbb9b"},
+              {"position": 0.75, "color": "#e2bd52"},
+              {"position": 1, "color": "#d85a30"}
+            ]
+          },
+          "aggregation": {"reducer": "mean", "null_policy": "ignore", "min_cell_pixels": 1.5, "max_factor": 64, "zoom_hysteresis": 0.2}
+        },
+        "zero_is_data": true
+      }
+    },
+    {
+      "mapping_id": "database.spark_thrift__gold_map_metric__fishing_hours",
+      "enabled": true,
+      "config_path": "config/sources/database/spark-thrift.presentation.json",
+      "connection_ref": "spark_thrift",
+      "backend": "hive",
+      "database": "ocean",
+      "table": "gold_map_metric",
+      "dataset_id": "pipeline_iceberg.fishing_hours",
+      "layer_id": "pipeline_iceberg.fishing_hours",
+      "label": "Fishing Activity",
+      "roles": {
+        "time": "event_date",
+        "id": "grid_id",
+        "lat": "grid_row",
+        "lon": "grid_col",
+        "row": "grid_row",
+        "column": "grid_col",
+        "value": "metric_value",
+        "resolution": "resolution_km",
+        "coverage": "data_coverage"
+      },
+      "selected_columns": ["event_date", "grid_id", "grid_row", "grid_col", "resolution_km", "metric_value", "relative_score", "display_level", "data_coverage"],
+      "display_columns": [],
+      "metric_columns": ["metric_value"],
+      "category_columns": ["display_level"],
+      "target_contract": "rrkal.sampled_grid.v1",
+      "sampled_grid": {
+        "contract_version": "rrkal.sampled_grid.v1",
+        "mapping_version": "bdde.gold_map_metric.presentation.v1",
+        "query_scope": "viewport",
+        "available_resolutions_km": [4, 16, 32],
+        "default_resolution_km": 4,
+        "max_viewport_rows": 400000,
+        "source_parameters": {"product": "GFW", "metric": "fishing_hours"},
+        "default_aoi": "northwest_pacific",
+        "request_fields": {"time": "date"},
+        "date_range": {"start": "2022-01-01", "end": "2024-12-31"},
+        "coverage_areas": [
+          {"id": "taiwan", "label": "Taiwan", "bounds": {"west": 118, "south": 20, "east": 124, "north": 27}},
+          {"id": "northwest_pacific", "label": "Northwest Pacific", "bounds": {"west": 105, "south": 15, "east": 135, "north": 35}}
+        ],
+        "geometry": {"encoding": "global_index", "origin_lat": 90, "origin_lon": -180, "index_units_per_degree": 24, "base_resolution_km": 4},
+        "alignment": {"id": "global_geographic_index", "origin_lat": 90, "origin_lon": -180, "index_units_per_degree": 24},
+        "value_semantics": {"kind": "continuous", "provenance": "gold_map_metric"},
+        "spatial_domain": {"kind": "marine", "provenance": "gold_map_metric"},
+        "snapshot_cache": {"enabled": true, "identity_roles": ["dataset_id", "date", "coverage_id", "resolution_km", "bbox"], "max_entries": 96, "ttl_seconds": 600},
+        "visualization": {
+          "color_scale": {"mode": "contract", "zero_opacity": 1, "stops": [
+            {"position": 0, "color": "#163b4a"}, {"position": 0.25, "color": "#2d8296"}, {"position": 0.5, "color": "#4dbb9b"}, {"position": 0.75, "color": "#e2bd52"}, {"position": 1, "color": "#d85a30"}
+          ]},
+          "aggregation": {"reducer": "mean", "null_policy": "ignore", "min_cell_pixels": 1.5, "max_factor": 64, "zoom_hysteresis": 0.2}
+        },
+        "zero_is_data": true
+      }
+    },
+    {
+      "mapping_id": "database.spark_thrift__gold_map_metric__ocean_productivity_score",
+      "enabled": true,
+      "config_path": "config/sources/database/spark-thrift.presentation.json",
+      "connection_ref": "spark_thrift",
+      "backend": "hive",
+      "database": "ocean",
+      "table": "gold_map_metric",
+      "dataset_id": "pipeline_iceberg.ocean_productivity_score",
+      "layer_id": "pipeline_iceberg.ocean_productivity_score",
+      "label": "Ocean Productivity",
+      "roles": {
+        "time": "event_date",
+        "id": "grid_id",
+        "lat": "grid_row",
+        "lon": "grid_col",
+        "row": "grid_row",
+        "column": "grid_col",
+        "value": "metric_value",
+        "resolution": "resolution_km",
+        "coverage": "data_coverage"
+      },
+      "selected_columns": ["event_date", "grid_id", "grid_row", "grid_col", "resolution_km", "metric_value", "relative_score", "display_level", "data_coverage"],
+      "display_columns": [],
+      "metric_columns": ["metric_value"],
+      "category_columns": ["display_level"],
+      "target_contract": "rrkal.sampled_grid.v1",
+      "sampled_grid": {
+        "contract_version": "rrkal.sampled_grid.v1",
+        "mapping_version": "bdde.gold_map_metric.presentation.v1",
+        "query_scope": "viewport",
+        "available_resolutions_km": [4, 16, 32],
+        "default_resolution_km": 4,
+        "max_viewport_rows": 400000,
+        "source_parameters": {"product": "PRODUCTIVITY", "metric": "ocean_productivity_score"},
+        "default_aoi": "northwest_pacific",
+        "request_fields": {"time": "date"},
+        "date_range": {"start": "2022-01-01", "end": "2024-12-31"},
+        "coverage_areas": [
+          {"id": "taiwan", "label": "Taiwan", "bounds": {"west": 118, "south": 20, "east": 124, "north": 27}},
+          {"id": "northwest_pacific", "label": "Northwest Pacific", "bounds": {"west": 105, "south": 15, "east": 135, "north": 35}}
+        ],
+        "geometry": {"encoding": "global_index", "origin_lat": 90, "origin_lon": -180, "index_units_per_degree": 24, "base_resolution_km": 4},
+        "alignment": {"id": "global_geographic_index", "origin_lat": 90, "origin_lon": -180, "index_units_per_degree": 24},
+        "value_semantics": {"kind": "continuous", "provenance": "gold_map_metric"},
+        "spatial_domain": {"kind": "marine", "provenance": "gold_map_metric"},
+        "snapshot_cache": {"enabled": true, "identity_roles": ["dataset_id", "date", "coverage_id", "resolution_km", "bbox"], "max_entries": 96, "ttl_seconds": 600},
+        "visualization": {
+          "color_scale": {"mode": "contract", "zero_opacity": 1, "stops": [
+            {"position": 0, "color": "#163b4a"}, {"position": 0.25, "color": "#2d8296"}, {"position": 0.5, "color": "#4dbb9b"}, {"position": 0.75, "color": "#e2bd52"}, {"position": 1, "color": "#d85a30"}
+          ]},
+          "aggregation": {"reducer": "mean", "null_policy": "ignore", "min_cell_pixels": 1.5, "max_factor": 64, "zoom_hysteresis": 0.2}
+        },
+        "zero_is_data": true
+      }
+    },
+    {
+      "mapping_id": "database.spark_thrift__gold_map_metric__sea_temperature",
+      "enabled": true,
+      "config_path": "config/sources/database/spark-thrift.presentation.json",
+      "connection_ref": "spark_thrift",
+      "backend": "hive",
+      "database": "ocean",
+      "table": "gold_map_metric",
+      "dataset_id": "pipeline_iceberg.sea_temperature",
+      "layer_id": "pipeline_iceberg.sea_temperature",
+      "label": "Sea Temperature",
+      "roles": {
+        "time": "event_date",
+        "id": "grid_id",
+        "lat": "grid_row",
+        "lon": "grid_col",
+        "row": "grid_row",
+        "column": "grid_col",
+        "value": "metric_value",
+        "resolution": "resolution_km",
+        "coverage": "data_coverage"
+      },
+      "selected_columns": ["event_date", "grid_id", "grid_row", "grid_col", "resolution_km", "metric_value", "relative_score", "display_level", "data_coverage"],
+      "display_columns": [],
+      "metric_columns": ["metric_value"],
+      "category_columns": ["display_level"],
+      "target_contract": "rrkal.sampled_grid.v1",
+      "sampled_grid": {
+        "contract_version": "rrkal.sampled_grid.v1",
+        "mapping_version": "bdde.gold_map_metric.presentation.v1",
+        "query_scope": "viewport",
+        "available_resolutions_km": [4, 16, 32],
+        "default_resolution_km": 4,
+        "max_viewport_rows": 400000,
+        "source_parameters": {"product": "SST", "metric": "sea_temperature"},
+        "default_aoi": "northwest_pacific",
+        "request_fields": {"time": "date"},
+        "date_range": {"start": "2022-01-01", "end": "2024-12-31"},
+        "coverage_areas": [
+          {"id": "taiwan", "label": "Taiwan", "bounds": {"west": 118, "south": 20, "east": 124, "north": 27}},
+          {"id": "northwest_pacific", "label": "Northwest Pacific", "bounds": {"west": 105, "south": 15, "east": 135, "north": 35}}
+        ],
+        "geometry": {"encoding": "global_index", "origin_lat": 90, "origin_lon": -180, "index_units_per_degree": 24, "base_resolution_km": 4},
+        "alignment": {"id": "global_geographic_index", "origin_lat": 90, "origin_lon": -180, "index_units_per_degree": 24},
+        "value_semantics": {"kind": "continuous", "provenance": "gold_map_metric"},
+        "spatial_domain": {"kind": "marine", "provenance": "gold_map_metric"},
+        "snapshot_cache": {"enabled": true, "identity_roles": ["dataset_id", "date", "coverage_id", "resolution_km", "bbox"], "max_entries": 96, "ttl_seconds": 600},
+        "visualization": {
+          "color_scale": {"mode": "contract", "zero_opacity": 1, "stops": [
+            {"position": 0, "color": "#163b4a"}, {"position": 0.25, "color": "#2d8296"}, {"position": 0.5, "color": "#4dbb9b"}, {"position": 0.75, "color": "#e2bd52"}, {"position": 1, "color": "#d85a30"}
+          ]},
+          "aggregation": {"reducer": "mean", "null_policy": "ignore", "min_cell_pixels": 1.5, "max_factor": 64, "zoom_hysteresis": 0.2}
+        },
+        "zero_is_data": true
+      }
+    },
+    {
+      "mapping_id": "database.spark_thrift__gold_map_metric__sustainability_pressure",
+      "enabled": true,
+      "config_path": "config/sources/database/spark-thrift.presentation.json",
+      "connection_ref": "spark_thrift",
+      "backend": "hive",
+      "database": "ocean",
+      "table": "gold_map_metric",
+      "dataset_id": "pipeline_iceberg.sustainability_pressure",
+      "layer_id": "pipeline_iceberg.sustainability_pressure",
+      "label": "Sustainability Pressure",
+      "roles": {
+        "time": "event_date",
+        "id": "grid_id",
+        "lat": "grid_row",
+        "lon": "grid_col",
+        "row": "grid_row",
+        "column": "grid_col",
+        "value": "metric_value",
+        "resolution": "resolution_km",
+        "coverage": "data_coverage"
+      },
+      "selected_columns": ["event_date", "grid_id", "grid_row", "grid_col", "resolution_km", "metric_value", "relative_score", "display_level", "data_coverage"],
+      "display_columns": [],
+      "metric_columns": ["metric_value"],
+      "category_columns": ["display_level"],
+      "target_contract": "rrkal.sampled_grid.v1",
+      "sampled_grid": {
+        "contract_version": "rrkal.sampled_grid.v1",
+        "mapping_version": "bdde.gold_map_metric.presentation.v1",
+        "query_scope": "viewport",
+        "available_resolutions_km": [4, 16, 32],
+        "default_resolution_km": 4,
+        "max_viewport_rows": 400000,
+        "source_parameters": {"product": "SUSTAINABILITY", "metric": "sustainability_pressure"},
+        "default_aoi": "northwest_pacific",
+        "request_fields": {"time": "date"},
+        "date_range": {"start": "2022-01-01", "end": "2024-12-31"},
+        "coverage_areas": [
+          {"id": "taiwan", "label": "Taiwan", "bounds": {"west": 118, "south": 20, "east": 124, "north": 27}},
+          {"id": "northwest_pacific", "label": "Northwest Pacific", "bounds": {"west": 105, "south": 15, "east": 135, "north": 35}}
+        ],
+        "geometry": {"encoding": "global_index", "origin_lat": 90, "origin_lon": -180, "index_units_per_degree": 24, "base_resolution_km": 4},
+        "alignment": {"id": "global_geographic_index", "origin_lat": 90, "origin_lon": -180, "index_units_per_degree": 24},
+        "value_semantics": {"kind": "continuous", "provenance": "gold_map_metric"},
+        "spatial_domain": {"kind": "marine", "provenance": "gold_map_metric"},
+        "snapshot_cache": {"enabled": true, "identity_roles": ["dataset_id", "date", "coverage_id", "resolution_km", "bbox"], "max_entries": 96, "ttl_seconds": 600},
+        "visualization": {
+          "color_scale": {"mode": "contract", "zero_opacity": 1, "stops": [
+            {"position": 0, "color": "#163b4a"}, {"position": 0.25, "color": "#2d8296"}, {"position": 0.5, "color": "#4dbb9b"}, {"position": 0.75, "color": "#e2bd52"}, {"position": 1, "color": "#d85a30"}
+          ]},
+          "aggregation": {"reducer": "mean", "null_policy": "ignore", "min_cell_pixels": 1.5, "max_factor": 64, "zoom_hysteresis": 0.2}
+        },
+        "zero_is_data": true
+      }
+    }
+  ]
+}

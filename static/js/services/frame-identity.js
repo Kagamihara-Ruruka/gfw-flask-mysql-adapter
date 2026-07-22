@@ -163,9 +163,11 @@ function createFrameIdentity({ datasetResolver } = {}) {
     const box = normalizedBbox(request.bbox);
     const resolution = requestedResolution(request);
     const effectiveQueryResolution = queryResolution(request);
+    const datasetId = String(request.datasetId || request.dataset_id || "");
+    const dataset = datasetResolver(datasetId) || {};
     return Object.freeze({
       ...request,
-      datasetId: String(request.datasetId || request.dataset_id || ""),
+      datasetId,
       date: String(request.date || ""),
       bbox: box ? bboxSignature(box) : "",
       columns: String(request.columns || "render"),
@@ -176,6 +178,7 @@ function createFrameIdentity({ datasetResolver } = {}) {
       effectiveQueryResolutionKm: effectiveQueryResolution,
       cacheNamespace: datasetNamespace(request),
       transportKey: transportKey(request),
+      queryBackend: String(request.queryBackend || request.query_backend || dataset.backend || ""),
     });
   }
 

@@ -1013,13 +1013,25 @@ def canonicalize_sampled_grid_range_packet(
 ) -> dict[str, Any]:
     if sampled_grid_contract(dataset) is None:
         return packet
-    normalized = deepcopy(packet)
+    # Range packets may contain immutable daily snapshots owned by the
+    # canonical cache.  HTTP metadata belongs to a mutable transport envelope,
+    # so materialize that envelope instead of deep-copying FrozenList values.
+    normalized = thaw_json(packet)
     snapshots: dict[str, list[dict[str, Any]]] = {}
-    for date_value, rows in _mapping(packet.get("snapshots")).items():
+    packet_is_canonical = (
+        packet.get("row_contract_version") == SAMPLED_GRID_CONTRACT_VERSION
+    )
+    for date_value, rows in _mapping(normalized.get("snapshots")).items():
+        if packet_is_canonical:
+            snapshots[str(date_value)] = list(rows or [])
+            continue
         snapshot = canonicalize_sampled_grid_packet({"rows": rows}, dataset)
-        snapshots[str(date_value)] = snapshot["rows"]
+        snapshots[str(date_value)] = thaw_json(snapshot["rows"])
     normalized["snapshots"] = snapshots
-    normalized["grid"] = canonicalize_sampled_grid_packet({"rows": []}, dataset)["grid"]
+    normalized["grid"] = canonicalize_sampled_grid_packet(
+        {"rows": [], "grid": normalized.get("grid") or {}},
+        dataset,
+    )["grid"]
     normalized["columns"] = sampled_grid_canonical_columns(dataset)
     return normalized
 

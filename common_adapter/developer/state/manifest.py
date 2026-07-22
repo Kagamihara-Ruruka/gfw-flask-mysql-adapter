@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 from typing import Any, Callable
 
 from common_adapter.config.paths import router_manifest_path as canonical_router_manifest_path
+from common_adapter.config.atomic_json import atomic_write_json, read_json_object
 from common_adapter.developer.sources.ref_policy import manifest_group_for_ref, normalize_config_ref
 
 DATA_LAYER_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
@@ -30,10 +30,7 @@ class RouterManifestStore:
     def _existing_imported_layers(self, path: Path) -> list[str]:
         if not path.exists():
             return []
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return []
+        data = read_json_object(path)
         if "imported_layers" not in data:
             return []
         return self.normalize_imported_layers(data.get("imported_layers"))
@@ -48,10 +45,7 @@ class RouterManifestStore:
         }
         if not path.exists():
             return fallback
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return fallback
+        data = read_json_object(path, missing=fallback)
         active = data.get("active_configs")
         if not isinstance(active, list):
             active = []
@@ -84,19 +78,14 @@ class RouterManifestStore:
             imported_layers = self.normalize_imported_layers(manifest.get("imported_layers"))
         else:
             imported_layers = self._existing_imported_layers(path)
-        path.write_text(
-            json.dumps(
-                {
-                    "active_configs": active,
-                    "locked_configs": locked,
-                    "config_notes": notes,
-                    "imported_layers": imported_layers,
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
+        atomic_write_json(
+            path,
+            {
+                "active_configs": active,
+                "locked_configs": locked,
+                "config_notes": notes,
+                "imported_layers": imported_layers,
+            },
         )
 
     def set_layer_import(self, layer_id: str, imported: bool) -> dict[str, Any]:

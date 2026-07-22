@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 from typing import Any, Callable
+
+from common_adapter.config.atomic_json import atomic_write_json
 
 
 class SourceConfigStore:
@@ -69,7 +70,7 @@ class SourceConfigStore:
             raise ValueError(f"config cannot be moved until its JSON is valid: {error}")
         data["role"] = source_group
         if current_group == source_group:
-            path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            atomic_write_json(path, data)
             return {
                 "status": "ok",
                 "moved": old_ref,
@@ -84,10 +85,8 @@ class SourceConfigStore:
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination_existed = destination.exists()
         target_ref = self.normalize_config_ref(destination)
-        if destination_existed:
-            destination.unlink()
-        shutil.move(str(path), str(destination))
-        destination.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        atomic_write_json(destination, data)
+        path.unlink()
         new_ref = self.normalize_config_ref(destination)
         manifest = self.load_manifest()
         active_before = set(manifest["active_configs"])
@@ -297,7 +296,7 @@ class SourceConfigStore:
                 f'config role "{declared_role or "<missing>"}" must match source folder "{source_group}"; '
                 "use the source-group selector to move this config"
             )
-        path.write_text(json.dumps(parsed, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        atomic_write_json(path, parsed)
         active_refs = set(self.load_manifest()["active_configs"])
         locked_refs = set(self.load_manifest()["locked_configs"])
         return {"status": "ok", "config": self.summarize(path, active_refs, locked_refs)}

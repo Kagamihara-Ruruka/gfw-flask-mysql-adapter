@@ -450,6 +450,7 @@ test("mask tile loading is single-flight across viewport epochs", async () => {
 test("a current mask image timeout becomes a terminal failed snapshot", async () => {
   const SpatialLandMaskServiceCore = loadService();
   const timers = new Map();
+  const timerDelays = [];
   let nextTimer = 0;
   const service = new SpatialLandMaskServiceCore({
     targetMap: {
@@ -462,14 +463,25 @@ test("a current mask image timeout becomes a terminal failed snapshot", async ()
         return { status: "supported", provider_layer_id: "eez", provider_capability: "land_mask_provider" };
       }
       if (name === "land_mask_provider") {
-        return { status: "supported", source_version: "v12", capability_version: "v2", tile_template: "/{z}/{x}/{y}" };
+        return {
+          status: "supported",
+          source_version: "v12",
+          capability_version: "v2",
+          tile_template: "/{z}/{x}/{y}",
+          tile_timeout_ms: 45000,
+        };
       }
       return null;
     },
     eventTarget: { addEventListener() {}, removeEventListener() {}, dispatchEvent() {} },
     renderClock: { request: () => 1, cancel() {} },
     timeoutClock: {
-      schedule(callback) { const id = ++nextTimer; timers.set(id, callback); return id; },
+      schedule(callback, delay) {
+        const id = ++nextTimer;
+        timerDelays.push(delay);
+        timers.set(id, callback);
+        return id;
+      },
       cancel(id) { timers.delete(id); },
     },
     imageTimeoutMs: 250,
@@ -479,6 +491,7 @@ test("a current mask image timeout becomes a terminal failed snapshot", async ()
 
   const refresh = service.refresh("timeout");
   await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(timerDelays, [45000]);
   for (const callback of [...timers.values()]) callback();
   await assert.rejects(refresh, { name: "TimeoutError" });
   assert.equal(service.snapshot().status, "FAILED");

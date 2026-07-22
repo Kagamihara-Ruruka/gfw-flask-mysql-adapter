@@ -7,6 +7,7 @@ import os
 import time
 import uuid
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
@@ -29,14 +30,18 @@ from common_adapter.spatial.overlay import postgis_dsn, validate_identifier
 
 ROOT = Path(__file__).resolve().parents[2]
 EEZ_DOMAIN_ARTIFACT_VERSION = "rrkal.eez_domain.v1"
+EEZ_DOMAIN_TILE_ARTIFACT_VERSION = "rrkal.eez_domain_tile.v1"
 DEFAULT_TILE_SIZE = 256
 DEFAULT_TILE_BLEED_PIXELS = 2
 DEFAULT_DOMAIN_TILE_QUERY_CONCURRENCY = 2
+DEFAULT_DOMAIN_TILE_DISK_CACHE_MAX_ENTRIES = 4096
+DEFAULT_DOMAIN_TILE_PREWARM_MAX_TILES = 512
 DEFAULT_TOPOLOGY_PRECISION_DEGREES = 0.025
 DEFAULT_TOPOLOGY_PARTITION_DEGREES = 30.0
 DEFAULT_ARTIFACT_LOCK_TIMEOUT_SECONDS = 600.0
 DEFAULT_ARTIFACT_LOCK_STALE_SECONDS = 1800.0
 LOD_GEOMETRY_MODE = "eez_lod"
+WEB_MERCATOR_MAX_LATITUDE = 85.05112878
 
 # Marine Regions High Seas v2 is paired with Maritime Boundaries v12. These
 # point-on-surface labels identify complement components; they are not stored
@@ -176,6 +181,51 @@ def xyz_geographic_bounds(z: int, x: int, y: int) -> tuple[float, float, float, 
     return west, south, east, north
 
 
+def xyz_tiles_for_bbox(
+    bbox: Sequence[float],
+    zoom: int,
+) -> tuple[tuple[int, int, int], ...]:
+    """Return every XYZ tile intersecting a geographic bbox without edge overfetch."""
+    if len(bbox) != 4:
+        raise ValueError("prewarm bbox must contain west, south, east and north")
+    west, south, east, north = (float(value) for value in bbox)
+    if not all(math.isfinite(value) for value in (west, south, east, north)):
+        raise ValueError("prewarm bbox coordinates must be finite")
+    if south >= north:
+        raise ValueError("prewarm bbox south must be less than north")
+    if west == east:
+        raise ValueError("prewarm bbox must have a positive longitude span")
+
+    z = max(0, min(18, int(zoom)))
+    scale = 2 ** z
+
+    def tile_x(longitude: float) -> int:
+        clamped = max(-180.0, min(180.0, longitude))
+        return max(0, min(scale - 1, int(math.floor(((clamped + 180.0) / 360.0) * scale))))
+
+    def tile_y(latitude: float) -> int:
+        clamped = max(-WEB_MERCATOR_MAX_LATITUDE, min(WEB_MERCATOR_MAX_LATITUDE, latitude))
+        radians = math.radians(clamped)
+        normalized = (1.0 - (math.asinh(math.tan(radians)) / math.pi)) / 2.0
+        return max(0, min(scale - 1, int(math.floor(normalized * scale))))
+
+    longitude_ranges = (
+        ((west, east),)
+        if west < east
+        else ((west, 180.0), (-180.0, east))
+    )
+    north_y = tile_y(north)
+    south_y = tile_y(math.nextafter(south, north))
+    tiles: set[tuple[int, int, int]] = set()
+    for range_west, range_east in longitude_ranges:
+        first_x = tile_x(range_west)
+        last_x = tile_x(math.nextafter(range_east, range_west))
+        for x in range(first_x, last_x + 1):
+            for y in range(north_y, south_y + 1):
+                tiles.add((z, x, y))
+    return tuple(sorted(tiles))
+
+
 def xyz_geographic_bleed_bounds(
     z: int,
     x: int,
@@ -246,6 +296,8 @@ class EezDomainTile:
     lod: str
     simplify_meters: float
     query_ms: float
+    cache: str = "miss"
+    cache_tier: str = "none"
 
 
 class EezDomainMaskService:
@@ -279,6 +331,15 @@ class EezDomainMaskService:
             ),
         )
         self.cache_path = self._cache_path(self.settings.get("cache_path"))
+        self.domain_tile_cache_path = self.cache_path / "domain-tiles"
+        try:
+            disk_cache_max_entries = int(
+                self.settings.get("tile_disk_cache_max_entries")
+                or DEFAULT_DOMAIN_TILE_DISK_CACHE_MAX_ENTRIES
+            )
+        except (TypeError, ValueError):
+            disk_cache_max_entries = DEFAULT_DOMAIN_TILE_DISK_CACHE_MAX_ENTRIES
+        self.domain_tile_disk_cache_max_entries = max(0, disk_cache_max_entries)
         try:
             tile_query_concurrency = int(
                 self.settings.get("tile_query_concurrency")
@@ -328,6 +389,11 @@ class EezDomainMaskService:
                 "tile_query_concurrency",
                 DEFAULT_DOMAIN_TILE_QUERY_CONCURRENCY,
             ),
+            "tile_disk_cache_max_entries": domain.get(
+                "tile_disk_cache_max_entries",
+                DEFAULT_DOMAIN_TILE_DISK_CACHE_MAX_ENTRIES,
+            ),
+            "prewarm": domain.get("prewarm") or {},
             "artifact_lock_timeout_seconds": domain.get(
                 "artifact_lock_timeout_seconds",
                 DEFAULT_ARTIFACT_LOCK_TIMEOUT_SECONDS,
@@ -377,6 +443,228 @@ class EezDomainMaskService:
             sort_keys=True,
         ).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
+
+    def _domain_tile_cache_identity(self) -> str:
+        pg = self.settings.get("postgis") or {}
+        payload = json.dumps(
+            {
+                "artifact_version": EEZ_DOMAIN_TILE_ARTIFACT_VERSION,
+                "topology_digest": self.artifact().provenance_digest,
+                "source_version": self.source_version,
+                "source_table": pg.get("table", "eez_v12"),
+                "tile_table": pg.get("tile_table", f"{pg.get('table', 'eez_v12')}_tile"),
+                "geometry_column": pg.get("geometry_column", "geom"),
+                "tile_size": DEFAULT_TILE_SIZE,
+                "tile_bleed_pixels": DEFAULT_TILE_BLEED_PIXELS,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    def _domain_tile_artifact_paths(
+        self,
+        key: tuple[int, int, int],
+    ) -> tuple[Path, Path, Path]:
+        z, x, y = key
+        directory = self.domain_tile_cache_path / self._domain_tile_cache_identity() / str(z) / str(x)
+        return (
+            directory / f"{y}.json",
+            directory / f"{y}.land.wkb",
+            directory / f"{y}.high-seas.wkb",
+        )
+
+    @property
+    def domain_tile_prewarm_manifest_path(self) -> Path:
+        return self.domain_tile_cache_path / "prewarm-manifest.json"
+
+    def _load_cached_domain_tile(
+        self,
+        key: tuple[int, int, int],
+    ) -> EezDomainTile | None:
+        if self.domain_tile_disk_cache_max_entries <= 0:
+            return None
+        metadata_path, land_path, high_seas_path = self._domain_tile_artifact_paths(key)
+        if not all(path.exists() for path in (metadata_path, land_path, high_seas_path)):
+            return None
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if metadata.get("artifact_version") != EEZ_DOMAIN_TILE_ARTIFACT_VERSION:
+                return None
+            if metadata.get("cache_identity") != self._domain_tile_cache_identity():
+                return None
+            if tuple(int(value) for value in metadata.get("tile", ())) != key:
+                return None
+            land = tuple(_polygon_parts(from_wkb(land_path.read_bytes())))
+            high_seas = tuple(_polygon_parts(from_wkb(high_seas_path.read_bytes())))
+            os.utime(metadata_path, None)
+            return EezDomainTile(
+                land=land,
+                high_seas=high_seas,
+                source_table=str(metadata.get("source_table") or "unknown"),
+                lod=str(metadata.get("lod") or f"z{key[0]}"),
+                simplify_meters=float(metadata.get("simplify_meters") or 0.0),
+                query_ms=0.0,
+                cache="hit",
+                cache_tier="disk",
+            )
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None
+
+    def _persist_domain_tile(
+        self,
+        key: tuple[int, int, int],
+        tile: EezDomainTile,
+    ) -> None:
+        if self.domain_tile_disk_cache_max_entries <= 0:
+            return
+        metadata_path, land_path, high_seas_path = self._domain_tile_artifact_paths(key)
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        self._atomic_write(land_path, bytes(to_wkb(_multi_polygon(tile.land))))
+        self._atomic_write(high_seas_path, bytes(to_wkb(_multi_polygon(tile.high_seas))))
+        metadata = {
+            "artifact_version": EEZ_DOMAIN_TILE_ARTIFACT_VERSION,
+            "cache_identity": self._domain_tile_cache_identity(),
+            "source_version": self.source_version,
+            "tile": list(key),
+            "source_table": tile.source_table,
+            "lod": tile.lod,
+            "simplify_meters": tile.simplify_meters,
+            "land_components": len(tile.land),
+            "high_seas_components": len(tile.high_seas),
+        }
+        self._atomic_write(
+            metadata_path,
+            json.dumps(metadata, ensure_ascii=False, indent=2).encode("utf-8"),
+        )
+
+    def _prune_domain_tile_disk_cache(self) -> int:
+        maximum = self.domain_tile_disk_cache_max_entries
+        if maximum <= 0 or not self.domain_tile_cache_path.exists():
+            return 0
+        manifests = sorted(
+            (
+                path
+                for path in self.domain_tile_cache_path.glob("*/*/*/*.json")
+                if path.name != self.domain_tile_prewarm_manifest_path.name
+            ),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        removed = 0
+        for metadata_path in manifests[maximum:]:
+            stem = metadata_path.stem
+            for path in (
+                metadata_path,
+                metadata_path.with_name(f"{stem}.land.wkb"),
+                metadata_path.with_name(f"{stem}.high-seas.wkb"),
+            ):
+                path.unlink(missing_ok=True)
+            removed += 1
+        return removed
+
+    def _prewarm_tiles(self) -> tuple[tuple[int, int, int], ...]:
+        settings = self.settings.get("prewarm") or {}
+        if not isinstance(settings, dict) or not bool(settings.get("enabled", False)):
+            return ()
+        views = settings.get("views") or ()
+        if not isinstance(views, Sequence) or isinstance(views, (str, bytes)):
+            raise ValueError("EEZ domain prewarm views must be a list")
+        padding = max(0, min(4, int(settings.get("tile_padding", 0))))
+        tiles: set[tuple[int, int, int]] = set()
+        for view in views:
+            if not isinstance(view, dict):
+                raise ValueError("each EEZ domain prewarm view must be an object")
+            bbox = view.get("bbox")
+            zooms = view.get("zooms")
+            if zooms is None:
+                minimum = int(view.get("zoom_min", view.get("zoom", 0)))
+                maximum = int(view.get("zoom_max", view.get("zoom", minimum)))
+                zooms = range(minimum, maximum + 1)
+            if not isinstance(zooms, Iterable) or isinstance(zooms, (str, bytes)):
+                raise ValueError("EEZ domain prewarm zooms must be a list or range")
+            for zoom in zooms:
+                for z, x, y in xyz_tiles_for_bbox(bbox, int(zoom)):
+                    scale = 2 ** z
+                    for offset_x in range(-padding, padding + 1):
+                        for offset_y in range(-padding, padding + 1):
+                            candidate_y = y + offset_y
+                            if 0 <= candidate_y < scale:
+                                tiles.add((z, (x + offset_x) % scale, candidate_y))
+        maximum_tiles = max(
+            1,
+            int(settings.get("max_tiles") or DEFAULT_DOMAIN_TILE_PREWARM_MAX_TILES),
+        )
+        if len(tiles) > maximum_tiles:
+            raise ValueError(
+                f"EEZ domain prewarm selected {len(tiles)} tiles; configured maximum is {maximum_tiles}"
+            )
+        return tuple(sorted(tiles))
+
+    def prewarm_domain_tiles(
+        self,
+        *,
+        progress: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        if not self.enabled:
+            return {"enabled": False, "complete": True, "tiles": 0}
+        tiles = self._prewarm_tiles()
+        if not tiles:
+            return {"enabled": False, "complete": True, "tiles": 0}
+        self.artifact()
+        started = time.perf_counter()
+        completed = 0
+        generated = 0
+        cached = 0
+        counts_lock = RLock()
+
+        def emit(status: str, **details: Any) -> None:
+            if progress is not None:
+                progress({"status": status, **details})
+
+        emit("eez_domain_prewarm_start", tiles=len(tiles))
+
+        def load(key: tuple[int, int, int]) -> None:
+            nonlocal completed, generated, cached
+            tile = self._domain_tile(*key, "land")
+            with counts_lock:
+                completed += 1
+                if tile.cache_tier == "disk":
+                    cached += 1
+                else:
+                    generated += 1
+                current = completed
+            emit(
+                "eez_domain_prewarm_progress",
+                completed=current,
+                tiles=len(tiles),
+                tile=list(key),
+                cache_tier=tile.cache_tier,
+            )
+
+        workers = max(1, min(self.domain_tile_query_concurrency, len(tiles)))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            tuple(executor.map(load, tiles))
+        removed = self._prune_domain_tile_disk_cache()
+        manifest = {
+            "schema": "rrkal.eez_domain_prewarm.v1",
+            "complete": True,
+            "artifact_version": EEZ_DOMAIN_TILE_ARTIFACT_VERSION,
+            "cache_identity": self._domain_tile_cache_identity(),
+            "source_version": self.source_version,
+            "tiles": len(tiles),
+            "generated": generated,
+            "cached": cached,
+            "pruned": removed,
+            "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 3),
+        }
+        self.domain_tile_cache_path.mkdir(parents=True, exist_ok=True)
+        self._atomic_write(
+            self.domain_tile_prewarm_manifest_path,
+            json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
+        )
+        emit("eez_domain_prewarm_ready", **manifest)
+        return manifest
 
     def _load_cached_artifact(self) -> EezDomainTopologyArtifact | None:
         metadata_path, high_seas_path = self._artifact_paths()
@@ -624,51 +912,53 @@ class EezDomainMaskService:
             source_bounds_select = "ST_Transform(geom, 4326) AS source_geom"
             source_filter = f"source.{geom_col} && bounds.source_geom"
             source_geom_select = f"ST_Transform(source.{geom_col}, 3857) AS geom"
-        sql = f"""
-            WITH tile_bounds AS (
-                SELECT ST_TileEnvelope(%s, %s, %s) AS geom
-            ),
-            bounds AS (
-                SELECT ST_Expand(
-                    geom,
-                    (ST_XMax(geom) - ST_XMin(geom)) * %s / %s
-                ) AS geom,
-                {source_bounds_select}
-                FROM tile_bounds
-            ),
-            source_geom AS MATERIALIZED (
-                SELECT {source_geom_select}
-                FROM {source_table} AS source, bounds
-                WHERE {source_filter}
-            ),
-            clipped AS MATERIALIZED (
-                SELECT ST_CollectionExtract(
-                    ST_MakeValid(ST_ClipByBox2D(source.geom, bounds.geom)),
-                    3
-                ) AS geom
-                FROM source_geom AS source, bounds
-            ),
-            dissolved AS MATERIALIZED (
-                SELECT ST_CollectionExtract(
-                    ST_MakeValid(
-                        ST_ReducePrecision(
-                            ST_UnaryUnion(ST_Collect(geom)),
-                            %s
-                        )
-                    ),
-                    3
-                ) AS geom
-                FROM clipped
+        def query(precision_function: str) -> tuple[Any, ...] | None:
+            sql = f"""
+                WITH tile_bounds AS (
+                    SELECT ST_TileEnvelope(%s, %s, %s) AS geom
+                ),
+                bounds AS (
+                    SELECT ST_Expand(
+                        geom,
+                        (ST_XMax(geom) - ST_XMin(geom)) * %s / %s
+                    ) AS geom,
+                    {source_bounds_select}
+                    FROM tile_bounds
+                ),
+                source_geom AS MATERIALIZED (
+                    SELECT {source_geom_select}
+                    FROM {source_table} AS source, bounds
+                    WHERE {source_filter}
+                ),
+                clipped AS MATERIALIZED (
+                    SELECT ST_CollectionExtract(
+                        ST_MakeValid(ST_ClipByBox2D(source.geom, bounds.geom)),
+                        3
+                    ) AS geom
+                    FROM source_geom AS source, bounds
+                ),
+                dissolved AS MATERIALIZED (
+                    SELECT ST_CollectionExtract(
+                        ST_MakeValid(
+                            {precision_function}(
+                                ST_CollectionExtract(
+                                    ST_MakeValid(ST_UnaryUnion(ST_Collect(geom))),
+                                    3
+                                ),
+                                %s
+                            )
+                        ),
+                        3
+                    ) AS geom
+                    FROM clipped
+                    WHERE NOT ST_IsEmpty(geom)
+                )
+                SELECT ST_AsBinary(
+                    ST_Transform(geom, 4326)
+                )
+                FROM dissolved
                 WHERE NOT ST_IsEmpty(geom)
-            )
-            SELECT ST_AsBinary(
-                ST_Transform(geom, 4326)
-            )
-            FROM dissolved
-            WHERE NOT ST_IsEmpty(geom)
-        """
-        started = time.perf_counter()
-        with self._tile_query_slot(request_kind):
+            """
             with psycopg.connect(postgis_dsn(pg)) as connection:
                 with connection.cursor() as cursor:
                     cursor.execute(sql, (
@@ -679,7 +969,16 @@ class EezDomainMaskService:
                         DEFAULT_TILE_SIZE,
                         source.simplify_meters,
                     ))
-                    row = cursor.fetchone()
+                    return cursor.fetchone()
+
+        started = time.perf_counter()
+        with self._tile_query_slot(request_kind):
+            try:
+                row = query("ST_ReducePrecision")
+            except psycopg.Error as error:
+                if "lwgeom_reduceprecision" not in str(error).casefold():
+                    raise
+                row = query("ST_SnapToGrid")
         geometry = GeometryCollection()
         if row is not None and row[0] is not None:
             geometry = _valid_polygonal(from_wkb(bytes(row[0])))
@@ -724,6 +1023,8 @@ class EezDomainMaskService:
             lod=ocean.lod,
             simplify_meters=ocean.simplify_meters,
             query_ms=ocean.query_ms,
+            cache="miss",
+            cache_tier="postgis",
         )
 
     def _domain_tile(self, z: int, x: int, y: int, request_kind: str) -> EezDomainTile:
@@ -746,7 +1047,10 @@ class EezDomainMaskService:
             return flight["result"]
 
         try:
-            result = self._compute_domain_tile(z, x, y, request_kind)
+            result = self._load_cached_domain_tile(key)
+            if result is None:
+                result = self._compute_domain_tile(z, x, y, request_kind)
+                self._persist_domain_tile(key, result)
             with self._domain_tile_lock:
                 self._domain_tile_cache[key] = result
                 while len(self._domain_tile_cache) > self._domain_tile_cache_max_entries:
@@ -851,6 +1155,8 @@ class EezDomainMaskService:
             "lod": domain_tile.lod,
             "simplify_meters": domain_tile.simplify_meters,
             "source_query_ms": domain_tile.query_ms,
+            "cache": domain_tile.cache,
+            "cache_tier": domain_tile.cache_tier,
             "z": z,
             "x": x,
             "y": y,

@@ -9,6 +9,7 @@ from common_adapter.config.paths import runtime_config_path as resolve_runtime_c
 from common_adapter.db.connect import import_duckdb_to_mysql, load_config, server_settings
 from common_adapter.endpoint.supervisor import ManagedEndpointSupervisor
 from common_adapter.http.server import run_server, run_server_pair
+from common_adapter.runtime.identity import capture_runtime_config_snapshot
 from common_adapter.spatial.dependency import check_runtime_dependencies
 from common_adapter.spatial.eez_bootstrap import ensure_eez_runtime_assets
 
@@ -37,14 +38,29 @@ def command_serve(args: argparse.Namespace) -> int:
     config = load_config(selected_config_path)
     config_path = str(selected_config_path.resolve()) if selected_config_path else str(Path(config["__config_path"]).resolve())
     config["__config_path"] = config_path
-    eez_status = ensure_eez_runtime_assets(config, config_path=config_path, reason="serve")
-    print(json.dumps(eez_status, ensure_ascii=False))
-    dependency_status = check_runtime_dependencies(config)
-    print(json.dumps({"status": "dependencies_ready", **dependency_status}, ensure_ascii=False))
     server = server_settings(config)
     host = args.host or server["host"]
     port = args.port if args.port is not None else server["port"]
     debug = args.debug if args.debug is not None else server["debug"]
+    developer_port = None if args.no_developer_server else (
+        args.developer_port if args.developer_port is not None else port + 1
+    )
+    runtime_snapshot = capture_runtime_config_snapshot(
+        config,
+        http_port=port,
+        developer_port=developer_port,
+    )
+    config = runtime_snapshot.config
+    print(json.dumps({"status": "runtime_identity_ready", **runtime_snapshot.public_identity()}, ensure_ascii=False))
+    eez_status = ensure_eez_runtime_assets(
+        config,
+        config_path=config_path,
+        reason="serve",
+        prepare_domain_tiles=False,
+    )
+    print(json.dumps(eez_status, ensure_ascii=False))
+    dependency_status = check_runtime_dependencies(config)
+    print(json.dumps({"status": "dependencies_ready", **dependency_status}, ensure_ascii=False))
     endpoint_supervisor = ManagedEndpointSupervisor(config)
     endpoint_statuses = endpoint_supervisor.start()
     print(json.dumps({"status": "managed_endpoints_checked", "endpoints": endpoint_statuses}, ensure_ascii=False))
@@ -59,12 +75,11 @@ def command_serve(args: argparse.Namespace) -> int:
                 endpoint_supervisor=endpoint_supervisor,
             )
         else:
-            developer_port = args.developer_port if args.developer_port is not None else port + 1
             run_server_pair(
                 config,
                 host=host,
                 port=port,
-                developer_port=developer_port,
+                developer_port=int(developer_port),
                 debug=debug,
                 kill_port_if_busy=server["kill_port_if_busy"],
                 endpoint_supervisor=endpoint_supervisor,
@@ -79,7 +94,12 @@ def command_bootstrap_eez(args: argparse.Namespace) -> int:
     config = load_config(selected_config_path)
     config_path = str(selected_config_path.resolve()) if selected_config_path else str(Path(config["__config_path"]).resolve())
     config["__config_path"] = config_path
-    status = ensure_eez_runtime_assets(config, config_path=config_path, reason="manual")
+    status = ensure_eez_runtime_assets(
+        config,
+        config_path=config_path,
+        reason="manual",
+        prepare_domain_tiles=not args.skip_domain_prewarm,
+    )
     print(json.dumps(status, ensure_ascii=False, indent=2))
     return 0
 
@@ -125,7 +145,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     eez_bootstrap_parser = subparsers.add_parser(
         "bootstrap-eez",
-        help="Download/cache EEZ source data and import it into PostGIS when configured.",
+        help=(
+            "Download/cache EEZ source data, import it into PostGIS, and prepare "
+            "persistent domain-mask tiles when configured."
+        ),
+    )
+    eez_bootstrap_parser.add_argument(
+        "--skip-domain-prewarm",
+        action="store_true",
+        help="Skip the configured persistent EEZ domain-tile prewarm.",
     )
     eez_bootstrap_parser.set_defaults(func=command_bootstrap_eez)
 

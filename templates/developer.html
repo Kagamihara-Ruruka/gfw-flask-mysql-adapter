@@ -33,7 +33,19 @@
       <h1>開發者路由器控制面</h1>
       <p>管理資料後端路由器 config file、啟用狀態與連線檢查。</p>
     </div>
-    <div class="status" id="status">開發者服務</div>
+    <div class="app-header-runtime">
+      <div
+        id="runtime-identity-badge"
+        class="runtime-identity-badge"
+        data-runtime-identity-endpoint="/api/developer/runtime/identity"
+        aria-label="Runtime 身分與配對狀態"
+      >
+        <strong>{{ runtime_identity.profile }}</strong>
+        <span>{{ runtime_identity.query_backend }}</span>
+        <small>{{ runtime_identity.source_config_path or 'no source' }}</small>
+      </div>
+      <div class="status" id="status">開發者服務</div>
+    </div>
   </header>
   {% endif %}
 
@@ -360,6 +372,7 @@
     </section>
   </main>
 
+  <script src="/static/js/runtime/runtime-identity-badge.js?v=runtime-identity-v2"></script>
   <script src="/static/js/ui/developer/developer-utils.js?v=display-number-v2"></script>
   <script src="/static/js/ui/developer/developer-api.js?v=route-registry-v1"></script>
   <script src="/static/js/ui/developer/developer-config-list.js?v=route-registry-v1"></script>

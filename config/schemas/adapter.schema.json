@@ -15,6 +15,16 @@
     "description": {
       "type": "string"
     },
+    "runtime_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "managed_by": { "type": "string", "minLength": 1 },
+        "manifest_path": { "type": "string", "minLength": 1 },
+        "mapping_path": { "type": "string", "minLength": 1 }
+      }
+    },
     "query_policy": {
       "type": "object",
       "required": [
@@ -87,6 +97,40 @@
         "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
         "debug": { "type": "boolean" },
         "kill_port_if_busy": { "type": "boolean" }
+      }
+    },
+    "playback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["buffer_unit", "low_watermark_months", "high_watermark_months"],
+      "properties": {
+        "buffer_unit": {
+          "type": "string",
+          "enum": ["frame", "calendar_month"]
+        },
+        "low_watermark_months": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 12
+        },
+        "high_watermark_months": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 12
+        },
+        "rated_frame_bytes": {
+          "type": "integer",
+          "minimum": 1048576
+        },
+        "cache_headroom_frames": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 62
+        },
+        "cache_max_bytes": {
+          "type": "integer",
+          "minimum": 67108864
+        }
       }
     },
     "rendering": {

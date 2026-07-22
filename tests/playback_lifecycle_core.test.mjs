@@ -37,6 +37,45 @@ function internalPacket(packet = {}) {
   return normalized;
 }
 
+function inclusiveDates(start, end) {
+  const dates = [];
+  const cursor = new Date(`${start}T00:00:00Z`);
+  const last = new Date(`${end}T00:00:00Z`);
+  while (Number.isFinite(cursor.getTime()) && cursor <= last) {
+    dates.push(cursor.toISOString().slice(0, 10));
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return dates;
+}
+
+function internalRangePacket(operation, packet = {}) {
+  if (String(packet.snapshot_profile || "") === "canonical_frame" && packet.snapshots) {
+    return {
+      ...packet,
+      snapshots: Object.fromEntries(Object.entries(packet.snapshots).map(([date, snapshot]) => (
+        [date, internalPacket(snapshot)]
+      ))),
+    };
+  }
+  const dates = inclusiveDates(operation.params?.start, operation.params?.end);
+  const rows = Array.isArray(packet.rows) ? packet.rows : [];
+  const snapshots = Object.fromEntries(dates.map((date) => {
+    const dailyRows = rows.map((row, index) => ({
+      ...row,
+      cell_id: `${row?.cell_id || index}:${date}`,
+      date,
+    }));
+    return [date, internalPacket({ ...packet, rows: dailyRows })];
+  }));
+  return {
+    snapshot_profile: "canonical_frame",
+    start: operation.params?.start,
+    end: operation.params?.end,
+    snapshots,
+    row_count: dates.length * rows.length,
+  };
+}
+
 function framePacket(context, rows = [], patch = {}) {
   return {
     ...patch,
@@ -53,6 +92,35 @@ function deferred() {
     reject = rejectPromise;
   });
   return { promise, reject, resolve };
+}
+
+function batchDemandService(service) {
+  return {
+    ...service,
+    async demandMany(requests, options = {}) {
+      const progress = {
+        total: requests.length,
+        completed: 0,
+        cacheHits: 0,
+        fetched: 0,
+        failed: 0,
+      };
+      const demandOptions = { ...options };
+      delete demandOptions.onProgress;
+      await Promise.all(requests.map(async (request) => {
+        try {
+          const result = await service.demand(request, demandOptions);
+          progress.completed += 1;
+          progress.fetched += 1;
+          options.onProgress?.({ ok: true, request, result });
+        } catch (error) {
+          progress.failed += 1;
+          options.onProgress?.({ ok: false, request, error });
+        }
+      }));
+      return progress;
+    },
+  };
 }
 
 function batchFetch(sourceFetchJson) {
@@ -82,8 +150,10 @@ function batchFetch(sourceFetchJson) {
                 if (value != null) params.set(key, String(value));
               }
               try {
+                const isRange = operation.kind === "sampled_grid.records_range";
+                if (isRange && !params.has("date")) params.set("date", params.get("start"));
                 const packet = await sourceFetchJson(
-                  `/api/datasets/${operation.dataset_id}/records?${params}`,
+                  `/api/datasets/${operation.dataset_id}/${isRange ? "records/range" : "records"}?${params}`,
                   { signal: requestController.signal },
                 );
                 enqueue({
@@ -91,7 +161,7 @@ function batchFetch(sourceFetchJson) {
                   batch_id: envelope.batch_id,
                   operation_id: operation.operation_id,
                   status: "ok",
-                  packet: internalPacket(packet),
+                  packet: isRange ? internalRangePacket(operation, packet) : internalPacket(packet),
                 });
               } catch (error) {
                 if (error?.name === "AbortError") break;
@@ -226,12 +296,153 @@ async function waitFor(predicate, timeoutMs = 1000) {
   }
 }
 
+test("calendar-month windows follow real month boundaries in a leap year", () => {
+  const context = contextFor(async () => ({ rows: [], row_count: 0 }));
+  const monthWindow = api(context, "playbackCalendarMonthWindow");
+  const allDates = inclusiveDates("2024-01-01", "2024-03-31");
+
+  const january = monthWindow(allDates, 14, 2);
+  assert.equal(january.startIndex, 0);
+  assert.equal(january.endIndex, 60);
+  assert.deepEqual([...january.monthKeys], ["2024-01", "2024-02"]);
+
+  const february = monthWindow(allDates, 31, 2);
+  assert.equal(february.startIndex, 31);
+  assert.equal(february.endIndex, 91);
+  assert.deepEqual([...february.monthKeys], ["2024-02", "2024-03"]);
+});
+
+test("calendar-month cache capacity follows the two-month retention contract", () => {
+  const context = contextFor(async () => ({ rows: [], row_count: 0 }));
+  const normalize = api(context, "normalizedPlaybackCacheCapacityPolicy");
+  const policy = normalize({
+    buffer_unit: "calendar_month",
+    low_watermark_months: 1,
+    high_watermark_months: 2,
+    rated_frame_bytes: 16 * 1024 * 1024,
+    cache_headroom_frames: 8,
+    cache_max_bytes: 1280 * 1024 * 1024,
+  });
+
+  assert.equal(policy.retainedFrameCapacity, 62);
+  assert.equal(policy.requiredFrameCapacity, 70);
+  assert.equal(policy.requiredCacheBytes, 70 * 16 * 1024 * 1024);
+  assert.equal(policy.cacheMaxBytes, 1280 * 1024 * 1024);
+});
+
+test("calendar-month preheater retains two months and releases the previous month on crossing", () => {
+  const context = contextFor(async () => ({ rows: [], row_count: 0 }));
+  const Preheater = api(context, "PlaybackPreheaterController");
+  const identity = api(context, "FrameIdentity");
+  const activePins = new Set();
+  const released = [];
+  const store = {
+    subscribe: () => () => {},
+    inspect(request) {
+      return { status: "ready", frameKey: `frame:${request.date}` };
+    },
+    pin(frameKey) {
+      activePins.add(frameKey);
+      return true;
+    },
+    release(frameKey) {
+      activePins.delete(frameKey);
+      released.push(frameKey);
+      return true;
+    },
+  };
+  const preheater = new Preheater({
+    fixedPolicyNormalizer: api(context, "normalizedFixedWatermarkPolicy"),
+    store,
+    demandService: {
+      cancelScope() { return 0; },
+      demandMany() { throw new Error("ready month window must not refetch"); },
+    },
+    eventLog: api(context, "LifecycleEventLog"),
+    frameIdentity: identity,
+    clock: api(context, "ClockDomain").monotonic,
+    optionsProvider: () => ({
+      bufferUnit: "calendar_month",
+      lowWatermarkMonths: 1,
+      highWatermarkMonths: 2,
+      lowWatermark: 10,
+      highWatermark: 15,
+      windowBehind: 1,
+    }),
+  });
+  const allDates = inclusiveDates("2024-01-01", "2024-03-31");
+  preheater.setScope({ dates: allDates, requestContext: requestContext(), anchorDate: allDates[0] });
+
+  let snapshot = preheater.snapshot();
+  assert.deepEqual([...snapshot.retainedMonthKeys], ["2024-01", "2024-02"]);
+  assert.equal(snapshot.retainedFrameCount, 60);
+  assert.equal(snapshot.pinnedFrameCount, 60);
+  assert.equal(snapshot.lowWatermark, 30);
+  assert.equal(snapshot.targetWatermark, 59);
+
+  preheater.setPlayhead({ date: "2024-02-01", index: 31 });
+  snapshot = preheater.snapshot();
+  assert.deepEqual([...snapshot.retainedMonthKeys], ["2024-02", "2024-03"]);
+  assert.equal(snapshot.retainedFrameCount, 60);
+  assert.equal(snapshot.pinnedFrameCount, 60);
+  assert.equal(activePins.size, 60);
+  assert.equal([...activePins].some((key) => key.startsWith("frame:2024-01")), false);
+  assert.equal(released.filter((key) => key.startsWith("frame:2024-01")).length, 31);
+
+  preheater.stop("test_complete");
+  assert.equal(activePins.size, 0);
+});
+
+test("calendar-month preheater delegates one month to the range-query owner", () => {
+  const context = contextFor(async () => ({ rows: [], row_count: 0 }));
+  const Preheater = api(context, "PlaybackPreheaterController");
+  const calls = [];
+  const range = deferred();
+  const preheater = new Preheater({
+    fixedPolicyNormalizer: api(context, "normalizedFixedWatermarkPolicy"),
+    store: {
+      subscribe: () => () => {},
+      inspect: () => ({ status: "missing" }),
+    },
+    demandService: {
+      cancelScope() { return 0; },
+      demandMany(requests, options) {
+        calls.push({ requests, options });
+        return range.promise;
+      },
+    },
+    eventLog: api(context, "LifecycleEventLog"),
+    frameIdentity: api(context, "FrameIdentity"),
+    clock: api(context, "ClockDomain").monotonic,
+    optionsProvider: () => ({
+      bufferUnit: "calendar_month",
+      lowWatermarkMonths: 1,
+      highWatermarkMonths: 1,
+      maxPendingFrames: 32,
+    }),
+  });
+  const january = inclusiveDates("2024-01-01", "2024-01-31");
+
+  preheater.setScope({ dates: january, requestContext: requestContext(), anchorDate: january[0] });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].requests.length, 31);
+  assert.equal(calls[0].options.lane, "playback-window");
+  assert.equal(calls[0].options.rangeMode, "calendar_month");
+  preheater.stop("test_complete");
+  range.resolve({ total: 31, completed: 0, cacheHits: 0, fetched: 0, failed: 0 });
+});
+
 test("preheater refills from low 10 to high 15 without becoming a playback gate", async () => {
   let requestCount = 0;
   const context = contextFor(async (url) => {
     requestCount += 1;
     const date = new URL(`http://local${url}`).searchParams.get("date");
-    return { rows: [{ cell_id: date, value: 1 }], row_count: 1, grid: { actual_resolution_km: 4 } };
+    return {
+      rows: [{ cell_id: date, date, lat: 15, lon: 125, value: 1 }],
+      row_count: 1,
+      grid: { actual_resolution_km: 4 },
+    };
   });
   const store = api(context, "DataFrameStore");
   const preheater = api(context, "PlaybackPreheater");
@@ -241,6 +452,7 @@ test("preheater refills from low 10 to high 15 without becoming a playback gate"
 
   await waitFor(() => preheater.snapshot().readyAhead >= 15);
   assert.equal(preheater.snapshot().readyAhead, 15);
+  assert.equal(preheater.readinessRequirement(1), 1);
   assert.equal(requestCount, 15);
   assert.equal(api(context, "LayerQueryCoordinator").snapshot().queued.length, 0);
 
@@ -249,6 +461,7 @@ test("preheater refills from low 10 to high 15 without becoming a playback gate"
   assert.equal(preheater.snapshot().readyAhead, 15);
   assert.equal(requestCount, 21);
   assert.equal(preheater.snapshot().status, "READY");
+  preheater.stop("test_complete");
 });
 
 test("preheater caps outstanding playback-window work while filling a large watermark", async () => {
@@ -263,7 +476,7 @@ test("preheater caps outstanding playback-window work while filling a large wate
       subscribe: () => () => {},
       inspect: () => ({ status: "missing" }),
     },
-    demandService: {
+    demandService: batchDemandService({
       cancelScope() {},
       demand() {
         demands += 1;
@@ -271,7 +484,7 @@ test("preheater caps outstanding playback-window work while filling a large wate
         pending.push(task);
         return task.promise;
       },
-    },
+    }),
     eventLog: api(context, "LifecycleEventLog"),
     frameIdentity: identity,
     clock: api(context, "ClockDomain").monotonic,
@@ -303,7 +516,7 @@ test("preheater derives its pending window from source capacity", () => {
       subscribe: () => () => {},
       inspect: () => ({ status: "missing" }),
     },
-    demandService: {
+    demandService: batchDemandService({
       cancelScope() {},
       demand() {
         demands += 1;
@@ -311,7 +524,7 @@ test("preheater derives its pending window from source capacity", () => {
         pending.push(task);
         return task.promise;
       },
-    },
+    }),
     eventLog: api(context, "LifecycleEventLog"),
     frameIdentity: api(context, "FrameIdentity"),
     clock: api(context, "ClockDomain").monotonic,
@@ -348,10 +561,10 @@ test("preheater coalesces cache commit and completion reconcile triggers", async
       },
       inspect: () => ({ status: "missing" }),
     },
-    demandService: {
+    demandService: batchDemandService({
       cancelScope() {},
       demand: () => new Promise(() => {}),
-    },
+    }),
     eventLog: api(context, "LifecycleEventLog"),
     frameIdentity: api(context, "FrameIdentity"),
     clock: api(context, "ClockDomain").monotonic,
@@ -384,13 +597,13 @@ test("preheater prunes queued window consumers without aborting active work on r
       subscribe: () => () => {},
       inspect: () => ({ status: "missing" }),
     },
-    demandService: {
+    demandService: batchDemandService({
       cancelScope(scopeId, options) {
         cancellations.push({ scopeId, options });
         return options.includeActive ? 0 : 7;
       },
       demand: () => new Promise(() => {}),
-    },
+    }),
     eventLog: api(context, "LifecycleEventLog"),
     frameIdentity: api(context, "FrameIdentity"),
     clock: api(context, "ClockDomain").monotonic,
@@ -427,10 +640,10 @@ test("preheater watermarks govern replenishment and never expose playback readin
       subscribe: () => () => {},
       inspect: () => ({ status: "missing" }),
     },
-    demandService: {
+    demandService: batchDemandService({
       cancelScope() {},
       demand: () => new Promise(() => {}),
-    },
+    }),
     eventLog: api(context, "LifecycleEventLog"),
     frameIdentity: api(context, "FrameIdentity"),
     clock: api(context, "ClockDomain").monotonic,
@@ -469,7 +682,7 @@ test("preheater migrates physical scope when the resolved query route changes", 
       subscribe: () => () => {},
       inspect: () => ({ status: "missing" }),
     },
-    demandService: {
+    demandService: batchDemandService({
       cancelScope(scopeId) { cancelledScopes.push(scopeId); },
       demand(request, { scopeId }) {
         requests.push(request);
@@ -478,7 +691,7 @@ test("preheater migrates physical scope when the resolved query route changes", 
         pending.push(task);
         return task.promise;
       },
-    },
+    }),
     eventLog: api(context, "LifecycleEventLog"),
     frameIdentity: api(context, "FrameIdentity"),
     clock: api(context, "ClockDomain").monotonic,
@@ -532,7 +745,7 @@ test("rapid scope changes settle into one playback-window scope", async () => {
       subscribe: () => () => {},
       inspect: () => ({ status: "missing" }),
     },
-    demandService: {
+    demandService: batchDemandService({
       cancelScope() {},
       demand(request) {
         requestedBboxes.push(request.bbox);
@@ -540,7 +753,7 @@ test("rapid scope changes settle into one playback-window scope", async () => {
         pending.push(task);
         return task.promise;
       },
-    },
+    }),
     eventLog: api(context, "LifecycleEventLog"),
     frameIdentity: api(context, "FrameIdentity"),
     clock: api(context, "ClockDomain").monotonic,
@@ -588,13 +801,13 @@ test("playback activation bypasses scope settling without reviving stale scopes"
       subscribe: () => () => {},
       inspect: () => ({ status: "missing" }),
     },
-    demandService: {
+    demandService: batchDemandService({
       cancelScope() {},
       demand(request) {
         requestedBboxes.push(request.bbox);
         return new Promise(() => {});
       },
-    },
+    }),
     eventLog: api(context, "LifecycleEventLog"),
     frameIdentity: api(context, "FrameIdentity"),
     clock: api(context, "ClockDomain").monotonic,
@@ -648,7 +861,7 @@ test("watermark policy status cannot overwrite the preheater lifecycle status", 
   const preheater = new Preheater({
     fixedPolicyNormalizer: api(context, "normalizedFixedWatermarkPolicy"),
     store: { subscribe: () => () => {}, inspect: () => ({ status: "missing" }) },
-    demandService: { demand: () => new Promise(() => {}), cancelScope() {} },
+    demandService: batchDemandService({ demand: () => new Promise(() => {}), cancelScope() {} }),
     eventLog: api(context, "LifecycleEventLog"),
     frameIdentity: api(context, "FrameIdentity"),
     clock: api(context, "ClockDomain").monotonic,
@@ -720,6 +933,65 @@ test("cold playback waits for only the next frame and does not record a stall", 
   assert.equal(engine.snapshot().status, "PLAYING");
   assert.equal(log.query({ type: "PREPARE_READY" }).length, 1);
   assert.equal(log.summary(engine.snapshot().runId).stallCount, 0);
+  engine.stop("test_complete");
+});
+
+test("calendar-month watermarks do not expand the one-frame playback gate", async () => {
+  const context = contextFor(async () => ({ rows: [], row_count: 0 }));
+  const Engine = api(context, "PlaybackEngineCore");
+  const identity = api(context, "FrameIdentity");
+  const log = api(context, "LifecycleEventLog");
+  const nextFrame = deferred();
+  const allDates = inclusiveDates("2024-01-01", "2024-03-31");
+  const requestedWindows = [];
+  const requestedLanes = [];
+  let ready = 0;
+  const engine = new Engine({
+    store: {
+      inspect(request) { return { status: "missing", request }; },
+      pin() { return true; },
+      release() { return true; },
+    },
+    demandService: { cancelScope() {}, demand: async () => ({ frameKey: "unused" }) },
+    preheater: {
+      setScope() {},
+      setPlayhead() {},
+      activate() {},
+      readyAhead() { return ready; },
+      readinessRequirement() { return 1; },
+      waitForDates: async (requestedDates, options) => {
+        requestedWindows.push([...requestedDates]);
+        requestedLanes.push(options.lane);
+        await nextFrame.promise;
+        return { failed: 0 };
+      },
+      snapshot() {
+        return {
+          status: "FETCHING",
+          bufferUnit: "calendar_month",
+          lowWatermarkMonths: 1,
+          highWatermarkMonths: 2,
+          degradationReason: "",
+        };
+      },
+    },
+    eventLog: log,
+    frameIdentity: identity,
+    clock: api(context, "ClockDomain").playback,
+  });
+  engine.configure({ dates: allDates, requestContext: requestContext(), currentDate: allDates[0] });
+  const pending = engine.start({ consumption_rate: 1 });
+
+  assert.equal(engine.snapshot().status, "PREPARING");
+  assert.equal(engine.snapshot().preparationRequired, 1);
+  assert.deepEqual(requestedWindows, [["2024-01-02"]]);
+  assert.deepEqual(requestedLanes, ["playback-target"]);
+  assert.equal(log.query({ type: "PREPARE_STARTED" }).at(-1).policy_reason, "next_frame_ready");
+
+  ready = 1;
+  nextFrame.resolve();
+  assert.equal(await pending, true);
+  assert.equal(engine.snapshot().status, "PLAYING");
   engine.stop("test_complete");
 });
 
@@ -1041,13 +1313,13 @@ test("an LRU eviction below the low watermark re-enters the same replenishment l
         return { status: readyDates.has(request.date) ? "ready" : "missing" };
       },
     },
-    demandService: {
+    demandService: batchDemandService({
       cancelScope() {},
       demand(request) {
         demands.push(request.date);
         return new Promise(() => {});
       },
-    },
+    }),
     eventLog: api(context, "LifecycleEventLog"),
     frameIdentity: api(context, "FrameIdentity"),
     clock: api(context, "ClockDomain").monotonic,
@@ -1077,42 +1349,42 @@ test("an LRU eviction below the low watermark re-enters the same replenishment l
 test("playback target promotes an existing preheat request and resumes from the same result", async () => {
   const responses = new Map();
   let requests = 0;
+  const requestedDates = [];
   const context = contextFor(async (url) => {
     requests += 1;
     const date = new URL(`http://local${url}`).searchParams.get("date");
+    requestedDates.push(date);
     if (!responses.has(date)) responses.set(date, deferred());
     return responses.get(date).promise;
   });
   const store = api(context, "DataFrameStore");
   const engine = api(context, "PlaybackEngine");
   const log = api(context, "LifecycleEventLog");
-  const allDates = dates(4);
-  store.put(requestContext(), framePacket(context, [], { grid: { actual_resolution_km: 4 } }));
-  engine.configure({ dates: allDates, requestContext: requestContext(), currentDate: allDates[0] });
-  await waitFor(() => responses.has(allDates[1]));
+  const allDates = ["2020-01-30", "2020-01-31", "2020-02-01", "2020-02-02"];
+  const contextRequest = { ...requestContext(), date: allDates[0] };
+  store.put(contextRequest, framePacket(context, [], { grid: { actual_resolution_km: 4 } }));
+  engine.configure({ dates: allDates, requestContext: contextRequest, currentDate: allDates[0] });
+  await waitFor(() => responses.has("2020-01-31"));
   const starting = engine.start();
-  responses.get(allDates[1]).resolve({ rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
+  responses.get("2020-01-31").resolve({ rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
   await starting;
+  await waitFor(() => responses.has("2020-02-01"));
   const target = engine.requireTarget(2);
   const promoted = log.query({ type: "TASK_PROMOTED" })
     .find((event) => event.date === allDates[2]);
   assert.equal(promoted?.previous_lane, "playback-window");
   assert.equal(promoted?.requested_lane, "playback-target");
-  assert.notEqual(
-    api(context, "AppRuntime.services().QueryBroker").operationStatus(promoted.intent_key),
-    "missing",
-  );
+  assert.doesNotMatch(promoted?.intent_key || "", /^range\|/);
 
-  responses.get(allDates[2]).resolve({ rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
+  responses.get("2020-02-01").resolve({ rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
   const result = await target;
   assert.equal(result.status, "ready");
-  assert.equal(requests >= 1, true);
+  assert.equal(requests, 3);
+  assert.equal(requestedDates.filter((date) => date === "2020-02-01").length, 1);
   assert.equal(log.query({ type: "TASK_PROMOTED" }).length >= 1, true);
   assert.equal(log.query({ type: "BUFFER_ENTERED" }).length, 1);
   assert.equal(log.query({ type: "BUFFER_RESUMED" }).length, 1);
 
-  await waitFor(() => responses.has(allDates[3]));
-  responses.get(allDates[3]).resolve({ rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
   for (const response of responses.values()) response.resolve({ rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
   engine.stop("test_complete");
 });
@@ -1328,16 +1600,18 @@ test("a target that becomes ready while paused does not restart playback", async
   });
   const store = api(context, "DataFrameStore");
   const engine = api(context, "PlaybackEngine");
-  const allDates = dates(3);
-  store.put(requestContext(), framePacket(context, [], { grid: { actual_resolution_km: 4 } }));
-  engine.configure({ dates: allDates, requestContext: requestContext(), currentDate: allDates[0] });
-  await waitFor(() => responses.has(allDates[1]));
+  const allDates = ["2020-01-30", "2020-01-31", "2020-02-01"];
+  const contextRequest = { ...requestContext(), date: allDates[0] };
+  store.put(contextRequest, framePacket(context, [], { grid: { actual_resolution_km: 4 } }));
+  engine.configure({ dates: allDates, requestContext: contextRequest, currentDate: allDates[0] });
+  await waitFor(() => responses.has("2020-01-31"));
   const starting = engine.start();
-  responses.get(allDates[1]).resolve({ rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
+  responses.get("2020-01-31").resolve({ rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
   await starting;
+  await waitFor(() => responses.has("2020-02-01"));
   const target = engine.requireTarget(2);
   engine.pause("user_pause");
-  responses.get(allDates[2]).resolve({ rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
+  responses.get("2020-02-01").resolve({ rows: [], row_count: 0, grid: { actual_resolution_km: 4 } });
   await target;
 
   assert.equal(engine.snapshot().status, "PAUSED");

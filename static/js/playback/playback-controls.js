@@ -50,7 +50,10 @@ function syncPlaybackCacheCapacityMeter() {
     const configuredSuffix = snapshot.heapSafetyApplied
       ? `（設定 ${PlaybackCacheService.formatBytes(configuredLimitBytes)}）`
       : "";
-    capacityText.textContent = `快取容量：${PlaybackCacheService.formatBytes(usedBytes)} / ${PlaybackCacheService.formatBytes(limitBytes)}${configuredSuffix}`;
+    const shortfallSuffix = snapshot.playbackCacheCapacitySufficient
+      ? ""
+      : ` · 月份水位尚缺 ${PlaybackCacheService.formatBytes(snapshot.playbackCacheShortfallBytes)}`;
+    capacityText.textContent = `快取容量：${PlaybackCacheService.formatBytes(usedBytes)} / ${PlaybackCacheService.formatBytes(limitBytes)}${configuredSuffix}${shortfallSuffix}`;
   }
   if (capacityPercent) {
     capacityPercent.textContent = `${percent}%`;
@@ -233,18 +236,22 @@ function syncPlaybackSettingsInputs() {
     Number(state.playbackCache.lowWatermark || 10),
   ));
   if ($("playback-cache-low-watermark")) {
-    $("playback-cache-low-watermark").disabled = options.strategy === "adaptive";
+    $("playback-cache-low-watermark").disabled = ["adaptive", "calendar_month"].includes(options.strategy);
     $("playback-cache-low-watermark").min = "1";
     $("playback-cache-low-watermark").max = String(configuredHigh - 1);
     $("playback-cache-low-watermark").value = String(configuredLow);
   }
   if ($("playback-cache-high-watermark")) {
-    $("playback-cache-high-watermark").disabled = options.strategy === "adaptive";
+    $("playback-cache-high-watermark").disabled = ["adaptive", "calendar_month"].includes(options.strategy);
     $("playback-cache-high-watermark").min = String(configuredLow + 1);
     $("playback-cache-high-watermark").value = String(configuredHigh);
   }
   if ($("playback-cache-window-behind")) $("playback-cache-window-behind").value = String(options.windowBehind);
-  if ($("playback-cache-max-gb")) $("playback-cache-max-gb").value = String(Math.round(options.maxGb * 100) / 100);
+  if ($("playback-cache-max-gb")) {
+    const requiredGb = Number(options.requiredCacheBytes || 0) / PlaybackCacheService.BYTES_PER_GB;
+    $("playback-cache-max-gb").min = String(Math.max(0.25, Math.ceil(requiredGb * 100) / 100));
+    $("playback-cache-max-gb").value = String(Math.round(options.maxGb * 100) / 100);
+  }
   if ($("sampled-grid-transition-ms")) {
     $("sampled-grid-transition-ms").value = String(Math.max(0, Number(state.sampledGridTransitionMs || 0)));
   }
@@ -302,7 +309,9 @@ function bindPlaybackSettingsControls() {
     syncPlaybackSettingsInputs();
   });
   $("playback-cache-max-gb")?.addEventListener("change", (event) => {
-    const maxGb = Math.max(0.25, Number(event.target.value || 2));
+    const requiredGb = Number(PlaybackCacheService.options().requiredCacheBytes || 0)
+      / PlaybackCacheService.BYTES_PER_GB;
+    const maxGb = Math.max(0.25, requiredGb, Number(event.target.value || 2));
     state.dataFrameStore.maxBytes = Math.round(maxGb * PlaybackCacheService.BYTES_PER_GB);
     DataFrameStore.enforceBudget?.();
     PlaybackCacheService.resetPolicy("ram_budget_changed");

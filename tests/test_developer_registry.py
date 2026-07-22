@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from common_adapter.developer.artifacts.layer_mappings import LayerMappingStore
+from common_adapter.developer.sources.drawers import SourceDrawerRegistry
 from common_adapter.developer.sources.files import SourceConfigStore
 from common_adapter.developer.state.manifest import RouterManifestStore
 
@@ -117,6 +118,33 @@ class SourceConfigRegistrationTests(unittest.TestCase):
 
 
 class RegistryArtifactTests(unittest.TestCase):
+    def test_source_group_registry_uses_last_known_good_instead_of_empty_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "source-groups.json"
+            registry = SourceDrawerRegistry(
+                ensure_layout=lambda: Path(directory),
+                normalize_source_group=lambda value: str(value).strip().lower(),
+                normalize_adapter_group=lambda value: str(value).strip().lower(),
+                is_routable_source_group=bool,
+                has_builtin_probe=lambda _group: True,
+            )
+            registry.registry_path = lambda: path
+            registry.write_registry(
+                [
+                    {
+                        "id": 1,
+                        "name": "database",
+                        "path": "config/sources/database",
+                        "created_at": 1,
+                    }
+                ]
+            )
+            path.write_text("{broken", encoding="utf-8")
+
+            packet = registry.read_registry()
+
+        self.assertEqual("database", packet["groups"][0]["name"])
+
     def test_new_manifest_has_no_implicit_imported_layers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "router_manifest.local.json"

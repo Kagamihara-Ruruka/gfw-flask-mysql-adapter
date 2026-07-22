@@ -71,7 +71,11 @@ class LayerCapabilityTests(unittest.TestCase):
                         "enabled": True,
                         "provider": "postgis",
                         "source": {"version": "v12_20231025"},
-                        "domain_mask": {"enabled": True, "tile_query_concurrency": 3},
+                        "domain_mask": {
+                            "enabled": True,
+                            "tile_query_concurrency": 3,
+                            "tile_timeout_ms": 42000,
+                        },
                     }
                 }
             },
@@ -80,10 +84,11 @@ class LayerCapabilityTests(unittest.TestCase):
 
         self.assertEqual("supported", capability["status"])
         self.assertIn("/eez/domain/land/", capability["tile_template"])
-        self.assertEqual("rrkal.eez_land_mask.v6", capability["capability_version"])
+        self.assertEqual("rrkal.eez_land_mask.v7", capability["capability_version"])
         self.assertEqual("eez_lod", capability["geometry_source"])
         self.assertEqual("eez", capability["lod_owner"])
         self.assertEqual(3, capability["tile_request_concurrency"])
+        self.assertEqual(42000, capability["tile_timeout_ms"])
 
     def test_eez_route_registers_high_seas_paint_as_separate_child_capability(self) -> None:
         capability = eez_high_seas_overlay_capability(

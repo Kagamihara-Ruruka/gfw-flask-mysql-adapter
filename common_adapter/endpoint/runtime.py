@@ -82,9 +82,13 @@ def _catalog_mapping(mapping: dict[str, Any]) -> dict[str, Any] | None:
     return sampled_grid
 
 
-def sampled_grid_catalog_mappings(config_ref: str) -> list[dict[str, Any]]:
+def sampled_grid_catalog_mappings(
+    config_ref: str,
+    *,
+    mappings: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for mapping in load_layer_mappings().get("mappings", []):
+    for mapping in (mappings or load_layer_mappings()).get("mappings", []):
         if not mapping.get("enabled", True):
             continue
         if _text(mapping.get("config_path")) != config_ref:
@@ -294,12 +298,14 @@ def endpoint_datasets_from_routes(
     active_routes: list[tuple[str, Any, dict[str, Any]]],
     *,
     source_route_group: str = "endpoint",
+    mappings: dict[str, Any] | None = None,
+    mappings_config_ref: str = LAYER_MAPPINGS_CONFIG_REF,
 ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
     datasets: dict[str, dict[str, Any]] = {}
     errors: list[dict[str, Any]] = []
     grid_registry = GridRegistry()
     for config_ref, _path, route_config in active_routes:
-        for mapping in sampled_grid_catalog_mappings(config_ref):
+        for mapping in sampled_grid_catalog_mappings(config_ref, mappings=mappings):
             sampled_grid = _catalog_mapping(mapping)
             if sampled_grid is None:
                 continue
@@ -329,6 +335,7 @@ def endpoint_datasets_from_routes(
                     )
                     if generated is not None:
                         dataset_id, dataset = generated
+                        dataset["__runtime_config_path"] = mappings_config_ref
                         datasets[dataset_id] = dataset
             except (EndpointRequestError, ValueError) as exc:
                 errors.append(

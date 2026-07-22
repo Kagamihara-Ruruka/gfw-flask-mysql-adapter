@@ -26,6 +26,85 @@ function evaluatePlaybackReplenishment({
   return Object.freeze({ replenishing: false, trigger: "" });
 }
 
+function playbackCalendarMonthKey(date) {
+  const match = /^(\d{4})-(\d{2})-\d{2}$/.exec(String(date || ""));
+  return match ? `${match[1]}-${match[2]}` : "";
+}
+
+function playbackCalendarMonthWindow(dates = [], cursorIndex = 0, monthCount = 1) {
+  if (!Array.isArray(dates) || !dates.length) {
+    return Object.freeze({ startIndex: 0, endIndex: 0, monthKeys: Object.freeze([]) });
+  }
+  const cursor = Math.max(0, Math.min(dates.length - 1, Number(cursorIndex) || 0));
+  const activeMonth = playbackCalendarMonthKey(dates[cursor]);
+  if (!activeMonth) {
+    return Object.freeze({ startIndex: cursor, endIndex: cursor + 1, monthKeys: Object.freeze([]) });
+  }
+  let startIndex = cursor;
+  while (startIndex > 0 && playbackCalendarMonthKey(dates[startIndex - 1]) === activeMonth) {
+    startIndex -= 1;
+  }
+  const monthKeys = [];
+  const limit = Math.max(1, Math.floor(Number(monthCount) || 1));
+  let endIndex = startIndex;
+  while (endIndex < dates.length) {
+    const key = playbackCalendarMonthKey(dates[endIndex]);
+    if (!key) break;
+    if (monthKeys.at(-1) !== key) {
+      if (monthKeys.length >= limit) break;
+      monthKeys.push(key);
+    }
+    endIndex += 1;
+  }
+  return Object.freeze({
+    startIndex,
+    endIndex,
+    monthKeys: Object.freeze(monthKeys),
+  });
+}
+
+function normalizedPlaybackCacheCapacityPolicy(policy = {}) {
+  const bufferUnit = String(policy.bufferUnit || policy.buffer_unit || "frame") === "calendar_month"
+    ? "calendar_month"
+    : "frame";
+  const lowWatermarkMonths = Math.max(1, Math.floor(Number(
+    policy.lowWatermarkMonths ?? policy.low_watermark_months ?? 1,
+  )));
+  const highWatermarkMonths = Math.max(lowWatermarkMonths, Math.floor(Number(
+    policy.highWatermarkMonths ?? policy.high_watermark_months ?? 2,
+  )));
+  const ratedFrameBytes = Math.max(1024 * 1024, Math.floor(Number(
+    policy.ratedFrameBytes ?? policy.rated_frame_bytes ?? 16 * 1024 * 1024,
+  )));
+  const cacheHeadroomFrames = Math.max(0, Math.min(62, Math.floor(Number(
+    policy.cacheHeadroomFrames ?? policy.cache_headroom_frames ?? 8,
+  ))));
+  const retainedFrameCapacity = bufferUnit === "calendar_month"
+    ? highWatermarkMonths * 31
+    : 0;
+  const requiredFrameCapacity = retainedFrameCapacity > 0
+    ? retainedFrameCapacity + cacheHeadroomFrames
+    : 0;
+  const requiredCacheBytes = requiredFrameCapacity * ratedFrameBytes;
+  const requestedCacheMaxBytes = Math.max(0, Math.floor(Number(
+    policy.cacheMaxBytes ?? policy.cache_max_bytes ?? 0,
+  )));
+  const cacheMaxBytes = requestedCacheMaxBytes > 0
+    ? Math.max(requestedCacheMaxBytes, requiredCacheBytes)
+    : requiredCacheBytes;
+  return Object.freeze({
+    bufferUnit,
+    lowWatermarkMonths,
+    highWatermarkMonths,
+    ratedFrameBytes,
+    cacheHeadroomFrames,
+    retainedFrameCapacity,
+    requiredFrameCapacity,
+    requiredCacheBytes,
+    cacheMaxBytes,
+  });
+}
+
 class PlaybackPreheaterController {
   constructor({
     store,
@@ -65,11 +144,14 @@ class PlaybackPreheaterController {
     this.retryTimer = null;
     this.scopeSettleTimer = null;
     this.reconcileTimer = null;
+    this.pinOwner = "playback-preheater";
+    this.pinnedFrames = new Map();
     this.unsubscribeStore = this.store.subscribe?.((change) => this.handleStoreChange(change)) || null;
   }
 
   options(policyContext = {}) {
     const cache = this.optionsProvider() || {};
+    const capacityPolicy = normalizedPlaybackCacheCapacityPolicy(cache);
     const basePolicy = this.fixedPolicyNormalizer(cache);
     const configuredMaxPendingFrames = Math.max(1, Math.min(
       32,
@@ -103,6 +185,60 @@ class PlaybackPreheaterController {
       effectiveBatchSize,
       scopeSettleMs: Math.max(0, Number(cache.scopeSettleMs ?? 0)),
     };
+    const { bufferUnit, lowWatermarkMonths, highWatermarkMonths } = capacityPolicy;
+    if (bufferUnit === "calendar_month" && this.scope?.dates.length) {
+      const highWindow = playbackCalendarMonthWindow(
+        this.scope.dates,
+        this.scope.cursorIndex,
+        highWatermarkMonths,
+      );
+      const lowWindow = playbackCalendarMonthWindow(
+        this.scope.dates,
+        this.scope.cursorIndex,
+        lowWatermarkMonths,
+      );
+      const futureStart = Math.min(this.scope.dates.length, this.scope.cursorIndex + 1);
+      const remainingSlices = Math.max(0, this.scope.dates.length - futureStart);
+      const targetWatermark = Math.max(0, highWindow.endIndex - futureStart);
+      const lowWatermark = Math.max(0, lowWindow.endIndex - futureStart);
+      const tailMode = highWindow.monthKeys.length < highWatermarkMonths;
+      return {
+        ...fixedPolicy,
+        ...capacityPolicy,
+        bufferUnit,
+        lowWatermarkMonths,
+        highWatermarkMonths,
+        retainedMonthKeys: [...highWindow.monthKeys],
+        retainedFrameCount: Math.max(0, highWindow.endIndex - highWindow.startIndex),
+        calendarWindowStartIndex: highWindow.startIndex,
+        calendarWindowEndIndex: highWindow.endIndex,
+        highWatermark: targetWatermark,
+        lowWatermark,
+        windowBehind: Math.max(0, this.scope.cursorIndex - highWindow.startIndex),
+        targetWatermark,
+        immediateReplenishment: false,
+        tailMode,
+        supplyRatio: null,
+        strategy: "calendar_month",
+        policyStatus: "FIXED",
+        policyReason: "runtime_calendar_month_policy",
+        candidateLowWatermark: lowWatermark,
+        candidateHighWatermark: targetWatermark,
+        ramBudgetFrames: null,
+        playbackRamBudgetBytes: 0,
+        hasObservedFrameSize: false,
+        estimatedFrameBytes: 0,
+        consumptionRate: 0,
+        supplyRate: 0,
+        supplySamples: 0,
+        latencyP95Ms: 0,
+        latencySamples: 0,
+        minimumSupplySamples: 2,
+        remainingSlices,
+        sustainable: null,
+        degradationReason: "",
+      };
+    }
     const policy = this.watermarkPolicyProvider?.(fixedPolicy, {
       datasetId: requestContext.datasetId || "",
       cacheNamespace: requestContext.cacheNamespace || "",
@@ -132,6 +268,12 @@ class PlaybackPreheaterController {
       : candidateTarget;
     return {
       ...fixedPolicy,
+      ...capacityPolicy,
+      bufferUnit,
+      lowWatermarkMonths: 0,
+      highWatermarkMonths: 0,
+      retainedMonthKeys: [],
+      retainedFrameCount: 0,
       highWatermark: effectiveHigh,
       lowWatermark: effectiveLow,
       windowBehind: fixedPolicy.windowBehind,
@@ -227,6 +369,7 @@ class PlaybackPreheaterController {
     }
 
     const id = `preheater:${++this.scopeSequence}:${signature}`;
+    this.releasePinnedFrames();
     this.scope.queryScopeIds = this.scope.queryScopeIds || new Set([previousScopeId]);
     this.scope.queryScopeIds.add(id);
     this.scope.id = id;
@@ -263,6 +406,7 @@ class PlaybackPreheaterController {
     }
     this.cancelScheduledReconcile();
     this.cancelQueryScopes(this.scope, { includeActive: true });
+    this.releasePinnedFrames();
     this.clock.cancel(this.retryTimer);
     this.retryTimer = null;
     this.clock.cancel(this.scopeSettleTimer);
@@ -353,8 +497,59 @@ class PlaybackPreheaterController {
     return count;
   }
 
+  readinessRequirement(startIndex = null) {
+    if (!this.scope) return 0;
+    const start = Number.isInteger(startIndex) ? startIndex : this.scope.cursorIndex + 1;
+    const remaining = Math.max(0, this.scope.dates.length - Math.max(0, start));
+    return Math.min(remaining, 1);
+  }
+
+  releasePinnedFrames() {
+    for (const frameKey of this.pinnedFrames.values()) {
+      this.store.release?.(frameKey, this.pinOwner);
+    }
+    this.pinnedFrames.clear();
+  }
+
+  syncRetainedFrames(options = this.options()) {
+    if (!this.scope || options.bufferUnit !== "calendar_month" || typeof this.store.pin !== "function") {
+      this.releasePinnedFrames();
+      return 0;
+    }
+    const desired = new Map(this.windowRequests(options).map((request) => (
+      [this.frameIdentity.intentKey(request), request]
+    )));
+    for (const [intentKey, frameKey] of [...this.pinnedFrames.entries()]) {
+      if (desired.has(intentKey)) continue;
+      this.store.release?.(frameKey, this.pinOwner);
+      this.pinnedFrames.delete(intentKey);
+    }
+    for (const [intentKey, request] of desired.entries()) {
+      const inspected = this.store.inspect(request);
+      if (inspected.status !== "ready" || !inspected.frameKey) {
+        const staleFrameKey = this.pinnedFrames.get(intentKey);
+        if (staleFrameKey) this.store.release?.(staleFrameKey, this.pinOwner);
+        this.pinnedFrames.delete(intentKey);
+        continue;
+      }
+      const previousFrameKey = this.pinnedFrames.get(intentKey);
+      if (previousFrameKey && previousFrameKey !== inspected.frameKey) {
+        this.store.release?.(previousFrameKey, this.pinOwner);
+      }
+      if (this.store.pin(inspected.frameKey, this.pinOwner)) {
+        this.pinnedFrames.set(intentKey, inspected.frameKey);
+      }
+    }
+    return this.pinnedFrames.size;
+  }
+
   windowRequests(options = this.options()) {
     if (!this.scope) return [];
+    if (options.bufferUnit === "calendar_month") {
+      return this.scope.dates
+        .slice(options.calendarWindowStartIndex, options.calendarWindowEndIndex)
+        .map((date) => this.requestForDate(date));
+    }
     const { targetWatermark, windowBehind } = options;
     const start = Math.max(0, this.scope.cursorIndex - windowBehind);
     const end = Math.min(this.scope.dates.length, this.scope.cursorIndex + targetWatermark + 1);
@@ -403,6 +598,7 @@ class PlaybackPreheaterController {
       supplyRatio,
       remainingSlices,
     } = options;
+    this.syncRetainedFrames(options);
     if (pruneQueued) {
       const cancelled = this.cancelQueryScopes(this.scope, { includeActive: false });
       if (cancelled > 0) {
@@ -489,44 +685,45 @@ class PlaybackPreheaterController {
     const scopeId = this.scope.id;
     this.scope.scheduledTotal += missing.length;
     this.syncState("FETCHING");
-    for (const request of missing) {
-      const intentKey = this.frameIdentity.intentKey(request);
-      const promise = this.demandService.demand(request, {
-        lane: "playback-window",
-        scopeId,
-        consumerId: `window:${request.date}`,
-      })
-        .then((result) => {
+    const intentKeys = missing.map((request) => this.frameIdentity.intentKey(request));
+    const promise = this.demandService.demandMany(missing, {
+      lane: "playback-window",
+      scopeId,
+      rangeMode: options.bufferUnit === "calendar_month" ? "calendar_month" : "individual",
+      onProgress: ({ ok, request, error }) => {
+        const intentKey = this.frameIdentity.intentKey(request);
+        if (ok) {
           this.retryAfter.delete(intentKey);
-          return result;
-        })
-        .catch((error) => {
-          if (error?.name !== "AbortError" && this.ownsQueryScope(scopeId)) {
-            this.scope.failed += 1;
-            this.retryAfter.set(intentKey, this.clock.now() + 5000);
-          }
-          return null;
-        })
-        .finally(() => {
+          return;
+        }
+        if (error?.name !== "AbortError" && this.ownsQueryScope(scopeId)) {
+          this.scope.failed += 1;
+          this.retryAfter.set(intentKey, this.clock.now() + 5000);
+        }
+      },
+    })
+      .catch(() => null)
+      .finally(() => {
+        for (const intentKey of intentKeys) {
           if (this.inflight.get(intentKey) === promise) this.inflight.delete(intentKey);
-          if (!this.ownsQueryScope(scopeId)) return;
-          const hasRetry = [...this.retryAfter.values()].some((retryAt) => (
-            Number(retryAt || 0) > this.clock.now()
-          ));
-          this.syncState(
-            this.inflight.size
-              ? "FETCHING"
-              : hasRetry
-                ? "DEGRADED"
-                : this.scope.replenishing
-                  ? "FETCHING"
-                  : "READY",
-          );
-          if (hasRetry) this.scheduleRetry();
-          else if (this.scope.replenishing) this.scheduleReconcile();
-        });
-      this.inflight.set(intentKey, promise);
-    }
+        }
+        if (!this.ownsQueryScope(scopeId)) return;
+        const hasRetry = [...this.retryAfter.values()].some((retryAt) => (
+          Number(retryAt || 0) > this.clock.now()
+        ));
+        this.syncState(
+          this.inflight.size
+            ? "FETCHING"
+            : hasRetry
+              ? "DEGRADED"
+              : this.scope.replenishing
+                ? "FETCHING"
+                : "READY",
+        );
+        if (hasRetry) this.scheduleRetry();
+        else if (this.scope.replenishing) this.scheduleReconcile();
+      });
+    for (const intentKey of intentKeys) this.inflight.set(intentKey, promise);
     return this.snapshot();
   }
 
@@ -581,6 +778,7 @@ class PlaybackPreheaterController {
     if (!this.scope || !["committed", "evicted"].includes(change?.type)) return;
     if (String(change.datasetId || "") !== this.scope.requestContext.datasetId) return;
     if (change.date && !this.scope.dates.includes(String(change.date))) return;
+    this.syncRetainedFrames(this.options());
     this.scheduleReconcile();
   }
 
@@ -603,6 +801,7 @@ class PlaybackPreheaterController {
     this.clock.cancel(this.scopeSettleTimer);
     this.scopeSettleTimer = null;
     this.cancelScheduledReconcile();
+    this.releasePinnedFrames();
     this.scope = null;
     this.stateSink?.(this.snapshot());
   }
@@ -626,6 +825,7 @@ class PlaybackPreheaterController {
       queued: this.inflight.size,
       scheduledTotal: this.scope.scheduledTotal,
       failed: this.scope.failed,
+      pinnedFrameCount: this.pinnedFrames.size,
       replenishing: this.scope.replenishing,
       scopeSettlePending: Boolean(this.scopeSettleTimer),
       reconcilePending: this.reconcileTimer !== null,
@@ -644,5 +844,8 @@ class PlaybackPreheaterController {
 
 if (typeof globalThis !== "undefined") {
   globalThis.evaluatePlaybackReplenishment = evaluatePlaybackReplenishment;
+  globalThis.playbackCalendarMonthKey = playbackCalendarMonthKey;
+  globalThis.playbackCalendarMonthWindow = playbackCalendarMonthWindow;
+  globalThis.normalizedPlaybackCacheCapacityPolicy = normalizedPlaybackCacheCapacityPolicy;
   globalThis.PlaybackPreheaterController = PlaybackPreheaterController;
 }

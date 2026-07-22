@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 import re
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable
 
 from common_adapter.config.paths import layer_mappings_path as canonical_layer_mappings_path
+from common_adapter.config.atomic_json import atomic_write_json, read_json_object
 from common_adapter.developer.sources.configs import normalize_config_ref
 from common_adapter.developer.state.manifest import (
     DATA_LAYER_ID_PATTERN,
@@ -31,10 +31,7 @@ class LayerMappingStore:
         path = self.path()
         if not path.exists():
             return {"mappings": []}
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return {"mappings": []}
+        data = read_json_object(path, missing={"mappings": []})
         mappings = data.get("mappings")
         if not isinstance(mappings, list):
             mappings = []
@@ -54,9 +51,9 @@ class LayerMappingStore:
             if isinstance(item, dict):
                 mappings.append(self.normalize(item))
         path = self.path()
-        path.write_text(
-            json.dumps({"mappings": sorted(mappings, key=lambda row: row["mapping_id"])}, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
+        atomic_write_json(
+            path,
+            {"mappings": sorted(mappings, key=lambda row: row["mapping_id"])},
         )
 
     def clean_column_list(self, value: Any) -> list[str]:

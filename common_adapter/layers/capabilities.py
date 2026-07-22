@@ -5,7 +5,7 @@ from typing import Any, Mapping
 
 SPATIAL_INTERPOLATION_METHODS = ("nearest", "linear")
 REGULAR_GRID_ENCODINGS = frozenset({"center", "global_index"})
-EEZ_LAND_MASK_CAPABILITY_VERSION = "rrkal.eez_land_mask.v6"
+EEZ_LAND_MASK_CAPABILITY_VERSION = "rrkal.eez_land_mask.v7"
 EEZ_HIGH_SEAS_OVERLAY_CAPABILITY_VERSION = "rrkal.eez_high_seas_overlay.v5"
 
 
@@ -141,6 +141,10 @@ def eez_land_mask_provider_capability(route_config: Any, overlay_ref: Any) -> di
         tile_request_concurrency = max(1, int(domain_mask.get("tile_query_concurrency") or 2))
     except (TypeError, ValueError):
         tile_request_concurrency = 2
+    try:
+        tile_timeout_ms = max(1000, int(domain_mask.get("tile_timeout_ms") or 45000))
+    except (TypeError, ValueError):
+        tile_timeout_ms = 45000
     return {
         "status": "supported",
         "capability_version": EEZ_LAND_MASK_CAPABILITY_VERSION,
@@ -148,6 +152,7 @@ def eez_land_mask_provider_capability(route_config: Any, overlay_ref: Any) -> di
         "source_version": source_version,
         "tile_template": "/api/overlays/eez/domain/land/tiles/{z}/{x}/{y}.svg",
         "tile_request_concurrency": tile_request_concurrency,
+        "tile_timeout_ms": tile_timeout_ms,
         "geometry_source": "eez_lod",
         "lod_owner": "eez",
         "topology_classification": "versioned_seed_tuple",

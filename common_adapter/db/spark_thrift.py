@@ -7,7 +7,10 @@ import math
 import re
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 
@@ -16,6 +19,10 @@ DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 class SparkThriftConfigError(RuntimeError):
+    pass
+
+
+class SparkThriftQueryTimeout(TimeoutError):
     pass
 
 
@@ -48,11 +55,55 @@ def _is_retryable_connection_error(exc: Exception) -> bool:
     return any(token in message for token in _RETRYABLE_CONNECTION_MESSAGES)
 
 
+class _FairQuerySlot:
+    """Serialize one connection without allowing later requests to jump the queue."""
+
+    def __init__(self) -> None:
+        self._condition = threading.Condition()
+        self._waiters: deque[object] = deque()
+        self._owned = False
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        waiter = object()
+        with self._condition:
+            if not blocking and (self._owned or self._waiters):
+                return False
+            self._waiters.append(waiter)
+            deadline = None if timeout is None or timeout < 0 else time.monotonic() + timeout
+            while self._owned or self._waiters[0] is not waiter:
+                if not blocking:
+                    self._waiters.remove(waiter)
+                    return False
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    self._waiters.remove(waiter)
+                    self._condition.notify_all()
+                    return False
+                self._condition.wait(timeout=remaining)
+            self._waiters.popleft()
+            self._owned = True
+            return True
+
+    def release(self) -> None:
+        with self._condition:
+            if not self._owned:
+                raise RuntimeError("release unlocked Spark Thrift query slot")
+            self._owned = False
+            self._condition.notify_all()
+
+    def __enter__(self) -> "_FairQuerySlot":
+        self.acquire()
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.release()
+
+
 class SparkThriftConnectionManager:
     """Own one lazy PyHive connection and serialize access to it."""
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._lock = _FairQuerySlot()
         self._connection: Any | None = None
         self._connection_key: tuple[Any, ...] | None = None
 
@@ -91,14 +142,42 @@ class SparkThriftConnectionManager:
         connection_key: tuple[Any, ...],
         connection_kwargs: dict[str, Any],
         sql: str,
+        *,
+        timeout_seconds: float | None = None,
+        slot_timeout_seconds: float | None = None,
+        poll_interval_seconds: float = 0.25,
     ) -> dict[str, Any]:
         g_mark = time.perf_counter_ns()
         reconnect_count = 0
 
-        with self._lock:
+        effective_slot_timeout = (
+            timeout_seconds
+            if slot_timeout_seconds is None
+            else slot_timeout_seconds
+        )
+        if effective_slot_timeout is None:
+            self._lock.acquire()
+        else:
+            if not self._lock.acquire(timeout=effective_slot_timeout):
+                raise SparkThriftQueryTimeout(
+                    "waiting for Spark Thrift query slot exceeded "
+                    f"{effective_slot_timeout:g} seconds"
+                )
+
+        query_started_monotonic = time.monotonic()
+        deadline = (
+            None
+            if timeout_seconds is None
+            else query_started_monotonic + timeout_seconds
+        )
+        try:
             while True:
                 cursor = None
                 try:
+                    if deadline is not None and deadline <= time.monotonic():
+                        raise SparkThriftQueryTimeout(
+                            f"Spark Thrift query exceeded {timeout_seconds:g} seconds"
+                        )
                     connection, connection_reused = self._connection_for(
                         connection_factory,
                         connection_key,
@@ -107,13 +186,79 @@ class SparkThriftConnectionManager:
                     h_mark = time.perf_counter_ns()
                     cursor = connection.cursor()
                     i_mark = time.perf_counter_ns()
-                    cursor.execute(sql)
+                    supports_cancellation = callable(getattr(cursor, "poll", None)) and callable(
+                        getattr(cursor, "cancel", None)
+                    )
+                    if timeout_seconds is not None and supports_cancellation:
+                        cursor.execute(sql, async_=True)
+                        while True:
+                            status = cursor.poll(get_progress_update=False)
+                            operation_state = getattr(status, "operationState", None)
+                            if operation_state == 2:  # FINISHED_STATE
+                                break
+                            if operation_state in {3, 4, 5, 6, 8}:
+                                state_name = {
+                                    3: "canceled",
+                                    4: "closed",
+                                    5: "failed",
+                                    6: "unknown",
+                                    8: "timed out",
+                                }.get(operation_state, "failed")
+                                detail = str(getattr(status, "errorMessage", "") or "").strip()
+                                raise RuntimeError(
+                                    f"Spark Thrift query {state_name}"
+                                    + (f": {detail}" if detail else "")
+                                )
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                try:
+                                    cursor.cancel()
+                                except Exception:
+                                    pass
+                                raise SparkThriftQueryTimeout(
+                                    f"Spark Thrift query exceeded {timeout_seconds:g} seconds"
+                                )
+                            time.sleep(min(poll_interval_seconds, remaining))
+                    else:
+                        cursor.execute(sql)
                     j_mark = time.perf_counter_ns()
                     columns = [
                         str(item[0]).split(".")[-1]
                         for item in cursor.description or []
                     ]
-                    raw_rows = cursor.fetchall()
+                    raw_rows = []
+                    fetchmany = getattr(cursor, "fetchmany", None)
+                    if callable(fetchmany):
+                        while True:
+                            if deadline is not None and deadline <= time.monotonic():
+                                try:
+                                    cursor.cancel()
+                                except Exception:
+                                    pass
+                                raise SparkThriftQueryTimeout(
+                                    "Spark Thrift query and result transfer exceeded "
+                                    f"{timeout_seconds:g} seconds"
+                                )
+                            batch = fetchmany(1000)
+                            raw_rows.extend(batch)
+                            if deadline is not None and deadline <= time.monotonic():
+                                try:
+                                    cursor.cancel()
+                                except Exception:
+                                    pass
+                                raise SparkThriftQueryTimeout(
+                                    "Spark Thrift query and result transfer exceeded "
+                                    f"{timeout_seconds:g} seconds"
+                                )
+                            if not batch:
+                                break
+                    else:
+                        raw_rows = cursor.fetchall()
+                        if deadline is not None and deadline <= time.monotonic():
+                            raise SparkThriftQueryTimeout(
+                                "Spark Thrift query and result transfer exceeded "
+                                f"{timeout_seconds:g} seconds"
+                            )
                     k_mark = time.perf_counter_ns()
                 except Exception as exc:
                     if cursor is not None:
@@ -121,6 +266,10 @@ class SparkThriftConnectionManager:
                             cursor.close()
                         except Exception:
                             pass
+
+                    if isinstance(exc, SparkThriftQueryTimeout):
+                        self._discard_locked()
+                        raise
 
                     retryable = _is_retryable_connection_error(exc)
                     if retryable:
@@ -135,6 +284,8 @@ class SparkThriftConnectionManager:
                     except Exception:
                         self._discard_locked()
                     break
+        finally:
+            self._lock.release()
 
         rows = [
             {column: json_ready(value) for column, value in zip(columns, row)}
@@ -160,11 +311,40 @@ class SparkThriftConnectionManager:
         }
 
 
-_CONNECTION_MANAGER = SparkThriftConnectionManager()
+SPARK_THRIFT_FOREGROUND_LANE = "foreground"
+SPARK_THRIFT_BACKGROUND_LANE = "background"
+_QUERY_LANE: ContextVar[str] = ContextVar(
+    "spark_thrift_query_lane",
+    default=SPARK_THRIFT_FOREGROUND_LANE,
+)
+_CONNECTION_MANAGERS = {
+    SPARK_THRIFT_FOREGROUND_LANE: SparkThriftConnectionManager(),
+    SPARK_THRIFT_BACKGROUND_LANE: SparkThriftConnectionManager(),
+}
+
+
+def normalize_spark_thrift_query_lane(value: Any) -> str:
+    return (
+        SPARK_THRIFT_BACKGROUND_LANE
+        if str(value or "").strip().lower() == SPARK_THRIFT_BACKGROUND_LANE
+        else SPARK_THRIFT_FOREGROUND_LANE
+    )
+
+
+@contextmanager
+def spark_thrift_query_lane(value: Any):
+    """Bind one request to a bounded foreground or background connection owner."""
+
+    token = _QUERY_LANE.set(normalize_spark_thrift_query_lane(value))
+    try:
+        yield
+    finally:
+        _QUERY_LANE.reset(token)
 
 
 def close_spark_thrift_connection() -> None:
-    _CONNECTION_MANAGER.close()
+    for manager in _CONNECTION_MANAGERS.values():
+        manager.close()
 
 
 atexit.register(close_spark_thrift_connection)
@@ -309,6 +489,22 @@ def execute_query(config: dict[str, Any], sql: str) -> dict[str, Any]:
     username = str(settings.get("username") or settings.get("user") or "bigred")
     auth = str(settings.get("auth") or "NONE")
     password = settings.get("password")
+    raw_timeout = settings.get("query_timeout_seconds")
+    timeout_seconds = None if raw_timeout in (None, "") else float(raw_timeout)
+    if timeout_seconds is not None and timeout_seconds <= 0:
+        raise SparkThriftConfigError("query_timeout_seconds must be positive")
+    raw_slot_timeout = settings.get("query_slot_timeout_seconds")
+    slot_timeout_seconds = (
+        timeout_seconds
+        if raw_slot_timeout in (None, "")
+        else float(raw_slot_timeout)
+    )
+    if slot_timeout_seconds is not None and slot_timeout_seconds <= 0:
+        raise SparkThriftConfigError("query_slot_timeout_seconds must be positive")
+    raw_poll_interval = settings.get("query_poll_interval_seconds", 0.25)
+    poll_interval_seconds = float(raw_poll_interval)
+    if poll_interval_seconds <= 0:
+        raise SparkThriftConfigError("query_poll_interval_seconds must be positive")
 
     conn_kwargs: dict[str, Any] = {
         "host": host,
@@ -320,12 +516,17 @@ def execute_query(config: dict[str, Any], sql: str) -> dict[str, Any]:
         conn_kwargs["password"] = str(password)
 
     connection_key = (host, port, username, auth, str(password or ""))
-    packet = _CONNECTION_MANAGER.execute(
+    query_lane = normalize_spark_thrift_query_lane(_QUERY_LANE.get())
+    packet = _CONNECTION_MANAGERS[query_lane].execute(
         hive.Connection,
         connection_key,
         conn_kwargs,
         sql,
+        timeout_seconds=timeout_seconds,
+        slot_timeout_seconds=slot_timeout_seconds,
+        poll_interval_seconds=poll_interval_seconds,
     )
+    packet["connection"]["query_lane"] = query_lane
     packet["endpoint"] = {"host": host, "port": port, "auth": auth}
     return packet
 
@@ -397,6 +598,111 @@ WHERE event_date = DATE {sql_literal(date)}
             "metric": metric,
             "resolution": resolution,
             "limit": resolved_limit,
+            "bbox": None if bbox is None else list(bbox),
+            "grid_window": grid_window,
+        },
+        **packet,
+    }
+
+
+def heatmap_range_packet(
+    config: dict[str, Any],
+    *,
+    start_date: str,
+    end_date: str,
+    aoi: str,
+    product: str,
+    metric: str,
+    resolution: int,
+    limit: int | None = None,
+    bbox: tuple[float, float, float, float] | None = None,
+    geometry: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Load one calendar range in a single Spark job for playback warming."""
+
+    f_mark = time.perf_counter_ns()
+    table = dataset_table(config, "gold_map_metric", "lake.ocean.gold_map_metric")
+    start_date = validate_date(start_date)
+    end_date = validate_date(end_date)
+    if start_date > end_date:
+        raise ValueError("start_date must not be after end_date")
+    aoi = validate_identifier(aoi, "aoi")
+    product = validate_identifier(product, "product")
+    metric = validate_identifier(metric, "metric")
+    resolution = int(resolution)
+    resolved_limit = None if limit is None else effective_limit(limit, default=20000)
+    grid_window = None
+    bbox_clause = ""
+    if bbox is not None:
+        grid_window = global_index_window(
+            bbox,
+            resolution=resolution,
+            geometry=geometry or {},
+        )
+        bbox_clause = (
+            f"\n  AND grid_row BETWEEN {grid_window['min_grid_row']} AND {grid_window['max_grid_row']}"
+            f"\n  AND grid_col BETWEEN {grid_window['min_grid_col']} AND {grid_window['max_grid_col']}"
+        )
+
+    selected_columns = """event_date,
+  grid_id,
+  grid_row,
+  grid_col,
+  resolution_km,
+  metric_value,
+  relative_score,
+  display_level,
+  data_coverage"""
+    predicates = f"""event_date BETWEEN DATE {sql_literal(start_date)} AND DATE {sql_literal(end_date)}
+  AND aoi_id = {sql_literal(aoi)}
+  AND product_id = {sql_literal(product)}
+  AND metric_id = {sql_literal(metric)}
+  AND resolution_km = {resolution}{bbox_clause}"""
+    if resolved_limit is None:
+        sql = f"""
+SELECT
+  {selected_columns}
+FROM {table}
+WHERE {predicates}
+ORDER BY event_date, grid_row, grid_col
+""".strip()
+    else:
+        sql = f"""
+SELECT
+  {selected_columns}
+FROM (
+  SELECT
+    {selected_columns},
+    ROW_NUMBER() OVER (
+      PARTITION BY event_date
+      ORDER BY grid_row, grid_col
+    ) AS __snapshot_row
+  FROM {table}
+  WHERE {predicates}
+) ranked
+WHERE __snapshot_row <= {resolved_limit}
+ORDER BY event_date, grid_row, grid_col
+""".strip()
+
+    g_mark = time.perf_counter_ns()
+    packet = execute_query(config, sql)
+    packet["timing"] = {
+        "fg_ms": elapsed_ms(f_mark, g_mark),
+        **packet["timing"],
+    }
+    return {
+        "status": "ok",
+        "kind": "heatmap_range",
+        "table": table,
+        "params": {
+            "start_date": start_date,
+            "end_date": end_date,
+            "aoi": aoi,
+            "product": product,
+            "metric": metric,
+            "resolution": resolution,
+            "limit": resolved_limit,
+            "limit_mode": "per_snapshot" if resolved_limit is not None else "unbounded",
             "bbox": None if bbox is None else list(bbox),
             "grid_window": grid_window,
         },

@@ -229,6 +229,39 @@ const SampledGridWebglLayer = L.Layer.extend({
       ? Boolean(this._renderContextValidator(this._renderContext))
       : true;
   },
+  _recordRenderDiagnostics(outcome, extra = {}) {
+    if (!this._canvas) return;
+    const context = this._renderContext;
+    const paintFrame = context?.paintFrame;
+    let status = null;
+    try {
+      status = this._renderContextValidator?.diagnose?.(context) || null;
+    } catch (error) {
+      status = { current: false, reason: `diagnostic_error:${error?.name || "Error"}` };
+    }
+    const fields = {
+      renderOutcome: outcome,
+      renderContextCurrent: status?.current ?? Boolean(context),
+      renderContextReason: status?.reason || "",
+      renderIdentityCurrent: status?.current == null ? "" : status.current,
+      renderEpochCurrent: status?.epochCurrent ?? "",
+      renderMaskCurrent: status?.maskCurrent ?? "",
+      renderContextEpoch: context?.renderEpoch ?? "",
+      renderExpectedEpoch: status?.expectedRenderEpoch ?? "",
+      renderContextScope: context?.scopeKey || "",
+      renderExpectedScope: status?.expectedScopeKey || "",
+      renderContextMaskRevision: context?.maskRevision ?? "",
+      renderExpectedMaskRevision: status?.expectedMaskRevision ?? "",
+      renderFrameRows: this._frame?.rowCount ?? 0,
+      renderValidRows: paintFrame?.validIndices?.length ?? 0,
+      renderRows: paintFrame?.indices?.length ?? 0,
+      renderAlpha: context?.alpha ?? "",
+      ...extra,
+    };
+    for (const [name, value] of Object.entries(fields)) {
+      this._canvas.dataset[name] = String(value ?? "");
+    }
+  },
   clearSurface() {
     if (!this._gl || this._contextLost) return;
     this._gl.viewport(0, 0, this._canvas?.width || 0, this._canvas?.height || 0);
@@ -252,8 +285,12 @@ const SampledGridWebglLayer = L.Layer.extend({
     this._canvas.style.height = `${size.y}px`;
   },
   redraw() {
-    if (!this._active) return 0;
+    if (!this._active) {
+      this._recordRenderDiagnostics("inactive");
+      return 0;
+    }
     if (!this.isRenderContextCurrent()) {
+      this._recordRenderDiagnostics("stale_context");
       this.clearSurface();
       return 0;
     }
@@ -865,6 +902,7 @@ const SampledGridWebglLayer = L.Layer.extend({
   },
   _draw() {
     const started = this._renderClock.now();
+    const contextCurrent = this.isRenderContextCurrent();
     if (
       !this._active
       || this._contextLost
@@ -872,8 +910,11 @@ const SampledGridWebglLayer = L.Layer.extend({
       || !this._map
       || !this._canvas
       || !this._renderContext
-      || !this.isRenderContextCurrent()
-    ) return 0;
+      || !contextCurrent
+    ) {
+      this._recordRenderDiagnostics("draw_guard", { renderContextCurrent: contextCurrent });
+      return 0;
+    }
     const gl = this._gl;
     const size = this._map.getSize();
     gl.viewport(0, 0, size.x, size.y);
@@ -897,6 +938,7 @@ const SampledGridWebglLayer = L.Layer.extend({
       try {
         const drawMs = this._drawSmooth(paintFrame, alpha, started);
         this._drawMs = drawMs;
+        this._recordRenderDiagnostics("smooth_committed", { renderDrawMs: drawMs });
         return drawMs;
       } catch (err) {
         console.warn("Sampled-grid spatial interpolation failed", err);
@@ -912,6 +954,7 @@ const SampledGridWebglLayer = L.Layer.extend({
         const drawMs = this._drawAggregated(paintFrame, renderGridProfile, alpha, started);
         if (Number.isFinite(drawMs)) {
           this._drawMs = drawMs;
+          this._recordRenderDiagnostics("aggregation_committed", { renderDrawMs: drawMs });
           return drawMs;
         }
       } catch (err) {
@@ -952,6 +995,10 @@ const SampledGridWebglLayer = L.Layer.extend({
     }
     if (!vertexFloatCount) {
       this._drawMs = this._renderClock.now() - started;
+      this._recordRenderDiagnostics("nearest_empty", {
+        renderDrawMs: this._drawMs,
+        renderVertexCount: 0,
+      });
       return this._drawMs;
     }
 
@@ -980,11 +1027,20 @@ const SampledGridWebglLayer = L.Layer.extend({
       gl.drawArrays(gl.TRIANGLES, 0, vertexFloatCount / 6);
       gl.disable(gl.BLEND);
       this._drawMs = this._renderClock.now() - started;
+      this._recordRenderDiagnostics("nearest_committed", {
+        renderDrawMs: this._drawMs,
+        renderVertexCount: vertexFloatCount / 6,
+      });
       return this._drawMs;
     } catch (err) {
       console.warn("Sampled-grid WebGL draw failed", err);
       this._failed = true;
       this._drawMs = this._renderClock.now() - started;
+      this._recordRenderDiagnostics("nearest_failed", {
+        renderDrawMs: this._drawMs,
+        renderVertexCount: vertexFloatCount / 6,
+        renderError: err?.name || "Error",
+      });
       return this._drawMs;
     }
   },

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Callable
+
+from common_adapter.config.atomic_json import atomic_write_json, atomic_write_text
 
 from common_adapter.config.paths import (
     STAGING_CONFIG_DIR,
@@ -124,7 +125,7 @@ class StagingConfigStore:
         except UnicodeDecodeError as exc:
             raise ValueError("config file must be UTF-8 JSON") from exc
         destination = self.unique_path(filename)
-        destination.write_text(text, encoding="utf-8")
+        atomic_write_text(destination, text)
         return {
             "status": "ok",
             "staging": self.machine(),
@@ -144,7 +145,7 @@ class StagingConfigStore:
             raise ValueError(f"staging config is not valid JSON: {error}")
         data["role"] = source_group
         destination = self.target_source_config_path(path.name, source_group)
-        destination.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        atomic_write_json(destination, data)
         path.unlink()
         return {
             "status": "ok",

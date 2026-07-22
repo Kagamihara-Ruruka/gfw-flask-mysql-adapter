@@ -19,7 +19,7 @@
     "batch_size": 250,
     "auto_create_table": true,
     "meta_table": "ais_ingest_meta",
-    "data_directory": "D:/RRKAL_tools/mysql_ais_data",
+    "data_directory": "data/mysql_ais_data",
     "snapshot_enabled": true,
     "snapshot_table": "ais_hourly_snapshots",
     "snapshot_retention_days": 31,

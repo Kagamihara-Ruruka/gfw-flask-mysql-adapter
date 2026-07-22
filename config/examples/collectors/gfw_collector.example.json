@@ -12,7 +12,7 @@
     "chunk_size": 5000
   },
   "storage_note": {
-    "mysql_container_data_directory": "D:/RRKAL_tools/gfw_mysql_data",
+    "mysql_container_data_directory": "data/gfw_mysql_data",
     "boundary": "The collector owns source files and SQL loading. The consumer app only reads SQL."
   }
 }

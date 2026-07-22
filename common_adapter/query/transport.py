@@ -19,3 +19,21 @@ def project_sampled_grid_render_packet(packet: dict[str, Any]) -> dict[str, Any]
             raise ValueError("unsupported canonical grid frame schema")
         return packet
     raise ValueError("canonical sampled-grid batch packet has no canonical_frame")
+
+
+def project_sampled_grid_batch_packet(packet: dict[str, Any]) -> dict[str, Any]:
+    """Validate either one canonical frame or a range of canonical frames."""
+
+    if str(packet.get("snapshot_profile") or "") != "canonical_frame":
+        return project_sampled_grid_render_packet(packet)
+    snapshots = packet.get("snapshots")
+    if not isinstance(snapshots, dict):
+        raise ValueError("canonical sampled-grid range packet has no snapshots")
+    projected = {
+        str(date_value): project_sampled_grid_render_packet(snapshot)
+        for date_value, snapshot in snapshots.items()
+        if isinstance(snapshot, dict)
+    }
+    if len(projected) != len(snapshots):
+        raise ValueError("canonical sampled-grid range packet contains an invalid snapshot")
+    return {**packet, "snapshots": projected}

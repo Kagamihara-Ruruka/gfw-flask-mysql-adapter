@@ -226,7 +226,7 @@ class PlaybackEngineCore {
         let progress;
         try {
           progress = await this.preheater.waitForDates(requestedDates, {
-            lane: "playback-window",
+            lane: "playback-target",
             scopeId: this.prepareScopeId,
             signal: waitController.signal,
           });
@@ -430,10 +430,14 @@ class PlaybackEngineCore {
   readinessGate(kind, startIndex) {
     const remaining = Math.max(0, this.dates.length - Math.max(0, startIndex));
     const policy = this.preheater.snapshot?.() || {};
+    const requestedRequirement = Number(this.preheater.readinessRequirement?.(startIndex));
+    const required = Number.isFinite(requestedRequirement)
+      ? Math.max(0, Math.min(remaining, Math.floor(requestedRequirement)))
+      : Math.min(remaining, 1);
     return Object.freeze({
       kind,
       remaining,
-      required: Math.min(remaining, 1),
+      required,
       policyReason: "next_frame_ready",
       degradationReason: String(policy.degradationReason || ""),
     });
@@ -578,7 +582,7 @@ class PlaybackEngineCore {
           progress = await this.preheater.waitForDates(
             this.dates.slice(index, index + episode.required),
             {
-              lane: "playback-window",
+              lane: "playback-target",
               scopeId: episode.scopeId,
               signal: waitController.signal,
             },

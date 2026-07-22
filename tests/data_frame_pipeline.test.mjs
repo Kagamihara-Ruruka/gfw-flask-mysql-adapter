@@ -341,6 +341,36 @@ test("browser frame cache clamps configured capacity to a safe heap fraction", (
   assert.equal(snapshot.heapSafetyApplied, true);
 });
 
+test("browser frame cache exposes a calendar-month capacity shortfall after heap safety", () => {
+  const context = createContext();
+  const DataFrameStore = api(context, "DataFrameStoreCore");
+  const ratedFrameBytes = 16 * 1024 * 1024;
+  const requiredFrameCapacity = 70;
+  const requiredPlaybackCacheBytes = ratedFrameBytes * requiredFrameCapacity;
+  const store = new DataFrameStore({
+    frameIdentity: api(context, "FrameIdentity"),
+    clock: api(context, "ClockDomain").monotonic,
+    optionsProvider: () => ({
+      maxBytes: 1280 * 1024 * 1024,
+      ratedPlaybackFrameBytes: ratedFrameBytes,
+      requiredPlaybackFrameCapacity: requiredFrameCapacity,
+      requiredPlaybackCacheBytes,
+    }),
+    heapLimitProvider: () => 2 * 1024 * 1024 * 1024,
+    heapBudgetFraction: 0.35,
+  });
+
+  const snapshot = store.snapshot();
+  assert.equal(snapshot.maxBytes, Math.floor(2 * 1024 * 1024 * 1024 * 0.35));
+  assert.equal(snapshot.requiredPlaybackFrameCapacity, 70);
+  assert.equal(snapshot.effectivePlaybackFrameCapacity, 44);
+  assert.equal(snapshot.playbackCacheCapacitySufficient, false);
+  assert.equal(
+    snapshot.playbackCacheShortfallBytes,
+    requiredPlaybackCacheBytes - snapshot.maxBytes,
+  );
+});
+
 test("browser frame cache preserves configured capacity when heap telemetry is unavailable", () => {
   const context = createContext();
   const DataFrameStore = api(context, "DataFrameStoreCore");
@@ -612,6 +642,169 @@ test("concurrent map and widget demand shares one HTTP request", async () => {
   const [left, right] = await Promise.all([background, target]);
   assert.equal(left.frameKey, right.frameKey);
   assert.equal(requests, 1);
+});
+
+test("ordinary multi-frame demand does not expand requested dates to a month", async () => {
+  const context = createContext();
+  let rangeRequests = 0;
+  let singleRequests = 0;
+  const queryBroker = {
+    operationStatus: () => "active",
+    promoteSampledGrid: () => false,
+    requestSampledGrid(requestPacket) {
+      singleRequests += 1;
+      return Promise.resolve(framePacket(context, [{
+        cell_id: requestPacket.date,
+        lat: 15,
+        lon: 125,
+        value: singleRequests,
+      }]));
+    },
+    requestSampledGridRange() {
+      rangeRequests += 1;
+      throw new Error("ordinary demand must not issue a month range");
+    },
+  };
+  const FrameDemandService = api(context, "FrameDemandServiceCore");
+  const service = new FrameDemandService({
+    frameIdentity: api(context, "FrameIdentity"),
+    queryBroker,
+    dataFrameStore: api(context, "DataFrameStore"),
+    eventLog: api(context, "LifecycleEventLog"),
+    sampledGridContract: context.SampledGridContract,
+    clock: api(context, "ClockDomain").monotonic,
+  });
+
+  const progress = await service.demandMany([
+    request("2024-01-30"),
+    request("2024-01-31"),
+  ], { lane: "playback-window", scopeId: "preheater:january" });
+
+  assert.equal(progress.completed, 2);
+  assert.equal(progress.failed, 0);
+  assert.equal(singleRequests, 2);
+  assert.equal(rangeRequests, 0);
+  service.dispose();
+});
+
+test("one calendar month uses one range operation instead of daily operations", async () => {
+  const context = createContext({
+    statePatch: {
+      dataFrameStore: { maxEntries: 64, maxBytes: 128 * 1024 * 1024, stats: {} },
+    },
+  });
+  const january = Array.from({ length: 31 }, (_, index) => (
+    `2024-01-${String(index + 1).padStart(2, "0")}`
+  ));
+  let rangeRequests = 0;
+  let singleRequests = 0;
+  const queryBroker = {
+    operationStatus: () => "active",
+    promoteSampledGrid: () => false,
+    requestSampledGrid() {
+      singleRequests += 1;
+      throw new Error("calendar-month preheat must not issue daily operations");
+    },
+    requestSampledGridRange(requestPacket) {
+      rangeRequests += 1;
+      assert.equal(requestPacket.start, "2024-01-01");
+      assert.equal(requestPacket.end, "2024-01-31");
+      return Promise.resolve({
+        snapshots: Object.fromEntries(january.map((date) => [
+          date,
+          framePacket(context, [{ cell_id: date, date, lat: 15, lon: 125, value: 1 }]),
+        ])),
+        timing: { cache_hit: false },
+      });
+    },
+  };
+  const FrameDemandService = api(context, "FrameDemandServiceCore");
+  const service = new FrameDemandService({
+    frameIdentity: api(context, "FrameIdentity"),
+    queryBroker,
+    dataFrameStore: api(context, "DataFrameStore"),
+    eventLog: api(context, "LifecycleEventLog"),
+    sampledGridContract: context.SampledGridContract,
+    clock: api(context, "ClockDomain").monotonic,
+  });
+
+  const progress = await service.demandMany(january.map((date) => request(date)), {
+    lane: "playback-window",
+    scopeId: "preheater:january",
+    rangeMode: "calendar_month",
+  });
+
+  assert.equal(progress.completed, 31);
+  assert.equal(progress.failed, 0);
+  assert.equal(rangeRequests, 1);
+  assert.equal(singleRequests, 0);
+  service.dispose();
+});
+
+test("explicit monthly demand shares one range query with a concurrent playback target", async () => {
+  const context = createContext();
+  const source = deferred();
+  let rangeRequests = 0;
+  let singleRequests = 0;
+  const queryBroker = {
+    operationStatus: () => "active",
+    promoteSampledGrid: () => false,
+    requestSampledGrid() {
+      singleRequests += 1;
+      return Promise.resolve(framePacket(context));
+    },
+    requestSampledGridRange(requestPacket) {
+      rangeRequests += 1;
+      assert.equal(requestPacket.start, "2024-01-01");
+      assert.equal(requestPacket.end, "2024-01-31");
+      return source.promise;
+    },
+  };
+  const FrameDemandService = api(context, "FrameDemandServiceCore");
+  const store = api(context, "DataFrameStore");
+  const service = new FrameDemandService({
+    frameIdentity: api(context, "FrameIdentity"),
+    queryBroker,
+    dataFrameStore: store,
+    eventLog: api(context, "LifecycleEventLog"),
+    sampledGridContract: context.SampledGridContract,
+    clock: api(context, "ClockDomain").monotonic,
+  });
+  const january = service.demandMany([
+    request("2024-01-01"),
+    request("2024-01-02"),
+  ], {
+    lane: "playback-window",
+    scopeId: "preheater:january",
+    rangeMode: "calendar_month",
+  });
+  await flush();
+  const target = service.demand(request("2024-01-03"), {
+    lane: "playback-target",
+    scopeId: "playback-engine",
+  });
+  await flush();
+
+  assert.equal(rangeRequests, 1);
+  assert.equal(singleRequests, 0);
+  source.resolve({
+    snapshots: {
+      "2024-01-01": framePacket(context, [{ cell_id: "day-1", lat: 15, lon: 125, value: 1 }]),
+      "2024-01-02": framePacket(context, [{ cell_id: "day-2", lat: 15, lon: 125, value: 2 }]),
+      "2024-01-03": framePacket(context, [{ cell_id: "day-3", lat: 15, lon: 125, value: 3 }]),
+    },
+    timing: { cache_hit: false },
+  });
+  const [progress, targetFrame] = await Promise.all([january, target]);
+
+  assert.equal(progress.completed, 2);
+  assert.equal(progress.fetched, 2);
+  assert.equal(progress.failed, 0);
+  assert.equal(targetFrame.packet.frame.valueAt("cell_id", 0), "day-3");
+  assert.equal(store.inspect(request("2024-01-02")).status, "ready");
+  assert.equal(rangeRequests, 1);
+  assert.equal(singleRequests, 0);
+  service.dispose();
 });
 
 test("an in-flight viewport request satisfies a covered widget bbox without duplicate HTTP", async () => {

@@ -175,6 +175,7 @@ function loadPlaybackCacheService({
   };
   const { context } = loadBrowserScripts([
     "static/js/playback/adaptive-watermark-controller.js",
+    "static/js/playback/playback-preheater.js",
     "static/js/playback/playback-cache-service.js",
   ], globals);
   const createPlaybackCacheService = vm.runInContext("globalThis.createPlaybackCacheService", context);
@@ -184,6 +185,7 @@ function loadPlaybackCacheService({
     preheater: globals.PlaybackPreheater,
     watermarkController: globals.AdaptiveWatermarkController,
     fixedPolicyNormalizer: vm.runInContext("normalizedFixedWatermarkPolicy", context),
+    capacityPolicyNormalizer: vm.runInContext("normalizedPlaybackCacheCapacityPolicy", context),
     frameIdentity: globals.FrameIdentity,
     sampledGridLayerPredicate: globals.isSampledGridLayer,
   });
@@ -574,7 +576,7 @@ test("document visibility suspends only the playback clock and preserves the pro
   const app = readFileSync(
     path.join(repoRoot, "static/app.js"),
     "utf8",
-  );
+  ).replaceAll("\r\n", "\n");
   const start = app.indexOf('document.addEventListener("visibilitychange"');
   const end = app.indexOf("\n  });\n}", start);
   const body = app.slice(start, end);

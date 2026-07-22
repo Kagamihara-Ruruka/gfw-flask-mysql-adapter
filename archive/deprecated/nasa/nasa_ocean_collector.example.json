@@ -56,7 +56,7 @@
     ]
   },
   "store": {
-    "root": "D:/RRKAL_tools/nasa_ocean_store",
+    "root": "data/nasa_ocean_store",
     "raw_dir": "raw",
     "zarr_dir": "zarr",
     "manifest_dir": "manifests",
@@ -64,7 +64,7 @@
   },
   "sink": {
     "kind": "duckdb_array_read_model",
-    "database_path": "D:/RRKAL_tools/nasa_ocean_store/db/nasa_ocean.duckdb",
+    "database_path": "data/nasa_ocean_store/db/nasa_ocean.duckdb",
     "metadata_database": "BDDE38No1",
     "assets_table": "nasa_ocean_assets",
     "schema_table": "nasa_ocean_schema_snapshots",

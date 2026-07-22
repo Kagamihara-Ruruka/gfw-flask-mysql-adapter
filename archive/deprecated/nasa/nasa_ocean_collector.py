@@ -48,7 +48,7 @@ def iter_days(start: date, end: date):
 
 def resolve_store_path(config: dict[str, Any], key: str) -> Path:
     store = config.get("store", {})
-    root = Path(store.get("root", "D:/RRKAL_tools/nasa_ocean_store"))
+    root = Path(store.get("root", "data/nasa_ocean_store"))
     child = store.get(key, key)
     path = root / child
     path.mkdir(parents=True, exist_ok=True)
@@ -57,7 +57,7 @@ def resolve_store_path(config: dict[str, Any], key: str) -> Path:
 
 def resolve_database_path(config: dict[str, Any]) -> Path:
     sink = config.get("sink", {})
-    database_path = Path(sink.get("database_path", "D:/RRKAL_tools/nasa_ocean_store/db/nasa_ocean.duckdb"))
+    database_path = Path(sink.get("database_path", "data/nasa_ocean_store/db/nasa_ocean.duckdb"))
     if not database_path.is_absolute():
         database_path = ROOT / database_path
     database_path.parent.mkdir(parents=True, exist_ok=True)

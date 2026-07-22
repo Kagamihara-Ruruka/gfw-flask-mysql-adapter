@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import logging
 import socket
@@ -26,6 +28,20 @@ def _expand_path(value: Any, root: Path) -> Path:
     text = str(value or "").strip().replace("${APP_ROOT}", str(root))
     path = Path(text)
     return path.resolve() if path.is_absolute() else (root / path).resolve()
+
+
+def _spec_fingerprint(spec: dict[str, Any]) -> str:
+    execution_spec = {
+        "config_ref": spec["config_ref"],
+        "host": spec["host"],
+        "port": spec["port"],
+        "app": spec["app"],
+        "working_directory": str(spec["working_directory"]),
+        "python_path": str(spec["python_path"]),
+        "environment": spec["environment"],
+    }
+    payload = json.dumps(execution_spec, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def managed_runtime_spec(
@@ -73,7 +89,7 @@ def managed_runtime_spec(
         monitor_interval = float(runtime.get("monitor_interval_seconds") or 5)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{config_ref}: managed runtime intervals must be numeric") from exc
-    return {
+    spec = {
         "config_ref": config_ref,
         "name": str(route_config.get("name") or Path(config_ref).stem),
         "host": host,
@@ -85,6 +101,8 @@ def managed_runtime_spec(
         "startup_timeout_seconds": max(0.2, min(startup_timeout, 60.0)),
         "monitor_interval_seconds": max(0.5, min(monitor_interval, 60.0)),
     }
+    spec["spec_fingerprint"] = _spec_fingerprint(spec)
+    return spec
 
 
 class ManagedEndpointSupervisor:
@@ -108,6 +126,7 @@ class ManagedEndpointSupervisor:
         self._stop_event = Event()
         self._monitor: Thread | None = None
         self._processes: dict[str, subprocess.Popen[Any]] = {}
+        self._process_specs: dict[str, str] = {}
         self._streams: dict[str, tuple[Any, Any]] = {}
         self._statuses: dict[str, dict[str, Any]] = {}
         self._status_change_listeners: list[Callable[[], None]] = []
@@ -157,6 +176,7 @@ class ManagedEndpointSupervisor:
                 stdout_stream.close()
                 stderr_stream.close()
             self._processes.clear()
+            self._process_specs.clear()
             self._streams.clear()
 
     def ensure_all(self) -> list[dict[str, Any]]:
@@ -178,10 +198,29 @@ class ManagedEndpointSupervisor:
 
     def ensure(self, spec: dict[str, Any]) -> dict[str, Any]:
         config_ref = spec["config_ref"]
+        expected_fingerprint = str(spec["spec_fingerprint"])
+        with self._lock:
+            process = self._processes.get(config_ref)
+            owned_fingerprint = self._process_specs.get(config_ref)
+            if process is not None and process.poll() is not None:
+                self._stop_owned_process(config_ref)
+                process = None
+                owned_fingerprint = None
+            if process is not None and owned_fingerprint != expected_fingerprint:
+                self._stop_owned_process(config_ref)
+                process = None
+                owned_fingerprint = None
+
         if self.port_probe(spec["host"], spec["port"]):
-            with self._lock:
-                process = self._processes.get(config_ref)
-            return self._record_status(self._status(spec, "ready", process=process))
+            if process is not None and owned_fingerprint == expected_fingerprint:
+                return self._record_status(self._status(spec, "ready", process=process, owned=True))
+            return self._record_status(
+                self._status(
+                    spec,
+                    "conflict",
+                    error="endpoint port is occupied by a process not owned by this supervisor",
+                )
+            )
 
         launch_error: Exception | None = None
         with self._lock:
@@ -194,13 +233,14 @@ class ManagedEndpointSupervisor:
                     launch_error = exc
                 else:
                     self._processes[config_ref] = process
+                    self._process_specs[config_ref] = expected_fingerprint
         if launch_error is not None:
             return self._record_status(self._status(spec, "failed", error=str(launch_error)))
 
         deadline = time.monotonic() + spec["startup_timeout_seconds"]
         while time.monotonic() < deadline and not self._stop_event.is_set():
             if self.port_probe(spec["host"], spec["port"]):
-                return self._record_status(self._status(spec, "ready", process=process))
+                return self._record_status(self._status(spec, "ready", process=process, owned=True))
             if process.poll() is not None:
                 break
             self._stop_event.wait(0.1)
@@ -290,6 +330,7 @@ class ManagedEndpointSupervisor:
 
     def _stop_owned_process(self, config_ref: str) -> None:
         process = self._processes.pop(config_ref, None)
+        self._process_specs.pop(config_ref, None)
         if process is not None and process.poll() is None:
             process.terminate()
             try:
@@ -313,6 +354,7 @@ class ManagedEndpointSupervisor:
         *,
         process: subprocess.Popen[Any] | None = None,
         error: str | None = None,
+        owned: bool = False,
     ) -> dict[str, Any]:
         return {
             "config_ref": spec["config_ref"],
@@ -323,5 +365,7 @@ class ManagedEndpointSupervisor:
             "host": spec["host"],
             "port": spec["port"],
             "pid": process.pid if process is not None else None,
+            "owned": owned,
+            "spec_fingerprint": spec["spec_fingerprint"],
             "error": error,
         }

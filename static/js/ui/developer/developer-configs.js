@@ -8,9 +8,6 @@
 
   const configDrawerOpen = {};
 
-  function notifySourceRegistryChanged(reason) {
-    window.parent?.postMessage({ type: "rrkal:source-registry-changed", reason }, "*");
-  }
   const sourceGroupSelector = new SourceGroupSelector({
     Utils,
     Api,
@@ -108,10 +105,9 @@
     const packet = await Api.saveConfigContent(editor.path(), editor.content(), requestedGroup);
     const currentPath = packet.path || packet.config?.path || editor.path();
     editor.applyMove({ moved: currentPath, config: packet.config });
-    Utils.setMessage("config 已儲存");
+    Utils.setMessage("config 已儲存為待套用版本；請由啟動器受控重啟。", false);
     await loadDeveloperConfig(currentPath);
     await loadDeveloperStatusMachines();
-    notifySourceRegistryChanged("config-saved");
   }
 
   async function setDeveloperConfigLocked(configPath, locked) {
@@ -138,7 +134,6 @@
     Utils.setMessage("config 已刪除");
     await loadDeveloperConfigs();
     await loadDeveloperStatusMachines();
-    notifySourceRegistryChanged("config-deleted");
   }
 
   async function importDeveloperConfig(file, group = "auto") {
@@ -173,7 +168,6 @@
       Utils.setMessage(packet.message || "暫存 config 已導入");
       await loadDeveloperConfigs();
       await loadDeveloperStatusMachines();
-      notifySourceRegistryChanged("config-promoted");
       return packet;
     } finally {
       if (control) {
@@ -206,10 +200,11 @@
 
   async function setDeveloperConfigActive(configPath, active) {
     await Api.setActive(configPath, active);
-    Utils.setMessage(active ? "config 已啟用" : "config 已停用");
+    Utils.setMessage(
+      active ? "config 啟用狀態已儲存，待啟動器重啟套用。" : "config 停用狀態已儲存，待啟動器重啟套用。",
+    );
     await loadDeveloperConfigs();
     await loadDeveloperStatusMachines();
-    notifySourceRegistryChanged(active ? "config-enabled" : "config-disabled");
   }
 
   function bindDeveloperConfigControls() {

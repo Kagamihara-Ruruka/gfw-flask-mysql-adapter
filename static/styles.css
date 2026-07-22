@@ -169,6 +169,75 @@ body {
   background: #10161f;
 }
 
+.app-header-runtime {
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.runtime-identity-badge {
+  display: grid;
+  align-content: center;
+  min-width: 190px;
+  max-width: min(34vw, 420px);
+  padding: 7px 10px;
+  overflow: hidden;
+  border: 1px solid rgb(48 164 108 / 48%);
+  border-radius: 6px;
+  background: rgb(16 22 31 / 92%);
+  color: var(--text);
+  line-height: 1.15;
+}
+
+.runtime-identity-badge strong,
+.runtime-identity-badge span,
+.runtime-identity-badge small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-identity-badge strong {
+  color: var(--accent-strong);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.runtime-identity-badge span {
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.runtime-identity-badge small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.runtime-identity-badge.is-pending {
+  border-color: rgb(245 158 11 / 70%);
+}
+
+.runtime-identity-badge.is-blocked {
+  border-color: var(--danger);
+  background: rgb(78 22 29 / 92%);
+}
+
+@media (max-width: 900px) {
+  .app-header-runtime {
+    width: 100%;
+  }
+
+  .runtime-identity-badge {
+    flex: 1 1 auto;
+    max-width: none;
+  }
+}
+
 .layout {
   padding: 16px 20px 20px;
   min-height: calc(100vh - 104px);

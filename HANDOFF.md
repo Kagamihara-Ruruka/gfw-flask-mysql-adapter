@@ -6,9 +6,57 @@ Companion translation: [HANDOFF.zh-TW.md](HANDOFF.zh-TW.md)
 
 Runtime overview: [README.md](README.md)
 
+## Current integrated presentation path
+
+PR #4's Spark/PyHive, Kubernetes, and handoff work is retained. The integration branch adds a Docker-first presentation path so a second Windows machine can run the complete website and adapter without discarding the original in-cluster deployment.
+
+```text
+Browser -> host :5185/:5186
+  -> Docker app :5085/:5086
+  -> host.docker.internal:11000
+  -> interactive Windows SSH to bigred@192.168.32.201 over Tailscale
+  -> remote kubectl port-forward
+  -> deployment/dtadm:10000
+  -> lake.ocean.gold_map_metric
+```
+
+The recommended operator entrypoint is the Tk launcher. The CLI wrappers and
+JSON-lines controller invoke the same state machine:
+
+```powershell
+.\scripts\presentation\presentation-launcher.cmd
+.\scripts\presentation\start-presentation.cmd
+.\.venv\Scripts\python.exe .\scripts\presentation\presentationctl.py --json status
+.\scripts\presentation\stop-presentation.cmd
+```
+
+The launcher can supply SSH through Windows AskPass and optionally store the
+credential in Windows Credential Manager. The password never enters the repo,
+command line, runtime JSON, or event log. Direct CLI fallback uses a visible
+terminal. Startup validates HDFS/YARN/Iceberg, reuses or owns Spark Thrift
+explicitly, starts PostGIS, runs the one-shot EEZ bootstrap and persistent
+domain-tile prewarm, starts the app, and runs the five-dataset smoke test.
+Stop removes only resources owned by this checkout. Shared-cluster mutation is
+not part of normal startup.
+
+The Config Browser is a desired-state editor. A save creates a validated
+`pending_restart` generation; Query, Registry, Status, Health, and Supervisor
+continue using one immutable `RuntimeConfigSnapshot` until
+`presentationctl start` applies the generation through a controlled restart.
+The Dashboard and Developer surfaces expose the same `runtime_instance_id`,
+generation, config-bundle hash, effective backend/source, and runtime
+fingerprint. The config-bundle hash covers only the effective runtime config,
+Manifest, Mapping, and active source documents. The runtime fingerprint also
+binds generation, public ports, image, Compose, and bridge evidence. A smoke
+marker is accepted only when all of those values match the live deployment.
+
+The formal Sea1 Gold table was verified on 2026-07-22 for `taiwan` and `northwest_pacific`, from 2022-01-01 through 2024-12-31, at 4/16/32 km. All five metrics exist in `lake.ocean.gold_map_metric`: chlorophyll, fishing hours, ocean productivity, sea temperature, and sustainability pressure. HDFS, YARN with three running NodeManagers, and the shared Spark Thrift service on port 10000 passed the cluster preflight. The repository must not claim 2020-2021 serving coverage unless those years are later materialized and verified.
+
+The Kubernetes ConfigMap, Deployment, NodePort Service, and registry workflow described below remain valid handoff assets. They are not deleted or replaced by the presentation Compose path.
+
 ## 1. Executive summary
 
-This repository is ready to hand off as the Flask adapter and browser-application side of a larger cluster system. The currently exercised path is:
+This repository is ready to hand off as the Flask adapter and browser-application side of a larger cluster system. The original in-cluster path retained from PR #4 is:
 
 ```text
 Iceberg Gold table on HDFS
@@ -19,7 +67,7 @@ Iceberg Gold table on HDFS
   <- NodePort 32080
 ```
 
-Release `0.10.0` is the source-of-truth checkpoint. It supports an SST sampled-grid layer sourced from `lake.ocean.gold_map_metric`, with selectable AOIs and 4/16/32 km resolutions. The browser-facing runtime and deployment manifest are in this repo; production of the Iceberg Gold table and lifecycle of Spark/Hadoop/YARN belong upstream.
+Release `0.10.0` remains the backend checkpoint absorbed from PR #4. The formal Sea1 presentation table exposes five sampled-grid metrics from `lake.ocean.gold_map_metric`, uses the `taiwan` and `northwest_pacific` AOIs, covers 2022-01-01 through 2024-12-31, and supports 4/16/32 km resolutions. Upstream storage is monthly Parquet and Gold is built in monthly batches. The browser-facing runtime and deployment manifests are in this repo; production of the Iceberg Gold table and lifecycle of Spark/Hadoop/YARN belong upstream.
 
 The recommended merger with the other repository is a contract and deployment merge, not a blind source-tree overlay. Preserve the ownership boundaries in section 4 and use the gates in section 11.
 
@@ -29,26 +77,31 @@ The recommended merger with the other repository is a contract and deployment me
 | --- | --- |
 | Application version | `0.10.0` (`common_adapter/__init__.py`) |
 | Git checkpoint | tag `v0.10.0`, branch `codex/rrk-0.10.0` before this handoff commit |
-| Python image | `python:3.10-slim` |
+| Presentation Python image | `python:3.11-slim` |
 | Spark | `3.5.8-bin-hadoop3` |
 | Hadoop | `3.5.0` |
 | SQL transport | PyHive over HiveServer2 protocol |
-| Thrift endpoint expected by manifest | `dtadm:10000`, `auth=NONE`, user `bigred` |
+| Presentation Thrift endpoint | `host.docker.internal:11000`, forwarded to `dtadm:10000`; `auth=NONE`, user `bigred` |
 | Iceberg catalog | `lake`, Hadoop catalog |
 | Warehouse | `hdfs:///dataset/ocean/warehouse` |
 | Primary table | `lake.ocean.gold_map_metric` |
 | Kubernetes namespace | `dt` |
-| Flask Service | `bdde-flask-service`, NodePort `32080` |
+| Presentation host listeners | `5185` consumer/site/API and `5186` developer control plane |
+| Presentation container listeners | `5085` consumer/site/API and `5086` developer control plane |
+| Retained Kubernetes Service | `bdde-flask-service`, NodePort `32080` |
 | Container registry | `dkreg.taroko:5000` |
 | Current image reference | `dkreg.taroko:5000/bdde-flask:dev` |
 | Runtime class / node selector | `gvisor` / `dt=worker` |
 
 Validation at handoff:
 
-- Python: 55/55 tests pass after correcting a stale version assertion from `0.2.0` to `0.10.0`.
-- Node: all 13 contract-test files pass with the bundled Node runtime; rerun them in CI/build tooling.
-- `git diff --check` is part of the release gate.
-- Live Spark/HDFS/Kubernetes/registry connectivity must be validated in the target environment; unit tests mock or isolate those boundaries.
+- Python: 191/191 tests pass, plus 43 subtests.
+- Node: 294/294 tests pass across 28 `*.test.mjs` files with the bundled Node runtime.
+- The presentation/controller/launcher/runtime/server subset passes 40/40; the EEZ/registry/status/developer subset passes 33/33.
+- All Presentation PowerShell scripts parse, `docker compose -f compose.presentation.yaml config --quiet` passes, and controller contract/dry-run checks pass.
+- `git diff --check` remains part of the release gate.
+- Live validation on 2026-07-21 confirmed HDFS, three YARN workers, Spark Thrift, the Iceberg table, and all five presentation metrics through Docker/PyHive.
+- A read-only status check on 2026-07-22 correctly rejected the older live Compose instance: it still had a schema-v1 smoke marker and lacked the current runtime identity and persistent EEZ prewarm evidence. HTTP availability alone is not Presentation readiness.
 
 ## 3. What is implemented
 
@@ -64,14 +117,17 @@ Validation at handoff:
 - Leaflet/WebGL map rendering, playback/cache/preheat lifecycle, widgets, telemetry, and developer UI.
 - Versioned Kubernetes ConfigMap, Deployment, and NodePort Service.
 
-### Present but optional in the current manifest
+### Profile-dependent capabilities
 
 - MySQL datasets and DuckDB-to-MySQL import.
-- PostGIS-backed EEZ bootstrap, attribution, and vector tiles.
+- PostGIS-backed EEZ bootstrap, attribution, vector tiles, and persistent
+  domain-tile prewarm are required by the Presentation Compose profile.
 - AISStream-to-SQL collector and SQL/WebSocket live read path.
 - AISHub settings route as a reserved fallback.
 
-The current `bdde-flask-0.10.0.yaml` disables AIS and does not configure PostGIS. Do not treat the presence of code as proof that those services are deployed.
+The retained `bdde-flask-0.10.0.yaml` disables AIS and does not configure
+PostGIS. The Presentation Compose profile does configure PostGIS and proves EEZ
+readiness separately. Do not transfer capability claims between profiles.
 
 ## 4. Ownership boundary for the repository merge
 
@@ -197,7 +253,7 @@ Suggested verification from a host with Beeline:
 
 ```bash
 beeline -u 'jdbc:hive2://dtadm:10000/default' -n bigred \
-  -e "SELECT COUNT(*) FROM lake.ocean.gold_map_metric WHERE event_date = DATE '2022-01-01'"
+  -e "SELECT COUNT(*) FROM lake.ocean.gold_map_metric WHERE event_date = DATE '2024-01-01'"
 ```
 
 If the Spark SQL dialect rejects the quoted date form, use the verified literal syntax for the cluster; the purpose is to prove catalog access and one bounded Gold query.
@@ -230,7 +286,7 @@ From Windows PowerShell:
 ```powershell
 ssh -N -o ExitOnForwardFailure=yes `
   -L 15081:172.22.128.3:32080 `
-  bigred@192.168.32.200
+  bigred@192.168.32.201
 ```
 
 Keep that terminal open, then verify:
@@ -248,6 +304,9 @@ Open `http://127.0.0.1:15081/` for the UI. If SSH succeeds but HTTP fails, check
 ```powershell
 python -m unittest discover -s tests -p "test_*.py" -v
 node --test tests\*.test.mjs
+python scripts\presentation\presentationctl.py --json contract
+python scripts\presentation\presentationctl.py --json start --dry-run
+docker compose -f compose.presentation.yaml config --quiet
 git diff --check
 ```
 
@@ -275,6 +334,7 @@ Acceptance should cover both AOIs, all three resolutions, at least two dates, vi
 | Process-local snapshot cache | Cache is lost on restart and not shared across replicas. |
 | Single replica | No adapter HA; assess before production. |
 | Optional EEZ/AIS code | Not proof of deployed dependencies or data freshness. |
+| Older live Presentation instance | A schema-v1 smoke marker or missing runtime identity/prewarm evidence is not acceptable even when HTTP responds; restart through the current launcher and rerun smoke. |
 | Local compose passwords/Windows path | Development-only; do not import into cluster deployment. |
 | Historical manifests | Use 0.10.0 only unless intentionally reproducing an older release. |
 
@@ -299,6 +359,8 @@ Out of scope for this handoff: provisioning HDFS/YARN, generating the Gold table
 - [ ] Image pull succeeds.
 - [ ] Deployment rollout completes and Service has endpoints.
 - [ ] `/api/health`, `/api/spark/health`, and `/api/datasets` succeed through NodePort.
+- [ ] Dashboard and Developer report the same runtime instance, generation, fingerprint, effective backend, and config bundle hash.
+- [ ] Smoke evidence matches the current image, Compose file, config bundle, bridge owner, deployment generation, and persistent EEZ prewarm manifest.
 - [ ] UI renders SST for both AOIs and all resolutions.
 - [ ] Playback and cache behavior pass smoke checks.
 - [ ] Logs show no repeated reconnect, OOM, or query-resource failure.

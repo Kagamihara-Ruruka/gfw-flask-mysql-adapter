@@ -38,6 +38,7 @@
       "tile_query_concurrency": 6,
       "domain_mask": {
         "enabled": true,
+        "tile_timeout_ms": 45000,
         "topology_precision_degrees": 0.025,
         "topology_partition_degrees": 30,
         "prepare_on_startup": true,
@@ -47,7 +48,7 @@
         "host": "127.0.0.1",
         "port": 5433,
         "user": "postgres",
-        "password": "spatial123",
+        "password": "env:EEZ_POSTGRES_PASSWORD",
         "database": "common_spatial",
         "table": "eez_v12",
         "tile_table": "eez_v12_tile",

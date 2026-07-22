@@ -26,10 +26,17 @@ class SystemRoutes:
     def register(self, app: Flask) -> None:
         config = self.config
         developer_url = self.developer_url
+        runtime_identity = dict(config.get("__runtime_identity") or {})
+        playback_policy = dict(config.get("playback") or {})
 
         @app.get("/dashboard/")
         def dashboard():
-            return render_template("index.html", developer_url=developer_url)
+            return render_template(
+                "index.html",
+                developer_url=developer_url,
+                runtime_identity=runtime_identity,
+                playback_policy=playback_policy,
+            )
 
         @app.get("/favicon.ico")
         def favicon():
@@ -60,10 +67,23 @@ class SystemRoutes:
                         "routes": status_snapshot["routes"],
                         "layers": status_snapshot["layers"],
                         "status_generation": status_snapshot["generation"],
+                        "runtime_identity": runtime_identity,
+                        "runtime_fingerprint": runtime_identity.get("runtime_fingerprint"),
                     }
                 )
             except Exception as exc:
-                return jsonify({"status": "error", "error": str(exc)}), 503
+                return jsonify(
+                    {
+                        "status": "error",
+                        "error": str(exc),
+                        "runtime_identity": runtime_identity,
+                        "runtime_fingerprint": runtime_identity.get("runtime_fingerprint"),
+                    }
+                ), 503
+
+        @app.get("/api/runtime/identity")
+        def runtime_identity_packet():
+            return jsonify(runtime_identity)
 
         @app.get("/api/render/capability")
         def render_capability():

@@ -20,6 +20,7 @@ class FrameDemandServiceCore {
     this.sampledGridContract = sampledGridContract;
     this.clock = clock;
     this.inflight = new Map();
+    this.rangeInflight = new Map();
     this.consumerSequence = 0;
     this.disposed = false;
   }
@@ -135,6 +136,116 @@ class FrameDemandServiceCore {
     }
   }
 
+  monthRange(request) {
+    const match = /^(\d{4})-(\d{2})-\d{2}$/.exec(String(request?.date || ""));
+    if (!match) return null;
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    if (!Number.isInteger(year) || month < 1 || month > 12) return null;
+    const endDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    return Object.freeze({
+      start: `${match[1]}-${match[2]}-01`,
+      end: `${match[1]}-${match[2]}-${String(endDay).padStart(2, "0")}`,
+    });
+  }
+
+  rangeIntentKey(request, range) {
+    return `range|${this.frameIdentity.intentKey({ ...request, date: range.start })}|${range.end}`;
+  }
+
+  rangeCovers(entry, request) {
+    return Boolean(entry)
+      && this.frameIdentity.scopeKey(entry.request) === this.frameIdentity.scopeKey(request)
+      && String(request.date) >= entry.start
+      && String(request.date) <= entry.end;
+  }
+
+  rangeUnsupported(error) {
+    const message = String(error?.message || error || "").toLowerCase();
+    return message.includes("records_range_packet")
+      || message.includes("records_range") && message.includes("unsupported")
+      || message.includes("unsupported query batch operation");
+  }
+
+  async fetchRangeRequest(entry) {
+    const {
+      request,
+      controller,
+      intentKey,
+      physicalScopeId,
+      start,
+      end,
+    } = entry;
+    const startedAt = this.clock.now();
+    this.eventLog.record?.("QUERY_RANGE_STARTED", this.eventDetail(request, {
+      run_id: entry.runId,
+      lane: entry.lane,
+      scope_id: physicalScopeId,
+      start,
+      end,
+    }));
+    try {
+      const rangePacket = await this.queryBroker.requestSampledGridRange(
+        { ...request, start, end },
+        {
+          operationId: intentKey,
+          lane: entry.lane,
+          signal: controller.signal,
+          metadata: this.eventDetail(request, {
+            run_id: entry.runId,
+            resource: "sampled-grid-range",
+            scope_id: physicalScopeId,
+            start,
+            end,
+          }),
+        },
+      );
+      const stored = {};
+      let rowCount = 0;
+      for (const [date, sourcePacket] of Object.entries(rangePacket?.snapshots || {})) {
+        const snapshotRequest = this.frameIdentity.normalizeRequest({ ...request, date });
+        const packet = this.canonicalPacket(snapshotRequest, sourcePacket);
+        rowCount += Number(packet?.row_count ?? packet?.frame?.rowCount ?? 0);
+        this.sampledGridContract?.recordResolvedResolution?.(
+          snapshotRequest.datasetId,
+          packet?.grid || null,
+          { bbox: snapshotRequest.bbox },
+        );
+        stored[date] = this.dataFrameStore.put(snapshotRequest, packet, {
+          lane: entry.lane,
+          scopeId: physicalScopeId,
+          reason: "range-query",
+        });
+      }
+      this.eventLog.record?.("QUERY_RANGE_FINISHED", this.eventDetail(request, {
+        run_id: entry.runId,
+        lane: entry.lane,
+        scope_id: physicalScopeId,
+        start,
+        end,
+        duration_ms: this.clock.now() - startedAt,
+        snapshot_count: Object.keys(stored).length,
+        row_count: rowCount,
+        server_cache_hit: Boolean(rangePacket?.timing?.cache_hit),
+      }));
+      return Object.freeze({ rangePacket, stored: Object.freeze(stored) });
+    } catch (error) {
+      const cancelled = error?.name === "AbortError" || controller.signal.aborted;
+      this.eventLog.record?.(
+        cancelled ? "QUERY_RANGE_CANCELLED" : "QUERY_RANGE_FAILED",
+        this.eventDetail(request, {
+          run_id: entry.runId,
+          lane: entry.lane,
+          scope_id: physicalScopeId,
+          start,
+          end,
+          error: error?.message || String(error),
+        }),
+      );
+      throw error;
+    }
+  }
+
   createEntry(request, lane, runId = "") {
     const intentKey = this.frameIdentity.intentKey(request);
     const entry = {
@@ -153,6 +264,30 @@ class FrameDemandServiceCore {
     entry.promise = this.fetchRequest(entry).finally(() => {
       entry.settled = true;
       if (this.inflight.get(intentKey) === entry) this.inflight.delete(intentKey);
+    });
+    return entry;
+  }
+
+  createRangeEntry(request, range, lane, runId = "") {
+    const intentKey = this.rangeIntentKey(request, range);
+    const entry = {
+      request,
+      intentKey,
+      start: range.start,
+      end: range.end,
+      lane: String(lane || "background"),
+      runId: String(runId || ""),
+      physicalScopeId: `frame-demand:${intentKey}`,
+      controller: new AbortController(),
+      consumers: new Map(),
+      promise: null,
+      settled: false,
+      draining: false,
+    };
+    this.rangeInflight.set(intentKey, entry);
+    entry.promise = this.fetchRangeRequest(entry).finally(() => {
+      entry.settled = true;
+      if (this.rangeInflight.get(intentKey) === entry) this.rangeInflight.delete(intentKey);
     });
     return entry;
   }
@@ -291,6 +426,45 @@ class FrameDemandServiceCore {
       }
     }
 
+    const coveringRange = [...this.rangeInflight.values()].find((entry) => (
+      this.rangeCovers(entry, request)
+    ));
+    if (coveringRange) {
+      let fallbackToSingle = false;
+      this.eventLog.record?.("CACHE_WAIT", this.eventDetail(request, {
+        run_id: demandRunId,
+        lane,
+        covering_intent_key: coveringRange.intentKey,
+        reuse: "inflight_month_range",
+      }));
+      try {
+        await this.attachConsumer(coveringRange, {
+          lane,
+          signal,
+          scopeId,
+          consumerId: `${consumerId || "range"}:covering`,
+          runId: demandRunId,
+        });
+      } catch (error) {
+        if (error?.name === "AbortError" || !this.rangeUnsupported(error)) throw error;
+        fallbackToSingle = true;
+      }
+      if (signal?.aborted) throw this.abortError();
+      const reused = this.dataFrameStore.inspect(request);
+      if (reused.status === "ready") {
+        this.eventLog.record?.("CACHE_HIT", this.eventDetail(request, {
+          run_id: demandRunId,
+          frame_key: reused.frameKey,
+          lane,
+          reuse: "inflight_month_range",
+        }));
+        return reused;
+      }
+      if (!fallbackToSingle) {
+        throw new Error(`Monthly frame range did not materialize ${request.date}`);
+      }
+    }
+
     if (allowPartial) {
       const missing = this.dataFrameStore.missingRegions(request);
       if (missing.length > 0 && missing.length <= 8 && missing.some((bbox) => bbox !== request.bbox)) {
@@ -320,6 +494,7 @@ class FrameDemandServiceCore {
     scopeId = "",
     onProgress = null,
     runId = undefined,
+    rangeMode = "individual",
   } = {}) {
     this.assertActive();
     const unique = new Map();
@@ -328,26 +503,101 @@ class FrameDemandServiceCore {
       unique.set(this.frameIdentity.intentKey(normalized), normalized);
     }
     const progress = { total: unique.size, completed: 0, cacheHits: 0, fetched: 0, failed: 0 };
-    await Promise.all([...unique.values()].map(async (request, index) => {
+    const demandRunId = runId === undefined
+      ? String(this.eventLog.activeRunId?.() || "")
+      : String(runId || "");
+    const reportSuccess = (request, result, kind) => {
+      progress.completed += 1;
+      if (kind === "cache") progress.cacheHits += 1;
+      else progress.fetched += 1;
+      onProgress?.({ ok: true, request, result, ...progress });
+    };
+    const reportFailure = (request, error) => {
+      progress.completed += 1;
+      progress.failed += 1;
+      onProgress?.({ ok: false, request, error, ...progress });
+    };
+    const demandIndividually = async (group, offset = 0) => Promise.all(group.map(async (request, index) => {
       try {
         const result = await this.demand(request, {
           lane,
           signal,
           scopeId,
-          consumerId: `${scopeId || lane}-${index}`,
-          runId,
+          consumerId: `${scopeId || lane}-${offset + index}`,
+          runId: demandRunId,
         });
-        progress.completed += 1;
-        if (result.cacheHit) progress.cacheHits += 1;
-        else progress.fetched += 1;
-        onProgress?.({ ok: true, request, result, ...progress });
+        reportSuccess(request, result, result.cacheHit ? "cache" : "fetch");
       } catch (error) {
         if (error?.name === "AbortError") throw error;
-        progress.completed += 1;
-        progress.failed += 1;
-        onProgress?.({ ok: false, request, error, ...progress });
+        reportFailure(request, error);
       }
     }));
+
+    const missing = [];
+    for (const request of unique.values()) {
+      const inspected = this.dataFrameStore.inspect(request);
+      if (inspected.status === "ready") reportSuccess(request, inspected, "cache");
+      else missing.push(request);
+    }
+    if (!missing.length) return progress;
+    if (
+      rangeMode !== "calendar_month"
+      || typeof this.queryBroker.requestSampledGridRange !== "function"
+    ) {
+      await demandIndividually(missing);
+      return progress;
+    }
+
+    const rangeGroups = new Map();
+    const individual = [];
+    for (const request of missing) {
+      const range = this.monthRange(request);
+      if (!range) {
+        individual.push(request);
+        continue;
+      }
+      const key = this.rangeIntentKey(request, range);
+      const group = rangeGroups.get(key) || { key, range, requests: [] };
+      group.requests.push(request);
+      rangeGroups.set(key, group);
+    }
+
+    let individualOffset = 0;
+    await Promise.all([
+      ...[...rangeGroups.values()].map(async (group) => {
+        const baseRequest = group.requests[0];
+        const entry = this.rangeInflight.get(group.key)
+          || this.createRangeEntry(baseRequest, group.range, lane, demandRunId);
+        try {
+          await this.attachConsumer(entry, {
+            lane,
+            signal,
+            scopeId,
+            consumerId: `${scopeId || lane}:range:${group.range.start}`,
+            runId: demandRunId,
+          });
+          for (const request of group.requests) {
+            const result = this.dataFrameStore.inspect(request);
+            if (result.status !== "ready") {
+              throw new Error(`Monthly frame range did not materialize ${request.date}`);
+            }
+            reportSuccess(request, result, "fetch");
+          }
+        } catch (error) {
+          if (error?.name === "AbortError") throw error;
+          if (this.rangeUnsupported(error)) {
+            await demandIndividually(group.requests, individualOffset);
+            individualOffset += group.requests.length;
+            return;
+          }
+          for (const request of group.requests) {
+            this.dataFrameStore.markFailed(request, error);
+            reportFailure(request, error);
+          }
+        }
+      }),
+      ...(individual.length ? [demandIndividually(individual, missing.length)] : []),
+    ]);
     return progress;
   }
 
@@ -356,14 +606,18 @@ class FrameDemandServiceCore {
   }
 
   demandRange(context, options = {}) {
-    return this.demandMany(this.requestsForDates(context), options);
+    return this.demandMany(this.requestsForDates(context), {
+      ...options,
+      rangeMode: options.rangeMode || "calendar_month",
+    });
   }
 
   cancelScope(scopeId, options) {
     const normalized = String(scopeId || "");
     if (!normalized) return 0;
     let cancelled = 0;
-    for (const entry of this.inflight.values()) {
+    const entries = [...this.inflight.values(), ...this.rangeInflight.values()];
+    for (const entry of entries) {
       if (
         options?.includeActive === false
         && this.queryBroker.operationStatus?.(entry.intentKey) === "active"
@@ -392,7 +646,9 @@ class FrameDemandServiceCore {
     if (this.disposed) return;
     this.disposed = true;
     for (const entry of this.inflight.values()) entry.controller.abort();
+    for (const entry of this.rangeInflight.values()) entry.controller.abort();
     this.inflight.clear();
+    this.rangeInflight.clear();
   }
 }
 

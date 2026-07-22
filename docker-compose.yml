@@ -3,7 +3,7 @@ services:
     image: mysql:8.4
     container_name: common_adapter_mysql
     environment:
-      MYSQL_ROOT_PASSWORD: fishery123
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}"
       MYSQL_DATABASE: common_fishery
     ports:
       - "3307:3306"
@@ -13,7 +13,7 @@ services:
       - --collation-server=utf8mb4_unicode_ci
     volumes:
       - type: bind
-        source: D:/RRKAL_tools/gfw_mysql_data
+        source: "${MYSQL_DATA_PATH:?Set MYSQL_DATA_PATH in .env}"
         target: /var/lib/mysql
 
   postgis:
@@ -21,7 +21,7 @@ services:
     container_name: common_adapter_postgis
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: spatial123
+      POSTGRES_PASSWORD: "${EEZ_POSTGRES_PASSWORD:?Set EEZ_POSTGRES_PASSWORD in .env}"
       POSTGRES_DB: common_spatial
     ports:
       - "5433:5432"

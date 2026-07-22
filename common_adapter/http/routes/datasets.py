@@ -17,6 +17,7 @@ from common_adapter.db.connect import (
     schema_packet,
     time_series_packet,
 )
+from common_adapter.db.spark_thrift import spark_thrift_query_lane
 from common_adapter.layers.registry import RuntimeLayerRegistry
 from common_adapter.layers.runtime import dataset_layer_id
 from common_adapter.query.batch import QueryBatchExecutor, dataset_query_concurrency
@@ -26,7 +27,7 @@ from common_adapter.query.sampled_grid import (
     sampled_grid_public_fields,
 )
 from common_adapter.query.snapshot_cache import CANONICAL_SNAPSHOT_CACHE
-from common_adapter.query.transport import project_sampled_grid_render_packet
+from common_adapter.query.transport import project_sampled_grid_batch_packet
 from common_adapter.spatial.overlay import elapsed_ms
 
 
@@ -66,6 +67,20 @@ class BatchStreamTiming:
 
 class DatasetRoutes:
     DEFAULT_API_TIMING_PHASES = ("server_total_ms",)
+    QUERY_LANES = frozenset({
+        "foreground",
+        "background",
+        "map-current",
+        "playback-target",
+        "playback-window",
+        "widget-interactive",
+        "widget-auto",
+    })
+    BACKGROUND_QUERY_LANES = frozenset({
+        "background",
+        "playback-window",
+        "widget-auto",
+    })
 
     def __init__(
         self,
@@ -79,6 +94,7 @@ class DatasetRoutes:
         self.batch_executor = batch_executor
         self.batch_handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {}
         self.register_batch_handler("sampled_grid.records", self.sampled_grid_records_operation)
+        self.register_batch_handler("sampled_grid.records_range", self.sampled_grid_records_range_operation)
         CANONICAL_SNAPSHOT_CACHE.configure(
             max_total_rows=query_policy(config)["snapshot_cache_max_rows"]
         )
@@ -105,12 +121,51 @@ class DatasetRoutes:
             output_profile="canonical_frame",
         )
 
+    def sampled_grid_records_range_operation(self, operation: dict[str, Any]) -> dict[str, Any]:
+        dataset_id = str(operation.get("dataset_id") or "").strip()
+        if not dataset_id:
+            raise ValueError("sampled_grid.records_range requires dataset_id")
+        return self.records_range_result(
+            dataset_id,
+            operation["params"],
+            output_profile="canonical_frame",
+        )
+
     def execute_batch_operation(self, operation: dict[str, Any]) -> dict[str, Any]:
         kind = str(operation.get("kind") or "")
         handler = self.batch_handlers.get(kind)
         if handler is None:
             raise ValueError(f"unsupported query batch operation: {kind or '<missing>'}")
-        return handler(operation)
+        with spark_thrift_query_lane(self.batch_operation_query_lane(operation)):
+            return handler(operation)
+
+    @classmethod
+    def normalized_operation_lane(cls, value: Any) -> str:
+        lane = str(value or "foreground").strip().lower()
+        if lane not in cls.QUERY_LANES:
+            raise ValueError(f"unsupported query batch lane: {lane or '<missing>'}")
+        return lane
+
+    @classmethod
+    def operation_lane_class(cls, value: Any) -> str:
+        return (
+            "background"
+            if cls.normalized_operation_lane(value) in cls.BACKGROUND_QUERY_LANES
+            else "foreground"
+        )
+
+    def batch_operation_query_lane(self, operation: dict[str, Any]) -> str:
+        dataset_id = str(operation.get("dataset_id") or "").strip()
+        if not dataset_id:
+            return "foreground"
+        try:
+            dataset = self.get_dataset(dataset_id)
+            backend = str(dataset.get("backend") or "").strip().lower()
+        except Exception:
+            backend = ""
+        if backend != "hive":
+            return "foreground"
+        return self.operation_lane_class(operation.get("lane"))
 
     def batch_operation_source_key(self, operation: dict[str, Any]) -> str:
         dataset_id = str(operation.get("dataset_id") or "").strip()
@@ -120,7 +175,13 @@ class DatasetRoutes:
             dataset = self.get_dataset(dataset_id)
         except Exception:  # The operation handler will expose the canonical error.
             return f"{operation.get('kind') or 'unknown'}|{dataset_id}"
-        return str(dataset.get("__runtime_query_transport_key") or dataset_query_transport_key(dataset))
+        source_key = str(
+            dataset.get("__runtime_query_transport_key")
+            or dataset_query_transport_key(dataset)
+        )
+        if str(dataset.get("backend") or "").strip().lower() == "hive":
+            return f"{source_key}|query_lane={self.batch_operation_query_lane(operation)}"
+        return source_key
 
     def batch_operation_source_limit(self, operation: dict[str, Any]) -> int:
         dataset_id = str(operation.get("dataset_id") or "").strip()
@@ -242,6 +303,36 @@ class DatasetRoutes:
         self.finalize_api_timing(packet, elapsed_ms(request_start))
         return packet
 
+    def records_range_result(
+        self,
+        dataset_id: str,
+        values: Mapping[str, Any],
+        *,
+        output_profile: str = "rows",
+    ) -> dict[str, Any]:
+        request_start = time.perf_counter()
+        dataset = self.get_dataset(dataset_id)
+        start_date = values.get("start") or values.get("start_date")
+        end_date = values.get("end") or values.get("end_date")
+        if not start_date or not end_date:
+            raise ValueError("range records requires start and end")
+        query_context = self.query_context_from(values)
+        query_context["output_profile"] = output_profile
+        packet = records_range_packet(
+            self.config,
+            dataset,
+            start_date=str(start_date),
+            end_date=str(end_date),
+            bbox=parse_bbox(values.get("bbox")),
+            limit=values.get("limit", query_policy(self.config)["default_limit"]),
+            column_profile=values.get("columns") or "render",
+            query_context=query_context,
+        )
+        packet["dataset_id"] = dataset_id
+        packet["runtime"] = self.runtime_packet(dataset_id, dataset)
+        self.finalize_api_timing(packet, elapsed_ms(request_start))
+        return packet
+
     @staticmethod
     def batch_payload(payload: Any, *, max_operations: int) -> tuple[str, list[dict[str, Any]]]:
         if not isinstance(payload, dict):
@@ -269,6 +360,7 @@ class DatasetRoutes:
             params = raw_operation.get("params")
             if not kind or not isinstance(params, dict):
                 raise ValueError("query batch operation requires kind and params")
+            lane = DatasetRoutes.normalized_operation_lane(raw_operation.get("lane"))
             seen.add(operation_id)
             normalized.append(
                 {
@@ -276,6 +368,7 @@ class DatasetRoutes:
                     "kind": kind,
                     "dataset_id": dataset_id,
                     "params": params,
+                    "lane": lane,
                 }
             )
         return batch_id, normalized
@@ -425,7 +518,7 @@ class DatasetRoutes:
                     }
                     event["status"] = result.status
                     if result.error is None:
-                        event["packet"] = project_sampled_grid_render_packet(result.packet)
+                        event["packet"] = project_sampled_grid_batch_packet(result.packet)
                     else:
                         event["error"] = result.error
                     completed += 1
@@ -463,27 +556,8 @@ class DatasetRoutes:
 
         @app.get("/api/datasets/<dataset_id>/records/range")
         def records_range(dataset_id: str):
-            request_start = time.perf_counter()
             try:
-                dataset = self.get_dataset(dataset_id)
-                start_date = request.args.get("start") or request.args.get("start_date")
-                end_date = request.args.get("end") or request.args.get("end_date")
-                if not start_date or not end_date:
-                    return jsonify({"error": "range records requires start and end"}), 400
-                packet = records_range_packet(
-                    config,
-                    dataset,
-                    start_date=start_date,
-                    end_date=end_date,
-                    bbox=parse_bbox(request.args.get("bbox")),
-                    limit=request.args.get("limit", query_policy(config)["default_limit"]),
-                    column_profile=request.args.get("columns") or "render",
-                    query_context=self.query_context(),
-                )
-                packet["dataset_id"] = dataset_id
-                packet["runtime"] = self.runtime_packet(dataset_id, dataset)
-                packet["timing"]["api_total_ms"] = elapsed_ms(request_start)
-                return jsonify(packet)
+                return jsonify(self.records_range_result(dataset_id, request.args))
             except Exception as exc:
                 return jsonify({"error": str(exc)}), 400
 

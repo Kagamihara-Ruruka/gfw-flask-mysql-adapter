@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from common_adapter.http.interface import create_flask_app
 from common_adapter.http.routes.system import SystemRoutes
+from common_adapter.developer.probes.status import RouteProbe
 from common_adapter.layers.status import RouteStatusRegistry
 
 
@@ -38,7 +39,7 @@ class _RouteProbe:
     def __init__(self) -> None:
         self.database_calls = 0
 
-    def connection_status_from_config(self, config_ref, data, active):
+    def connection_status_from_config(self, config_ref, data, active, **_kwargs):
         self.database_calls += 1
         return [
             {
@@ -48,6 +49,7 @@ class _RouteProbe:
                 "backend": "mysql",
                 "enabled": active,
                 "connected": True,
+                "contract_detected": True,
                 "detail": "connected",
             }
         ]
@@ -62,6 +64,43 @@ class _EndpointProbe:
 
 
 class RouteStatusRegistryTests(unittest.TestCase):
+    def test_hive_health_uses_the_formal_query_adapter(self) -> None:
+        config_ref = "config/sources/database/spark-thrift.presentation.json"
+        source = {
+            "name": "pipeline_iceberg",
+            "sql_backend": {"kind": "hive"},
+            "connections": {"spark_thrift": {"kind": "hive"}},
+        }
+        runtime_config = {"__runtime_identity": {"profile": "PRESENTATION"}}
+        dataset = {
+            "connection_ref": "spark_thrift",
+            "__runtime_source_config_path": config_ref,
+        }
+        with patch(
+            "common_adapter.developer.probes.status.schema_packet",
+            return_value={"columns": ["event_date"]},
+        ) as schema_query:
+            rows = RouteProbe().connection_status_from_config(
+                config_ref,
+                source,
+                True,
+                runtime_config=runtime_config,
+                datasets={"pipeline_iceberg.chlor_a": dataset},
+            )
+
+        self.assertEqual(1, len(rows))
+        self.assertTrue(rows[0]["connected"])
+        self.assertTrue(rows[0]["contract_detected"])
+        self.assertIn("正式 Query Adapter 驗證成功", rows[0]["detail"])
+        schema_query.assert_called_once_with(
+            runtime_config,
+            dataset,
+            query_context={
+                "health_probe": True,
+                "dataset_id": "pipeline_iceberg.chlor_a",
+            },
+        )
+
     def test_one_snapshot_owns_distinct_route_and_layer_states(self) -> None:
         clock = [0.0]
         layer_registry = _LayerRegistry()

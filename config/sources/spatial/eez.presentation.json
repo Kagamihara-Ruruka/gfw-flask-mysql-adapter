@@ -1,0 +1,85 @@
+{
+  "schema": "rrkal.adapter.spatial.v1",
+  "role": "spatial",
+  "description": "Presentation EEZ route backed by the Docker Compose PostGIS service.",
+  "overlays": {
+    "eez": {
+      "enabled": true,
+      "provider": "postgis",
+      "full_gpkg_path": "data/eez/eez_v12.gpkg",
+      "source": {
+        "kind": "remote_gpkg_zip",
+        "url": "https://www.marineregions.org/download_file.php?name=World_EEZ_v12_20231025_gpkg.zip",
+        "source_page": "https://www.marineregions.org/downloads.php",
+        "version": "v12_20231025",
+        "archive_path": "data/eez/World_EEZ_v12_20231025_gpkg.zip",
+        "cache_path": "data/eez/eez_v12.gpkg",
+        "remove_archive": false,
+        "retry_seconds": 15,
+        "max_attempts": 0,
+        "form": {
+          "name": "BDDE38 Group 01",
+          "organisation": "iSpan BDDE38",
+          "email": "rrkal.common.adapter@example.com",
+          "country": "Taiwan (Province of China)",
+          "user_category": "academia",
+          "purpose_category": "Data exploration & testing"
+        }
+      },
+      "auto_download": true,
+      "auto_import": true,
+      "auto_replace": true,
+      "gpkg_table": "eez_v12",
+      "gpkg_geometry_column": "geom",
+      "force_full": false,
+      "tile_cache_max": 2048,
+      "tile_cache_path": "data/eez/mvt-cache",
+      "tile_query_concurrency": 6,
+      "domain_mask": {
+        "enabled": true,
+        "tile_query_concurrency": 2,
+        "tile_timeout_ms": 45000,
+        "topology_precision_degrees": 0.025,
+        "topology_partition_degrees": 30,
+        "prepare_on_startup": true,
+        "cache_path": "data/eez/derived-domain-cache",
+        "tile_disk_cache_max_entries": 4096,
+        "prewarm": {
+          "enabled": true,
+          "max_tiles": 512,
+          "tile_padding": 1,
+          "views": [
+            {
+              "id": "world",
+              "bbox": [-180, -85, 180, 85],
+              "zooms": [2, 3]
+            },
+            {
+              "id": "northwest_pacific",
+              "bbox": [105, 15, 135, 35],
+              "zooms": [4, 5, 6]
+            },
+            {
+              "id": "taiwan",
+              "bbox": [118, 20, 124, 27],
+              "zooms": [7, 8]
+            }
+          ]
+        }
+      },
+      "postgis": {
+        "host": "postgis",
+        "port": 5432,
+        "user": "postgres",
+        "password": "env:EEZ_POSTGRES_PASSWORD",
+        "database": "ocean_spatial",
+        "table": "eez_v12",
+        "tile_table": "eez_v12_tile",
+        "fill_table": "eez_v12_fill",
+        "boundary_table": "eez_v12_boundary",
+        "geometry_column": "geom",
+        "mvt_layer": "eez"
+      }
+    }
+  }
+}

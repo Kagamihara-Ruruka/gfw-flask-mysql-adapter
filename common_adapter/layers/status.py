@@ -71,8 +71,9 @@ class RouteStatusRegistry:
     def _build_snapshot(self) -> dict[str, Any]:
         layer_snapshot = self.layer_registry.snapshot()
         layers = layer_snapshot.get("layers") or []
+        datasets = layer_snapshot.get("datasets") or {}
         routes: list[dict[str, Any]] = []
-        routes.extend(self._database_rows(layers))
+        routes.extend(self._database_rows(layers, datasets))
         routes.extend(self._endpoint_rows(layers))
         routes.extend(self._websocket_rows(layers))
         routes.extend(self._spatial_rows(layers))
@@ -90,13 +91,23 @@ class RouteStatusRegistry:
             "source_errors": layer_snapshot.get("source_errors") or [],
         }
 
-    def _database_rows(self, layers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _database_rows(
+        self,
+        layers: list[dict[str, Any]],
+        datasets: dict[str, dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         for config_ref, _path, data in active_config_files_by_group("database", self.config):
-            for raw in self.route_probe.connection_status_from_config(config_ref, data, True):
+            for raw in self.route_probe.connection_status_from_config(
+                config_ref,
+                data,
+                True,
+                runtime_config=self.config,
+                datasets=datasets,
+            ):
                 backend = str(raw.get("backend") or "unknown").lower()
                 connected = bool(raw.get("connected"))
-                discovered = bool(connected and (backend == "mysql" or raw.get("contract_detected")))
+                discovered = bool(connected and raw.get("contract_detected"))
                 raw = {**raw, "schema_inspectable": discovered}
                 rows.append(
                     self._normalize_row(
@@ -107,7 +118,7 @@ class RouteStatusRegistry:
                         configured=raw.get("configured", True),
                         reachable=connected,
                         discovered=discovered,
-                        queryable=connected,
+                        queryable=connected and discovered,
                     )
                 )
         return rows

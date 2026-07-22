@@ -5,7 +5,6 @@ from copy import deepcopy
 from threading import RLock
 from typing import Any, Callable
 
-from common_adapter.developer.config_service import load_layer_mappings
 from common_adapter.endpoint.runtime import endpoint_datasets_from_routes
 from common_adapter.layers.runtime import (
     active_config_files_by_group,
@@ -13,6 +12,8 @@ from common_adapter.layers.runtime import (
     database_datasets_from_mappings,
     dataset_layer_id,
     imported_layer_ids,
+    layer_mappings_ref,
+    layer_mappings_with_runtime,
 )
 from common_adapter.query.identity import dataset_query_transport_key
 
@@ -84,14 +85,20 @@ class RuntimeLayerRegistry:
         return deepcopy(dataset) if dataset is not None else None
 
     def _build_snapshot(self) -> dict[str, Any]:
+        mappings = layer_mappings_with_runtime(self.config)
+        mappings_ref = layer_mappings_ref(self.config)
         database_datasets, database_errors = database_datasets_from_mappings(self.config)
         endpoint_datasets, endpoint_errors = endpoint_datasets_from_routes(
             active_config_files_by_group("database", self.config),
             source_route_group="database",
+            mappings=mappings,
+            mappings_config_ref=mappings_ref,
         )
         routed_endpoint_datasets, routed_endpoint_errors = endpoint_datasets_from_routes(
             active_config_files_by_group("endpoint", self.config),
             source_route_group="endpoint",
+            mappings=mappings,
+            mappings_config_ref=mappings_ref,
         )
         endpoint_datasets.update(routed_endpoint_datasets)
         endpoint_errors.extend(routed_endpoint_errors)
@@ -101,7 +108,7 @@ class RuntimeLayerRegistry:
             self.config,
             endpoint_datasets=endpoint_datasets,
         )
-        requested_layers = imported_layer_ids()
+        requested_layers = imported_layer_ids(self.config)
         datasets = {**database_datasets, **endpoint_datasets}
         for dataset_id, dataset in datasets.items():
             dataset.setdefault("dataset_id", dataset_id)
@@ -205,10 +212,9 @@ class RuntimeLayerRegistry:
             "availability_error": source_error,
         }
 
-    @staticmethod
-    def _mapping_for_declared_layer(layer_id: str) -> dict[str, Any]:
+    def _mapping_for_declared_layer(self, layer_id: str) -> dict[str, Any]:
         candidates: list[dict[str, Any]] = []
-        for mapping in load_layer_mappings().get("mappings", []):
+        for mapping in layer_mappings_with_runtime(self.config).get("mappings", []):
             if not mapping.get("enabled", True):
                 continue
             prefix = str(mapping.get("layer_id") or "").strip().lower()

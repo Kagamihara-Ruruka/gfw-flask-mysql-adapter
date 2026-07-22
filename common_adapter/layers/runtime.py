@@ -8,6 +8,7 @@ from common_adapter.db.connect import dataset_backend_info, validate_identifier
 from common_adapter.developer.config_service import (
     discover_config_files,
     has_builtin_probe,
+    infer_config_group,
     load_layer_mappings,
     load_router_manifest,
     normalize_config_ref,
@@ -25,6 +26,26 @@ from common_adapter.registry import unique_by
 LAYER_MAPPINGS_CONFIG_REF = "config/artifacts/layer_mappings.local.json"
 
 
+def manifest_with_runtime(runtime_config: dict[str, Any] | None) -> dict[str, Any]:
+    snapshot = (runtime_config or {}).get("__runtime_manifest_snapshot")
+    return deepcopy(snapshot) if isinstance(snapshot, dict) else load_router_manifest()
+
+
+def layer_mappings_with_runtime(runtime_config: dict[str, Any] | None) -> dict[str, Any]:
+    snapshot = (runtime_config or {}).get("__runtime_mapping_snapshot")
+    return deepcopy(snapshot) if isinstance(snapshot, dict) else load_layer_mappings()
+
+
+def layer_mappings_ref(runtime_config: dict[str, Any] | None) -> str:
+    configured = str((runtime_config or {}).get("__layer_mappings_path") or "").strip()
+    if not configured:
+        return LAYER_MAPPINGS_CONFIG_REF
+    try:
+        return normalize_config_ref(configured)
+    except Exception:
+        return configured.replace("\\", "/")
+
+
 def dataset_layer_id(dataset_id: str, dataset: dict[str, Any]) -> str:
     configured = str(dataset.get("data_layer") or dataset.get("layer_id") or "").strip().lower()
     if configured:
@@ -32,8 +53,8 @@ def dataset_layer_id(dataset_id: str, dataset: dict[str, Any]) -> str:
     return dataset_id.strip().lower()
 
 
-def imported_layer_ids() -> set[str]:
-    manifest = load_router_manifest()
+def imported_layer_ids(runtime_config: dict[str, Any] | None = None) -> set[str]:
+    manifest = manifest_with_runtime(runtime_config)
     return set(normalize_imported_layers(manifest.get("imported_layers")))
 
 
@@ -57,11 +78,11 @@ def runtime_config_refs(runtime_config: dict[str, Any] | None) -> set[str]:
 
 
 def active_refs_with_runtime(runtime_config: dict[str, Any] | None) -> set[str]:
-    return set(load_router_manifest()["active_configs"])
+    return set(manifest_with_runtime(runtime_config)["active_configs"])
 
 
 def locked_refs_with_runtime(runtime_config: dict[str, Any] | None) -> set[str]:
-    return set(load_router_manifest()["locked_configs"]) | runtime_config_refs(runtime_config)
+    return set(manifest_with_runtime(runtime_config)["locked_configs"]) | runtime_config_refs(runtime_config)
 
 
 def config_paths_with_runtime(runtime_config: dict[str, Any] | None) -> list[Path]:
@@ -77,6 +98,18 @@ def active_config_files_by_group(
     runtime_config: dict[str, Any] | None = None,
 ) -> list[tuple[str, Path, dict[str, Any]]]:
     active_refs = active_refs_with_runtime(runtime_config)
+    snapshots = (runtime_config or {}).get("__runtime_source_snapshots")
+    if isinstance(snapshots, dict):
+        rows: list[tuple[str, Path, dict[str, Any]]] = []
+        for ref in sorted(active_refs):
+            data = snapshots.get(ref)
+            if not isinstance(data, dict):
+                continue
+            path = resolve_config_ref(ref)
+            summary = {"group": infer_config_group(path, data)}
+            if config_supports_group(data, summary, group):
+                rows.append((ref, path, deepcopy(data)))
+        return rows
     locked_refs = locked_refs_with_runtime(runtime_config)
     runtime_refs = runtime_config_refs(runtime_config)
     rows: list[tuple[str, Path, dict[str, Any]]] = []
@@ -98,11 +131,15 @@ def active_layer_contract_rows(
     runtime_config: dict[str, Any] | None = None,
     endpoint_datasets: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    imported_layers = imported_layer_ids()
+    imported_layers = imported_layer_ids(runtime_config)
+    mappings = layer_mappings_with_runtime(runtime_config)
+    mappings_ref = layer_mappings_ref(runtime_config)
     contracts = build_layer_contracts(
         database_routes=active_config_files_by_group("database", runtime_config),
         websocket_routes=active_config_files_by_group("websocket", runtime_config),
         spatial_routes=active_config_files_by_group("spatial", runtime_config),
+        mappings=mappings,
+        mappings_config_ref=mappings_ref,
     )
     from common_adapter.endpoint.runtime import endpoint_datasets_from_routes, endpoint_layer_contracts
 
@@ -110,10 +147,14 @@ def active_layer_contract_rows(
         endpoint_datasets, _database_catalog_errors = endpoint_datasets_from_routes(
             active_config_files_by_group("database", runtime_config),
             source_route_group="database",
+            mappings=mappings,
+            mappings_config_ref=mappings_ref,
         )
         endpoint_route_datasets, _endpoint_errors = endpoint_datasets_from_routes(
             active_config_files_by_group("endpoint", runtime_config),
             source_route_group="endpoint",
+            mappings=mappings,
+            mappings_config_ref=mappings_ref,
         )
         endpoint_datasets.update(endpoint_route_datasets)
     contracts.extend(endpoint_layer_contracts(endpoint_datasets))
@@ -132,9 +173,9 @@ def active_layer_contract_rows(
     return rows
 
 
-def is_layer_imported(layer_id: str) -> bool:
+def is_layer_imported(layer_id: str, runtime_config: dict[str, Any] | None = None) -> bool:
     layer = str(layer_id or "").strip().lower()
-    return layer in imported_layer_ids()
+    return layer in imported_layer_ids(runtime_config)
 
 
 def _mapping_selected_columns(mapping: dict[str, Any]) -> list[str]:
@@ -169,7 +210,7 @@ def _mapping_selected_columns(mapping: dict[str, Any]) -> list[str]:
     return columns
 
 
-def _dataset_from_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
+def _dataset_from_mapping(mapping: dict[str, Any], runtime_config: dict[str, Any] | None = None) -> dict[str, Any]:
     roles = mapping.get("roles") if isinstance(mapping.get("roles"), dict) else {}
     time_column = validate_identifier(roles.get("time"), "mapping time_column")
     lat_column = validate_identifier(roles.get("lat"), "mapping lat_column")
@@ -222,7 +263,7 @@ def _dataset_from_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
             "__runtime_contract_group": "mapping",
             "__runtime_source_route_group": "database",
             "__runtime_mapping_id": mapping.get("mapping_id"),
-            "__runtime_config_path": LAYER_MAPPINGS_CONFIG_REF,
+            "__runtime_config_path": layer_mappings_ref(runtime_config),
             "__runtime_source_config_path": mapping.get("config_path"),
         }
     if sampled_grid is not None:
@@ -235,12 +276,12 @@ def database_datasets_from_mappings(
     config: dict[str, Any],
 ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
     """Build runtime datasets from Mapping Controller artifacts, not source config schemas."""
-    manifest = load_router_manifest()
+    manifest = manifest_with_runtime(config)
     active_configs = set(str(item) for item in manifest.get("active_configs") or [])
     imported_layers = set(normalize_imported_layers(manifest.get("imported_layers")))
     datasets: dict[str, dict[str, Any]] = {}
     errors: list[dict[str, Any]] = []
-    for mapping in load_layer_mappings().get("mappings", []):
+    for mapping in layer_mappings_with_runtime(config).get("mappings", []):
         if not mapping.get("enabled", True):
             continue
         sampled_grid = mapping.get("sampled_grid") if isinstance(mapping.get("sampled_grid"), dict) else {}
@@ -256,7 +297,7 @@ def database_datasets_from_mappings(
         try:
             if not dataset_id:
                 raise ValueError("mapping dataset id is required")
-            runtime_dataset = _dataset_from_mapping(mapping)
+            runtime_dataset = _dataset_from_mapping(mapping, config)
             dataset_backend_info(config, runtime_dataset)
             if dataset_id in datasets:
                 raise ValueError(f"duplicate mapping dataset id: {dataset_id}")

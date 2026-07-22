@@ -27,10 +27,15 @@ def _layer_label(layer_id: str, fallback: str = "") -> str:
     return fallback or layer_id.upper()
 
 
-def _mapping_contracts(database_routes: list[tuple[str, Any, dict[str, Any]]]) -> list[dict[str, Any]]:
+def _mapping_contracts(
+    database_routes: list[tuple[str, Any, dict[str, Any]]],
+    *,
+    mappings: dict[str, Any] | None = None,
+    mappings_config_ref: str = LAYER_MAPPINGS_CONFIG_REF,
+) -> list[dict[str, Any]]:
     contracts: list[dict[str, Any]] = []
     active_config_refs = {str(config_ref) for config_ref, _path, _route in database_routes}
-    for mapping in load_layer_mappings().get("mappings", []):
+    for mapping in (mappings or load_layer_mappings()).get("mappings", []):
         if not mapping.get("enabled", True):
             continue
         if str(mapping.get("config_path") or "") not in active_config_refs:
@@ -51,7 +56,7 @@ def _mapping_contracts(database_routes: list[tuple[str, Any, dict[str, Any]]]) -
                 "contract_source": "mapping_controller_contract",
                 "contract_group": "mapping",
                 "contract_status": "active",
-                "config_path": LAYER_MAPPINGS_CONFIG_REF,
+                "config_path": mappings_config_ref,
                 "source_route_group": "database",
                 "source_config_path": _text(mapping.get("config_path")),
                 "source_ref": _text(mapping.get("mapping_id")),
@@ -170,9 +175,15 @@ def build_layer_contracts(
     database_routes: list[tuple[str, Any, dict[str, Any]]],
     websocket_routes: list[tuple[str, Any, dict[str, Any]]],
     spatial_routes: list[tuple[str, Any, dict[str, Any]]],
+    mappings: dict[str, Any] | None = None,
+    mappings_config_ref: str = LAYER_MAPPINGS_CONFIG_REF,
 ) -> list[dict[str, Any]]:
     contracts = [
-        *_mapping_contracts(database_routes),
+        *_mapping_contracts(
+            database_routes,
+            mappings=mappings,
+            mappings_config_ref=mappings_config_ref,
+        ),
         *_websocket_contracts(websocket_routes),
         *_spatial_contracts(spatial_routes),
     ]

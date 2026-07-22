@@ -430,6 +430,14 @@ async function reloadSampledGridRecords() {
     const metricsSource = currentDatasetBackendDetail(packet);
     TimingMetrics.markRenderStart?.(metricsSource ? `${requestedLayerLabel} ${metricsSource}` : requestedLayerLabel);
     const renderResult = renderSampledGridMap(packet.frame, { requestContext });
+    if (!renderResult.deferred && renderResult.committed === false) {
+      RenderState.loading(requestedLayer, "視窗已變更，重新查詢");
+      setStatus(`${requestedLayerLabel} 視窗已變更，正在載入目前範圍`);
+      if (typeof schedulePrimaryReload === "function") {
+        schedulePrimaryReload(viewportReloadSettleMs());
+      }
+      return { ...renderResult, visible: false };
+    }
     renderTable(renderResult.frame, state.datasets[state.datasetId].display_columns, { layer: requestedLayer, date: requestedDate });
     const serverCacheHit = Boolean(packet.timing?.cache_hit);
     if (cacheHit || serverCacheHit) {
@@ -456,6 +464,12 @@ async function reloadSampledGridRecords() {
         if (!stale && completion?.reason === "land_mask_failed") {
           RenderState.error(requestedLayer, "陸地遮罩載入失敗");
           setStatus(`${requestedLayerLabel} 陸地遮罩載入失敗`, true);
+        } else if (!stale) {
+          RenderState.loading(requestedLayer, "視窗已變更，重新查詢");
+          setStatus(`${requestedLayerLabel} 視窗已變更，正在載入目前範圍`);
+          if (typeof schedulePrimaryReload === "function") {
+            schedulePrimaryReload(viewportReloadSettleMs());
+          }
         }
         return { ...renderResult, visible: false, completionStatus: completion?.status || "stale" };
       }

@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import datetime as dt
 import math
 import time
 from copy import deepcopy
 from typing import Any
 
 from common_adapter.db.connect import dataset_backend_info
-from common_adapter.db.spark_thrift import availability_packet, heatmap_packet, spark_defaults
+from common_adapter.db.spark_thrift import (
+    heatmap_packet,
+    heatmap_range_packet,
+    spark_defaults,
+)
 from common_adapter.endpoint.sampled_grid import (
     _bbox_mapping,
     _bounds_intersect,
@@ -30,6 +35,7 @@ from common_adapter.query.snapshot_cache import (
     SnapshotCachePolicy,
     SnapshotLoad,
 )
+from common_adapter.services.snapshot_split import split_rows_by_date
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -229,15 +235,18 @@ class HiveReadBackend:
             raise ValueError("hive sampled-grid dataset has no coverage area")
         resolution = self.available_resolutions[0]
         start_date, end_date = self._date_range()
-        packet = availability_packet(
-            self.config,
-            start_date=start_date,
-            end_date=end_date,
-            aoi=coverage_id,
-            product=str(self._source_value("product")),
-            metric=str(self._source_value("metric")),
-            resolution=int(resolution),
-        )
+        try:
+            first_date = dt.date.fromisoformat(start_date)
+            last_date = dt.date.fromisoformat(end_date)
+        except ValueError as exc:
+            raise ValueError("hive sampled-grid date_range must use ISO dates") from exc
+        if first_date > last_date:
+            raise ValueError("hive sampled-grid date_range start must not exceed end")
+        dates: list[str] = []
+        cursor = first_date
+        while cursor <= last_date:
+            dates.append(cursor.isoformat())
+            cursor += dt.timedelta(days=1)
         return {
             "columns": [
                 {"Field": column, "Type": "canonical"}
@@ -245,15 +254,20 @@ class HiveReadBackend:
             ],
             "row_count": None,
             "bounds": deepcopy(coverage.get("bounds")),
-            "dates": packet.get("dates") or [],
+            "dates": dates,
             "date_range": {"start": start_date, "end": end_date},
             "coverage_status": coverage_status,
             "coverage_id": coverage_id,
             "timing": {
-                **_mapping(packet.get("timing")),
+                "query_ms": 0.0,
+                "source_request_count": 0,
+                "availability_source": "effective_mapping_date_range",
                 "server_total_ms": round((time.perf_counter() - started) * 1000, 3),
             },
-            "connection": thaw_json(packet.get("connection") or {}),
+            "connection": {
+                "mode": "effective_mapping",
+                "connection_ref": self.connection_ref,
+            },
             "backend": {"kind": self.kind, "connection_ref": self.connection_ref},
         }
 
@@ -375,11 +389,225 @@ class HiveReadBackend:
         column_profile: str | None = None,
         query_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        raise UnsupportedQueryOperation(
-            "hive",
-            "records_range_packet",
-            "playback loads date snapshots on demand; bulk multi-date rows are intentionally disabled",
+        started = time.perf_counter()
+        try:
+            first_date = dt.date.fromisoformat(str(start_date))
+            last_date = dt.date.fromisoformat(str(end_date))
+        except ValueError as exc:
+            raise ValueError("range records requires ISO start and end dates") from exc
+        if first_date > last_date:
+            raise ValueError("start_date must not be after end_date")
+        dates: list[str] = []
+        cursor = first_date
+        while cursor <= last_date:
+            dates.append(cursor.isoformat())
+            cursor += dt.timedelta(days=1)
+
+        context = _mapping(query_context)
+        requested_bbox = _bbox_mapping(bbox)
+        if self.query_scope == "viewport" and requested_bbox is None:
+            raise ValueError("hive viewport range query requires bbox")
+        requested_resolution = _resolution_for_request(
+            self.available_resolutions,
+            requested_bbox,
+            context,
         )
+        query_resolution, estimated_rows = self._effective_viewport_resolution(
+            requested_resolution,
+            requested_bbox,
+        )
+        coverage, coverage_status, coverage_id = self._coverage_for_request(
+            requested_bbox,
+            context,
+        )
+        effective_limit = _effective_limit(limit)
+        grid = {
+            "contract_version": SAMPLED_GRID_CONTRACT_VERSION,
+            "grid_profile": deepcopy(_mapping(self.descriptor.get("grid_profile"))),
+            "requested_resolution_km": requested_resolution,
+            "actual_resolution_km": query_resolution,
+            "available_resolutions_km": self.available_resolutions,
+            "lod_degraded": query_resolution > requested_resolution,
+            "degrade_reason": "viewport_row_budget" if query_resolution > requested_resolution else None,
+            "estimated_source_rows": estimated_rows,
+            "coverage_status": coverage_status,
+            "coverage_id": coverage_id,
+            "zero_is_data": bool(self.descriptor.get("zero_is_data", True)),
+            "alignment": deepcopy(_mapping(self.descriptor.get("alignment"))),
+        }
+
+        if coverage is None:
+            return {
+                "row_contract_version": SAMPLED_GRID_CONTRACT_VERSION,
+                "start": first_date.isoformat(),
+                "end": last_date.isoformat(),
+                "dates": dates,
+                "snapshots": {date_value: [] for date_value in dates},
+                "snapshot_count": len(dates),
+                "row_count": 0,
+                "limit": effective_limit,
+                "limit_mode": "per_snapshot",
+                "column_profile": column_profile or "render",
+                "columns": sampled_grid_canonical_columns(self.dataset),
+                "grid": grid,
+                "timing": {
+                    "cache_hit": True,
+                    "query_ms": 0.0,
+                    "normalize_ms": 0.0,
+                    "split_ms": 0.0,
+                    "server_total_ms": round((time.perf_counter() - started) * 1000, 3),
+                },
+                "backend": {"kind": self.kind, "connection_ref": self.connection_ref},
+            }
+
+        cached: dict[str, SnapshotLoad] = {}
+        missing: list[str] = []
+        cache_started = time.perf_counter()
+        for date_value in dates:
+            identity = self._snapshot_identity(
+                date_value,
+                coverage_id,
+                query_resolution,
+                requested_bbox,
+            )
+            loaded = CANONICAL_SNAPSHOT_CACHE.get(
+                self.snapshot_cache_namespace,
+                self.snapshot_cache_policy,
+                identity,
+            )
+            if loaded is None:
+                missing.append(date_value)
+            else:
+                cached[date_value] = loaded
+        cache_lookup_ms = (time.perf_counter() - cache_started) * 1000
+
+        query_ms = 0.0
+        split_ms = 0.0
+        normalize_ms = 0.0
+        connection: dict[str, Any] = {}
+        if missing:
+            configured_limit = self.descriptor.get("snapshot_limit")
+            snapshot_limit = None if configured_limit in (None, "") else int(configured_limit)
+            query_started = time.perf_counter()
+            source_packet = heatmap_range_packet(
+                self.config,
+                start_date=min(missing),
+                end_date=max(missing),
+                aoi=coverage_id,
+                product=str(self._source_value("product")),
+                metric=str(self._source_value("metric")),
+                resolution=int(query_resolution),
+                limit=snapshot_limit,
+                bbox=(
+                    None
+                    if self.query_scope != "viewport" or requested_bbox is None
+                    else (
+                        requested_bbox["west"],
+                        requested_bbox["south"],
+                        requested_bbox["east"],
+                        requested_bbox["north"],
+                    )
+                ),
+                geometry=_mapping(self.descriptor.get("geometry")),
+            )
+            query_ms = (time.perf_counter() - query_started) * 1000
+            connection = thaw_json(source_packet.get("connection") or {})
+            split = split_rows_by_date(
+                source_packet.get("rows") or [],
+                date_column="event_date",
+                allowed_dates=missing,
+            )
+            split_ms = float(split.get("split_ms") or 0)
+            source_snapshots = _mapping(split.get("snapshots"))
+            normalize_started = time.perf_counter()
+            for date_value in missing:
+                rows: list[dict[str, Any]] = []
+                for source_row in source_snapshots.get(date_value) or []:
+                    if not isinstance(source_row, dict):
+                        continue
+                    row = {
+                        **source_row,
+                        "resolution_km": source_row.get("resolution_km", query_resolution),
+                    }
+                    rows.append(
+                        canonicalize_sampled_grid_row(
+                            row,
+                            self.mapping_context,
+                            context={"date": date_value},
+                        )
+                    )
+                identity = self._snapshot_identity(
+                    date_value,
+                    coverage_id,
+                    query_resolution,
+                    requested_bbox,
+                )
+                payload = {
+                    "rows": rows,
+                    "actual_resolution_km": query_resolution,
+                    "source_query_ms": round(query_ms, 3),
+                    "normalize_ms": 0.0,
+                    "connection": connection,
+                    "range_source": {
+                        "start": min(missing),
+                        "end": max(missing),
+                    },
+                }
+                cached[date_value] = CANONICAL_SNAPSHOT_CACHE.get_or_load(
+                    self.snapshot_cache_namespace,
+                    self.snapshot_cache_policy,
+                    identity,
+                    lambda identity=identity, payload=payload: SnapshotLoad(identity, payload),
+                )
+            normalize_ms = (time.perf_counter() - normalize_started) * 1000
+
+        snapshots: dict[str, list[dict[str, Any]]] = {}
+        row_count = 0
+        for date_value in dates:
+            payload = _mapping(cached[date_value].payload)
+            rows = [
+                row
+                for row in payload.get("rows") or []
+                if _bounds_intersect(row, requested_bbox)
+            ]
+            if effective_limit is not None:
+                rows = rows[:effective_limit]
+            snapshots[date_value] = rows
+            row_count += len(rows)
+            if not connection:
+                connection = thaw_json(payload.get("connection") or {})
+
+        cache_stats = CANONICAL_SNAPSHOT_CACHE.stats(self.snapshot_cache_namespace)
+        return {
+            "row_contract_version": SAMPLED_GRID_CONTRACT_VERSION,
+            "start": first_date.isoformat(),
+            "end": last_date.isoformat(),
+            "dates": dates,
+            "snapshots": snapshots,
+            "snapshot_count": len(snapshots),
+            "row_count": row_count,
+            "limit": effective_limit,
+            "limit_mode": "per_snapshot",
+            "column_profile": column_profile or "render",
+            "columns": sampled_grid_canonical_columns(self.dataset),
+            "grid": grid,
+            "timing": {
+                "cache_hit": not missing,
+                "cache_hits": len(dates) - len(missing),
+                "cache_misses": len(missing),
+                "cache_namespace_entries": cache_stats["namespace_entries"],
+                "cache_total_entries": cache_stats["total_entries"],
+                "cache_total_rows": cache_stats["total_rows"],
+                "cache_max_rows": cache_stats["max_total_rows"],
+                "cache_lookup_ms": round(cache_lookup_ms, 3),
+                "query_ms": round(query_ms, 3),
+                "normalize_ms": round(normalize_ms, 3),
+                "split_ms": round(split_ms, 3),
+                "server_total_ms": round((time.perf_counter() - started) * 1000, 3),
+            },
+            "connection": connection,
+            "backend": {"kind": self.kind, "connection_ref": self.connection_ref},
+        }
 
     def time_series_packet(
         self,

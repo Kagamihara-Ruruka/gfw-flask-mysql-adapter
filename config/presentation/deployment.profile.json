@@ -1,0 +1,42 @@
+{
+  "schema": "bdde38.presentation.deployment.v1",
+  "profile": "PRESENTATION",
+  "managed_by": "presentationctl",
+  "cluster": {
+    "environment": "sea1",
+    "ssh_target": "bigred@192.168.32.201",
+    "kubernetes_context": "kubernetes-admin@sea1",
+    "namespace": "dt",
+    "spark_target": "deployment/dtadm",
+    "expected_yarn_nodes": 3,
+    "spark_service_port": 10000,
+    "spark_lifecycle": "reuse_required"
+  },
+  "ports": {
+    "remote_bridge": 21000,
+    "local_tunnel": 11000,
+    "host_http": 5185,
+    "host_developer": 5186,
+    "container_http": 5085,
+    "container_developer": 5086
+  },
+  "data": {
+    "catalog": "lake",
+    "namespace": "ocean",
+    "table": "lake.ocean.gold_map_metric",
+    "warehouse": "hdfs:///dataset/ocean/warehouse",
+    "snapshot_id": "6665865250480704800",
+    "serving_start": "2022-01-01",
+    "serving_end": "2024-12-31",
+    "distinct_days": 1096,
+    "aoi_ids": [
+      "taiwan",
+      "northwest_pacific"
+    ],
+    "resolutions_km": [
+      4,
+      16,
+      32
+    ]
+  }
+}

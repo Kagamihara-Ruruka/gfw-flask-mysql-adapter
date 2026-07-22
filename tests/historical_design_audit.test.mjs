@@ -137,7 +137,7 @@ test("PlaybackEngine exclusively owns buffer episodes and wall-clock timeout pol
   assert.match(engine, /episode\.waitMs\(this\.clock\.now\(\)\)/);
   assert.doesNotMatch(controls, /BUFFER_TIMEOUT|bufferTimeoutMs|bufferWaitStartedAt/);
   assert.match(compositionRoot, /frameBufferPolicy:\s*PlaybackFrameBuffer/);
-  assert.match(compositionRoot, /bufferTimeoutMs:\s*PlaybackTimePolicy\.BUFFER_TIMEOUT_MS/);
+  assert.match(compositionRoot, /bufferTimeoutMs:\s*PlaybackTimePolicy\.bufferTimeoutMs\(this\.runtimeIdentity\)/);
 });
 
 test("long-lived UI helpers own and dispose their browser resources", () => {

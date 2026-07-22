@@ -23,6 +23,21 @@ def canonical_packet(date: str) -> dict:
     }
 
 
+def canonical_range_packet(start: str, end: str) -> dict:
+    return {
+        "row_contract_version": "rrkal.sampled_grid.v1",
+        "snapshot_profile": "canonical_frame",
+        "start": start,
+        "end": end,
+        "snapshots": {
+            start: canonical_packet(start),
+            end: canonical_packet(end),
+        },
+        "snapshot_count": 2,
+        "row_count": 2,
+    }
+
+
 def batch_payload(*operation_ids: str) -> dict:
     return {
         "schema": "query_batch.v1",
@@ -145,6 +160,34 @@ class QueryBatchRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("operation_id must be unique", response.get_json()["error"])
 
+    def test_batch_rejects_unknown_query_lane(self) -> None:
+        payload = batch_payload("invalid-lane")
+        payload["operations"][0]["lane"] = "unbounded-priority"
+
+        response = self.client.post("/api/query/batch", json=payload)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("unsupported query batch lane", response.get_json()["error"])
+
+    def test_hive_capacity_is_partitioned_into_bounded_query_lanes(self) -> None:
+        dataset = self.routes.layer_registry.get_dataset.return_value
+        dataset["backend"] = "hive"
+        payload = batch_payload("background", "foreground")
+        payload["operations"][0]["lane"] = "playback-window"
+        payload["operations"][1]["lane"] = "playback-target"
+        _batch_id, operations = self.routes.batch_payload(payload, max_operations=3)
+
+        keys = [self.routes.batch_operation_source_key(operation) for operation in operations]
+
+        self.assertEqual(keys, [
+            "source-test|query_lane=background",
+            "source-test|query_lane=foreground",
+        ])
+        self.assertEqual(self.routes.batch_source_capacities(operations), {
+            "source-test|query_lane=background": 2,
+            "source-test|query_lane=foreground": 2,
+        })
+
     def test_unsupported_operation_is_isolated_from_supported_results(self) -> None:
         self.routes.records_result = lambda _dataset_id, params, **_kwargs: canonical_packet(  # type: ignore[method-assign]
             params["date"]
@@ -159,6 +202,39 @@ class QueryBatchRouteTests(unittest.TestCase):
         self.assertEqual(by_id["unsupported"]["status"], "error")
         self.assertIn("unsupported query batch operation", by_id["unsupported"]["error"])
         self.assertEqual(by_id["supported"]["status"], "ok")
+
+    def test_batch_accepts_one_canonical_month_range_operation(self) -> None:
+        self.routes.records_range_result = (  # type: ignore[method-assign]
+            lambda _dataset_id, params, **_kwargs: canonical_range_packet(
+                params["start"],
+                params["end"],
+            )
+        )
+        payload = {
+            "schema": "query_batch.v1",
+            "batch_id": "month-test",
+            "operations": [{
+                "operation_id": "january",
+                "kind": "sampled_grid.records_range",
+                "dataset_id": "ocean",
+                "params": {
+                    "start": "2024-01-01",
+                    "end": "2024-01-31",
+                    "bbox": "120,10,130,20",
+                    "limit": "max",
+                    "columns": "render",
+                    "resolution": 4,
+                },
+            }],
+        }
+
+        response = self.client.post("/api/query/batch", json=payload)
+        events = [json.loads(line) for line in response.data.decode("utf-8").splitlines()]
+        result = next(event for event in events if event["type"] == "batch.result")
+
+        self.assertEqual("ok", result["status"])
+        self.assertEqual("canonical_frame", result["packet"]["snapshot_profile"])
+        self.assertEqual(2, len(result["packet"]["snapshots"]))
 
     def test_batch_stream_supports_incremental_gzip(self) -> None:
         self.routes.records_result = lambda _dataset_id, params, **_kwargs: canonical_packet(  # type: ignore[method-assign]

@@ -1561,6 +1561,26 @@ test("sampled-grid viewport changes replace the query scope after the settle win
   assert.doesNotMatch(refresh, /schedulePrimaryReload\(250\)/);
 });
 
+test("a stale render transaction schedules the current viewport instead of reporting ready", () => {
+  const apiClient = fs.readFileSync(
+    path.join(root, "static/js/services/api-client.js"),
+    "utf8",
+  );
+  const staleBranch = apiClient.indexOf("renderResult.committed === false");
+  const readyOffset = apiClient.slice(staleBranch).search(/RenderState\.ready\(\s*requestedLayer/);
+  const readyBranch = readyOffset >= 0 ? staleBranch + readyOffset : -1;
+  assert.ok(staleBranch >= 0, "API client must detect a renderer-rejected transaction");
+  assert.ok(readyBranch > staleBranch, "stale render handling must run before ready is reported");
+  assert.match(
+    apiClient.slice(staleBranch, readyBranch),
+    /schedulePrimaryReload\(viewportReloadSettleMs\(\)\)/,
+  );
+  assert.match(
+    apiClient.slice(staleBranch, readyBranch),
+    /visible:\s*false/,
+  );
+});
+
 test("sampled-grid viewport resize invalidates the active context and schedules one replacement", async () => {
   const source = fs.readFileSync(path.join(root, "static/js/core/render-refresh.js"), "utf8");
   const handlers = {};

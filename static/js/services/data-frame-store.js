@@ -54,6 +54,19 @@ class DataFrameStoreCore {
     const maxBytes = heapSafeMaxBytes > 0
       ? (configuredMaxBytes > 0 ? Math.min(configuredMaxBytes, heapSafeMaxBytes) : heapSafeMaxBytes)
       : configuredMaxBytes;
+    const requiredPlaybackCacheBytes = Math.max(0, Math.floor(Number(
+      configured.requiredPlaybackCacheBytes || 0,
+    )));
+    const requiredPlaybackFrameCapacity = Math.max(0, Math.floor(Number(
+      configured.requiredPlaybackFrameCapacity || 0,
+    )));
+    const ratedPlaybackFrameBytes = Math.max(0, Math.floor(Number(
+      configured.ratedPlaybackFrameBytes || 0,
+    )));
+    const effectivePlaybackFrameCapacity = ratedPlaybackFrameBytes > 0 && maxBytes > 0
+      ? Math.floor(maxBytes / ratedPlaybackFrameBytes)
+      : 0;
+    const playbackCacheShortfallBytes = Math.max(0, requiredPlaybackCacheBytes - maxBytes);
     return {
       maxEntries: rawMaxEntries <= 0 ? 0 : Math.max(12, rawMaxEntries),
       maxBytes,
@@ -63,6 +76,13 @@ class DataFrameStoreCore {
       heapBudgetFraction: safeHeapBudgetFraction,
       heapSafetyApplied: heapSafeMaxBytes > 0
         && (configuredMaxBytes <= 0 || maxBytes < configuredMaxBytes),
+      requiredPlaybackCacheBytes,
+      requiredPlaybackFrameCapacity,
+      ratedPlaybackFrameBytes,
+      effectivePlaybackFrameCapacity,
+      playbackCacheShortfallBytes,
+      playbackCacheCapacitySufficient: requiredPlaybackCacheBytes <= 0
+        || playbackCacheShortfallBytes === 0,
     };
   }
 
@@ -79,6 +99,12 @@ class DataFrameStoreCore {
       heapSafeMaxBytes,
       heapBudgetFraction,
       heapSafetyApplied,
+      requiredPlaybackCacheBytes,
+      requiredPlaybackFrameCapacity,
+      ratedPlaybackFrameBytes,
+      effectivePlaybackFrameCapacity,
+      playbackCacheShortfallBytes,
+      playbackCacheCapacitySufficient,
     } = options();
     const patch = {
       cacheEntries: cache.size,
@@ -89,6 +115,12 @@ class DataFrameStoreCore {
       browserHeapSafeCacheBytes: heapSafeMaxBytes,
       browserHeapBudgetFraction: heapBudgetFraction,
       browserHeapSafetyApplied: heapSafetyApplied,
+      requiredPlaybackCacheBytes,
+      requiredPlaybackFrameCapacity,
+      ratedPlaybackFrameBytes,
+      effectivePlaybackFrameCapacity,
+      playbackCacheShortfallBytes,
+      playbackCacheCapacitySufficient,
       pinnedEntries: [...pins.values()].filter((owners) => owners.size > 0).length,
       aliasEntries: aliases.size,
       ...extra,
@@ -601,6 +633,12 @@ class DataFrameStoreCore {
       heapSafeMaxBytes,
       heapBudgetFraction,
       heapSafetyApplied,
+      requiredPlaybackCacheBytes,
+      requiredPlaybackFrameCapacity,
+      ratedPlaybackFrameBytes,
+      effectivePlaybackFrameCapacity,
+      playbackCacheShortfallBytes,
+      playbackCacheCapacitySufficient,
     } = options();
     return Object.freeze({
       entries: cache.size,
@@ -613,6 +651,12 @@ class DataFrameStoreCore {
       heapSafeMaxBytes,
       heapBudgetFraction,
       heapSafetyApplied,
+      requiredPlaybackCacheBytes,
+      requiredPlaybackFrameCapacity,
+      ratedPlaybackFrameBytes,
+      effectivePlaybackFrameCapacity,
+      playbackCacheShortfallBytes,
+      playbackCacheCapacitySufficient,
       maxEntries,
       pinned: [...pins.values()].reduce((total, owners) => total + owners.size, 0),
       failures: failures.size,

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from common_adapter.config.contracts import load_assembled_config
-from common_adapter.config.paths import runtime_config_path
+from common_adapter.config.paths import activate_runtime_profile, runtime_config_path
 from common_adapter.query.builtins import register_builtin_query_adapters
 from common_adapter.query.registry import UnsupportedQueryOperation, instantiate_query_adapter
 from common_adapter.query.serialization import json_ready, rows_json_ready
@@ -43,6 +43,7 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     if not config_path.is_absolute():
         config_path = ROOT / config_path
     config = load_assembled_config(config_path)
+    activate_runtime_profile(config)
     validate_config(config)
     return config
 
@@ -1102,7 +1103,48 @@ def records_range_packet(
         column_profile=column_profile,
         query_context=query_context,
     )
-    return canonicalize_sampled_grid_range_packet(packet, dataset)
+    normalized = canonicalize_sampled_grid_range_packet(packet, dataset)
+    output_profile = str((query_context or {}).get("output_profile") or "rows").strip().lower()
+    if output_profile != "canonical_frame" or sampled_grid_contract(dataset) is None:
+        return normalized
+
+    mapping = compile_sampled_grid_mapping(dataset)
+    grid = dict(normalized.get("grid") or {})
+    timing = dict(normalized.get("timing") or {})
+    snapshots: dict[str, dict[str, Any]] = {}
+    projection_started = time.perf_counter()
+    for date_value, rows in (normalized.get("snapshots") or {}).items():
+        frame = canonicalize_sampled_grid_rows(
+            rows or [],
+            mapping,
+            context={**(query_context or {}), "date": str(date_value)},
+        )
+        snapshots[str(date_value)] = {
+            "row_contract_version": "rrkal.sampled_grid.v1",
+            "column_profile": normalized.get("column_profile") or column_profile or "render",
+            "columns": list(normalized.get("columns") or []),
+            "row_count": frame.row_count,
+            "grid": dict(grid),
+            "timing": {
+                **timing,
+                "range_query_shared": True,
+                "range_snapshot_date": str(date_value),
+            },
+            "connection": dict(normalized.get("connection") or {}),
+            "backend": dict(normalized.get("backend") or {}),
+            "canonical_frame": frame.view().transport(),
+        }
+    normalized["snapshots"] = snapshots
+    normalized["snapshot_profile"] = "canonical_frame"
+    normalized["timing"] = {
+        **timing,
+        "packet_projection_ms": round(
+            float(timing.get("packet_projection_ms") or 0)
+            + ((time.perf_counter() - projection_started) * 1000),
+            3,
+        ),
+    }
+    return normalized
 
 
 def time_series_packet(

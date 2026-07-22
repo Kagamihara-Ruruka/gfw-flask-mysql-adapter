@@ -37,7 +37,8 @@ class SpatialLandMaskServiceCore {
     this.canvasFactory = canvasFactory;
     this.imageLoader = imageLoader;
     this.tileSize = Math.max(16, Number(tileSize) || 256);
-    this.imageTimeoutMs = Math.max(250, Number(imageTimeoutMs) || 10000);
+    this.defaultImageTimeoutMs = Math.max(250, Number(imageTimeoutMs) || 10000);
+    this.imageTimeoutMs = this.defaultImageTimeoutMs;
     this.tileRequestConcurrency = Math.max(1, Math.floor(Number(tileRequestConcurrency) || 2));
     this.activeTileLoads = 0;
     this.tileLoadQueue = [];
@@ -172,11 +173,12 @@ class SpatialLandMaskServiceCore {
     if (entry) this.imageCache.delete(url);
 
     const controller = this.abortControllerFactory();
+    const timeoutMs = this.imageTimeoutMs;
     const timeout = this.timeoutClock.schedule(() => {
-      const error = new Error(`land-mask image timed out after ${this.imageTimeoutMs} ms: ${url}`);
+      const error = new Error(`land-mask image timed out after ${timeoutMs} ms: ${url}`);
       error.name = "TimeoutError";
       controller.abort(error);
-    }, this.imageTimeoutMs);
+    }, timeoutMs);
     const aborted = new Promise((resolve, reject) => {
       const rejectAbort = () => {
         const error = controller.signal.reason instanceof Error
@@ -350,6 +352,10 @@ class SpatialLandMaskServiceCore {
     this.tileRequestConcurrency = Math.max(
       1,
       Math.floor(Number(resolved.provider.tile_request_concurrency) || this.tileRequestConcurrency),
+    );
+    this.imageTimeoutMs = Math.max(
+      250,
+      Number(resolved.provider.tile_timeout_ms) || this.defaultImageTimeoutMs,
     );
     this.pumpTileLoadQueue();
     const size = this.map.getSize();

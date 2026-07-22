@@ -326,9 +326,8 @@ function renderSampledGridMap(frame, { requestContext = null } = {}) {
     drawMs = nextLayer.redraw?.() || 0;
   }
   state.gridLayer = nextLayer;
-  state.renderedSampledGridDate = nextLayer.isRenderContextCurrent?.()
-    ? (renderContext.date || null)
-    : null;
+  const committed = nextLayer.isRenderContextCurrent?.() !== false;
+  state.renderedSampledGridDate = committed ? (renderContext.date || null) : null;
   setRenderedLodZoom(state.dataLayer || "sampled-grid");
   applyLayerOrder();
   crossfadeSampledGridLayer(previousLayer, nextLayer, {
@@ -339,6 +338,8 @@ function renderSampledGridMap(frame, { requestContext = null } = {}) {
     drawMs,
     rowCount: visibleFrame.rowCount,
     frame: visibleFrame,
+    committed,
+    reason: committed ? "committed" : "render_context_stale",
     detail: RendererRegistry.recordSampledGridRender(choice.backend, drawMs),
   };
 }

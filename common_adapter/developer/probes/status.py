@@ -5,7 +5,7 @@ from typing import Any
 
 import psycopg
 
-from common_adapter.db.connect import mysql_connection
+from common_adapter.db.connect import mysql_connection, schema_packet
 from common_adapter.developer.probes.endpoint import endpoint_status_from_config
 from common_adapter.spatial.overlay import overlay_settings, postgis_dsn, validate_identifier
 
@@ -15,7 +15,15 @@ POSTGIS_CONNECT_TIMEOUT_SECONDS = 5
 class RouteProbe:
     """Runtime status probes for source routes."""
 
-    def connection_status_from_config(self, config_ref: str, data: dict[str, Any], active: bool) -> list[dict[str, Any]]:
+    def connection_status_from_config(
+        self,
+        config_ref: str,
+        data: dict[str, Any],
+        active: bool,
+        *,
+        runtime_config: dict[str, Any] | None = None,
+        datasets: dict[str, dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
         route_ref = str(data.get("name") or data.get("id") or Path(config_ref).stem).strip()
         adapter = data.get("adapter") if isinstance(data.get("adapter"), dict) else {}
         adapter_kind = str(adapter.get("kind") or "").strip().lower()
@@ -49,6 +57,7 @@ class RouteProbe:
         for connection_ref, connection in connection_items:
             kind = str(connection.get("kind") or data.get("sql_backend", {}).get("kind") or "mysql").lower()
             connected = False
+            contract_detected = False
             detail = "尚未測試"
             if kind == "mysql":
                 try:
@@ -57,10 +66,37 @@ class RouteProbe:
                         cur.execute("SELECT 1 AS ok")
                         connected = bool(cur.fetchone()["ok"])
                     detail = "連線成功" if connected else "連線失敗"
+                    contract_detected = connected
                 except Exception as exc:
                     detail = str(exc)
             else:
-                detail = f"{kind} 連線測試尚未實作"
+                candidate_id, candidate = next(
+                    (
+                        (dataset_id, dataset)
+                        for dataset_id, dataset in sorted((datasets or {}).items())
+                        if str(dataset.get("connection_ref") or "") == connection_ref
+                        and str(
+                            dataset.get("__runtime_source_config_path")
+                            or dataset.get("source_config_path")
+                            or config_ref
+                        ) == config_ref
+                    ),
+                    (None, None),
+                )
+                if runtime_config is None or candidate is None:
+                    detail = f"{kind} 缺少可供正式 Query Adapter 驗證的資料集"
+                else:
+                    try:
+                        packet = schema_packet(
+                            runtime_config,
+                            candidate,
+                            query_context={"health_probe": True, "dataset_id": candidate_id},
+                        )
+                        connected = isinstance(packet, dict)
+                        contract_detected = connected
+                        detail = f"正式 Query Adapter 驗證成功：{candidate_id}"
+                    except Exception as exc:
+                        detail = str(exc)
             rows.append(
                 {
                     "config_path": config_ref,
@@ -69,6 +105,7 @@ class RouteProbe:
                     "backend": kind,
                     "enabled": active,
                     "connected": connected,
+                    "contract_detected": contract_detected,
                     "detail": detail,
                 }
             )

@@ -8,6 +8,7 @@ function compileQueryBatch(items, batchId) {
       operation_id: operationId,
       kind: String(operation.kind || ""),
       dataset_id: String(operation.dataset_id || ""),
+      lane: String(item?.lane || "foreground"),
       params: Object.freeze({ ...(operation.params || {}) }),
     }));
   }
@@ -40,6 +41,7 @@ function sampledGridBatchOperation(request, operationId) {
     kind: "sampled_grid.records",
     dataset_id: String(request?.datasetId || ""),
     source_key: String(request?.transportKey || ""),
+    query_backend: String(request?.queryBackend || ""),
     params: Object.freeze({
       date: String(request?.date || ""),
       bbox: String(request?.bbox || ""),
@@ -48,6 +50,38 @@ function sampledGridBatchOperation(request, operationId) {
       resolution: request?.queryResolution ?? request?.resolution ?? null,
     }),
   });
+}
+
+function sampledGridRangeBatchOperation(request, operationId) {
+  return Object.freeze({
+    operation_id: String(operationId || ""),
+    kind: "sampled_grid.records_range",
+    dataset_id: String(request?.datasetId || ""),
+    source_key: String(request?.transportKey || ""),
+    query_backend: String(request?.queryBackend || ""),
+    params: Object.freeze({
+      start: String(request?.start || request?.startDate || ""),
+      end: String(request?.end || request?.endDate || ""),
+      bbox: String(request?.bbox || ""),
+      limit: request?.limit == null ? "max" : request.limit,
+      columns: String(request?.columns || "render"),
+      resolution: request?.queryResolution ?? request?.resolution ?? null,
+    }),
+  });
+}
+
+function decodeSampledGridBatchPacket(packet) {
+  if (String(packet?.snapshot_profile || "") !== "canonical_frame") {
+    return decodeCanonicalGridFramePacket(packet);
+  }
+  const sourceSnapshots = packet?.snapshots;
+  if (!sourceSnapshots || typeof sourceSnapshots !== "object" || Array.isArray(sourceSnapshots)) {
+    throw new Error("Canonical sampled-grid range packet is missing snapshots");
+  }
+  const snapshots = Object.fromEntries(Object.entries(sourceSnapshots).map(([date, snapshot]) => (
+    [String(date), decodeCanonicalGridFramePacket(snapshot)]
+  )));
+  return Object.freeze({ ...packet, snapshots: Object.freeze(snapshots) });
 }
 
 class QueryBroker {
@@ -94,7 +128,7 @@ class QueryBroker {
   sourceInflightCount(sourceKey) {
     const normalizedKey = String(sourceKey || "");
     return [...this.activeBatches.values()].reduce((total, batch) => {
-      if (batch.sourceKey !== normalizedKey) return total;
+      if (batch.executionSourceKey !== normalizedKey) return total;
       return total + (batch.envelope?.operations || []).reduce((count, operation) => (
         batch.completedOperations.has(String(operation.operation_id || "")) ? count : count + 1
       ), 0);
@@ -116,19 +150,31 @@ class QueryBroker {
       || `${String(operation?.kind || "")}|${String(operation?.dataset_id || "")}`;
   }
 
+  queryLane(lane) {
+    return ["background", "playback-window", "widget-auto"].includes(String(lane || ""))
+      ? "background"
+      : "foreground";
+  }
+
+  executionSourceKey(item) {
+    const sourceKey = this.sourceKey(item?.operation);
+    if (String(item?.operation?.query_backend || "").toLowerCase() !== "hive") return sourceKey;
+    return `${sourceKey}|query_lane=${this.queryLane(item?.lane)}`;
+  }
+
   record(type, detail = {}) {
     this.eventLog.record?.(type, detail);
   }
 
   taskDetail(item, extra = {}) {
     return {
+      ...(item?.metadata || {}),
       task_id: item?.id || "",
       intent_key: String(item?.operation?.operation_id || ""),
       lane: item?.lane || "",
       queue_depth: this.pending.filter((candidate) => !candidate.settled).length,
       active_count: this.activeBatches.size,
       source_key: this.sourceKey(item?.operation),
-      ...(item?.metadata || {}),
       ...extra,
     };
   }
@@ -227,6 +273,10 @@ class QueryBroker {
     return this.request(sampledGridBatchOperation(request, operationId), options);
   }
 
+  requestSampledGridRange(request, { operationId, ...options } = {}) {
+    return this.request(sampledGridRangeBatchOperation(request, operationId), options);
+  }
+
   promoteSampledGrid(operationId, lane) {
     return this.promoteOperation(operationId, lane);
   }
@@ -256,25 +306,30 @@ class QueryBroker {
     this.pending = this.pending.filter((item) => !item.settled && !item.signal?.aborted);
     this.pending.sort((left, right) => left.priority - right.priority || left.sequence - right.sequence);
     const firstIndex = this.pending.findIndex((item) => (
-      this.sourceAvailableSlots(this.sourceKey(item.operation)) > 0
+      this.sourceAvailableSlots(this.executionSourceKey(item)) > 0
     ));
     if (firstIndex < 0) return null;
     const first = this.pending[firstIndex];
     const sourceKey = this.sourceKey(first.operation);
+    const executionSourceKey = this.executionSourceKey(first);
     const priority = first.priority;
     const effectiveBatchSize = Math.min(
       this.batchSize(sourceKey),
-      this.sourceAvailableSlots(sourceKey),
+      this.sourceAvailableSlots(executionSourceKey),
     );
     const selected = [];
     for (let index = 0; index < this.pending.length && selected.length < effectiveBatchSize; index += 1) {
       const item = this.pending[index];
-      if (item.priority !== priority || this.sourceKey(item.operation) !== sourceKey) continue;
+      if (
+        item.priority !== priority
+        || this.sourceKey(item.operation) !== sourceKey
+        || this.executionSourceKey(item) !== executionSourceKey
+      ) continue;
       selected.push(item);
     }
     const selectedIds = new Set(selected.map((item) => item.id));
     this.pending = this.pending.filter((item) => !selectedIds.has(item.id));
-    return { items: selected, lane: first.lane, priority, sourceKey };
+    return { items: selected, lane: first.lane, priority, sourceKey, executionSourceKey };
   }
 
   flush() {
@@ -383,7 +438,7 @@ class QueryBroker {
       const consumers = operationItems.get(operationId) || [];
       if (event.status === "ok") {
         const decodeStartedAt = this.clock.now();
-        const packet = decodeCanonicalGridFramePacket(event.packet);
+        const packet = decodeSampledGridBatchPacket(event.packet);
         batch.frameDecodeMs += Math.max(0, this.clock.now() - decodeStartedAt);
         for (const item of consumers) this.settle(item, item.resolve, packet);
       } else {
@@ -451,8 +506,8 @@ class QueryBroker {
       ),
       sourceInflight: Object.freeze(Object.fromEntries(
         [...new Set([
-          ...this.pending.map((item) => this.sourceKey(item.operation)),
-          ...[...this.activeBatches.values()].map((batch) => batch.sourceKey),
+          ...this.pending.map((item) => this.executionSourceKey(item)),
+          ...[...this.activeBatches.values()].map((batch) => batch.executionSourceKey),
         ])].map((sourceKey) => [sourceKey, Object.freeze({
           capacity: this.sourceCapacity(sourceKey),
           effectiveBatchSize: this.batchSize(sourceKey),
@@ -485,5 +540,7 @@ if (typeof globalThis !== "undefined") {
   globalThis.QueryBroker = QueryBroker;
   globalThis.compileQueryBatch = compileQueryBatch;
   globalThis.sampledGridBatchOperation = sampledGridBatchOperation;
+  globalThis.sampledGridRangeBatchOperation = sampledGridRangeBatchOperation;
+  globalThis.decodeSampledGridBatchPacket = decodeSampledGridBatchPacket;
   globalThis.splitQueryBatchEvent = splitQueryBatchEvent;
 }

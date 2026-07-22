@@ -152,7 +152,16 @@ test("five seconds of buffering stays five wall-clock seconds at every playback 
   }
 });
 
-test("PlaybackEngine owns the 30 second monotonic buffer timeout at every playback speed", async () => {
+test("PlaybackTimePolicy gives cluster-backed playback enough time without weakening local failure detection", () => {
+  const context = loadClockRuntime();
+  const PlaybackTimePolicy = vm.runInContext("PlaybackTimePolicy", context);
+
+  assert.equal(PlaybackTimePolicy.bufferTimeoutMs({ profile: "LOCAL", queryBackend: "sampled_grid_http" }), 30_000);
+  assert.equal(PlaybackTimePolicy.bufferTimeoutMs({ profile: "PRESENTATION", queryBackend: "hive" }), 180_000);
+  assert.equal(PlaybackTimePolicy.bufferTimeoutMs({ queryBackend: "hive" }), 180_000);
+});
+
+test("PlaybackEngine owns the injected monotonic buffer timeout at every playback speed", async () => {
   const context = loadClockRuntime();
   const createClockDomain = vm.runInContext("createClockDomain", context);
   const LifecycleEventLogCore = vm.runInContext("LifecycleEventLogCore", context);

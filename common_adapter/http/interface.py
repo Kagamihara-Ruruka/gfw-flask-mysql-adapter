@@ -23,7 +23,6 @@ from common_adapter.query.batch import QueryBatchExecutor
 from common_adapter.spatial.land_mask import EezDomainMaskService
 
 ROOT = Path(__file__).resolve().parents[2]
-SERVER_PID_FILE = Path("flask_pid.txt")
 
 
 def create_flask_app() -> Flask:
@@ -44,6 +43,7 @@ def create_app(
 ) -> Flask:
     app = create_flask_app()
     app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+    app.extensions["runtime_identity"] = dict(config.get("__runtime_identity") or {})
     sock = Sock(app)
 
     @app.after_request
@@ -118,9 +118,12 @@ def create_developer_app(
     layer_registry: RuntimeLayerRegistry | None = None,
     route_status_registry: RouteStatusRegistry | None = None,
     endpoint_supervisor: ManagedEndpointSupervisor | None = None,
+    consumer_probe_url: str | None = None,
 ) -> Flask:
     app = create_flask_app()
     app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+    runtime_identity = dict(config.get("__runtime_identity") or {})
+    app.extensions["runtime_identity"] = runtime_identity
 
     @app.after_request
     def no_store_static(response):
@@ -131,7 +134,12 @@ def create_developer_app(
     @app.get("/")
     def developer_index():
         embedded = request.args.get("embedded") == "1"
-        return render_template("developer.html", consumer_url=consumer_url, embedded=embedded)
+        return render_template(
+            "developer.html",
+            consumer_url=consumer_url,
+            embedded=embedded,
+            runtime_identity=runtime_identity,
+        )
 
     @app.get("/favicon.ico")
     def favicon():
@@ -145,5 +153,6 @@ def create_developer_app(
         layer_registry=resolved_layer_registry,
         route_status_registry=resolved_route_status_registry,
         endpoint_supervisor=endpoint_supervisor,
+        consumer_probe_url=consumer_probe_url,
     )
     return app

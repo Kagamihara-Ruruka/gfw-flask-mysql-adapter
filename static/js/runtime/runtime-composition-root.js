@@ -8,6 +8,8 @@ class RuntimeCompositionRoot {
     fetchJson: fetchJsonFn,
     sampledGridContract = null,
     clockDomain = null,
+    runtimeIdentity = {},
+    playbackPolicy = {},
   } = {}) {
     if (!targetState || !globalTarget || !eventTarget || !frameIdentity || typeof fetchJsonFn !== "function") {
       throw new TypeError("RuntimeCompositionRoot requires state, globals, events, identity and fetchJson");
@@ -20,6 +22,23 @@ class RuntimeCompositionRoot {
     this.fetchJson = fetchJsonFn;
     this.sampledGridContract = sampledGridContract;
     this.clockDomain = clockDomain || createSystemClockDomain({ globalTarget });
+    this.runtimeIdentity = Object.freeze({
+      profile: String(runtimeIdentity?.profile || ""),
+      queryBackend: String(runtimeIdentity?.queryBackend || runtimeIdentity?.query_backend || ""),
+    });
+    this.playbackPolicy = normalizedPlaybackCacheCapacityPolicy(playbackPolicy);
+    Object.assign(this.state.playbackCache ||= {}, this.playbackPolicy);
+    this.state.dataFrameStore ||= { maxEntries: 0, maxBytes: 512 * 1024 * 1024, stats: {} };
+    if (this.playbackPolicy.cacheMaxBytes > 0) {
+      Object.assign(this.state.dataFrameStore, {
+        maxBytes: this.playbackPolicy.cacheMaxBytes,
+        requiredPlaybackCacheBytes: this.playbackPolicy.requiredCacheBytes,
+        requiredPlaybackFrameCapacity: this.playbackPolicy.requiredFrameCapacity,
+        retainedPlaybackFrameCapacity: this.playbackPolicy.retainedFrameCapacity,
+        playbackCacheHeadroomFrames: this.playbackPolicy.cacheHeadroomFrames,
+        ratedPlaybackFrameBytes: this.playbackPolicy.ratedFrameBytes,
+      });
+    }
     this.instances = new Map();
     this.exposedNames = new Map();
     this.disposalOrder = [];
@@ -64,6 +83,17 @@ class RuntimeCompositionRoot {
       immediateReplenishment: Boolean(snapshot.immediateReplenishment),
       tailMode: Boolean(snapshot.tailMode),
       effectiveWatermarkStrategy: snapshot.strategy || "fixed",
+      bufferUnit: snapshot.bufferUnit || "frame",
+      lowWatermarkMonths: Number(snapshot.lowWatermarkMonths || 0),
+      highWatermarkMonths: Number(snapshot.highWatermarkMonths || 0),
+      retainedMonthKeys: Array.isArray(snapshot.retainedMonthKeys) ? [...snapshot.retainedMonthKeys] : [],
+      retainedFrameCount: Number(snapshot.retainedFrameCount || 0),
+      pinnedFrameCount: Number(snapshot.pinnedFrameCount || 0),
+      requiredFrameCapacity: Number(snapshot.requiredFrameCapacity || 0),
+      retainedFrameCapacity: Number(snapshot.retainedFrameCapacity || 0),
+      cacheHeadroomFrames: Number(snapshot.cacheHeadroomFrames || 0),
+      ratedFrameBytes: Number(snapshot.ratedFrameBytes || 0),
+      requiredCacheBytes: Number(snapshot.requiredCacheBytes || 0),
     });
   }
 
@@ -175,26 +205,78 @@ class RuntimeCompositionRoot {
     }
     let renderIntentService = null;
     let sampledGridLayerPool = null;
-    const renderContextIdentityIsCurrent = (context) => {
-      if (!context?.scopeKey || !renderIntentService) return false;
+    const renderContextIdentityStatus = (context) => {
+      if (!context?.scopeKey || !renderIntentService) {
+        return Object.freeze({
+          current: false,
+          reason: !renderIntentService ? "render_intent_unavailable" : "context_scope_missing",
+          expectedScopeKey: "",
+        });
+      }
       const currentRequest = renderIntentService.toSampledGridPacketRequest(
         renderIntentService.snapshot({
           layerId: this.state.dataLayer,
           renderProfile: "dashboard.snapshot",
         }),
       );
-      return !currentRequest.outsideCoverage
-        && context.layerId === String(this.state.dataLayer || "").trim().toLowerCase()
-        && context.datasetId === String(this.state.datasetId || "").trim()
-        && context.date === currentRequest.date
-        && context.scopeKey === this.frameIdentity.scopeKey(currentRequest);
+      const expectedScopeKey = this.frameIdentity.scopeKey(currentRequest);
+      const layerCurrent = context.layerId === String(this.state.dataLayer || "").trim().toLowerCase();
+      const datasetCurrent = context.datasetId === String(this.state.datasetId || "").trim();
+      const dateCurrent = context.date === currentRequest.date;
+      const scopeCurrent = context.scopeKey === expectedScopeKey;
+      const current = !currentRequest.outsideCoverage
+        && layerCurrent
+        && datasetCurrent
+        && dateCurrent
+        && scopeCurrent;
+      let reason = "current";
+      if (currentRequest.outsideCoverage) reason = "outside_coverage";
+      else if (!layerCurrent) reason = "layer_mismatch";
+      else if (!datasetCurrent) reason = "dataset_mismatch";
+      else if (!dateCurrent) reason = "date_mismatch";
+      else if (!scopeCurrent) reason = "scope_mismatch";
+      return Object.freeze({
+        current,
+        reason,
+        expectedScopeKey,
+        expectedDate: currentRequest.date || "",
+        layerCurrent,
+        datasetCurrent,
+        dateCurrent,
+        scopeCurrent,
+      });
+    };
+    const renderContextIdentityIsCurrent = (context) => renderContextIdentityStatus(context).current;
+    const renderContextStatus = (context) => {
+      const identity = renderContextIdentityStatus(context);
+      const epochCurrent = Boolean(
+        identity.current
+        && (!sampledGridLayerPool || sampledGridLayerPool.isRenderEpochCurrent(context.renderEpoch))
+      );
+      const currentMask = spatialLandMaskService?.snapshot?.(context?.layerId);
+      const maskCurrent = Boolean(
+        identity.current
+        && epochCurrent
+        && sampledGridRenderContextMatchesMask(context, currentMask)
+      );
+      let reason = identity.reason;
+      if (identity.current && !epochCurrent) reason = "render_epoch_mismatch";
+      else if (identity.current && epochCurrent && !maskCurrent) reason = "mask_generation_mismatch";
+      return Object.freeze({
+        ...identity,
+        current: identity.current && epochCurrent && maskCurrent,
+        reason,
+        epochCurrent,
+        maskCurrent,
+        expectedRenderEpoch: sampledGridLayerPool?.snapshot?.().renderEpoch ?? context?.renderEpoch ?? 0,
+        expectedMaskRevision: currentMask?.revision ?? -1,
+        expectedMaskScopeSignature: currentMask?.scopeSignature || "",
+      });
     };
     const renderContextIsCurrent = (context) => {
-      if (!renderContextIdentityIsCurrent(context)) return false;
-      if (sampledGridLayerPool && !sampledGridLayerPool.isRenderEpochCurrent(context.renderEpoch)) return false;
-      const currentMask = spatialLandMaskService?.snapshot?.(context.layerId);
-      return sampledGridRenderContextMatchesMask(context, currentMask);
+      return renderContextStatus(context).current;
     };
+    renderContextIsCurrent.diagnose = renderContextStatus;
     let sampledGridLayerTransitions = null;
     if (this.targetMap && typeof SampledGridLayerTransitionControllerCore !== "undefined") {
       sampledGridLayerTransitions = this.own(
@@ -319,7 +401,10 @@ class RuntimeCompositionRoot {
       eventLog,
       frameIdentity: this.frameIdentity,
       clock: clockDomain.monotonic,
-      optionsProvider: () => this.state.playbackCache || {},
+      optionsProvider: () => ({
+        ...(this.state.playbackCache || {}),
+        ...this.playbackPolicy,
+      }),
       fixedPolicyNormalizer: normalizedFixedWatermarkPolicy,
       watermarkPolicyProvider: (fixedPolicy, context) => (
         adaptiveWatermarkController?.resolve({ fixedPolicy, ...context }) || fixedPolicy
@@ -341,7 +426,7 @@ class RuntimeCompositionRoot {
       frameIdentity: this.frameIdentity,
       clock: clockDomain.playback,
       frameBufferPolicy: PlaybackFrameBuffer,
-      bufferTimeoutMs: PlaybackTimePolicy.BUFFER_TIMEOUT_MS,
+      bufferTimeoutMs: PlaybackTimePolicy.bufferTimeoutMs(this.runtimeIdentity),
     }));
     const playbackRuntime = this.own("PlaybackRuntime", new PlaybackRuntimeController({
       engine: playbackEngine,
@@ -396,6 +481,7 @@ class RuntimeCompositionRoot {
         preheater: playbackPreheater,
         watermarkController: adaptiveWatermarkController,
         fixedPolicyNormalizer: normalizedFixedWatermarkPolicy,
+        capacityPolicyNormalizer: normalizedPlaybackCacheCapacityPolicy,
         frameIdentity: this.frameIdentity,
         sampledGridLayerPredicate: (layerId) => (
           typeof isSampledGridLayer === "function" && isSampledGridLayer(layerId)
@@ -588,6 +674,18 @@ const AppRuntime = new RuntimeCompositionRoot({
   frameIdentity: runtimeFrameIdentity,
   fetchJson,
   sampledGridContract: typeof SampledGridContract === "undefined" ? null : SampledGridContract,
+  runtimeIdentity: {
+    profile: document.body?.dataset.runtimeProfile || "",
+    queryBackend: document.body?.dataset.runtimeQueryBackend || "",
+  },
+  playbackPolicy: {
+    bufferUnit: document.body?.dataset.playbackBufferUnit || "frame",
+    lowWatermarkMonths: document.body?.dataset.playbackLowWatermarkMonths || 1,
+    highWatermarkMonths: document.body?.dataset.playbackHighWatermarkMonths || 2,
+    ratedFrameBytes: document.body?.dataset.playbackRatedFrameBytes || 0,
+    cacheHeadroomFrames: document.body?.dataset.playbackCacheHeadroomFrames || 0,
+    cacheMaxBytes: document.body?.dataset.playbackCacheMaxBytes || 0,
+  },
 }).composeCore();
 
 globalThis.RuntimeCompositionRoot = RuntimeCompositionRoot;

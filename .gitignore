@@ -33,3 +33,7 @@ chrome_*_stderr.log
 last_records_response.json
 frontend_verified*.png
 work/
+.runtime/
+tmp-noaa-rov-*
+official_site/assets/page-*.png
+official_site/assets/source-montage.png

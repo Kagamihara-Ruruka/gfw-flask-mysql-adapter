@@ -604,6 +604,65 @@ The map UI must not learn raw source paths or temporary manifests. Those belong 
 
 Python dependencies are listed in `requirements.txt`.
 
+## Presentation Docker Path
+
+The release-candidate presentation path preserves the Spark/Iceberg work from RRK 0.10.0 and serves the integrated group website, dashboard, API, and developer control plane from one Docker image.
+
+```text
+Docker app
+  -> host.docker.internal:11000
+  -> Windows OpenSSH tunnel
+  -> bigred@192.168.32.201
+  -> kubectl port-forward in namespace dt
+  -> Spark Thrift Server on deployment/dtadm:10000
+  -> lake.ocean.gold_map_metric on Iceberg/HDFS
+```
+
+The formal Sea1 serving table has been queried and validated from `2022-01-01` through `2024-12-31`. It is stored in `lake.ocean.gold_map_metric` under `hdfs:///dataset/ocean/warehouse`. The upstream jobs use monthly Parquet partitions and monthly Gold batches to bound Join/Group By shuffle and spill. No validated Gold data exists for 2020-2021, and the standard Bronze/Silver locations have not yet been established, so the runtime and documentation must not claim a 2020-2024 serving range.
+
+| Current online contract | Validated value |
+|---|---|
+| AOI | `taiwan`, `northwest_pacific` |
+| Dates | `2022-01-01` through `2024-12-31` (1,096 distinct days) |
+| Resolutions | `4`, `16`, and `32` km |
+| Metrics | chlorophyll, fishing hours, ocean productivity, sea temperature, sustainability pressure |
+| Cluster | Sea1 at `192.168.32.201`; HDFS healthy; YARN ResourceManager plus 3 running NodeManagers; shared Spark Thrift listening on `10000` |
+
+Prerequisites are Docker Desktop, Windows OpenSSH, Tailscale access, and working SSH access to `bigred@192.168.32.201`. The jump host must have `kubectl` access to namespace `dt`. The Tk launcher uses Windows AskPass; it stores the password in Windows Credential Manager only when the operator selects **Remember password**. A temporary credential is removed after startup. Passwords never enter the repo, command line, JSON events, or runtime state.
+
+Before the first Docker start, copy `.env.example` to `.env` and replace every `change-me` value. `.env` is ignored by git. The current WIP branch does not generate this database secret automatically.
+
+The Tk launcher is the recommended entrypoint. The CLI wrappers and JSON-lines
+controller call the same implementation:
+
+```powershell
+# Graphical launcher.
+.\scripts\presentation\presentation-launcher.cmd
+
+# CLI start/status/stop.
+.\scripts\presentation\start-presentation.cmd
+.\.venv\Scripts\python.exe .\scripts\presentation\presentationctl.py --json status
+.\scripts\presentation\stop-presentation.cmd
+
+# Read-only plan; changes no service.
+.\.venv\Scripts\python.exe .\scripts\presentation\presentationctl.py --json start --dry-run
+```
+
+The host URLs are `http://127.0.0.1:5185/`, `http://127.0.0.1:5185/dashboard/`, and `http://127.0.0.1:5186/`; Compose maps them to container ports `5085/5086`. The first EEZ bootstrap can take several minutes. It must complete GPKG validation/import, topology generation, and the persistent domain-tile prewarm manifest before the App starts. Do not run `restore-cluster-services.ps1` during normal startup; it is an explicit, authorized shared-cluster recovery tool for missing HDFS/YARN daemons only.
+
+The Presentation Config Browser edits desired state. Saving creates a validated
+`pending_restart` generation; it does not rebuild a live connection pool.
+`presentationctl start` is the apply owner and performs the controlled restart.
+Query, Registry, Status, Health, and Supervisor consume one immutable runtime
+snapshot. Dashboard and Developer identity endpoints must agree on runtime
+instance, generation, config-bundle hash, backend/source, and fingerprint.
+The config-bundle hash covers only the effective runtime config, Manifest,
+Mapping, and active source documents. The runtime fingerprint additionally
+binds generation, public ports, image digest, Compose hash, and bridge owner
+token, so evidence from an older deployment cannot be reused.
+
+The original Kubernetes ConfigMap, Deployment, Service, registry, and NodePort material from RRK 0.10.0 remains in the repository for a later in-cluster deployment. The presentation Compose path is an additional deployment surface, not a replacement for that work.
+
 ## Quick Start
 
 From the repo root:
@@ -639,7 +698,7 @@ The public website and dashboard deliberately share the consumer origin. Its `DA
 
 ## Deployment Guide
 
-This repository serves the public website, consumer dashboard, and consumer API from one consumer listener. The same `core.py` process also starts the developer control plane on a separate listener. Stateful dependencies and upstream collectors remain separate. `docker-compose.yml` starts local MySQL and PostGIS support services only; it does not build or deploy the Flask application.
+This repository serves the public website, consumer dashboard, and consumer API from one consumer listener. The same `core.py` process also starts the developer control plane on a separate listener. Stateful dependencies and upstream collectors remain separate. `docker-compose.yml` remains the generic local dependency profile; `compose.presentation.yaml` builds and runs the integrated presentation application plus PostGIS.
 
 ### Human runbook
 
@@ -693,7 +752,7 @@ This repository serves the public website, consumer dashboard, and consumer API 
 - Mount the configured EEZ cache path, normally `data/eez/`, on persistent storage. Keep MySQL and PostGIS outside the application container or in separately managed services.
 - Use `GET /api/health` for liveness/readiness only after `check-dependencies` succeeds. Keep the developer port private or disable it.
 - Pin the image to a Git commit and retain the previous image digest. Roll back by redeploying the previous digest; do not mutate a running container or clear data caches as a rollback mechanism.
-- The repository does not currently ship an application Dockerfile, Helm chart, TLS termination, or public-network authentication. Those are deployment-platform responsibilities and must not be implied by the local Compose file.
+- The repository ships a presentation Dockerfile and Compose profile, plus retained Kubernetes manifests. It does not provide TLS termination or public-network authentication; those remain deployment-platform responsibilities.
 
 ### Agent runbook
 
@@ -714,6 +773,13 @@ Deployment is complete only when dependency checks, API checks, and the browser 
 
 The developer page is a configuration control plane, not a second dashboard and not a data-query client. One `core.py serve` command starts both listeners: the public website, dashboard, and API stay on `server.port`, while the developer control plane uses `server.port + 1` by default. The dashboard's Developer tab embeds that separate service. It can also be opened directly at `http://127.0.0.1:5058` when the consumer port is `5057`.
 
+The page always distinguishes **saved**, **validated**, **pending restart**,
+**effective**, and **failed**. Browser edits target a pending copy and never
+replace the running Runtime snapshot. Query and health continue to report the
+effective backend/source until the deployment owner applies the pending
+generation and smoke validation succeeds. Compare the runtime identity shown by
+the Dashboard and Developer service before trusting either status panel.
+
 Use the panels from top to bottom. Each panel consumes the persisted result of the preceding panel:
 
 ```text
@@ -727,14 +793,14 @@ Config Router
 ### 1. Config Router
 
 - **Wizard** creates a DATABASE route fragment and imports it into the managed config list. Creation does not automatically activate the route.
-- **Import** first copies a JSON file into `config/staging/`. Inspect or edit the staged JSON, select its source group, then promote it into `config/sources/<role>/`. A file outside that tree is not a runtime source.
-- The selected source group and the JSON `role` must agree. Moving a config between groups updates the file location, role, and known downstream references as one control-plane operation.
-- **Active** writes the route reference to `config/state/router_manifest.local.json.active_configs`. This manifest is the only source-activation truth.
-- **Locked** prevents control-plane edits; it does not test connectivity or enable a source.
-- Notes are operator metadata only. They do not affect routing.
-- The JSON editor writes the selected local source file. Review the diff before saving and never place a raw secret in a file that may be committed.
+- **Import** copies a JSON file into `config/staging/` for inspection. Promotion, moving between source groups, and deletion are deployment operations and are deliberately rejected by the Browser; perform them in a reviewed checkout before applying a generation.
+- The selected source group and JSON `role` must agree. The Browser does not rewrite paths or downstream references in the running deployment.
+- **Active**, **Locked**, and notes update the pending Manifest. They do not change the effective route set until a controlled restart succeeds.
+- The JSON editor validates and stages a pending source document. Review the diff before saving and never place a raw secret in a file that may be committed.
 
-An imported or syntactically valid config is not necessarily routable. Activation should be followed immediately by the Route State Machine check.
+An imported or syntactically valid config is not necessarily routable. After the
+launcher applies it, use the Route State Machine and runtime identity to verify
+the new effective generation.
 
 ### 2. Route State Machine
 

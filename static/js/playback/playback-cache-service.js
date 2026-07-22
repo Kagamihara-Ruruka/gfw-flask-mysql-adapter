@@ -4,6 +4,7 @@ function createPlaybackCacheService({
   preheater,
   watermarkController,
   fixedPolicyNormalizer,
+  capacityPolicyNormalizer,
   frameIdentity,
   sampledGridLayerPredicate,
 } = {}) {
@@ -16,10 +17,14 @@ function createPlaybackCacheService({
   if (typeof fixedPolicyNormalizer !== "function") {
     throw new TypeError("PlaybackCacheService requires a fixed watermark policy normalizer");
   }
+  if (typeof capacityPolicyNormalizer !== "function") {
+    throw new TypeError("PlaybackCacheService requires a cache capacity policy normalizer");
+  }
   const state = targetState;
   const DataFrameStore = dataFrameStore;
   const PlaybackPreheater = preheater;
   const WatermarkController = watermarkController;
+  const CapacityPolicyNormalizer = capacityPolicyNormalizer;
   const FrameIdentity = frameIdentity;
   const BYTES_PER_GB = 1024 * 1024 * 1024;
   function isEnabledForCurrentLayer() {
@@ -32,6 +37,37 @@ function createPlaybackCacheService({
 
   function options() {
     const fixedPolicy = fixedPolicyNormalizer(state.playbackCache || {});
+    const capacityPolicy = CapacityPolicyNormalizer(state.playbackCache || {});
+    const cacheSnapshot = DataFrameStore.snapshot();
+    const preheaterPolicy = PlaybackPreheater.snapshot();
+    if (capacityPolicy.bufferUnit === "calendar_month") {
+      const scoped = preheaterPolicy.bufferUnit === "calendar_month" ? preheaterPolicy : capacityPolicy;
+      return {
+        ...fixedPolicy,
+        ...capacityPolicy,
+        windowAhead: Number(scoped.targetWatermark || capacityPolicy.retainedFrameCapacity),
+        maxGb: Math.max(0.25, Number(state.dataFrameStore?.maxBytes || 0.5 * BYTES_PER_GB) / BYTES_PER_GB),
+        strategy: "calendar_month",
+        policyStatus: "FIXED",
+        effectiveLowWatermark: Number(scoped.lowWatermark || capacityPolicy.lowWatermarkMonths * 31),
+        effectiveHighWatermark: Number(scoped.highWatermark || capacityPolicy.retainedFrameCapacity),
+        effectiveTargetWatermark: Number(scoped.targetWatermark || capacityPolicy.retainedFrameCapacity),
+        immediateReplenishment: false,
+        tailMode: Boolean(scoped.tailMode),
+        supplyRatio: null,
+        ramBudgetFrames: cacheSnapshot.effectivePlaybackFrameCapacity,
+        playbackRamBudgetBytes: cacheSnapshot.maxBytes,
+        hasObservedFrameSize: Number(cacheSnapshot.frameSizeSamples || 0) > 0,
+        estimatedFrameBytes: Number(cacheSnapshot.estimatedFrameBytes || capacityPolicy.ratedFrameBytes),
+        policyReason: "runtime_calendar_month_policy",
+        degradationReason: cacheSnapshot.playbackCacheCapacitySufficient
+          ? ""
+          : "cache_capacity_shortfall",
+        cacheCapacitySufficient: Boolean(cacheSnapshot.playbackCacheCapacitySufficient),
+        cacheCapacityShortfallBytes: Number(cacheSnapshot.playbackCacheShortfallBytes || 0),
+        effectivePlaybackFrameCapacity: Number(cacheSnapshot.effectivePlaybackFrameCapacity || 0),
+      };
+    }
     const policy = WatermarkController.preview({ fixedPolicy });
     return {
       ...fixedPolicy,
@@ -72,14 +108,27 @@ function createPlaybackCacheService({
     const cache = DataFrameStore.snapshot();
     const preheater = PlaybackPreheater.snapshot();
     const capacity = `快取容量：${formatBytes(cache.bytes)} / ${formatBytes(cache.maxBytes)}`;
+    const shortfall = cache.playbackCacheCapacitySufficient
+      ? ""
+      : `，低於月份水位需求 ${formatBytes(cache.requiredPlaybackCacheBytes)}`;
     if (preheater.status === "FETCHING") {
-      return `背景補充中：前方已備 ${preheater.readyAhead} 張，傳輸中 ${preheater.inflight} 張，${capacity}`;
+      return `背景補充中：前方已備 ${preheater.readyAhead} 張，傳輸中 ${preheater.inflight} 張，${capacity}${shortfall}`;
     }
-    return `待命：前方已備 ${preheater.readyAhead || 0} 張，${capacity}`;
+    return `待命：前方已備 ${preheater.readyAhead || 0} 張，${capacity}${shortfall}`;
   }
 
   function policyStatusText() {
     const policy = options();
+    if (policy.strategy === "calendar_month") {
+      const shortfall = policy.cacheCapacitySufficient
+        ? ""
+        : ` · 容量不足 ${formatBytes(policy.cacheCapacityShortfallBytes)}`;
+      return [
+        `月份水位：低 ${policy.lowWatermarkMonths} 個月 / 高 ${policy.highWatermarkMonths} 個月`,
+        `額定 ${policy.requiredFrameCapacity} 張（${formatBytes(policy.requiredCacheBytes)}）`,
+        `有效容量 ${policy.effectivePlaybackFrameCapacity} 張${shortfall}`,
+      ].join(" · ");
+    }
     const target = ` · 目標 ${policy.effectiveTargetWatermark}`;
     if (policy.strategy === "fixed") {
       return `固定水位：低 ${policy.effectiveLowWatermark} 觸發 / 高 ${policy.effectiveHighWatermark}${target}`;

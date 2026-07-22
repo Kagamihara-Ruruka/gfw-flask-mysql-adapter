@@ -6,9 +6,40 @@ English: [HANDOFF.md](HANDOFF.md)
 
 Runtime 總覽：[README.zh-TW.md](README.zh-TW.md)
 
+## 目前整合後的發表路徑
+
+PR #4 的 Spark／PyHive、Kubernetes 與交接成果完整保留。整合分支另外加入 Docker-first 發表路徑，讓另一台 Windows 電腦能執行完整官網與 adapter，不必捨棄原本的叢集內部署。
+
+```text
+Browser -> host :5185/:5186
+  -> Docker app :5085/:5086
+  -> host.docker.internal:11000
+  -> 經 Tailscale 互動式 Windows SSH 登入 bigred@192.168.32.201
+  -> 遠端 kubectl port-forward
+  -> deployment/dtadm:10000
+  -> lake.ocean.gold_map_metric
+```
+
+建議使用 Tk 啟動器；CLI wrappers 與 JSON Lines controller 使用同一套狀態機：
+
+```powershell
+.\scripts\presentation\presentation-launcher.cmd
+.\scripts\presentation\start-presentation.cmd
+.\.venv\Scripts\python.exe .\scripts\presentation\presentationctl.py --json status
+.\scripts\presentation\stop-presentation.cmd
+```
+
+Tk 可透過 Windows AskPass 提供 SSH 密碼；只有勾選「記憶密碼」時才存入 Windows Credential Manager。密碼不會進入 repo、命令列、runtime JSON 或事件 log。直接使用 CLI 時則由可見終端負責互動。啟動流程會驗證 HDFS／YARN／Iceberg、明確重用或擁有 Spark Thrift、啟動 PostGIS、執行一次性 EEZ bootstrap 與持久化 domain-tile 預熱、啟動 App，最後執行五資料集 smoke test。停止流程只清理由此 checkout 擁有的資源；正常啟動不會修改共用叢集。
+
+Config Browser 是 Desired State 編輯器。儲存只會建立已驗證的 `pending_restart` generation；在 `presentationctl start` 受控重啟前，Query、Registry、Status、Health 與 Supervisor 都繼續使用同一份 immutable `RuntimeConfigSnapshot`。Dashboard 與 Developer 必須回報相同的 `runtime_instance_id`、generation、config bundle hash、effective backend/source 與 runtime fingerprint。Config bundle hash 只涵蓋 effective runtime config、Manifest、Mapping 與 active source documents；runtime fingerprint 再綁定 generation、公開 ports、image、Compose 與 bridge evidence。所有值都和 live deployment 一致時，smoke marker 才有效。
+
+正式 Sea1 Gold table 已於 2026-07-22 驗證：AOI 為 `taiwan` 與 `northwest_pacific`，日期為 2022-01-01 至 2024-12-31，解析度為 4／16／32 km。`lake.ocean.gold_map_metric` 具有五項指標：葉綠素、捕魚時數、海洋生產力、海表溫度與永續壓力。HDFS、三個運作中的 YARN NodeManager，以及 port 10000 的共用 Spark Thrift 均通過預檢。除非日後完成 materialize 與驗證，Repo 不得宣稱 2020-2021 serving coverage。
+
+下方原有的 Kubernetes ConfigMap、Deployment、NodePort Service 與 registry 流程仍是有效交接資產，不會被發表用 Compose 刪除或取代。
+
 ## 1. 交接摘要
 
-此 repo 已可作為大型叢集系統中的 Flask adapter 與 browser application 端交接。目前實際主路徑為：
+此 repo 已可作為大型叢集系統中的 Flask adapter 與 browser application 端交接。PR #4 保留的原始叢集內路徑為：
 
 ```text
 HDFS 上的 Iceberg Gold table
@@ -19,7 +50,7 @@ HDFS 上的 Iceberg Gold table
   <- NodePort 32080
 ```
 
-`0.10.0` 是本次 source-of-truth checkpoint。它支援由 `lake.ocean.gold_map_metric` 提供的 SST sampled-grid layer，可切換 AOI 與 4/16/32 km 解析度。Browser runtime 與部署 manifest 在本 repo；Iceberg Gold table 生產，以及 Spark/Hadoop/YARN 生命週期屬 upstream。
+`0.10.0` 仍是從 PR #4 吸收的後端 checkpoint。正式 Sea1 發表資料由 `lake.ocean.gold_map_metric` 提供五項 sampled-grid 指標，使用 `taiwan` 與 `northwest_pacific` AOI，日期涵蓋 2022-01-01 至 2024-12-31，並支援 4／16／32 km 解析度。上游儲存使用年月分區 Parquet，Gold 按月建立。Browser runtime 與部署 manifests 在本 repo；Iceberg Gold table 生產，以及 Spark／Hadoop／YARN 生命週期屬 upstream。
 
 與另一個 repo 合併時，建議做「契約與部署整合」，不要直接把兩棵 source tree 無條件覆蓋。請保留第 4 節責任邊界，並以第 11 節作為 release gates。
 
@@ -29,26 +60,31 @@ HDFS 上的 Iceberg Gold table
 | --- | --- |
 | Application version | `0.10.0`（`common_adapter/__init__.py`） |
 | Git checkpoint | 本次 handoff commit 前為 tag `v0.10.0`、branch `codex/rrk-0.10.0` |
-| Python image | `python:3.10-slim` |
+| 發表用 Python image | `python:3.11-slim` |
 | Spark | `3.5.8-bin-hadoop3` |
 | Hadoop | `3.5.0` |
 | SQL transport | PyHive over HiveServer2 protocol |
-| Manifest 預期 Thrift endpoint | `dtadm:10000`、`auth=NONE`、user `bigred` |
+| 發表用 Thrift endpoint | `host.docker.internal:11000`，轉送至 `dtadm:10000`；`auth=NONE`、user `bigred` |
 | Iceberg catalog | `lake`，Hadoop catalog |
 | Warehouse | `hdfs:///dataset/ocean/warehouse` |
 | 主要 table | `lake.ocean.gold_map_metric` |
 | Kubernetes namespace | `dt` |
-| Flask Service | `bdde-flask-service`，NodePort `32080` |
+| 發表用 host listeners | `5185` 官網／消費端／API，`5186` 開發者控制面 |
+| 發表用 container listeners | `5085` 官網／消費端／API，`5086` 開發者控制面 |
+| 保留的 Kubernetes Service | `bdde-flask-service`，NodePort `32080` |
 | Container registry | `dkreg.taroko:5000` |
 | 目前 image | `dkreg.taroko:5000/bdde-flask:dev` |
 | Runtime class / node selector | `gvisor` / `dt=worker` |
 
 本次驗證：
 
-- Python：修正測試中由 `0.2.0` 漂移到 `0.10.0` 的版本 assertion 後，55/55 通過。
-- Node：13 個 contract-test files 已使用 bundled Node runtime 全數通過；CI/build 環境仍須重跑。
-- Release gate 包含 `git diff --check`。
-- Live Spark/HDFS/Kubernetes/registry 連線必須在目標環境驗證；unit tests 會 mock 或隔離這些邊界。
+- Python：191/191 通過，另有 43 個 subtests。
+- Node：使用 bundled Node runtime 執行 28 個 `*.test.mjs` files，294/294 通過。
+- Presentation/controller/launcher/runtime/server 子集 40/40 通過；EEZ/registry/status/developer 子集 33/33 通過。
+- 所有 Presentation PowerShell scripts 皆可解析，`docker compose -f compose.presentation.yaml config --quiet` 通過，controller contract 與 dry-run 亦通過。
+- Release gate 仍包含 `git diff --check`。
+- 2026-07-21 live 驗證已確認 HDFS、三個 YARN workers、Spark Thrift、Iceberg table，以及 Docker／PyHive 路徑上的五項發表指標。
+- 2026-07-22 的唯讀 status 檢查正確拒絕舊 Compose instance：它仍使用 schema-v1 smoke marker，且缺少目前的 runtime identity 與持久化 EEZ prewarm evidence。HTTP 可回應不等於發表環境已 ready。
 
 ## 3. 已完成能力
 
@@ -64,14 +100,14 @@ HDFS 上的 Iceberg Gold table
 - Leaflet/WebGL、playback/cache/preheat、widgets、telemetry、developer UI。
 - 版本化 Kubernetes ConfigMap、Deployment、NodePort Service。
 
-### 程式存在，但目前 manifest 未啟用
+### 依 Profile 決定的能力
 
 - MySQL datasets 與 DuckDB-to-MySQL import。
-- PostGIS EEZ bootstrap、attribution 與 vector tiles。
+- 發表用 Compose 必須具備 PostGIS EEZ bootstrap、attribution、vector tiles 與持久化 domain-tile 預熱。
 - AISStream-to-SQL collector 與 SQL/WebSocket live read path。
 - 作為備援位置的 AISHub settings route。
 
-目前 `bdde-flask-0.10.0.yaml` 關閉 AIS，也沒有設定 PostGIS。程式存在不代表該外部服務已部署完成。
+保留的 `bdde-flask-0.10.0.yaml` 關閉 AIS，也沒有設定 PostGIS；發表用 Compose 則會設定 PostGIS 並獨立驗證 EEZ readiness。不可把某個 Profile 的能力宣告套到另一個 Profile。
 
 ## 4. 與另一個 repo 合併時的責任邊界
 
@@ -196,7 +232,7 @@ fi
 
 ```bash
 beeline -u 'jdbc:hive2://dtadm:10000/default' -n bigred \
-  -e "SELECT COUNT(*) FROM lake.ocean.gold_map_metric WHERE event_date = DATE '2022-01-01'"
+  -e "SELECT COUNT(*) FROM lake.ocean.gold_map_metric WHERE event_date = DATE '2024-01-01'"
 ```
 
 若叢集 Spark SQL 不接受此 date literal，改用該環境已驗證語法；重點是證明 catalog access 與 bounded Gold query。
@@ -229,7 +265,7 @@ Windows PowerShell：
 ```powershell
 ssh -N -o ExitOnForwardFailure=yes `
   -L 15081:172.22.128.3:32080 `
-  bigred@192.168.32.200
+  bigred@192.168.32.201
 ```
 
 保持該 terminal 開啟，再驗證：
@@ -247,6 +283,9 @@ UI 為 `http://127.0.0.1:15081/`。SSH 成功但 HTTP 失敗時，先查 Service
 ```powershell
 python -m unittest discover -s tests -p "test_*.py" -v
 node --test tests\*.test.mjs
+python scripts\presentation\presentationctl.py --json contract
+python scripts\presentation\presentationctl.py --json start --dry-run
+docker compose -f compose.presentation.yaml config --quiet
 git diff --check
 ```
 
@@ -274,6 +313,7 @@ python scripts\playback_contract_smoke.py
 | Process-local snapshot cache | Restart 會遺失，多 replicas 不共享。 |
 | 單 replica | Adapter 無 HA；production 前評估。 |
 | EEZ/AIS optional code | 不代表依賴已部署或資料新鮮。 |
+| 舊版發表用 instance | 即使 HTTP 可回應，schema-v1 smoke marker 或缺少 runtime identity/prewarm evidence 都不可接受；必須用目前啟動器受控重啟並重跑 smoke。 |
 | Local compose passwords/Windows path | 僅供開發，不得直接帶入叢集。 |
 | 歷史 manifests | 除非重現舊版，部署只用 0.10.0。 |
 
@@ -298,6 +338,8 @@ python scripts\playback_contract_smoke.py
 - [ ] Image pull 成功。
 - [ ] Deployment rollout 完成，Service 有 endpoints。
 - [ ] NodePort 上 `/api/health`、`/api/spark/health`、`/api/datasets` 成功。
+- [ ] Dashboard 與 Developer 回報相同的 runtime instance、generation、fingerprint、effective backend 與 config bundle hash。
+- [ ] Smoke evidence 與目前 image、Compose file、config bundle、bridge owner、deployment generation、持久化 EEZ prewarm manifest 完全一致。
 - [ ] UI 對兩個 AOI、三種解析度皆可畫 SST。
 - [ ] Playback/cache smoke 通過。
 - [ ] Logs 無持續 reconnect、OOM、query-resource failure。

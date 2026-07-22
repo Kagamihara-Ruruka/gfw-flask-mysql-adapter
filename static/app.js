@@ -231,7 +231,7 @@ async function refreshDatasetRegistry() {
 
 function bindDeveloperBridge() {
   window.addEventListener("message", (event) => {
-    if (!["rrkal:layer-imports-changed", "rrkal:source-registry-changed"].includes(event.data?.type)) {
+    if (event.data?.type !== "rrkal:runtime-generation-changed") {
       return;
     }
     try {
